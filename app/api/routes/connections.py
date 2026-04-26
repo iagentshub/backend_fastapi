@@ -61,6 +61,8 @@ async def save_connection(
     request: Request, _: str = Depends(require_auth)
 ) -> Dict[str, Any]:
     payload = await request.json()
+    if not get_provider(payload.get("type") or ""):
+        raise HTTPException(status_code=422, detail="Tipo de conexión no válido")
     conn = _storage.save(payload)
     return {k: v for k, v in conn.items() if k != "api_key"}
 
