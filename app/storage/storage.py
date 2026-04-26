@@ -199,10 +199,16 @@ class SkillStorage:
                     continue
         return items
 
+    def _safe_path(self, *parts: str) -> "Path":
+        p = (self.root_dir / Path(*parts)).resolve()
+        if not str(p).startswith(str(self.root_dir.resolve())):
+            raise ValueError("Path fuera del directorio de skills")
+        return p
+
     def get(self, scope: str, skill_id: str) -> Optional[Dict[str, Any]]:
-        p = self.root_dir / scope / skill_id / "SKILL.md"
+        p = self._safe_path(scope, skill_id, "SKILL.md")
         if not p.exists():
-            p = self.root_dir / scope / _slug(skill_id) / "SKILL.md"
+            p = self._safe_path(scope, _slug(skill_id), "SKILL.md")
         if not p.exists():
             return None
         skill = self._read(p)
@@ -234,7 +240,7 @@ class SkillStorage:
     def delete(self, scope: str, skill_id: str) -> bool:
         if scope == "public":
             raise ValueError("Las skills públicas son de solo lectura")
-        d = self.root_dir / scope / skill_id
+        d = self._safe_path(scope, skill_id)
         if not d.exists():
             return False
         shutil.rmtree(d)

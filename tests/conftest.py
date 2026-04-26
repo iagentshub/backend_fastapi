@@ -1,4 +1,4 @@
-"""fixtures compartidos de tests."""
+"""Fixtures compartidos de tests."""
 from __future__ import annotations
 
 import json
@@ -10,23 +10,17 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
-# ── directorio de datos temporal ──────────────────────────────────────────────
 
 @pytest.fixture(scope="session")
 def tmp_data_dir():
     """Crea un directorio de datos aislado para todos los tests."""
     d = Path(tempfile.mkdtemp(prefix="gaia_test_"))
-    # estructura mínima
     (d / "connections").mkdir()
     (d / "agents").mkdir()
     (d / "skills").mkdir()
     (d / "memory").mkdir()
     (d / "settings.json").write_text(
-        json.dumps({
-            "admin_username": "admin",
-            "admin_password_hash": "$2b$12$pFGz5cGeUIzDdGYtc8dXee2l1iWWkGVga2L3pZGLVpdWkPNO/oTfS",  # "admin"
-            "jwt_secret": "test-secret-key-for-tests-only",
-        }),
+        json.dumps({"jwt_secret": "test-secret-key-for-tests-only"}),
         encoding="utf-8",
     )
     (d / "connections" / "connections.json").write_text("[]", encoding="utf-8")
@@ -37,10 +31,10 @@ def tmp_data_dir():
 @pytest.fixture(autouse=True)
 def patch_data_dir(tmp_data_dir, monkeypatch):
     """Redirige GAIA_DATA_DIR al directorio temporal antes de cada test."""
-    # Reinicia users.json para aislamiento entre tests
     (tmp_data_dir / "users.json").write_text("[]", encoding="utf-8")
     monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_data_dir))
-    # Forzar que los módulos de config usen el valor actualizado
+    monkeypatch.setenv("GAIA_ADMIN_PASSWORD", "admin")
+
     import app.config.data as cfg
     monkeypatch.setattr(cfg, "DATA_DIR", tmp_data_dir)
     monkeypatch.setattr(cfg, "CONN_FILE", tmp_data_dir / "connections" / "connections.json")
@@ -66,15 +60,18 @@ def client(patch_data_dir):
 @pytest.fixture()
 def admin_client(client):
     """Client ya autenticado como admin."""
-    r = client.post("/api/auth/login", json={"username": "admin", "password": "admin"})
+    r = client.post("/api/auth/local", json={"password": "admin"})
     assert r.status_code == 200
     return client
 
 
 @pytest.fixture()
 def reset_rate_limiter():
-    """Limpia el rate limiter entre tests para evitar interferencias."""
-    from app.api.routes.auth import _rate_data
-    _rate_data.clear()
+    """Limpia los rate limiters entre tests para evitar interferencias."""
+    from app.api.routes.auth import _rate_data as auth_rate
+    from app.auth.login_local import _rate_data as local_rate
+    auth_rate.clear()
+    local_rate.clear()
     yield
-    _rate_data.clear()
+    auth_rate.clear()
+    local_rate.clear()

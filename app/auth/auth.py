@@ -1,4 +1,4 @@
-"""Auth: JWT + password hashing (un solo usuario admin)."""
+"""Auth: JWT, password hashing y gestión de usuarios."""
 from __future__ import annotations
 
 import json
@@ -10,7 +10,7 @@ import bcrypt as _bcrypt
 from jose import JWTError, jwt
 
 from app.config.data import SETTINGS_FILE
-from app.config.jwt import JWT_ALGORITHM, JWT_EXPIRE_HOURS, JWT_SECRET_ENV, JWT_UNSAFE_SECRETS
+from app.config.session import JWT_ALGORITHM, JWT_EXPIRE_HOURS, JWT_SECRET_ENV, JWT_UNSAFE_SECRETS
 
 _USERS_PATH = SETTINGS_FILE.parent / "users.json"
 
@@ -19,10 +19,6 @@ def _load_settings() -> dict:
     if SETTINGS_FILE.exists():
         return json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
     return {}
-
-
-def _save_settings(settings: dict) -> None:
-    SETTINGS_FILE.write_text(json.dumps(settings, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
 def _load_users() -> List[dict]:
@@ -36,22 +32,7 @@ def _save_users(users: List[dict]) -> None:
     _USERS_PATH.write_text(json.dumps(users, indent=2, ensure_ascii=False), encoding="utf-8")
 
 
-def ensure_admin_password_hashed() -> None:
-    """Si admin_password_plain existe sin hash, lo hashea y elimina el plain."""
-    settings = _load_settings()
-    plain = settings.get("admin_password_plain")
-    if plain and not settings.get("admin_password_hash"):
-        settings["admin_password_hash"] = hash_password(plain)
-        del settings["admin_password_plain"]
-        _save_settings(settings)
-
-
 def _secret() -> str:
-    """Lee el secreto JWT desde la variable de entorno o desde settings.json.
-
-    Lanza RuntimeError si el secreto no está configurado o es el valor por defecto
-    inseguro, para evitar firmar JWTs con una clave predecible.
-    """
     env_val = os.environ.get(JWT_SECRET_ENV)
     secret = env_val or _load_settings().get("jwt_secret", "")
     if secret in JWT_UNSAFE_SECRETS:
@@ -74,24 +55,10 @@ def verify_password(plain: str, hashed: str) -> bool:
         return False
 
 
-def authenticate(username: str, password: str) -> bool:
-    settings = _load_settings()
-    admin_user = settings.get("admin_username", "admin")
-    if username == admin_user:
-        stored_hash = settings.get("admin_password_hash", "")
-        if not stored_hash:
-            return password == settings.get("admin_password_plain", "admin")
-        return verify_password(password, stored_hash)
-    for user in _load_users():
-        if user.get("username") == username:
-            return verify_password(password, user.get("password_hash", ""))
-    return False
-
-
 def register_user(username: str, password: str, email: str = "") -> None:
-    """Crea un nuevo usuario. Lanza ValueError si el nombre o email ya existe."""
-    settings = _load_settings()
-    if username == settings.get("admin_username", "admin"):
+    """Crea un nuevo usuario local. Lanza ValueError si el nombre o email ya existe."""
+    from app.auth.login_local import _ADMIN_USERNAME
+    if username == _ADMIN_USERNAME:
         raise ValueError("Nombre de usuario no disponible")
     users = _load_users()
     if any(u.get("username") == username for u in users):
@@ -108,9 +75,38 @@ def register_user(username: str, password: str, email: str = "") -> None:
     _save_users(users)
 
 
+def get_or_create_oauth_user(provider: str, sub: str, email: str, name: str) -> str:
+    """Busca un usuario OAuth por (provider, sub). Si no existe lo crea. Devuelve el username."""
+    users = _load_users()
+    for u in users:
+        if u.get("provider") == provider and u.get("provider_sub") == sub:
+            return u["username"]
+    # Puede que ya exista el email por otro motivo — vincular OAuth
+    for u in users:
+        if u.get("email") == email:
+            u["provider"] = provider
+            u["provider_sub"] = sub
+            _save_users(users)
+            return u["username"]
+    # Usuario nuevo
+    username = email
+    users.append({
+        "username": username,
+        "email": email,
+        "display_name": name,
+        "provider": provider,
+        "provider_sub": sub,
+        "role": "standard",
+        "created_at": datetime.now(timezone.utc).isoformat(),
+    })
+    _save_users(users)
+    return username
+
+
 def get_user_role(username: str) -> str:
-    settings = _load_settings()
-    if username == settings.get("admin_username", "admin"):
+    # El admin local siempre tiene rol admin
+    from app.auth.login_local import _ADMIN_USERNAME  # importación local para evitar ciclo
+    if username == _ADMIN_USERNAME:
         return "admin"
     for user in _load_users():
         if user.get("username") == username:
@@ -120,7 +116,7 @@ def get_user_role(username: str) -> str:
 
 def list_users() -> list:
     return [
-        {k: v for k, v in u.items() if k != "password_hash"}
+        {k: v for k, v in u.items() if k not in ("password_hash", "provider_sub")}
         for u in _load_users()
     ]
 

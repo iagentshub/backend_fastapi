@@ -22,28 +22,32 @@ Cada proveedor de IA está implementado como un adaptador en `app/connections/`.
 
 ## Proveedores compatibles con OpenAI
 
-Gemini, Grok y Qwen exponen un endpoint de chat completions compatible con OpenAI. El enrutamiento en `services/chat.py` mapea cada `conn.type` a su URL base:
+Gemini, Grok y Qwen exponen un endpoint de chat completions compatible con OpenAI. Las URLs se definen en `app/config/providers.py` (`OPENAI_COMPAT_URLS`) y se derivan de las URLs base centralizadas en `PROVIDER_BASE_URLS`.
 
 | Tipo | URL base |
 |---|---|
-| `openai` | `https://api.openai.com/v1` |
-| `gemini` | `https://generativelanguage.googleapis.com/v1beta/openai` |
-| `grok` | `https://api.x.ai/v1` |
-| `qwen` | `https://dashscope-intl.aliyuncs.com/compatible-mode/v1` |
+| `openai` | `PROVIDER_BASE_URLS["openai"]` |
+| `gemini` | `PROVIDER_BASE_URLS["gemini"]` |
+| `grok` | `PROVIDER_BASE_URLS["grok"]` |
+| `qwen` | `PROVIDER_BASE_URLS["qwen"]` |
 
 ---
 
 ## Añadir un nuevo proveedor
 
-1. Crear `app/connections/{nombre}.py`.
-2. Extender `BaseProvider` de `app/connections/base.py`.
-3. Definir `type_id`, `label`, `icon` y `fields`.
-4. Implementar el método de clase `test(config)` devolviendo un `TestResult`.
-5. Decorar la clase con `@register`.
-6. Importar el módulo en `app/connections/__init__.py`.
+1. Añadir la URL base y el modelo por defecto en `app/config/providers.py`.
+2. Crear `app/connections/{nombre}.py`.
+3. Extender `BaseProvider` de `app/connections/base.py`.
+4. Definir `type_id`, `label`, `icon` y `fields` (importando los valores desde `providers.py`).
+5. Implementar el método de clase `test(config)` devolviendo un `TestResult`.
+6. Decorar la clase con `@register`.
+7. Importar el módulo en `app/connections/__init__.py`.
 
 ```python
+from app.config.providers import PROVIDER_BASE_URLS, PROVIDER_DEFAULT_MODELS
 from .base import BaseProvider, FieldDef, TestResult, register
+
+_BASE_URL = PROVIDER_BASE_URLS["miproveedor"]
 
 @register
 class MiProveedor(BaseProvider):
@@ -52,7 +56,7 @@ class MiProveedor(BaseProvider):
     icon = "🔌"
     fields = [
         FieldDef("api_key", "API Key", "password", required=True),
-        FieldDef("model", "Modelo", "text", "mi-modelo-v1"),
+        FieldDef("model", "Modelo", "text", PROVIDER_DEFAULT_MODELS["miproveedor"]),
     ]
 
     @classmethod

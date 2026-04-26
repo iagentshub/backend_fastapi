@@ -13,11 +13,19 @@ router = APIRouter(prefix="/api/skills", tags=["skills"])
 
 _storage = SkillStorage(SKILLS_DIR)
 
+_VALID_SCOPES = {"public", "private", "all"}
+
+
+def _check_scope(scope: str) -> None:
+    if scope not in _VALID_SCOPES:
+        raise HTTPException(status_code=400, detail="Scope no válido")
+
 
 @router.get("")
 async def list_skills(
     scope: str = "all", _: str = Depends(require_auth)
 ) -> List[Dict[str, Any]]:
+    _check_scope(scope)
     return _storage.list(scope)
 
 
@@ -25,6 +33,7 @@ async def list_skills(
 async def get_skill(
     scope: str, skill_id: str, _: str = Depends(require_auth)
 ) -> Dict[str, Any]:
+    _check_scope(scope)
     sk = _storage.get(scope, skill_id)
     if not sk:
         raise HTTPException(status_code=404, detail="Skill no encontrada")
@@ -35,6 +44,7 @@ async def get_skill(
 async def save_skill(
     scope: str, request: Request, _: str = Depends(require_auth)
 ) -> Dict[str, Any]:
+    _check_scope(scope)
     payload = await request.json()
     try:
         return _storage.save(scope, payload)
@@ -46,6 +56,7 @@ async def save_skill(
 async def delete_skill(
     scope: str, skill_id: str, _: str = Depends(require_auth)
 ) -> Dict[str, Any]:
+    _check_scope(scope)
     try:
         if not _storage.delete(scope, skill_id):
             raise HTTPException(status_code=404, detail="Skill no encontrada")

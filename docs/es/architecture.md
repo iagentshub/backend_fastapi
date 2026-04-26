@@ -7,53 +7,53 @@
 
 # Arquitectura
 
-El backend sigue una arquitectura por capas con separación clara de responsabilidades:
-
-```
-Petición → Router → Service → Storage → Sistema de ficheros
-               ↓
-          Middleware de auth (JWT)
-```
-
-| Capa | Ruta | Responsabilidad |
-|---|---|---|
-| **Routers** | `app/api/routes/` | Handlers HTTP, validación de requests, formato de respuesta |
-| **Services** | `app/services/` | Lógica de negocio, orquestación de proveedores, streaming |
-| **Storage** | `app/storage/` | Persistencia en sistema de ficheros (JSON, Markdown) |
-| **Connections** | `app/connections/` | Adaptadores de proveedores (Anthropic, OpenAI, Google, Grok, Qwen, Ollama) |
-| **Auth** | `app/auth/` | Creación y validación de JWT, hashing de contraseñas |
-| **Config** | `app/config/` | Configuración por variables de entorno (servidor, datos, CORS, JWT) |
-
 ---
 
-## Estructura del código
+## Visión general
+
+El backend es un servicio sin estado. Todo el contenido del usuario (agentes, conexiones, skills, memoria) se almacena en un directorio de datos externo que se monta en el servidor. Esto facilita las copias de seguridad, la migración y el escalado.
 
 ```
-app/
-  api/
-    app.py          ← factoría FastAPI (create_app)
-    routes/         ← auth, agentes, skills, memoria, conexiones
-  auth/             ← helpers JWT, gestión multi-usuario
-  config/
-    server.py       ← host, puerto, reload
-    data.py         ← rutas del directorio de datos
-    cors.py         ← orígenes CORS permitidos
-    jwt.py          ← algoritmo, expiración y validación del secreto
-  connections/      ← adaptadores de proveedores (Anthropic, OpenAI, Google, Grok, Qwen, Ollama)
-  models/           ← esquemas Pydantic
-  services/         ← lógica de negocio (streaming de chat)
-  storage/          ← capa de persistencia en sistema de ficheros
-main.py             ← punto de entrada (uvicorn)
-requirements.txt
-Dockerfile
-tests/              ← suite de tests
+Usuario → API → Lógica de negocio → Directorio de datos
+                     ↓
+              Proveedor de IA (Anthropic, OpenAI, Google…)
 ```
 
 ---
 
-## Decisiones de diseño clave
+## Componentes principales
 
-- **Servicio sin estado** — todo el estado vive en el directorio de datos montado (`GAIA_DATA_DIR`). El contenedor en sí no guarda estado.
-- **Almacenamiento en sistema de ficheros** — agentes, conexiones, memoria y skills se guardan como ficheros JSON/Markdown. No se necesita base de datos.
-- **Streaming SSE** — las respuestas del chat se envían por streaming usando `text/event-stream` via `asyncio.to_thread` para no bloquear el event loop.
-- **Cookies HTTP-only** — los tokens de sesión nunca quedan expuestos a JavaScript, reduciendo el riesgo de XSS.
+| Componente | Qué hace |
+|---|---|
+| **API** | Recibe las peticiones de la interfaz de usuario y las valida |
+| **Autenticación** | Verifica la identidad del usuario (Google o admin local) y protege el acceso |
+| **Agentes** | Gestiona la configuración y las conversaciones de cada agente |
+| **Skills** | Carga y sirve las habilidades que pueden añadirse a los agentes |
+| **Memoria** | Almacena y recupera el contexto persistente de cada agente |
+| **Conexiones** | Gestiona las credenciales y la comunicación con los proveedores de IA |
+| **Configuración** | Lee los ajustes del sistema desde variables de entorno |
+
+---
+
+## Almacenamiento
+
+No se utiliza ninguna base de datos. Toda la información se guarda como ficheros en el directorio de datos (`GAIA_DATA_DIR`):
+
+| Contenido | Ubicación |
+|---|---|
+| Agentes | `data/agents/` |
+| Conexiones | `data/connections/connections.json` |
+| Skills | `data/skills/` |
+| Memoria | `data/memory/` |
+| Configuración del sistema | `data/settings.json` |
+
+---
+
+## Control de acceso
+
+Existen dos formas de autenticarse:
+
+1. **Google Sign-In** — método principal para usuarios. No requiere gestionar contraseñas.
+2. **Admin local** — acceso de emergencia para el administrador mediante `GAIA_ADMIN_PASSWORD`. Útil cuando Google no está disponible o durante la configuración inicial.
+
+Las sesiones se mantienen de forma segura sin exponer información sensible al navegador.

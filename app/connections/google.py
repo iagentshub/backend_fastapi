@@ -6,7 +6,10 @@ import urllib.error
 import urllib.request
 from typing import Any, Dict
 
+from app.config.providers import PROVIDER_BASE_URLS, PROVIDER_DEFAULT_MODELS
 from .base import BaseProvider, FieldDef, TestResult, register
+
+_BASE_URL = PROVIDER_BASE_URLS["gemini"]
 
 
 @register
@@ -16,7 +19,7 @@ class GoogleProvider(BaseProvider):
     icon = "🔵"
     fields = [
         FieldDef("api_key", "API Key", "password", "AIza...", required=True),
-        FieldDef("model", "Modelo por defecto", "text", "gemini-2.0-flash"),
+        FieldDef("model", "Modelo por defecto", "text", PROVIDER_DEFAULT_MODELS["gemini"]),
     ]
 
     @classmethod
@@ -25,7 +28,7 @@ class GoogleProvider(BaseProvider):
         if not api_key:
             return TestResult(False, "Falta la API Key")
         try:
-            url = f"https://generativelanguage.googleapis.com/v1beta/models?key={api_key}&pageSize=5"
+            url = f"{_BASE_URL}/models?key={api_key}&pageSize=5"
             req = urllib.request.Request(url)
             with urllib.request.urlopen(req, timeout=10) as r:
                 data = json.loads(r.read())

@@ -6,7 +6,10 @@ import urllib.error
 import urllib.request
 from typing import Any, Dict
 
+from app.config.providers import PROVIDER_BASE_URLS, PROVIDER_DEFAULT_MODELS
 from .base import BaseProvider, FieldDef, TestResult, register
+
+_BASE_URL = PROVIDER_BASE_URLS["openai"]
 
 
 @register
@@ -16,7 +19,7 @@ class OpenAIProvider(BaseProvider):
     icon = "🟢"
     fields = [
         FieldDef("api_key", "API Key", "password", "sk-...", required=True),
-        FieldDef("model", "Modelo por defecto", "text", "gpt-4o"),
+        FieldDef("model", "Modelo por defecto", "text", PROVIDER_DEFAULT_MODELS["openai"]),
     ]
 
     @classmethod
@@ -26,7 +29,7 @@ class OpenAIProvider(BaseProvider):
             return TestResult(False, "Falta la API Key")
         try:
             req = urllib.request.Request(
-                "https://api.openai.com/v1/models",
+                f"{_BASE_URL}/models",
                 headers={"Authorization": f"Bearer {api_key}"},
             )
             with urllib.request.urlopen(req, timeout=10) as r:

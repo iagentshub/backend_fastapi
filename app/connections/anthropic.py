@@ -6,7 +6,15 @@ import urllib.error
 import urllib.request
 from typing import Any, Dict
 
+from app.config.providers import (
+    ANTHROPIC_API_VERSION,
+    ANTHROPIC_TEST_MODEL,
+    PROVIDER_BASE_URLS,
+    PROVIDER_DEFAULT_MODELS,
+)
 from .base import BaseProvider, FieldDef, TestResult, register
+
+_BASE_URL = PROVIDER_BASE_URLS["claude"]
 
 
 @register
@@ -16,7 +24,7 @@ class AnthropicProvider(BaseProvider):
     icon = "🟠"
     fields = [
         FieldDef("api_key", "API Key", "password", "sk-ant-...", required=True),
-        FieldDef("model", "Modelo por defecto", "text", "claude-sonnet-4-5"),
+        FieldDef("model", "Modelo por defecto", "text", PROVIDER_DEFAULT_MODELS["claude"]),
     ]
 
     @classmethod
@@ -26,16 +34,16 @@ class AnthropicProvider(BaseProvider):
             return TestResult(False, "Falta la API Key")
         try:
             payload = json.dumps({
-                "model": (config.get("model") or "claude-haiku-3-5").strip() or "claude-haiku-3-5",
+                "model": (config.get("model") or ANTHROPIC_TEST_MODEL).strip() or ANTHROPIC_TEST_MODEL,
                 "max_tokens": 1,
                 "messages": [{"role": "user", "content": "ping"}],
             }).encode()
             req = urllib.request.Request(
-                "https://api.anthropic.com/v1/messages",
+                f"{_BASE_URL}/messages",
                 data=payload,
                 headers={
                     "x-api-key": api_key,
-                    "anthropic-version": "2023-06-01",
+                    "anthropic-version": ANTHROPIC_API_VERSION,
                     "content-type": "application/json",
                 },
                 method="POST",

@@ -1,14 +1,42 @@
 """Servicio de chat — streaming SSE hacia los proveedores LLM."""
 from __future__ import annotations
 
+import ipaddress
 import json
 import urllib.error
 import urllib.request
 from typing import Any, AsyncGenerator, Dict, List, Optional
+from urllib.parse import urlparse
+
+from app.config.providers import ANTHROPIC_API_VERSION, OPENAI_COMPAT_URLS, PROVIDER_BASE_URLS
+from app.config.security import PRIVATE_HOST_PREFIXES
 
 
 def _sse(data: Dict[str, Any]) -> str:
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def _validate_ollama_host(host: str) -> None:
+    """Rechaza hosts que apunten a rangos privados o de metadata de cloud (SSRF)."""
+    parsed = urlparse(host)
+    if parsed.scheme not in ("http", "https"):
+        raise ValueError(f"Protocolo no permitido para Ollama: {parsed.scheme!r}")
+    hostname = (parsed.hostname or "").lower()
+    if hostname in ("localhost",):
+        return  # localhost es el caso de uso legítimo habitual
+    # Bloquear por prefijo de texto (cubre la mayoría de casos sin DNS)
+    if any(hostname.startswith(p) for p in PRIVATE_HOST_PREFIXES):
+        raise ValueError(f"Host Ollama no permitido: {hostname!r}")
+    # Bloquear mediante ipaddress si es una IP literal
+    try:
+        addr = ipaddress.ip_address(hostname)
+        if addr.is_private or addr.is_loopback or addr.is_link_local:
+            raise ValueError(f"Host Ollama no permitido: {hostname!r}")
+    except ValueError as exc:
+        if "no permitido" in str(exc):
+            raise
+        # No es una IP literal — es un hostname; se permite (el usuario lo configuró)
+
 
 
 async def stream_chat(
@@ -45,14 +73,8 @@ async def stream_chat(
             system += f"\n\n## Memoria del agente\n{mem_content}"
 
     try:
-        if conn_type in ("openai", "gemini", "qwen", "grok"):
-            _openai_compat_urls = {
-                "openai": "https://api.openai.com/v1/chat/completions",
-                "gemini": "https://generativelanguage.googleapis.com/v1beta/openai/chat/completions",
-                "qwen": "https://dashscope-intl.aliyuncs.com/compatible-mode/v1/chat/completions",
-                "grok": "https://api.x.ai/v1/chat/completions",
-            }
-            url = _openai_compat_urls[conn_type]
+        if conn_type in OPENAI_COMPAT_URLS:
+            url = OPENAI_COMPAT_URLS[conn_type]
             msgs: List[Dict[str, Any]] = []
             if system:
                 msgs.append({"role": "system", "content": system})
@@ -94,7 +116,7 @@ async def stream_chat(
             yield _sse({"type": "done", "reply": reply, "tokens": {}})
 
         elif conn_type == "claude":
-            url = "https://api.anthropic.com/v1/messages"
+            url = f"{PROVIDER_BASE_URLS['claude']}/messages"
             payload = {
                 "model": model,
                 "messages": history,
@@ -110,7 +132,7 @@ async def stream_chat(
             headers = {
                 "Content-Type": "application/json",
                 "x-api-key": api_key,
-                "anthropic-version": "2023-06-01",
+                "anthropic-version": ANTHROPIC_API_VERSION,
             }
 
             def _stream_claude() -> str:
@@ -135,6 +157,7 @@ async def stream_chat(
 
         elif conn_type == "ollama":
             host = str(conn.get("host") or "http://localhost:11434").rstrip("/")
+            _validate_ollama_host(host)
             msgs_ollama: List[Dict[str, Any]] = []
             if system:
                 msgs_ollama.append({"role": "system", "content": system})

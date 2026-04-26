@@ -25,8 +25,7 @@ def test_list_users_no_password_hash(admin_client, reset_rate_limiter):
 
 
 def test_list_users_forbidden_for_standard(client, reset_rate_limiter):
-    _register("stduser2")
-    client.post("/api/auth/login", json={"username": "stduser2", "password": "pass1234"})
+    client.post("/api/auth/register", json={"username": "stduser2", "password": "pass1234"})
     r = client.get("/api/admin/users")
     assert r.status_code == 403
 
