@@ -42,9 +42,9 @@ def test_register_password_too_short(client, reset_rate_limiter):
     assert r.status_code == 400
 
 
-def test_register_cannot_use_admin_username(client, reset_rate_limiter):
+def test_register_admin_username_allowed(client, reset_rate_limiter):
     r = client.post("/api/auth/register", json={"username": "admin", "password": "pass1234"})
-    assert r.status_code == 409
+    assert r.status_code == 200
 
 
 def test_register_rate_limit(client, reset_rate_limiter):

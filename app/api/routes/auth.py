@@ -83,6 +83,14 @@ async def register(request: Request, response: Response) -> Dict[str, Any]:
     return {"ok": True, "username": username}
 
 
+@router.post("/guest")
+async def guest_login(response: Response) -> Dict[str, Any]:
+    from app.auth.auth import create_token
+    token = create_token("guest")
+    response.set_cookie("ga_token", token, httponly=True, samesite="lax", max_age=43200)
+    return {"ok": True, "username": "guest"}
+
+
 @router.post("/logout")
 async def logout(response: Response) -> Dict[str, Any]:
     response.delete_cookie("ga_token")
@@ -98,13 +106,6 @@ async def me(username: str = Depends(require_auth)) -> Dict[str, Any]:
 async def change_password(
     request: Request, username: str = Depends(require_auth)
 ) -> Dict[str, Any]:
-    """Cambio de contraseña para usuarios locales. El admin usa GAIA_ADMIN_PASSWORD."""
-    from app.auth.login_local import _ADMIN_USERNAME
-    if username == _ADMIN_USERNAME:
-        raise HTTPException(
-            status_code=400,
-            detail="La contraseña del admin se gestiona mediante la variable de entorno GAIA_ADMIN_PASSWORD.",
-        )
     body = await request.json()
     current = str(body.get("current_password") or "")
     new_pw = str(body.get("new_password") or "").strip()

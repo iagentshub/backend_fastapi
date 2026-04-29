@@ -5,59 +5,32 @@
 
 <br>
 
-# Directorio de datos
+# Datos
 
-El backend espera la siguiente estructura en `GAIA_DATA_DIR` (valor por defecto: `./data`):
-
-```
-data/
-  settings.json             ← credenciales de admin, fallback de jwt_secret
-  users.json                ← cuentas de usuario registradas (se crea automáticamente)
-  agents/
-    {agent-id}/
-      config.json           ← modelo, system prompt, skills adjuntas
-  connections/
-    connections.json        ← credenciales de proveedores (mantener privado)
-  memory/
-    {agent-id}.md           ← memoria en Markdown libre por agente
-  skills/
-    public/
-      {lang}/
-        {skill-id}/
-          SKILL.md
-    private/
-      {skill-id}/
-        SKILL.md
-```
+El backend guarda toda la información en un directorio de datos externo montado en el servicio. No se utiliza ninguna base de datos.
 
 ---
 
-## Qué se versiona y qué se ignora
+## Qué contiene
 
-| Ruta | Versionado | Motivo |
-|---|---|---|
-| `data/settings.json` | Sí | Config por defecto (sin secretos reales) |
-| `data/users.json` | No | Datos de cuentas de usuario |
-| `data/agents/` | No | Específico del usuario, puede contener prompts privados |
-| `data/connections/connections.json` | No | Contiene claves API |
-| `data/memory/` | No | Datos personales del usuario |
-| `data/skills/public/` | No | Gestionado externamente (clonado por iAgentsHub) |
-| `data/skills/private/` | No | Específico del usuario |
+| Ruta | Contenido |
+|---|---|
+| `settings.json` | Configuración del sistema (secreto JWT de emergencia) |
+| `users.json` | Cuentas de usuario registradas |
+| `agents/` | Configuraciones de los agentes (instrucciones, modelo, skills asignadas) |
+| `connections/` | Credenciales de los proveedores de IA |
+| `memory/` | Memoria acumulada por cada agente entre conversaciones |
+| `skills/public/` | Skills sincronizadas desde el repositorio de skills |
+| `skills/private/` | Skills privadas de la instalación |
 
 ---
 
-## Formato de una skill
+## Qué se versiona
 
-Cada skill es un fichero Markdown con front matter YAML:
+Solo `settings.json` se incluye en el repositorio como valor por defecto. El resto de los datos no se versiona: contiene información específica de cada instalación.
 
-```markdown
----
-id: mi-skill
-name: Mi Skill
-description: Qué hace esta skill.
-icon: 🔧
-category: productividad
 ---
 
-El contenido de la skill va aquí. Se inyecta en el system prompt del agente.
-```
+## Skills
+
+Las skills son ficheros de texto con una cabecera de metadatos (nombre, descripción, icono, categoría) seguida del contenido de la skill. El contenido se inyecta en el system prompt del agente cuando la skill está activada.

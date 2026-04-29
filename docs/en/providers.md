@@ -5,62 +5,33 @@
 
 <br>
 
-# Providers
+# AI Providers
 
-Each AI provider is implemented as an adapter under `app/connections/`. The adapter receives the connection credentials from `connections.json` at runtime.
-
-| Provider | File | Models | API Style |
-|---|---|---|---|
-| Anthropic | `anthropic.py` | Claude family | Anthropic Messages API |
-| OpenAI | `openai.py` | GPT family, o-series | OpenAI Chat Completions |
-| Google Gemini | `google.py` | Gemini family | OpenAI-compatible |
-| Grok (xAI) | `grok.py` | Grok family | OpenAI-compatible |
-| Qwen (Alibaba) | `qwen.py` | Qwen family | OpenAI-compatible |
-| Ollama | `ollama.py` | Any local model | Ollama REST API |
+The backend can connect to multiple AI providers. Each provider is configured independently from the connections management interface.
 
 ---
 
-## OpenAI-compatible providers
+## Supported providers
 
-Gemini, Grok and Qwen expose an OpenAI-compatible chat completions endpoint. All URLs are defined in `app/config/providers.py` (`OPENAI_COMPAT_URLS`) and derived from the centralised base URLs in `PROVIDER_BASE_URLS`.
-
-| Type | Base URL |
+| Provider | Models |
 |---|---|
-| `openai` | `PROVIDER_BASE_URLS["openai"]` |
-| `gemini` | `PROVIDER_BASE_URLS["gemini"]` |
-| `grok` | `PROVIDER_BASE_URLS["grok"]` |
-| `qwen` | `PROVIDER_BASE_URLS["qwen"]` |
+| **Anthropic** | Claude family |
+| **OpenAI** | GPT family, o-series |
+| **Google Gemini** | Gemini family |
+| **Grok (xAI)** | Grok family |
+| **Qwen (Alibaba)** | Qwen family |
+| **Ollama** | Any local model |
 
 ---
 
-## Adding a new provider
+## How it works
 
-1. Add the base URL and default model to `app/config/providers.py`.
-2. Create `app/connections/{name}.py`.
-3. Subclass `BaseProvider` from `app/connections/base.py`.
-4. Set `type_id`, `label`, `icon` and `fields` (importing values from `providers.py`).
-5. Implement the `test(config)` classmethod returning a `TestResult`.
-6. Decorate the class with `@register`.
-7. Import the module in `app/connections/__init__.py`.
+Each provider requires an API key (or server URL, in the case of Ollama). Credentials are stored privately in the data directory and are never exposed in the interface or in logs.
 
-```python
-from app.config.providers import PROVIDER_BASE_URLS, PROVIDER_DEFAULT_MODELS
-from .base import BaseProvider, FieldDef, TestResult, register
+When an agent starts a conversation, the backend selects the provider configured for that agent, establishes the connection, and streams the response in real time.
 
-_BASE_URL = PROVIDER_BASE_URLS["myprovider"]
+---
 
-@register
-class MyProvider(BaseProvider):
-    type_id = "myprovider"
-    label = "My Provider"
-    icon = "🔌"
-    fields = [
-        FieldDef("api_key", "API Key", "password", required=True),
-        FieldDef("model", "Model", "text", PROVIDER_DEFAULT_MODELS["myprovider"]),
-    ]
+## Ollama
 
-    @classmethod
-    def test(cls, config):
-        # validate credentials and return TestResult
-        ...
-```
+Ollama allows running AI models directly on the local machine, without depending on external services or incurring usage costs. It is the recommended option for environments without internet access or for those who prefer to keep all data local.

@@ -5,59 +5,32 @@
 
 <br>
 
-# Data Directory
+# Data
 
-The backend expects the following structure at `GAIA_DATA_DIR` (default: `./data`):
-
-```
-data/
-  settings.json             ← admin credentials, jwt_secret fallback
-  users.json                ← registered non-admin accounts (auto-created)
-  agents/
-    {agent-id}/
-      config.json           ← model, system prompt, attached skills
-  connections/
-    connections.json        ← provider credentials (keep private)
-  memory/
-    {agent-id}.md           ← free-form Markdown memory per agent
-  skills/
-    public/
-      {lang}/
-        {skill-id}/
-          SKILL.md
-    private/
-      {skill-id}/
-        SKILL.md
-```
+The backend stores all information in an external data directory mounted into the service. No database is used.
 
 ---
 
-## What is committed vs. gitignored
+## What it contains
 
-| Path | Committed | Reason |
-|---|---|---|
-| `data/settings.json` | Yes | Default config (no real secrets) |
-| `data/users.json` | No | User-specific account data |
-| `data/agents/` | No | User-specific, may contain private prompts |
-| `data/connections/connections.json` | No | Contains API keys |
-| `data/memory/` | No | Personal user data |
-| `data/skills/public/` | No | Managed externally (cloned by iAgentsHub) |
-| `data/skills/private/` | No | User-specific |
+| Path | Contents |
+|---|---|
+| `settings.json` | System configuration (fallback JWT secret) |
+| `users.json` | Registered user accounts |
+| `agents/` | Agent configurations (instructions, model, assigned skills) |
+| `connections/` | AI provider credentials |
+| `memory/` | Memory accumulated by each agent between conversations |
+| `skills/public/` | Skills synced from the skills repository |
+| `skills/private/` | Installation-specific private skills |
 
 ---
 
-## Skill format
+## What is committed
 
-Each skill is a Markdown file with YAML front matter:
+Only `settings.json` is included in the repository as a default value. All other data is not committed: it contains installation-specific information.
 
-```markdown
----
-id: my-skill
-name: My Skill
-description: What this skill does.
-icon: 🔧
-category: productivity
 ---
 
-Skill content goes here. This is injected into the agent's system prompt.
-```
+## Skills
+
+Skills are text files with a metadata header (name, description, icon, category) followed by the skill content. The content is injected into the agent's system prompt when the skill is enabled.

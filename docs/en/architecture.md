@@ -5,55 +5,43 @@
 
 <br>
 
-# Architecture
-
-The backend follows a layered architecture with clear separation of concerns:
-
-```
-Request → Router → Service → Storage → File System
-                ↓
-           Auth middleware (JWT)
-```
-
-| Layer | Path | Responsibility |
-|---|---|---|
-| **Routers** | `app/api/routes/` | HTTP handlers, request validation, response shaping |
-| **Services** | `app/services/` | Business logic, provider orchestration, streaming |
-| **Storage** | `app/storage/` | File-system persistence (JSON, Markdown) |
-| **Connections** | `app/connections/` | Provider adapters (Anthropic, OpenAI, Google, Grok, Qwen, Ollama) |
-| **Auth** | `app/auth/` | JWT creation, validation, and password hashing |
-| **Config** | `app/config/` | Environment-variable driven configuration (server, data, CORS, JWT) |
+# Backend Architecture
 
 ---
 
-## Code Structure
+## Overview
 
-```
-app/
-  api/
-    app.py          ← FastAPI factory (create_app)
-    routes/         ← auth, agents, skills, memory, connections
-  auth/             ← JWT helpers, multi-user management
-  config/
-    server.py       ← host, port, reload
-    data.py         ← data directory paths
-    cors.py         ← allowed CORS origins
-    jwt.py          ← algorithm, expiry, and secret validation
-  connections/      ← provider adapters (Anthropic, OpenAI, Google, Grok, Qwen, Ollama)
-  models/           ← Pydantic schemas
-  services/         ← business logic (chat streaming)
-  storage/          ← file-system persistence layer
-main.py             ← entry point (uvicorn)
-requirements.txt
-Dockerfile
-tests/              ← test suite
-```
+The backend is a stateless service. All user data — agents, connections, skills, memory — is stored in an external data directory mounted into the service. This makes backups, migration, and updates straightforward with no risk of data loss.
+
+When the frontend sends a request, the backend authenticates it, runs the corresponding logic, and interacts with the AI provider or the file system as needed.
 
 ---
 
-## Key Design Decisions
+## Main components
 
-- **Stateless service** — all state lives in the mounted data directory (`GAIA_DATA_DIR`). The container itself holds no state.
-- **File-system storage** — agents, connections, memory and skills are stored as JSON/Markdown files. No database required.
-- **SSE streaming** — chat responses are streamed using `text/event-stream` via `asyncio.to_thread` to avoid blocking the event loop.
-- **HTTP-only cookies** — session tokens are never exposed to JavaScript, reducing XSS risk.
+| Component | What it does |
+|---|---|
+| **API** | Receives and validates requests |
+| **Authentication** | Verifies user identity and controls access |
+| **Agents** | Manages each agent's configuration and conversations |
+| **Skills** | Loads and serves the capabilities that can be added to agents |
+| **Memory** | Stores and retrieves each agent's persistent context between conversations |
+| **Connections** | Manages credentials and communication with AI providers |
+
+---
+
+## Storage
+
+No database is used. All information is stored as files in the data directory. This keeps the system predictable, easy to back up, and portable across environments.
+
+---
+
+## Access control
+
+There are two ways to access the platform:
+
+**Google Sign-In** — the access method for registered users. No need to manage passwords in the system.
+
+**Guest access** — allows using the platform without an account. Guest access has limited permissions.
+
+Sessions are maintained securely without exposing sensitive information to the browser.

@@ -49,7 +49,7 @@ def test_delete_nonexistent_user(admin_client):
 
 
 def test_admin_cannot_self_delete(admin_client):
-    r = admin_client.delete("/api/admin/users/admin")
+    r = admin_client.delete("/api/admin/users/testadmin")
     assert r.status_code == 400
 
 
