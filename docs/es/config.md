@@ -7,59 +7,30 @@
 
 # Configuración
 
-Toda la configuración se realiza mediante variables de entorno. No es necesario modificar ningún fichero de código.
+Toda la configuración se realiza mediante variables de entorno. Estas se establecen desde el orquestador de despliegue ([iAgentsHub](https://github.com/iagentshub/iagentshub)) y no requieren modificar ningún fichero de código.
 
 ---
 
-## Configuración esencial
+## Qué se puede configurar
 
-| Variable | Descripción | Obligatoria |
-|---|---|---|
-| `GAIA_AGENTS_SECRET` | Clave secreta para proteger las sesiones de usuario. Usar un valor aleatorio y largo. | **Sí** |
-| `GAIA_ADMIN_PASSWORD` | Contraseña del administrador. Permite acceso de emergencia cuando el login con Google no está disponible. | Recomendada |
+| Ajuste | Descripción |
+|---|---|
+| Secreto de sesión | Clave usada para firmar los tokens de sesión. Obligatorio en producción. |
+| Directorio de datos | Ruta donde se almacenan agentes, conexiones, skills y memoria. |
+| Puerto y host | Dónde escucha el servidor. |
+| Orígenes permitidos | Dominios desde los que se permite el acceso a la API. |
+| Duración de sesión | Tiempo en horas que una sesión permanece activa. |
+| Google OAuth | Credenciales para activar el inicio de sesión con Google. |
+| Restricción de acceso | Limitar el acceso a correos o dominios específicos de Google. |
 
 ---
 
 ## Acceso con Google
 
-Para activar el inicio de sesión con Google, configura estas variables con las credenciales obtenidas en [Google Cloud Console](https://console.cloud.google.com/):
-
-| Variable | Descripción |
-|---|---|
-| `GAIA_GOOGLE_CLIENT_ID` | ID de cliente de la aplicación Google |
-| `GAIA_GOOGLE_CLIENT_SECRET` | Secreto de cliente de la aplicación Google |
-| `GAIA_GOOGLE_REDIRECT_URI` | URL de retorno tras el login (p.ej. `https://tu-dominio.com/api/auth/google/callback`) |
-| `GAIA_FRONTEND_URL` | URL del frontend, para redirigir al usuario tras iniciar sesión |
-
-### Restricción de acceso (opcional)
-
-Por defecto, cualquier cuenta de Google puede acceder. Para limitar el acceso:
-
-| Variable | Descripción | Ejemplo |
-|---|---|---|
-| `GAIA_ALLOWED_EMAILS` | Lista de correos permitidos, separados por comas | `ana@empresa.com,juan@empresa.com` |
-| `GAIA_ALLOWED_DOMAINS` | Lista de dominios permitidos, separados por comas | `empresa.com` |
+El inicio de sesión con Google requiere registrar la aplicación en Google Cloud Console y configurar las credenciales obtenidas. Una vez configurado, cualquier cuenta de Google puede acceder, a menos que se restrinja el acceso a correos o dominios específicos.
 
 ---
 
-## Configuración del servidor
+## Secreto de sesión
 
-| Variable | Valor por defecto | Descripción |
-|---|---|---|
-| `GAIA_DATA_DIR` | `./data` | Directorio donde se almacenan agentes, conexiones, skills y memoria |
-| `GAIA_HOST` | `0.0.0.0` | Dirección de escucha del servidor |
-| `GAIA_PORT` | `8765` | Puerto del servidor |
-| `GAIA_RELOAD` | `true` | Recarga automática al detectar cambios. Desactivar en producción (`false`) |
-| `GAIA_CORS_ORIGINS` | `*` | Orígenes permitidos para acceder a la API (p.ej. `https://app.tudominio.com`) |
-| `GAIA_JWT_EXPIRE_HOURS` | `12` | Duración de la sesión en horas |
-
----
-
-## Lista de verificación para producción
-
-- [ ] Definir `GAIA_AGENTS_SECRET` con un valor aleatorio seguro
-- [ ] Definir `GAIA_ADMIN_PASSWORD` para acceso de emergencia
-- [ ] Configurar las variables de Google OAuth
-- [ ] Establecer `GAIA_CORS_ORIGINS` con el dominio exacto del frontend
-- [ ] Establecer `GAIA_RELOAD=false`
-- [ ] Montar `GAIA_DATA_DIR` en un volumen persistente
+Debe generarse de forma aleatoria antes del primer arranque y no cambiarse mientras haya sesiones activas. Si no se configura, el sistema usa un valor almacenado en los datos de la plataforma — aceptable en desarrollo, no en producción.

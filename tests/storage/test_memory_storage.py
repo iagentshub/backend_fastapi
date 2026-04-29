@@ -52,7 +52,6 @@ def test_path_traversal_blocked(storage):
 
 def test_delete_existing(storage):
     storage.save("to_delete.md", "temp")
-    from app.storage.storage import MemoryStorage as MS
     # Acceso directo al método delete si existe
     p = storage.root_dir / "to-delete.md"
     assert p.exists()

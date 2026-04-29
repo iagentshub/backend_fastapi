@@ -7,48 +7,30 @@
 
 # Configuration
 
-All settings are read at startup from environment variables. No config file needs to be modified for most deployments.
-
-| Variable | Default | Required | Description |
-|---|---|---|---|
-| `GAIA_DATA_DIR` | `./data` | No | Absolute path to the data directory |
-| `GAIA_HOST` | `0.0.0.0` | No | Bind address |
-| `GAIA_PORT` | `8765` | No | Listen port |
-| `GAIA_RELOAD` | `true` | No | Enable hot-reload. Set to `false` in production |
-| `GAIA_AGENTS_SECRET` | — | **Yes (prod)** | JWT signing secret. Falls back to `settings.json#jwt_secret` |
-| `GAIA_CORS_ORIGINS` | `*` | No | Comma-separated list of allowed origins |
-| `GAIA_JWT_EXPIRE_HOURS` | `12` | No | Token lifetime in hours |
+All configuration is done through environment variables. These are set by the deployment orchestrator ([iAgentsHub](https://github.com/iagentshub/iagentshub)) and do not require modifying any code files.
 
 ---
 
-## settings.json
+## What can be configured
 
-Located at `$GAIA_DATA_DIR/settings.json`. Stores the admin account and a fallback JWT secret.
-
-```json
-{
-  "admin_username": "admin",
-  "admin_password_hash": "$2b$12$...",
-  "jwt_secret": "change-me-in-production"
-}
-```
-
-> `GAIA_AGENTS_SECRET` takes priority over `jwt_secret` in `settings.json`. Always use the environment variable in production.
+| Setting | Description |
+|---|---|
+| Session secret | Key used to sign session tokens. Required in production. |
+| Data directory | Path where agents, connections, skills, and memory are stored. |
+| Port and host | Where the server listens. |
+| Allowed origins | Domains permitted to access the API. |
+| Session duration | How long in hours a session remains active. |
+| Google OAuth | Credentials to enable Google Sign-In. |
+| Access restriction | Limit access to specific Google emails or domains. |
 
 ---
 
-## CORS
+## Google Sign-In
 
-For a single frontend origin:
+Google login requires registering the application in Google Cloud Console and configuring the obtained credentials. Once set up, any Google account can access the platform unless access is restricted to specific emails or domains.
 
-```bash
-GAIA_CORS_ORIGINS=https://app.example.com
-```
+---
 
-For multiple origins:
+## Session secret
 
-```bash
-GAIA_CORS_ORIGINS=https://app.example.com,http://localhost:3000
-```
-
-Use `*` only in local development.
+Must be generated randomly before the first startup and not changed while sessions are active. If not configured, the system uses a value stored in the platform data — acceptable in development, not in production.

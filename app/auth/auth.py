@@ -57,9 +57,6 @@ def verify_password(plain: str, hashed: str) -> bool:
 
 def register_user(username: str, password: str, email: str = "") -> None:
     """Crea un nuevo usuario local. Lanza ValueError si el nombre o email ya existe."""
-    from app.auth.login_local import _ADMIN_USERNAME
-    if username == _ADMIN_USERNAME:
-        raise ValueError("Nombre de usuario no disponible")
     users = _load_users()
     if any(u.get("username") == username for u in users):
         raise ValueError("El nombre de usuario ya está en uso")
@@ -104,10 +101,8 @@ def get_or_create_oauth_user(provider: str, sub: str, email: str, name: str) -> 
 
 
 def get_user_role(username: str) -> str:
-    # El admin local siempre tiene rol admin
-    from app.auth.login_local import _ADMIN_USERNAME  # importación local para evitar ciclo
-    if username == _ADMIN_USERNAME:
-        return "admin"
+    if username == "guest":
+        return "guest"
     for user in _load_users():
         if user.get("username") == username:
             return user.get("role", "standard")

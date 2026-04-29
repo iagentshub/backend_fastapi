@@ -24,9 +24,9 @@ def test_registro_email_duplicado(patch_data_dir):
         register_user("user_b", "pass2", email="same@example.com")
 
 
-def test_registro_nombre_admin_no_permitido(patch_data_dir):
-    with pytest.raises(ValueError, match="no disponible"):
-        register_user("admin", "somepass")
+def test_registro_nombre_admin_permitido(patch_data_dir):
+    register_user("admin", "somepass")
+    assert any(u["username"] == "admin" for u in list_users())
 
 
 def test_listado_sin_password_hash(patch_data_dir):

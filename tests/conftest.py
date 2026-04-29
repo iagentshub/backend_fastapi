@@ -2,7 +2,6 @@
 from __future__ import annotations
 
 import json
-import os
 import shutil
 import tempfile
 from pathlib import Path
@@ -33,7 +32,6 @@ def patch_data_dir(tmp_data_dir, monkeypatch):
     """Redirige GAIA_DATA_DIR al directorio temporal antes de cada test."""
     (tmp_data_dir / "users.json").write_text("[]", encoding="utf-8")
     monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_data_dir))
-    monkeypatch.setenv("GAIA_ADMIN_PASSWORD", "admin")
 
     import app.config.data as cfg
     monkeypatch.setattr(cfg, "DATA_DIR", tmp_data_dir)
@@ -58,10 +56,19 @@ def client(patch_data_dir):
 
 
 @pytest.fixture()
-def admin_client(client):
-    """Client ya autenticado como admin."""
-    r = client.post("/api/auth/local", json={"password": "admin"})
-    assert r.status_code == 200
+def admin_client(client, tmp_data_dir):
+    """Client autenticado como usuario con rol admin."""
+    import json as _json
+    from app.auth.auth import register_user, create_token
+    register_user("testadmin", "pass1234")
+    users_path = tmp_data_dir / "users.json"
+    users = _json.loads(users_path.read_text())
+    for u in users:
+        if u["username"] == "testadmin":
+            u["role"] = "admin"
+    users_path.write_text(_json.dumps(users))
+    token = create_token("testadmin")
+    client.cookies.set("ga_token", token)
     return client
 
 
@@ -69,9 +76,6 @@ def admin_client(client):
 def reset_rate_limiter():
     """Limpia los rate limiters entre tests para evitar interferencias."""
     from app.api.routes.auth import _rate_data as auth_rate
-    from app.auth.login_local import _rate_data as local_rate
     auth_rate.clear()
-    local_rate.clear()
     yield
     auth_rate.clear()
-    local_rate.clear()
