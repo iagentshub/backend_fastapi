@@ -19,10 +19,18 @@ _conns   = ConnectionStorage(CONN_FILE)
 _skills  = SkillStorage(SKILLS_DIR)
 _memory  = MemoryStorage(MEMORY_DIR)
 
+_VALID_SCOPES = {"public", "private", "all"}
+
+
+def _check_scope(scope: str) -> None:
+    if scope not in _VALID_SCOPES:
+        raise HTTPException(status_code=400, detail="Scope no válido")
+
 
 @router.get("")
-async def list_agents(_: str = Depends(require_auth)) -> List[Dict[str, Any]]:
-    return _agents.list()
+async def list_agents(scope: str = "all", _: str = Depends(require_auth)) -> List[Dict[str, Any]]:
+    _check_scope(scope)
+    return _agents.list(scope)
 
 
 @router.post("")
@@ -30,8 +38,11 @@ async def save_agent(
     request: Request, _: str = Depends(require_auth)
 ) -> Dict[str, Any]:
     payload = await request.json()
+    scope = str(payload.pop("scope", "private") or "private")
+    if scope not in ("public", "private"):
+        raise HTTPException(status_code=400, detail="Scope no válido")
     try:
-        return _agents.save(payload)
+        return _agents.save(payload, scope)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
@@ -50,8 +61,11 @@ async def get_agent(
 async def delete_agent(
     agent_id: str, _: str = Depends(require_auth)
 ) -> Dict[str, Any]:
-    if not _agents.delete(agent_id):
-        raise HTTPException(status_code=404, detail="Agente no encontrado")
+    try:
+        if not _agents.delete(agent_id):
+            raise HTTPException(status_code=404, detail="Agente no encontrado")
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail=str(e))
     return {"ok": True}
 
 
