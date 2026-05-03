@@ -69,35 +69,60 @@ class ConnectionStorage:
 
 
 # ─── AgentStorage ─────────────────────────────────────────────────────────────
+# Agentes públicos:  data/agents/public/<slug>/config.json  (solo lectura en UI)
+# Agentes privados: data/agents/private/<slug>/config.json (CRUD completo)
 
 class AgentStorage:
     def __init__(self, root_dir: Path) -> None:
         self.root_dir = Path(root_dir)
-        self.root_dir.mkdir(parents=True, exist_ok=True)
+        (self.root_dir / "public").mkdir(parents=True, exist_ok=True)
+        priv = self.root_dir / "private"
+        priv.mkdir(parents=True, exist_ok=True)
+        # migrar agentes planos (estructura antigua) a private/
+        for p in list(self.root_dir.glob("*/config.json")):
+            agent_dir = p.parent
+            if agent_dir.name not in ("public", "private"):
+                dest = priv / agent_dir.name
+                if not dest.exists():
+                    agent_dir.rename(dest)
 
-    def _dir(self, agent_id: str) -> Path:
-        return self.root_dir / re.sub(r"[^a-z0-9_\-]", "-", agent_id.lower()).strip("-")
+    def _dir(self, scope: str, agent_id: str) -> Path:
+        safe = re.sub(r"[^a-z0-9_\-]", "-", agent_id.lower()).strip("-")
+        return self.root_dir / scope / safe
 
-    def _path(self, agent_id: str) -> Path:
-        return self._dir(agent_id) / "config.json"
+    def _path(self, scope: str, agent_id: str) -> Path:
+        return self._dir(scope, agent_id) / "config.json"
 
-    def list(self) -> List[Dict[str, Any]]:
+    def list(self, scope: str = "all") -> List[Dict[str, Any]]:
         items = []
-        for p in sorted(self.root_dir.glob("*/config.json")):
-            try:
-                a = json.loads(p.read_text(encoding="utf-8"))
-                items.append(self._summary(a))
-            except Exception:
-                continue
+        scopes = []
+        if scope in ("all", "public"):
+            scopes.append("public")
+        if scope in ("all", "private"):
+            scopes.append("private")
+        for s in scopes:
+            for p in sorted((self.root_dir / s).glob("*/config.json")):
+                try:
+                    a = json.loads(p.read_text(encoding="utf-8"))
+                    a["scope"] = s
+                    items.append(self._summary(a))
+                except Exception:
+                    continue
         return items
 
-    def get(self, agent_id: str) -> Optional[Dict[str, Any]]:
-        p = self._path(agent_id)
-        if not p.exists():
-            return None
-        return json.loads(p.read_text(encoding="utf-8"))
+    def get(self, agent_id: str, scope: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        scopes_to_try = [scope] if scope else ["public", "private"]
+        for s in scopes_to_try:
+            p = self._path(s, agent_id)
+            if p.exists():
+                a = json.loads(p.read_text(encoding="utf-8"))
+                a["scope"] = s
+                return a
+        return None
 
-    def save(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def save(self, payload: Dict[str, Any], scope: str = "private") -> Dict[str, Any]:
+        if scope == "public":
+            raise ValueError("Los agentes públicos son de solo lectura")
         name = str(payload.get("name") or "").strip()
         if not name:
             raise ValueError("name required")
@@ -114,9 +139,10 @@ class AgentStorage:
             "skills": [str(s) for s in (payload.get("skills") or []) if s],
             "use_memory": bool(payload.get("use_memory", False)),
             "memory_file": str(payload.get("memory_file") or "").strip() or None,
+            "scope": scope,
         }
         now = _now()
-        d = self._dir(agent_id)
+        d = self._dir(scope, agent_id)
         d.mkdir(exist_ok=True)
         p = d / "config.json"
         if p.exists():
@@ -128,12 +154,16 @@ class AgentStorage:
         p.write_text(json.dumps(agent, indent=2, ensure_ascii=False), encoding="utf-8")
         return agent
 
-    def delete(self, agent_id: str) -> bool:
-        d = self._dir(agent_id)
-        if not d.exists():
-            return False
-        shutil.rmtree(d)
-        return True
+    def delete(self, agent_id: str, scope: Optional[str] = None) -> bool:
+        scopes_to_try = [scope] if scope else ["private"]
+        for s in scopes_to_try:
+            if s == "public":
+                raise ValueError("Los agentes públicos son de solo lectura")
+            d = self._dir(s, agent_id)
+            if d.exists():
+                shutil.rmtree(d)
+                return True
+        return False
 
     def _summary(self, a: Dict[str, Any]) -> Dict[str, Any]:
         return {
@@ -147,6 +177,7 @@ class AgentStorage:
             "skills": a.get("skills", []),
             "use_memory": a.get("use_memory", False),
             "memory_file": a.get("memory_file"),
+            "scope": a.get("scope", "private"),
             "created_at": a.get("created_at"),
             "updated_at": a.get("updated_at"),
         }

@@ -8,11 +8,13 @@ from app.auth.login_google import router as google_router
 from app.config.cors import CORS_ORIGINS
 from app.api.routes import auth, connections, agents, skills, memory, settings
 from app.api.routes.auth import admin_router
+from app.middleware.locale import LocaleMiddleware
 
 
 def create_app() -> FastAPI:
     app = FastAPI(title="GAIA Backend", version="1.0.0", docs_url="/docs", redoc_url=None)
 
+    app.add_middleware(LocaleMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=CORS_ORIGINS,
