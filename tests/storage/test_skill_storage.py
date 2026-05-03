@@ -76,3 +76,29 @@ def test_delete_public_raises(storage):
 
 def test_delete_nonexistent_skill(storage):
     assert storage.delete("private", "ghost-skill") is False
+
+
+def test_get_skill_by_frontmatter_id(storage, tmp_path):
+    """get() debe encontrar una skill cuyo directorio tiene nombre distinto al id del frontmatter."""
+    # Simula la situación real: carpeta 'blogwatcher' con id: MONITOR_BLOGS
+    skill_dir = storage.root_dir / "public" / "blogwatcher"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nid: MONITOR_BLOGS\nname: Monitor de Blogs\ndescription: test\nicon: 📰\ncategory: productivity\n---\n\nContenido de la skill.\n",
+        encoding="utf-8",
+    )
+    found = storage.get("public", "MONITOR_BLOGS")
+    assert found is not None
+    assert found["name"] == "Monitor de Blogs"
+    assert found["content"] == "Contenido de la skill."
+
+
+def test_get_skill_frontmatter_id_case_insensitive(storage):
+    """El fallback por id es case-insensitive: 'monitor_blogs' == 'MONITOR_BLOGS'."""
+    skill_dir = storage.root_dir / "public" / "blogwatcher"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nid: MONITOR_BLOGS\nname: Monitor de Blogs\ndescription: test\nicon: 📰\ncategory: productivity\n---\n\nContenido.\n",
+        encoding="utf-8",
+    )
+    assert storage.get("public", "monitor_blogs") is not None

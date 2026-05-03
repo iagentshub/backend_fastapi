@@ -18,7 +18,7 @@ El backend guarda toda la información en un directorio de datos externo montado
 | `settings.json` | Configuración del sistema (secreto JWT de emergencia) |
 | `users.json` | Cuentas de usuario registradas |
 | `agents/` | Configuraciones de los agentes (instrucciones, modelo, skills asignadas) |
-| `connections/` | Credenciales de los proveedores de IA |
+| `connections/` | Credenciales de los proveedores de IA, incluyendo el consumo acumulado de tokens por conexión |
 | `memory/` | Memoria acumulada por cada agente entre conversaciones |
 | `skills/public/` | Skills sincronizadas desde el repositorio de skills |
 | `skills/private/` | Skills privadas de la instalación |

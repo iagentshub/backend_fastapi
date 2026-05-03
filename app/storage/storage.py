@@ -52,12 +52,26 @@ class ConnectionStorage:
         payload["updated_at"] = _now()
         idx = next((i for i, c in enumerate(items) if c.get("id") == conn_id), None)
         if idx is not None:
-            payload["created_at"] = items[idx].get("created_at", payload["created_at"])
+            existing = items[idx]
+            payload["created_at"] = existing.get("created_at", payload["created_at"])
+            if not payload.get("api_key") and existing.get("api_key"):
+                payload["api_key"] = existing["api_key"]
             items[idx] = payload
         else:
             items.append(payload)
         self._save(items)
         return payload
+
+    def add_tokens(self, conn_id: str, input_tokens: int, output_tokens: int) -> None:
+        items = self._load()
+        idx = next((i for i, c in enumerate(items) if c.get("id") == conn_id), None)
+        if idx is None:
+            return
+        items[idx].setdefault("tokens_in", 0)
+        items[idx].setdefault("tokens_out", 0)
+        items[idx]["tokens_in"] += input_tokens
+        items[idx]["tokens_out"] += output_tokens
+        self._save(items)
 
     def delete(self, conn_id: str) -> bool:
         items = self._load()
@@ -237,10 +251,23 @@ class SkillStorage:
         return p
 
     def get(self, scope: str, skill_id: str) -> Optional[Dict[str, Any]]:
+        # 1) path exacto con el id tal cual
         p = self._safe_path(scope, skill_id, "SKILL.md")
         if not p.exists():
+            # 2) path con el id slugificado
             p = self._safe_path(scope, _slug(skill_id), "SKILL.md")
         if not p.exists():
+            # 3) escanear todos los SKILL.md buscando id coincidente en frontmatter
+            scope_dir = self.root_dir / scope
+            for candidate in scope_dir.glob("*/SKILL.md"):
+                try:
+                    meta = self._read(candidate)
+                    if str(meta.get("id") or "").upper() == skill_id.upper():
+                        skill = meta
+                        skill["scope"] = scope
+                        return skill
+                except Exception:
+                    continue
             return None
         skill = self._read(p)
         skill["scope"] = scope

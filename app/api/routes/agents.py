@@ -11,7 +11,7 @@ from fastapi.responses import StreamingResponse
 from app.api.routes.auth import require_auth
 from app.config.data import AGENTS_DIR, CONN_FILE, MEMORY_DIR, SKILLS_DIR
 from app.middleware.locale import get_locale
-from app.services.chat import stream_chat
+from app.services.chat import auto_update_memory, stream_chat
 from app.storage.storage import AgentStorage, ConnectionStorage, MemoryStorage, SkillStorage
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
@@ -175,8 +175,37 @@ async def chat(
     if not conn:
         raise HTTPException(status_code=422, detail="El agente no tiene conexión configurada")
 
+    from starlette.background import BackgroundTask
+
+    done_event: List[dict] = []
+
+    async def _gen():
+        async for chunk in stream_chat(a, conn, history, _skills, _memory):
+            yield chunk
+            if chunk.startswith("data: "):
+                try:
+                    ev = json.loads(chunk[6:].strip())
+                    if ev.get("type") == "done":
+                        done_event.append(ev)
+                except Exception:
+                    pass
+
+    async def _on_done():
+        if not done_event:
+            return
+        ev = done_event[0]
+        tokens = ev.get("tokens") or {}
+        tok_in = int(tokens.get("in") or 0)
+        tok_out = int(tokens.get("out") or 0)
+        conn_id = conn.get("id") or ""
+        if conn_id and (tok_in or tok_out):
+            _conns.add_tokens(conn_id, tok_in, tok_out)
+        if a.get("use_memory"):
+            await auto_update_memory(a, conn, history, ev.get("reply", ""), _memory)
+
     return StreamingResponse(
-        stream_chat(a, conn, history, _skills, _memory),
+        _gen(),
         media_type="text/event-stream",
         headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        background=BackgroundTask(_on_done),
     )

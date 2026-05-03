@@ -6,7 +6,10 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).parents[2]
 
-DATA_DIR      = Path(os.getenv("GAIA_DATA_DIR", str(BASE_DIR / "data")))
+# En Docker: GAIA_DATA_DIR=/data (montado desde iagentshub/data).
+# En local sin variable: sube al directorio padre para apuntar a iagentshub/data.
+_default_data = BASE_DIR.parent / "iagentshub" / "data"
+DATA_DIR      = Path(os.getenv("GAIA_DATA_DIR", str(_default_data)))
 CONN_FILE     = DATA_DIR / "connections" / "connections.json"
 AGENTS_DIR    = DATA_DIR / "agents"
 SKILLS_DIR    = DATA_DIR / "skills"

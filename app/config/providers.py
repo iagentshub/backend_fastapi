@@ -22,9 +22,9 @@ PROVIDER_DEFAULT_MODELS: dict[str, str] = {
     "gemini": "gemini-2.0-flash",
     "qwen":   "qwen-plus",
     "grok":   "grok-3",
-    "claude": "claude-sonnet-4-5",
+    "claude": "claude-sonnet-4-6",
 }
 
 # Modelo ligero para el test de conectividad de Anthropic (minimiza coste del ping)
-ANTHROPIC_TEST_MODEL = "claude-haiku-3-5"
+ANTHROPIC_TEST_MODEL = "claude-haiku-4-5-20251001"
 ANTHROPIC_API_VERSION = "2023-06-01"

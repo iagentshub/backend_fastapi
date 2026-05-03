@@ -53,9 +53,11 @@ El endpoint de chat devuelve una respuesta `text/event-stream`. Cada evento es u
 
 ```
 data: {"type": "chunk", "content": "Hola"}
-data: {"type": "done", "reply": "¡Hola!", "tokens": {}}
+data: {"type": "done", "reply": "¡Hola!", "tokens": {"in": 120, "out": 45}}
 data: {"type": "error", "message": "..."}
 ```
+
+El evento `done` incluye siempre un campo `tokens` con el desglose de tokens consumidos en esa conversación: `in` (tokens de entrada) y `out` (tokens de salida). Estos valores se acumulan automáticamente en el contador de la conexión correspondiente.
 
 ---
 
@@ -86,7 +88,8 @@ data: {"type": "error", "message": "..."}
 | Método | Endpoint | Descripción |
 |---|---|---|
 | `GET` | `/api/connections/providers` | Listar todos los tipos de proveedor disponibles (con definición de campos) |
-| `GET` | `/api/connections` | Listar las conexiones configuradas (sin claves API) |
+| `GET` | `/api/connections` | Listar las conexiones configuradas (sin claves API); cada elemento incluye los campos `tokens_in` y `tokens_out` con el consumo acumulado |
+| `GET` | `/api/connections/{id}` | Obtener los detalles de una conexión concreta |
 | `POST` | `/api/connections` | Añadir o actualizar una conexión |
 | `DELETE` | `/api/connections/{id}` | Eliminar una conexión |
 | `POST` | `/api/connections/{id}/test` | Testar una conexión concreta |

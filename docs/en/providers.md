@@ -35,3 +35,9 @@ When an agent starts a conversation, the backend selects the provider configured
 ## Ollama
 
 Ollama allows running AI models directly on the local machine, without depending on external services or incurring usage costs. It is the recommended option for environments without internet access or for those who prefer to keep all data local.
+
+---
+
+## Token tracking per connection
+
+Each connection keeps a cumulative count of tokens consumed through it — both tokens sent (input) and received (output). This counter updates automatically after every agent conversation and persists between sessions. On the Connections page, the total is visible directly on each connection card.

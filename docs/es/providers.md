@@ -35,3 +35,9 @@ Cuando un agente inicia una conversación, el backend selecciona el proveedor co
 ## Ollama
 
 Ollama permite ejecutar modelos de IA directamente en la máquina local, sin depender de servicios externos ni incurrir en costes por uso. Es la opción recomendada para entornos sin acceso a internet o para quienes prefieren mantener todos los datos en local.
+
+---
+
+## Seguimiento de tokens por conexión
+
+Cada conexión lleva la cuenta acumulada de tokens consumidos a través de ella — tanto los tokens enviados (entrada) como los recibidos (salida). Este contador se actualiza automáticamente tras cada conversación con un agente y se mantiene entre sesiones. En la página de Conexiones, el total es visible directamente en cada tarjeta de conexión.

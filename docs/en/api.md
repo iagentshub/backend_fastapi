@@ -53,9 +53,11 @@ The chat endpoint returns a `text/event-stream` response. Each event is a JSON o
 
 ```
 data: {"type": "chunk", "content": "Hello"}
-data: {"type": "done", "reply": "Hello!", "tokens": {}}
+data: {"type": "done", "reply": "Hello!", "tokens": {"in": 120, "out": 45}}
 data: {"type": "error", "message": "..."}
 ```
+
+The `done` event always includes a `tokens` field with the breakdown of tokens consumed in that conversation: `in` (input tokens) and `out` (output tokens). These values are automatically accumulated into the counter for the corresponding connection.
 
 ---
 
@@ -86,7 +88,8 @@ data: {"type": "error", "message": "..."}
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/api/connections/providers` | List all available provider types (with field definitions) |
-| `GET` | `/api/connections` | List configured connections (API keys excluded) |
+| `GET` | `/api/connections` | List configured connections (API keys excluded); each item includes `tokens_in` and `tokens_out` fields with the cumulative token usage |
+| `GET` | `/api/connections/{id}` | Get details of a single connection |
 | `POST` | `/api/connections` | Add or update a connection |
 | `DELETE` | `/api/connections/{id}` | Remove a connection |
 | `POST` | `/api/connections/{id}/test` | Test a single connection |

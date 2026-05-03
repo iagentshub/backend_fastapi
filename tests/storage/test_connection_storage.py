@@ -59,3 +59,31 @@ def test_delete_existing(storage):
 
 def test_delete_nonexistent(storage):
     assert storage.delete("ghost-id") is False
+
+
+def test_add_tokens_accumulates(storage):
+    conn = storage.save({"type": "openai", "api_key": "sk-test"})
+    storage.add_tokens(conn["id"], 10, 5)
+    storage.add_tokens(conn["id"], 3, 2)
+    updated = storage.get(conn["id"])
+    assert updated["tokens_in"] == 13
+    assert updated["tokens_out"] == 7
+
+
+def test_add_tokens_nonexistent_id(storage):
+    storage.save({"type": "openai", "api_key": "sk-test"})
+    storage.add_tokens("ghost-id", 10, 5)
+    assert len(storage.list()) == 1
+
+
+def test_add_tokens_preserves_api_key(storage):
+    conn = storage.save({"type": "openai", "api_key": "sk-secret"})
+    storage.add_tokens(conn["id"], 7, 3)
+    updated = storage.get(conn["id"])
+    assert updated["api_key"] == "sk-secret"
+
+
+def test_new_connection_has_no_token_fields(storage):
+    conn = storage.save({"type": "openai", "api_key": "sk-test"})
+    assert "tokens_in" not in conn
+    assert "tokens_out" not in conn

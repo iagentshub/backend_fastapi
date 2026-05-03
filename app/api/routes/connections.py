@@ -67,6 +67,16 @@ async def save_connection(
     return {k: v for k, v in conn.items() if k != "api_key"}
 
 
+@router.get("/{conn_id}")
+async def get_connection(
+    conn_id: str, _: str = Depends(require_auth)
+) -> Dict[str, Any]:
+    conn = _storage.get(conn_id)
+    if not conn:
+        raise HTTPException(status_code=404, detail="Conexión no encontrada")
+    return conn
+
+
 @router.delete("/{conn_id}")
 async def delete_connection(
     conn_id: str, _: str = Depends(require_auth)

@@ -18,7 +18,7 @@ The backend stores all information in an external data directory mounted into th
 | `settings.json` | System configuration (fallback JWT secret) |
 | `users.json` | Registered user accounts |
 | `agents/` | Agent configurations (instructions, model, assigned skills) |
-| `connections/` | AI provider credentials |
+| `connections/` | AI provider credentials, including the cumulative token usage counter per connection |
 | `memory/` | Memory accumulated by each agent between conversations |
 | `skills/public/` | Skills synced from the skills repository |
 | `skills/private/` | Installation-specific private skills |
