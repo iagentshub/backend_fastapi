@@ -109,14 +109,15 @@ async def stream_chat(
                             break
                         try:
                             obj = json.loads(chunk)
-                            delta = obj["choices"][0]["delta"].get("content") or ""
-                            full_reply += delta
-                            usage = obj.get("usage") or {}
-                            if usage:
-                                tok_in = usage.get("prompt_tokens", tok_in)
-                                tok_out = usage.get("completion_tokens", tok_out)
                         except Exception:
-                            pass
+                            continue
+                        choices = obj.get("choices") or []
+                        if choices:
+                            full_reply += choices[0].get("delta", {}).get("content") or ""
+                        usage = obj.get("usage") or {}
+                        if usage:
+                            tok_in = usage.get("prompt_tokens", tok_in)
+                            tok_out = usage.get("completion_tokens", tok_out)
                 return full_reply, tok_in, tok_out
 
             reply, tok_in, tok_out = await asyncio.to_thread(_stream_openai)

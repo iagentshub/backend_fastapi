@@ -203,8 +203,9 @@ async def test_auto_update_memory_does_not_save_empty_content():
 
 def _sse_openai_with_usage(reply: str = "Hi", prompt_tokens: int = 10, completion_tokens: int = 5) -> MagicMock:
     chunk = json.dumps({"choices": [{"delta": {"content": reply}}]}).encode()
+    # choices vacío es el formato real que manda OpenAI/NVIDIA en el chunk de usage
     usage_chunk = json.dumps({
-        "choices": [{"delta": {}}],
+        "choices": [],
         "usage": {"prompt_tokens": prompt_tokens, "completion_tokens": completion_tokens},
     }).encode()
     line_chunk = b"data: " + chunk + b"\n"
@@ -299,3 +300,18 @@ async def test_ollama_done_event_includes_tokens():
     done_event = next(e for e in events if '"type": "done"' in e)
     data = json.loads(done_event.removeprefix("data: ").strip())
     assert data["tokens"] == {"in": 15, "out": 6}
+
+
+async def test_openai_usage_chunk_with_empty_choices():
+    """El chunk de usage llega con choices:[] — no debe lanzar IndexError ni perder los tokens."""
+    agent = _make_agent("nvidia", model="meta/llama-3.1-8b-instruct")
+    conn = _make_conn("nvidia", model="meta/llama-3.1-8b-instruct")
+    mock_resp = _sse_openai_with_usage("Hola", prompt_tokens=30, completion_tokens=12)
+
+    with patch("urllib.request.urlopen", return_value=mock_resp):
+        events = [e async for e in stream_chat(agent, conn, [{"role": "user", "content": "Hi"}], _skill_storage())]
+
+    done_event = next(e for e in events if '"type": "done"' in e)
+    data = json.loads(done_event.removeprefix("data: ").strip())
+    assert data["tokens"]["in"] == 30
+    assert data["tokens"]["out"] == 12

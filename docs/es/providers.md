@@ -20,6 +20,7 @@ El backend puede conectarse a múltiples proveedores de inteligencia artificial.
 | **Google Gemini** | Familia Gemini |
 | **Grok (xAI)** | Familia Grok |
 | **Qwen (Alibaba)** | Familia Qwen |
+| **NVIDIA NIM** | Llama, Mistral, Nemotron y otros modelos alojados en la nube de NVIDIA |
 | **Ollama** | Cualquier modelo local |
 
 ---
@@ -29,6 +30,14 @@ El backend puede conectarse a múltiples proveedores de inteligencia artificial.
 Cada proveedor requiere una clave de API (o la URL del servidor, en el caso de Ollama). Las credenciales se almacenan de forma privada en el directorio de datos y nunca se exponen en la interfaz ni en los logs.
 
 Cuando un agente inicia una conversación, el backend selecciona el proveedor configurado para ese agente, establece la conexión y transmite la respuesta en tiempo real.
+
+---
+
+## NVIDIA NIM
+
+NVIDIA NIM da acceso a más de 140 modelos alojados en la infraestructura de NVIDIA, incluyendo modelos propios (Llama, Mistral, Nemotron) y modelos de terceros (DeepSeek, Qwen, Moonshot, Mistral AI, entre otros). Requiere una clave de API obtenida desde [build.nvidia.com](https://build.nvidia.com).
+
+El identificador del modelo sigue el formato `organización/nombre-modelo` tal como aparece en el catálogo de NVIDIA — por ejemplo, `meta/llama-3.3-70b-instruct` o `z-ai/glm4.7`. Es importante usar el nombre exacto que figura en el catálogo, ya que pequeñas diferencias pueden impedir la conexión.
 
 ---
 
