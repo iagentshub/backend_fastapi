@@ -19,3 +19,6 @@ env/
 
 # Datos — gestionados desde iagentshub
 data/
+
+# -- Otros
+.DS_Store
