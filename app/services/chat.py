@@ -40,25 +40,29 @@ def _validate_ollama_host(host: str) -> None:
 
 
 async def stream_chat(
-    agent: Dict[str, Any],
+    agent: "Dict[str, Any] | Agent",
     conn: Dict[str, Any],
     history: List[Dict[str, Any]],
     skill_storage: Any,
     memory_storage: Optional[Any] = None,
 ) -> AsyncGenerator[str, None]:
     import asyncio
+    from app.models.agent import Agent
+
+    if not isinstance(agent, Agent):
+        agent = Agent.from_dict(agent)
 
     conn_type = str(conn.get("type") or "").lower()
     api_key = str(conn.get("api_key") or "")
     # Model: connection → agent → provider default
-    model = str(conn.get("model") or agent.get("model") or PROVIDER_DEFAULT_MODELS.get(conn_type) or "")
-    temperature = float(agent.get("temperature") if agent.get("temperature") is not None else 0.7)
-    max_tokens = agent.get("max_tokens")
-    timeout = int(agent.get("timeout")) if agent.get("timeout") is not None else 120
+    model = str(conn.get("model") or agent.model or PROVIDER_DEFAULT_MODELS.get(conn_type) or "")
+    temperature = agent.temperature
+    max_tokens = agent.max_tokens
+    timeout = agent.timeout
 
     # System prompt + skills
-    system = str(agent.get("system_prompt") or "").strip()
-    for sid in (agent.get("skills") or []):
+    system = agent.system_prompt
+    for sid in agent.skills:
         for scope in ("public", "private"):
             sk = skill_storage.get(scope, sid)
             if sk:
@@ -66,8 +70,8 @@ async def stream_chat(
                 break
 
     # Memory injection
-    if agent.get("use_memory") and memory_storage is not None:
-        mem_file = str(agent.get("memory_file") or f"{agent.get('id', 'agent')}.md")
+    if agent.use_memory and memory_storage is not None:
+        mem_file = agent.memory_file or f"{agent.id}.md"
         mem_content = memory_storage.get(mem_file)
         if mem_content and mem_content.strip():
             system += f"\n\n## Memoria del agente\n{mem_content}"
@@ -210,14 +214,17 @@ async def stream_chat(
 
 
 async def auto_update_memory(
-    agent: Dict[str, Any],
+    agent: "Dict[str, Any] | Agent",
     conn: Dict[str, Any],
     history: List[Dict[str, Any]],
     reply: str,
     memory_storage: Any,
 ) -> None:
     """Tras cada turno de chat, pide al LLM que actualice el fichero de memoria del agente."""
-    mem_file = str(agent.get("memory_file") or f"{agent.get('id', 'agent')}.md")
+    from app.models.agent import Agent
+    if not isinstance(agent, Agent):
+        agent = Agent.from_dict(agent)
+    mem_file = agent.memory_file or f"{agent.id}.md"
     existing = memory_storage.get(mem_file) or ""
 
     conv_lines: List[str] = []

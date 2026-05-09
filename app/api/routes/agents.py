@@ -11,6 +11,7 @@ from fastapi.responses import StreamingResponse
 from app.api.routes.auth import require_auth
 from app.config.data import AGENTS_DIR, CONN_FILE, MEMORY_DIR, SKILLS_DIR
 from app.middleware.locale import get_locale
+from app.models.agent import Agent
 from app.services.chat import auto_update_memory, stream_chat
 from app.storage.storage import AgentStorage, ConnectionStorage, MemoryStorage, SkillStorage
 
@@ -103,6 +104,7 @@ async def export_agent(
         raise HTTPException(status_code=404, detail="Agente no encontrado")
     a = _apply_locale(a, get_locale())
 
+    # Inject skills into system_prompt before export
     skills_text = ""
     for sid in (a.get("skills") or []):
         for scope in ("public", "private"):
@@ -110,47 +112,14 @@ async def export_agent(
             if sk:
                 skills_text += f"\n\n## Skill: {sk.get('name', sid)}\n{sk.get('content', '')}"
                 break
+    if skills_text:
+        a = {**a, "system_prompt": (str(a.get("system_prompt") or "").strip() + skills_text).strip()}
 
-    system = str(a.get("system_prompt") or "").strip()
-    full_prompt = f"{system}{skills_text}".strip()
-    name = a.get("name", agent_id)
-
-    if fmt == "openai":
-        payload = {
-            "model": a.get("model") or "gpt-4o",
-            "name": name,
-            "description": a.get("description") or "",
-            "instructions": full_prompt,
-            "temperature": a.get("temperature", 0.7),
-        }
-        if a.get("max_tokens"):
-            payload["max_response_output_tokens"] = a["max_tokens"]
-        content = json.dumps(payload, indent=2, ensure_ascii=False)
-        media = "application/json"
-        filename = f"{agent_id}-openai.json"
-
-    elif fmt == "claude":
-        payload = {
-            "name": name,
-            "description": a.get("description") or "",
-            "model": a.get("model") or "claude-sonnet-4-5",
-            "system_prompt": full_prompt,
-            "temperature": a.get("temperature", 0.7),
-        }
-        if a.get("max_tokens"):
-            payload["max_tokens"] = a["max_tokens"]
-        content = json.dumps(payload, indent=2, ensure_ascii=False)
-        media = "application/json"
-        filename = f"{agent_id}-claude.json"
-
-    elif fmt == "github":
-        lines = [f"# {name}", "", a.get("description") or "", "", full_prompt]
-        content = "\n".join(lines).strip()
-        media = "text/markdown; charset=utf-8"
-        filename = "copilot-instructions.md"
-
-    else:
-        raise HTTPException(status_code=400, detail=f"Formato '{fmt}' no soportado")
+    agent_obj = Agent.from_dict(a)
+    try:
+        content, media, filename = agent_obj.export(fmt)
+    except NotImplementedError:
+        raise HTTPException(status_code=400, detail=f"Formato '{fmt}' no soportado para tipo '{agent_obj.agent_type}'")
 
     return Response(
         content=content.encode("utf-8"),

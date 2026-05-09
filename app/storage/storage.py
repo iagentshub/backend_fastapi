@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
+from app.models.agent import Agent
+
 import yaml
 
 
@@ -141,32 +143,24 @@ class AgentStorage:
         if not name:
             raise ValueError("name required")
         agent_id = _slug(name)
-        agent = {
-            "id": agent_id,
-            "name": name,
-            "description": str(payload.get("description") or "").strip(),
-            "connection_id": str(payload.get("connection_id") or "").strip() or None,
-            "model": str(payload.get("model") or "").strip(),
-            "system_prompt": str(payload.get("system_prompt") or "").strip(),
-            "temperature": float(payload["temperature"]) if payload.get("temperature") is not None else 0.7,
-            "max_tokens": int(payload["max_tokens"]) if payload.get("max_tokens") else None,
-            "skills": [str(s) for s in (payload.get("skills") or []) if s],
-            "use_memory": bool(payload.get("use_memory", False)),
-            "memory_file": str(payload.get("memory_file") or "").strip() or None,
-            "scope": scope,
-        }
         now = _now()
+        agent = Agent.from_dict({**payload, "id": agent_id, "scope": scope})
         d = self._dir(scope, agent_id)
         d.mkdir(exist_ok=True)
         p = d / "config.json"
         if p.exists():
             existing = json.loads(p.read_text(encoding="utf-8"))
-            agent["created_at"] = existing.get("created_at", now)
+            agent.created_at = existing.get("created_at", now)
         else:
-            agent["created_at"] = now
-        agent["updated_at"] = now
-        p.write_text(json.dumps(agent, indent=2, ensure_ascii=False), encoding="utf-8")
-        return agent
+            agent.created_at = now
+        agent.updated_at = now
+        p.write_text(json.dumps(agent.to_dict(), indent=2, ensure_ascii=False), encoding="utf-8")
+        return agent.to_dict()
+
+    def get_model(self, agent_id: str, scope: Optional[str] = None) -> Optional[Agent]:
+        """Typed accessor — returns the correct Agent subclass."""
+        data = self.get(agent_id, scope)
+        return Agent.from_dict(data) if data else None
 
     def delete(self, agent_id: str, scope: Optional[str] = None) -> bool:
         scopes_to_try = [scope] if scope else ["private"]
@@ -183,11 +177,16 @@ class AgentStorage:
         return {
             "id": a["id"],
             "name": a.get("name", a["id"]),
+            "agent_type": a.get("agent_type", "generic"),
             "description": a.get("description", ""),
+            "icon": a.get("icon", ""),
+            "tags": a.get("tags", []),
+            "language": a.get("language", ""),
             "connection_id": a.get("connection_id"),
             "model": a.get("model", ""),
             "temperature": a.get("temperature", 0.7),
             "max_tokens": a.get("max_tokens"),
+            "timeout": a.get("timeout", 120),
             "skills": a.get("skills", []),
             "use_memory": a.get("use_memory", False),
             "memory_file": a.get("memory_file"),
