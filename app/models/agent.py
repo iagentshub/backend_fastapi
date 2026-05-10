@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, List, Literal, Optional
+from typing import List, Literal, Optional
 
 
 @dataclass
@@ -34,6 +34,7 @@ class Agent:
     skills: List[str] = field(default_factory=list)
     use_memory: bool = False
     memory_file: Optional[str] = None
+    routines: List[dict] = field(default_factory=list)
 
     # ── Audit ─────────────────────────────────────────────────────────────────
     created_at: str = ""
@@ -75,6 +76,7 @@ class Agent:
             skills=[str(s) for s in (data.get("skills") or []) if s],
             use_memory=bool(data.get("use_memory", False)),
             memory_file=str(data.get("memory_file") or "").strip() or None,
+            routines=[r for r in (data.get("routines") or []) if isinstance(r, dict)],
             created_at=str(data.get("created_at") or ""),
             updated_at=str(data.get("updated_at") or ""),
         )
@@ -101,6 +103,7 @@ class Agent:
             "skills": self.skills,
             "use_memory": self.use_memory,
             "memory_file": self.memory_file,
+            "routines": self.routines,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
         }
@@ -122,6 +125,8 @@ class Agent:
             }
             if self.max_tokens:
                 payload["max_tokens"] = self.max_tokens
+            if self.routines:
+                payload["routines"] = self.routines
             return json.dumps(payload, indent=2, ensure_ascii=False), "application/json", f"{self.id}-claude.json"
 
         if fmt == "openai":
@@ -142,6 +147,19 @@ class Agent:
                 parts += ["", self.description]
             if self.system_prompt:
                 parts += ["", self.system_prompt]
+            if self.routines:
+                parts += ["", "## Routines"]
+                for r in self.routines:
+                    parts.append(f"\n### {r.get('name', 'Routine')}")
+                    tt = r.get("trigger_type", "manual")
+                    if tt == "cron" and r.get("schedule"):
+                        parts.append(f"- **Trigger**: cron `{r['schedule']}`")
+                    else:
+                        parts.append(f"- **Trigger**: {tt}")
+                    if r.get("description"):
+                        parts.append(f"- **Description**: {r['description']}")
+                    if r.get("prompt"):
+                        parts.append(f"- **Prompt**: {r['prompt']}")
             content = "\n".join(parts).strip()
             return content, "text/markdown; charset=utf-8", "copilot-instructions.md"
 
