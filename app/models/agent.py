@@ -6,6 +6,75 @@ from dataclasses import dataclass, field
 from typing import List, Literal, Optional
 
 
+def _cron_to_schedule_hint(cron: str) -> Optional[str]:
+    """Map a 5-part cron expression to a Claude Code /schedule preset, or None."""
+    parts = cron.strip().split()
+    if len(parts) != 5:
+        return None
+    minute, hour, dom, month, dow = parts
+    if dom != "*" or month != "*":
+        return None
+
+    def _fmt(h: str) -> str:
+        n = int(h)
+        return f"{n % 12 or 12}{'am' if n < 12 else 'pm'}"
+
+    if minute == "0" and hour == "*" and dow == "*":
+        return "hourly"
+    if minute == "0" and hour.isdigit() and dow == "*":
+        return f"daily at {_fmt(hour)}"
+    if minute == "0" and hour.isdigit() and dow == "1-5":
+        return f"weekdays at {_fmt(hour)}"
+    if minute == "0" and hour.isdigit() and dow in ("0", "1"):
+        return f"weekly at {_fmt(hour)}"
+    return None
+
+
+def _routines_guide(routines: List[dict]) -> List[str]:
+    """Build the routines setup guide block for a Claude Code .md export."""
+    lines: List[str] = [
+        "",
+        "---",
+        "",
+        "> [!NOTE]",
+        "> **Routines setup guide** — Run the `/schedule` commands below in Claude Code CLI.",
+        "> This section is not part of the agent instructions; remove it after setup.",
+        "",
+    ]
+    for r in routines:
+        name = r.get("name") or "Routine"
+        lines.append(f"#### {name}")
+        if r.get("description"):
+            lines.append(r["description"])
+            lines.append("")
+        tt = r.get("trigger_type", "manual")
+        prompt = (r.get("prompt") or "").replace("\n", " ").strip()
+        if tt == "cron" and r.get("schedule"):
+            hint = _cron_to_schedule_hint(r["schedule"])
+            if hint:
+                lines += ["```", f"/schedule {hint}, {prompt}", "```"]
+            else:
+                cron = r["schedule"]
+                lines += [
+                    f"Cron: `{cron}`",
+                    "",
+                    "```",
+                    f"/schedule daily at 12am, {prompt}",
+                    "```",
+                    f"Then update the schedule: `/schedule update` → cron `{cron}`",
+                ]
+        elif tt == "webhook":
+            lines.append("**Trigger**: API — configure at <https://claude.ai/code/routines>")
+            if prompt:
+                lines += ["", f"Prompt: {prompt}"]
+        else:
+            lines.append("**Trigger**: Manual — invoke on demand with `/schedule run`")
+            if prompt:
+                lines += ["", f"Prompt: {prompt}"]
+        lines.append("")
+    return lines
+
+
 @dataclass
 class Agent:
     # ── Minimum required ──────────────────────────────────────────────────────
@@ -116,18 +185,18 @@ class Agent:
         Subclasses override to add platform-specific fields.
         """
         if fmt == "claude":
-            payload: dict = {
-                "name": self.name,
-                "description": self.description,
-                "model": self.model or "claude-sonnet-4-6",
-                "system_prompt": self.system_prompt,
-                "temperature": self.temperature,
-            }
-            if self.max_tokens:
-                payload["max_tokens"] = self.max_tokens
+            fm: List[str] = ["---", f"name: {self.name}"]
+            if self.description:
+                fm.append(f'description: "{self.description.replace(chr(34), chr(92) + chr(34))}"')
+            fm.append(f"model: {self.model or 'claude-sonnet-4-6'}")
+            fm.append("---")
+            body: List[str] = [""]
+            if self.system_prompt:
+                body.append(self.system_prompt)
             if self.routines:
-                payload["routines"] = self.routines
-            return json.dumps(payload, indent=2, ensure_ascii=False), "application/json", f"{self.id}-claude.json"
+                body += _routines_guide(self.routines)
+            content = "\n".join(fm + body).strip() + "\n"
+            return content, "text/markdown; charset=utf-8", f"{self.id}.md"
 
         if fmt == "openai":
             payload = {

@@ -1,7 +1,6 @@
 """Anthropic / Claude agent model."""
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -49,26 +48,3 @@ class ClaudeAgent(Agent):
         })
         return d
 
-    def export(self, fmt: str = "claude") -> tuple[str, str, str]:
-        payload: dict = {
-            "name": self.name,
-            "description": self.description,
-            "model": self.model or "claude-sonnet-4-6",
-            "system_prompt": self.system_prompt,
-            "temperature": self.temperature,
-        }
-        if self.max_tokens:
-            payload["max_tokens"] = self.max_tokens
-        if self.extended_thinking:
-            payload["extended_thinking"] = True
-            payload["thinking_budget_tokens"] = self.thinking_budget_tokens
-        if self.cache_control:
-            payload["cache_control"] = True
-        if self.top_k is not None:
-            payload["top_k"] = self.top_k
-        if self.stop_sequences:
-            payload["stop_sequences"] = self.stop_sequences
-        if self.anthropic_betas:
-            payload["anthropic_betas"] = self.anthropic_betas
-        content = json.dumps(payload, indent=2, ensure_ascii=False)
-        return content, "application/json", f"{self.id}-claude.json"
