@@ -1,7 +1,10 @@
 """Rutas de agentes: CRUD, exportación y chat SSE."""
 from __future__ import annotations
 
+import io
 import json
+import re
+import zipfile
 from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
@@ -23,6 +26,11 @@ _memory  = MemoryStorage(MEMORY_DIR)
 
 _VALID_SCOPES = {"public", "private", "all"}
 _LOCALE_FIELDS = ("name", "description", "system_prompt")
+
+
+def _name_slug(name: str) -> str:
+    slug = re.sub(r"[^a-z0-9_-]", "-", name.lower().strip())
+    return re.sub(r"-{2,}", "-", slug).strip("-") or "agent"
 
 
 def _check_scope(scope: str) -> None:
@@ -119,6 +127,42 @@ async def export_agent(
         content, media, filename = agent_obj.export(fmt)
     except NotImplementedError:
         raise HTTPException(status_code=400, detail=f"Formato '{fmt}' no soportado para tipo '{agent_obj.agent_type}'")
+
+    if fmt == "claude":
+        slug = _name_slug(agent_obj.name)
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr(f".claude/agents/{slug}.md", content)
+            for sid in (a.get("skills") or []):
+                for scope in ("public", "private"):
+                    sk = _skills.get(scope, sid)
+                    if sk:
+                        skill_md = (
+                            f"---\ndescription: {sk.get('description', '')}\n---\n\n"
+                            f"{sk.get('content', '')}"
+                        )
+                        zf.writestr(f".claude/commands/{sid}.md", skill_md)
+                        break
+            mem_file = a.get("memory_file") or f"{agent_id}.md"
+            mem_content = _memory.get(mem_file)
+            if mem_content and mem_content.strip():
+                zf.writestr("CLAUDE.md", mem_content.strip())
+        return Response(
+            content=buf.getvalue(),
+            media_type="application/zip",
+            headers={"Content-Disposition": f'attachment; filename="{slug}-claude.zip"'},
+        )
+
+    if fmt == "github":
+        slug = _name_slug(agent_obj.name)
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr(".github/copilot-instructions.md", content)
+        return Response(
+            content=buf.getvalue(),
+            media_type="application/zip",
+            headers={"Content-Disposition": f'attachment; filename="{slug}-copilot.zip"'},
+        )
 
     return Response(
         content=content.encode("utf-8"),
