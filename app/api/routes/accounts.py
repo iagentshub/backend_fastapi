@@ -19,12 +19,14 @@ _conn_storage = ConnectionStorage(CONN_FILE)
 _agent_storage = AgentStorage(AGENTS_DIR)
 _skill_storage = SkillStorage(SKILLS_DIR)
 
-_PROVIDERS = ["anthropic", "openai", "github", "ollama"]
+_PROVIDERS = ["anthropic", "openai", "github", "ollama", "nvidia", "google"]
 _PROVIDER_LABELS = {
     "anthropic": "Anthropic",
     "openai": "OpenAI",
     "github": "GitHub Copilot",
     "ollama": "Ollama",
+    "nvidia": "NVIDIA NIM",
+    "google": "Google Gemini",
 }
 
 
@@ -74,10 +76,30 @@ async def _fetch_models(provider: str, api_key: str, host: str = "") -> List[str
             data = r.json()
             return [m["name"] for m in data.get("models", [])]
 
+        if provider == "nvidia":
+            async with httpx.AsyncClient(timeout=10) as client:
+                r = await client.get(
+                    "https://integrate.api.nvidia.com/v1/models",
+                    headers={"Authorization": f"Bearer {api_key}"},
+                )
+            r.raise_for_status()
+            data = r.json()
+            return [m["id"] for m in data.get("data", [])]
+
+        if provider == "google":
+            async with httpx.AsyncClient(timeout=10) as client:
+                r = await client.get(
+                    "https://generativelanguage.googleapis.com/v1beta/models",
+                    params={"key": api_key},
+                )
+            r.raise_for_status()
+            data = r.json()
+            return [m["name"].split("/")[-1] for m in data.get("models", [])]
+
     except httpx.HTTPStatusError as exc:
         raise HTTPException(status_code=exc.response.status_code, detail=str(exc)) from exc
     except httpx.ConnectError:
-        label = {"anthropic": "Anthropic", "openai": "OpenAI", "github": "GitHub", "ollama": "Ollama"}.get(provider, provider)
+        label = _PROVIDER_LABELS.get(provider, provider)
         raise HTTPException(status_code=502, detail=f"No se puede conectar con {label}. Comprueba que el servicio está activo y la URL es correcta.") from None
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc

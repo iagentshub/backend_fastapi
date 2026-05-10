@@ -5,7 +5,10 @@ import ipaddress
 import json
 import urllib.error
 import urllib.request
-from typing import Any, AsyncGenerator, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, AsyncGenerator, Dict, List, Optional
+
+if TYPE_CHECKING:
+    from app.models.agent import Agent
 from urllib.parse import urlparse
 
 from app.config.providers import ANTHROPIC_API_VERSION, OPENAI_COMPAT_URLS, PROVIDER_BASE_URLS, PROVIDER_DEFAULT_MODELS
