@@ -99,7 +99,14 @@ async def logout(response: Response) -> Dict[str, Any]:
 
 @router.get("/me")
 async def me(username: str = Depends(require_auth)) -> Dict[str, Any]:
-    return {"username": username, "role": get_user_role(username)}
+    role = get_user_role(username)
+    if username == "guest":
+        auth_method = "guest"
+    else:
+        users = _load_users()
+        user = next((u for u in users if u.get("username") == username), {})
+        auth_method = user.get("provider") or "internal"
+    return {"username": username, "role": role, "auth_method": auth_method}
 
 
 @router.post("/change-password")
