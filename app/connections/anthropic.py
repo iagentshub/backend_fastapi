@@ -25,6 +25,7 @@ class AnthropicProvider(BaseProvider):
     fields = [
         FieldDef("api_key", "API Key", "password", "sk-ant-...", required=True),
         FieldDef("model", "Modelo por defecto", "text", PROVIDER_DEFAULT_MODELS["claude"]),
+        FieldDef("url", "URL", "text", default=f"{_BASE_URL}/messages"),
     ]
 
     @classmethod

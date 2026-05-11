@@ -12,6 +12,7 @@ class FieldDef:
     type: str = "text"           # text | password | number | select
     placeholder: str = ""
     required: bool = False
+    default: str = ""
     options: List[Dict[str, str]] = field(default_factory=list)   # for select
     depends_on: Optional[str] = None   # show only when another field == depends_value
     depends_value: Optional[str] = None

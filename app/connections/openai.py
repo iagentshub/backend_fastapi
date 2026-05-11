@@ -20,6 +20,7 @@ class OpenAIProvider(BaseProvider):
     fields = [
         FieldDef("api_key", "API Key", "password", "sk-...", required=True),
         FieldDef("model", "Modelo por defecto", "text", PROVIDER_DEFAULT_MODELS["openai"]),
+        FieldDef("url", "URL", "text", default=f"{_BASE_URL}/chat/completions"),
     ]
 
     @classmethod

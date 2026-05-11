@@ -20,6 +20,7 @@ class GoogleProvider(BaseProvider):
     fields = [
         FieldDef("api_key", "API Key", "password", "AIza...", required=True),
         FieldDef("model", "Modelo por defecto", "text", PROVIDER_DEFAULT_MODELS["gemini"]),
+        FieldDef("url", "URL", "text", default=f"{_BASE_URL}/openai/chat/completions"),
     ]
 
     @classmethod

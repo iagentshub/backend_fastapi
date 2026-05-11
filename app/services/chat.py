@@ -81,7 +81,7 @@ async def stream_chat(
 
     try:
         if conn_type in OPENAI_COMPAT_URLS:
-            url = OPENAI_COMPAT_URLS[conn_type]
+            url = (conn.get("url") or OPENAI_COMPAT_URLS[conn_type]).rstrip("/")
             msgs: List[Dict[str, Any]] = []
             if system:
                 msgs.append({"role": "system", "content": system})
@@ -131,7 +131,7 @@ async def stream_chat(
             yield _sse({"type": "done", "reply": reply, "tokens": {"in": tok_in, "out": tok_out}})
 
         elif conn_type == "claude":
-            url = f"{PROVIDER_BASE_URLS['claude']}/messages"
+            url = (conn.get("url") or f"{PROVIDER_BASE_URLS['claude']}/messages").rstrip("/")
             payload = {
                 "model": model,
                 "messages": history,

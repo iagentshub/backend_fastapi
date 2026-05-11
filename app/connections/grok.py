@@ -20,6 +20,7 @@ class GrokProvider(BaseProvider):
     fields = [
         FieldDef("api_key", "API Key", "password", "xai-...", required=True),
         FieldDef("model", "Modelo por defecto", "text", PROVIDER_DEFAULT_MODELS["grok"]),
+        FieldDef("url", "URL", "text", default=f"{_BASE_URL}/chat/completions"),
     ]
 
     @classmethod

@@ -21,6 +21,7 @@ class NvidiaProvider(BaseProvider):
     fields = [
         FieldDef("api_key", "API Key", "password", "nvapi-...", required=True),
         FieldDef("model", "Modelo por defecto", "text", PROVIDER_DEFAULT_MODELS["nvidia"]),
+        FieldDef("url", "URL", "text", default=f"{_BASE_URL}/chat/completions"),
     ]
 
     @classmethod
