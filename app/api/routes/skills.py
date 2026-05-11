@@ -2,11 +2,13 @@
 from __future__ import annotations
 
 from typing import Any, Dict, List
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.api.routes.auth import require_auth
 from app.config.data import SKILLS_DIR
+from app.storage.guest import get_session, is_guest
 from app.storage.storage import SkillStorage
 
 router = APIRouter(prefix="/api/skills", tags=["skills"])
@@ -23,17 +25,27 @@ def _check_scope(scope: str) -> None:
 
 @router.get("")
 async def list_skills(
-    scope: str = "all", _: str = Depends(require_auth)
+    scope: str = "all", user: str = Depends(require_auth)
 ) -> List[Dict[str, Any]]:
     _check_scope(scope)
+    if is_guest(user):
+        s = get_session(user)
+        public = _storage.list("public") if scope in ("public", "all") else []
+        private = s.skills if scope in ("private", "all") else []
+        return public + private
     return _storage.list(scope)
 
 
 @router.get("/{scope}/{skill_id}")
 async def get_skill(
-    scope: str, skill_id: str, _: str = Depends(require_auth)
+    scope: str, skill_id: str, user: str = Depends(require_auth)
 ) -> Dict[str, Any]:
     _check_scope(scope)
+    if is_guest(user) and scope == "private":
+        sk = next((s for s in get_session(user).skills if s.get("id") == skill_id), None)
+        if not sk:
+            raise HTTPException(status_code=404, detail="Skill no encontrada")
+        return sk
     sk = _storage.get(scope, skill_id)
     if not sk:
         raise HTTPException(status_code=404, detail="Skill no encontrada")
@@ -42,10 +54,18 @@ async def get_skill(
 
 @router.post("/{scope}")
 async def save_skill(
-    scope: str, request: Request, _: str = Depends(require_auth)
+    scope: str, request: Request, user: str = Depends(require_auth)
 ) -> Dict[str, Any]:
     _check_scope(scope)
     payload = await request.json()
+    if is_guest(user):
+        if scope == "public":
+            raise HTTPException(status_code=403, detail="Los invitados no pueden modificar skills públicas")
+        s = get_session(user)
+        skill: Dict[str, Any] = {**payload, "id": payload.get("id") or uuid4().hex[:12], "scope": "private"}
+        s.skills = [sk for sk in s.skills if sk.get("id") != skill["id"]]
+        s.skills.append(skill)
+        return skill
     try:
         return _storage.save(scope, payload)
     except ValueError as e:
@@ -54,9 +74,18 @@ async def save_skill(
 
 @router.delete("/{scope}/{skill_id}")
 async def delete_skill(
-    scope: str, skill_id: str, _: str = Depends(require_auth)
+    scope: str, skill_id: str, user: str = Depends(require_auth)
 ) -> Dict[str, Any]:
     _check_scope(scope)
+    if is_guest(user):
+        if scope == "public":
+            raise HTTPException(status_code=403, detail="Los invitados no pueden eliminar skills públicas")
+        s = get_session(user)
+        before = len(s.skills)
+        s.skills = [sk for sk in s.skills if sk.get("id") != skill_id]
+        if len(s.skills) == before:
+            raise HTTPException(status_code=404, detail="Skill no encontrada")
+        return {"ok": True}
     try:
         if not _storage.delete(scope, skill_id):
             raise HTTPException(status_code=404, detail="Skill no encontrada")

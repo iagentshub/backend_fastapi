@@ -86,9 +86,11 @@ async def register(request: Request, response: Response) -> Dict[str, Any]:
 @router.post("/guest")
 async def guest_login(response: Response) -> Dict[str, Any]:
     from app.auth.auth import create_token
-    token = create_token("guest")
+    from app.storage.guest import new_guest_id
+    guest_id = new_guest_id()
+    token = create_token(guest_id)
     response.set_cookie("ga_token", token, httponly=True, samesite="lax", max_age=43200)
-    return {"ok": True, "username": "guest"}
+    return {"ok": True, "username": guest_id}
 
 
 @router.post("/logout")
@@ -99,8 +101,9 @@ async def logout(response: Response) -> Dict[str, Any]:
 
 @router.get("/me")
 async def me(username: str = Depends(require_auth)) -> Dict[str, Any]:
+    from app.storage.guest import is_guest
     role = get_user_role(username)
-    if username == "guest":
+    if is_guest(username):
         auth_method = "guest"
     else:
         users = _load_users()

@@ -6,6 +6,7 @@ import json
 import re
 import zipfile
 from typing import Any, Dict, List
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
@@ -15,6 +16,7 @@ from app.config.data import AGENTS_DIR, CONN_FILE, MEMORY_DIR, SKILLS_DIR
 from app.middleware.locale import get_locale
 from app.models.agent import Agent
 from app.services.chat import auto_update_memory, stream_chat
+from app.storage.guest import GuestMemoryAdapter, get_session, is_guest
 from app.storage.storage import AgentStorage, ConnectionStorage, MemoryStorage, SkillStorage
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
@@ -59,20 +61,31 @@ def _apply_locale(agent: Dict[str, Any], locale: str) -> Dict[str, Any]:
 
 
 @router.get("")
-async def list_agents(scope: str = "all", _: str = Depends(require_auth)) -> List[Dict[str, Any]]:
+async def list_agents(scope: str = "all", user: str = Depends(require_auth)) -> List[Dict[str, Any]]:
     _check_scope(scope)
     locale = get_locale()
+    if is_guest(user):
+        s = get_session(user)
+        public = _agents.list("public") if scope in ("public", "all") else []
+        private = s.agents if scope in ("private", "all") else []
+        return [_apply_locale(a, locale) for a in public + private]
     return [_apply_locale(a, locale) for a in _agents.list(scope)]
 
 
 @router.post("")
 async def save_agent(
-    request: Request, _: str = Depends(require_auth)
+    request: Request, user: str = Depends(require_auth)
 ) -> Dict[str, Any]:
     payload = await request.json()
     scope = str(payload.pop("scope", "private") or "private")
     if scope not in ("public", "private"):
         raise HTTPException(status_code=400, detail="Scope no válido")
+    if is_guest(user):
+        s = get_session(user)
+        agent: Dict[str, Any] = {**payload, "id": payload.get("id") or uuid4().hex[:12], "scope": "private"}
+        s.agents = [a for a in s.agents if a.get("id") != agent["id"]]
+        s.agents.append(agent)
+        return agent
     try:
         return _agents.save(payload, scope)
     except ValueError as e:
@@ -81,8 +94,14 @@ async def save_agent(
 
 @router.get("/{agent_id}")
 async def get_agent(
-    agent_id: str, _: str = Depends(require_auth)
+    agent_id: str, user: str = Depends(require_auth)
 ) -> Dict[str, Any]:
+    if is_guest(user):
+        s = get_session(user)
+        a = next((a for a in s.agents if a.get("id") == agent_id), None) or _agents.get(agent_id)
+        if not a:
+            raise HTTPException(status_code=404, detail="Agente no encontrado")
+        return _apply_locale(a, get_locale())
     a = _agents.get(agent_id)
     if not a:
         raise HTTPException(status_code=404, detail="Agente no encontrado")
@@ -91,8 +110,15 @@ async def get_agent(
 
 @router.delete("/{agent_id}")
 async def delete_agent(
-    agent_id: str, _: str = Depends(require_auth)
+    agent_id: str, user: str = Depends(require_auth)
 ) -> Dict[str, Any]:
+    if is_guest(user):
+        s = get_session(user)
+        before = len(s.agents)
+        s.agents = [a for a in s.agents if a.get("id") != agent_id]
+        if len(s.agents) == before:
+            raise HTTPException(status_code=404, detail="Agente no encontrado")
+        return {"ok": True}
     try:
         if not _agents.delete(agent_id):
             raise HTTPException(status_code=404, detail="Agente no encontrado")
@@ -103,10 +129,16 @@ async def delete_agent(
 
 @router.get("/{agent_id}/export/{fmt}")
 async def export_agent(
-    agent_id: str, fmt: str, _: str = Depends(require_auth)
+    agent_id: str, fmt: str, user: str = Depends(require_auth)
 ) -> Response:
     """fmt: openai | claude | github"""
-    a = _agents.get(agent_id)
+    if is_guest(user):
+        s = get_session(user)
+        a = next((ag for ag in s.agents if ag.get("id") == agent_id), None) or _agents.get(agent_id)
+        memory_store = GuestMemoryAdapter(s)
+    else:
+        a = _agents.get(agent_id)
+        memory_store = _memory
     if not a:
         raise HTTPException(status_code=404, detail="Agente no encontrado")
     a = _apply_locale(a, get_locale())
@@ -144,7 +176,7 @@ async def export_agent(
                         zf.writestr(f".claude/commands/{sid}.md", skill_md)
                         break
             mem_file = a.get("memory_file") or f"{agent_id}.md"
-            mem_content = _memory.get(mem_file)
+            mem_content = memory_store.get(mem_file)
             if mem_content and mem_content.strip():
                 zf.writestr("CLAUDE.md", mem_content.strip())
         return Response(
@@ -173,9 +205,13 @@ async def export_agent(
 
 @router.post("/{agent_id}/chat")
 async def chat(
-    agent_id: str, request: Request, _: str = Depends(require_auth)
+    agent_id: str, request: Request, user: str = Depends(require_auth)
 ) -> StreamingResponse:
-    a = _agents.get(agent_id)
+    if is_guest(user):
+        s = get_session(user)
+        a = next((a for a in s.agents if a.get("id") == agent_id), None) or _agents.get(agent_id)
+    else:
+        a = _agents.get(agent_id)
     if not a:
         raise HTTPException(status_code=404, detail="Agente no encontrado")
     a = _apply_locale(a, get_locale())
@@ -183,7 +219,15 @@ async def chat(
     body = await request.json()
     history: List[Dict[str, Any]] = body.get("messages") or []
 
-    conn = _conns.get(a.get("connection_id") or "")
+    if is_guest(user):
+        s = get_session(user)
+        conn_id = a.get("connection_id") or ""
+        conn = next((c for c in s.connections if c.get("id") == conn_id), None) or _conns.get(conn_id)
+        memory_store = GuestMemoryAdapter(s)
+    else:
+        conn = _conns.get(a.get("connection_id") or "")
+        memory_store = _memory
+
     if not conn:
         raise HTTPException(status_code=422, detail="El agente no tiene conexión configurada")
 
@@ -192,7 +236,7 @@ async def chat(
     done_event: List[dict] = []
 
     async def _gen():
-        async for chunk in stream_chat(a, conn, history, _skills, _memory):
+        async for chunk in stream_chat(a, conn, history, _skills, memory_store):
             yield chunk
             if chunk.startswith("data: "):
                 try:
@@ -209,11 +253,12 @@ async def chat(
         tokens = ev.get("tokens") or {}
         tok_in = int(tokens.get("in") or 0)
         tok_out = int(tokens.get("out") or 0)
-        conn_id = conn.get("id") or ""
-        if conn_id and (tok_in or tok_out):
-            _conns.add_tokens(conn_id, tok_in, tok_out)
+        if not is_guest(user):
+            conn_id = conn.get("id") or ""
+            if conn_id and (tok_in or tok_out):
+                _conns.add_tokens(conn_id, tok_in, tok_out)
         if a.get("use_memory"):
-            await auto_update_memory(a, conn, history, ev.get("reply", ""), _memory)
+            await auto_update_memory(a, conn, history, ev.get("reply", ""), memory_store)
 
     return StreamingResponse(
         _gen(),
