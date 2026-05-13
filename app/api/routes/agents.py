@@ -20,7 +20,7 @@ from app.middleware.ratelimit import RateLimiter
 from app.models.agent import Agent
 from app.services.chat import auto_update_memory, stream_chat
 from app.storage.chat import ChatStorage
-from app.storage.guest import GuestMemoryAdapter, get_session, is_guest
+from app.storage.guest import GuestKnowledgeAdapter, GuestMemoryAdapter, get_session, is_guest
 from app.storage.knowledge import KnowledgeStorage
 from app.storage.storage import AgentStorage, ConnectionStorage, MemoryStorage, SkillStorage
 
@@ -240,9 +240,11 @@ async def chat(
         conn_id = a.get("connection_id") or ""
         conn = next((c for c in s.connections if c.get("id") == conn_id), None)
         memory_store = GuestMemoryAdapter(s)
+        knowledge_store = GuestKnowledgeAdapter(s)
     else:
         conn = _conns.get(a.get("connection_id") or "", _conn_owner(user))
         memory_store = _memory
+        knowledge_store = _knowledge
 
     if not conn:
         raise HTTPException(status_code=422, detail="El agente no tiene conexión configurada")
@@ -252,7 +254,7 @@ async def chat(
     done_event: List[dict] = []
 
     async def _gen():
-        async for chunk in stream_chat(a, conn, history, _skills, memory_store, _knowledge):
+        async for chunk in stream_chat(a, conn, history, _skills, memory_store, knowledge_store):
             yield chunk
             if chunk.startswith("data: "):
                 try:

@@ -20,6 +20,7 @@ class GuestSession:
     agents: List[Dict[str, Any]] = field(default_factory=list)
     memory: Dict[str, str] = field(default_factory=dict)
     skills: List[Dict[str, Any]] = field(default_factory=list)
+    knowledge: List[Dict[str, Any]] = field(default_factory=list)
 
 
 class GuestMemoryAdapter:
@@ -34,6 +35,16 @@ class GuestMemoryAdapter:
     def save(self, filename: str, content: str) -> Dict[str, Any]:
         self._s.memory[filename] = content
         return {"filename": filename}
+
+
+class GuestKnowledgeAdapter:
+    """Adaptador mínimo de KnowledgeStorage para sesiones guest (items en memoria)."""
+
+    def __init__(self, session: GuestSession) -> None:
+        self._s = session
+
+    def get(self, item_id: str, owner_id: Any = None) -> Dict[str, Any] | None:
+        return next((i for i in self._s.knowledge if i["id"] == item_id), None)
 
 
 def is_guest(user: str) -> bool:
