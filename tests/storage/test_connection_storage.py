@@ -9,7 +9,7 @@ from app.storage.storage import ConnectionStorage
 
 @pytest.fixture()
 def storage(tmp_path):
-    return ConnectionStorage(tmp_path / "connections" / "connections.json")
+    return ConnectionStorage(tmp_path / "test.db")
 
 
 def test_list_empty(storage):
@@ -87,3 +87,27 @@ def test_new_connection_has_no_token_fields(storage):
     conn = storage.save({"type": "openai", "api_key": "sk-test"})
     assert "tokens_in" not in conn
     assert "tokens_out" not in conn
+
+
+# ── owner_id isolation ──────────────────────────────────────────────────────
+
+def test_owner_isolation_list(storage):
+    storage.save({"type": "openai", "api_key": "sk-alice"}, owner_id="alice")
+    storage.save({"type": "anthropic", "api_key": "sk-bob"}, owner_id="bob")
+    assert len(storage.list("alice")) == 1
+    assert len(storage.list("bob")) == 1
+    assert len(storage.list(None)) == 2  # admin ve todo
+
+
+def test_owner_isolation_get(storage):
+    conn = storage.save({"type": "openai", "api_key": "sk-alice"}, owner_id="alice")
+    assert storage.get(conn["id"], "alice") is not None
+    assert storage.get(conn["id"], "bob") is None
+    assert storage.get(conn["id"], None) is not None  # admin
+
+
+def test_owner_isolation_delete(storage):
+    conn = storage.save({"type": "openai", "api_key": "sk-alice"}, owner_id="alice")
+    assert storage.delete(conn["id"], "bob") is False
+    assert storage.delete(conn["id"], "alice") is True
+    assert storage.list("alice") == []

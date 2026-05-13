@@ -10,9 +10,11 @@ BASE_DIR = Path(__file__).parents[2]
 # En local sin variable: sube al directorio padre para apuntar a iagentshub/data.
 _default_data = BASE_DIR.parent / "iagentshub" / "data"
 DATA_DIR      = Path(os.getenv("GAIA_DATA_DIR", str(_default_data)))
-CONN_FILE     = DATA_DIR / "connections" / "connections.json"
+DB_FILE       = DATA_DIR / "hub.db"
 AGENTS_DIR    = DATA_DIR / "agents"
 SKILLS_DIR    = DATA_DIR / "skills"
 MEMORY_DIR    = DATA_DIR / "memory"
 SETTINGS_FILE = DATA_DIR / "settings.json"
+# Legacy paths — referenced only by storage migration helpers
+CONN_FILE     = DATA_DIR / "connections" / "connections.json"
 ACCOUNTS_DIR  = DATA_DIR / "accounts"

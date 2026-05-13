@@ -101,6 +101,7 @@ class Agent:
 
     # ── Composition ───────────────────────────────────────────────────────────
     skills: List[str] = field(default_factory=list)
+    knowledge: List[str] = field(default_factory=list)
     use_memory: bool = False
     memory_file: Optional[str] = None
     routines: List[dict] = field(default_factory=list)
@@ -143,6 +144,7 @@ class Agent:
             max_tokens=int(data["max_tokens"]) if data.get("max_tokens") else None,
             timeout=int(data["timeout"]) if data.get("timeout") is not None else 120,
             skills=[str(s) for s in (data.get("skills") or []) if s],
+            knowledge=[str(k) for k in (data.get("knowledge") or []) if k],
             use_memory=bool(data.get("use_memory", False)),
             memory_file=str(data.get("memory_file") or "").strip() or None,
             routines=[r for r in (data.get("routines") or []) if isinstance(r, dict)],
@@ -170,6 +172,7 @@ class Agent:
             "max_tokens": self.max_tokens,
             "timeout": self.timeout,
             "skills": self.skills,
+            "knowledge": self.knowledge,
             "use_memory": self.use_memory,
             "memory_file": self.memory_file,
             "routines": self.routines,

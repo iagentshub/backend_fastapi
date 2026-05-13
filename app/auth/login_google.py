@@ -10,6 +10,7 @@ from fastapi import APIRouter, Cookie, HTTPException
 from fastapi.responses import RedirectResponse
 
 from app.auth.auth import create_token, get_or_create_oauth_user
+from app.config.session import SECURE_COOKIES
 
 _CLIENT_ID     = os.getenv("GAIA_GOOGLE_CLIENT_ID", "")
 _CLIENT_SECRET = os.getenv("GAIA_GOOGLE_CLIENT_SECRET", "")
@@ -55,7 +56,7 @@ async def google_login() -> RedirectResponse:
         "state": state,
     }
     redirect = RedirectResponse(url=f"{_AUTH_URL}?{urlencode(params)}")
-    redirect.set_cookie("ga_oauth_state", state, httponly=True, samesite="lax", max_age=600)
+    redirect.set_cookie("ga_oauth_state", state, httponly=True, samesite="lax", secure=SECURE_COOKIES, max_age=600)
     return redirect
 
 
@@ -107,6 +108,6 @@ async def google_callback(
     )
     token = create_token(username)
     redirect = RedirectResponse(url=f"{_FRONTEND_URL}/agents/")
-    redirect.set_cookie("ga_token", token, httponly=True, samesite="lax", max_age=43200)
+    redirect.set_cookie("ga_token", token, httponly=True, samesite="lax", secure=SECURE_COOKIES, max_age=43200)
     redirect.delete_cookie("ga_oauth_state")
     return redirect

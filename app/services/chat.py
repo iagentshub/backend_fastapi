@@ -48,6 +48,7 @@ async def stream_chat(
     history: List[Dict[str, Any]],
     skill_storage: Any,
     memory_storage: Optional[Any] = None,
+    knowledge_storage: Optional[Any] = None,
 ) -> AsyncGenerator[str, None]:
     import asyncio
     from app.models.agent import Agent
@@ -71,6 +72,13 @@ async def stream_chat(
             if sk:
                 system += f"\n\n## Skill: {sk.get('name', sid)}\n{sk.get('content', '')}"
                 break
+
+    # Knowledge injection (URLs + documents attached to the agent)
+    if knowledge_storage is not None and agent.knowledge:
+        for kid in agent.knowledge:
+            item = knowledge_storage.get(kid)
+            if item and item.get("content"):
+                system += f"\n\n## Conocimiento: {item.get('title', kid)}\n{item['content']}"
 
     # Memory injection
     if agent.use_memory and memory_storage is not None:

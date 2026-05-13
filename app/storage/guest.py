@@ -1,12 +1,14 @@
 """Storage efímero en memoria para sesiones guest."""
 from __future__ import annotations
 
+import os
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List
 from uuid import uuid4
 
 TTL = 43200  # 12 h — igual que max_age del cookie de sesión
+MAX_SESSIONS = int(os.getenv("GAIA_MAX_GUEST_SESSIONS", "200"))
 
 _sessions: Dict[str, "GuestSession"] = {}
 
@@ -40,11 +42,15 @@ def is_guest(user: str) -> bool:
 
 def get_session(guest_id: str) -> GuestSession:
     """Devuelve la sesión en memoria del guest, creándola si no existe. Limpia las expiradas."""
+    from fastapi import HTTPException
     now = time.time()
-    expired = [k for k, v in _sessions.items() if now - v.created_at > TTL]
+    # Limpiar siempre, no solo cuando hay demasiadas sesiones
+    expired = [k for k, v in list(_sessions.items()) if now - v.created_at > TTL]
     for k in expired:
         del _sessions[k]
     if guest_id not in _sessions:
+        if len(_sessions) >= MAX_SESSIONS:
+            raise HTTPException(status_code=503, detail="Servidor saturado. Inténtalo más tarde.")
         _sessions[guest_id] = GuestSession()
     return _sessions[guest_id]
 

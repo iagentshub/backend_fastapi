@@ -1,4 +1,4 @@
-"""Configuración de sesión: tokens, expiración y rate limiting de login."""
+"""Configuración de sesión: tokens, expiración, registro y seguridad."""
 from __future__ import annotations
 
 import os
@@ -18,3 +18,26 @@ LOGIN_MAX_FAILS = int(os.getenv("GAIA_LOGIN_MAX_FAILS", "5"))     # intentos fal
 
 REGISTER_WINDOW = int(os.getenv("GAIA_REGISTER_WINDOW", "3600"))  # segundos
 REGISTER_MAX    = int(os.getenv("GAIA_REGISTER_MAX",    "5"))     # registros por ventana
+
+# ── Registro ──────────────────────────────────────────────────────────────────
+# open   → cualquiera puede registrarse (default, backward-compatible)
+# closed → registro desactivado
+# invite → solo el admin puede crear usuarios vía /api/admin/users
+REGISTRATION_MODE: str = os.getenv("GAIA_REGISTRATION", "open").lower()
+
+# ── Cookies seguras ───────────────────────────────────────────────────────────
+# Se activan automáticamente si GAIA_FRONTEND_URL empieza por https://,
+# o explícitamente con GAIA_SECURE_COOKIES=true.
+_frontend_url = os.getenv("GAIA_FRONTEND_URL", "")
+SECURE_COOKIES: bool = (
+    _frontend_url.startswith("https://")
+    or os.getenv("GAIA_SECURE_COOKIES", "").lower() == "true"
+)
+
+# ── Rate limiting ─────────────────────────────────────────────────────────────
+RATE_CHAT_CALLS  = int(os.getenv("GAIA_RATE_CHAT_CALLS",  "30"))   # peticiones
+RATE_CHAT_WINDOW = int(os.getenv("GAIA_RATE_CHAT_WINDOW", "60"))   # por segundos
+RATE_TEST_CALLS  = int(os.getenv("GAIA_RATE_TEST_CALLS",  "10"))
+RATE_TEST_WINDOW = int(os.getenv("GAIA_RATE_TEST_WINDOW", "60"))
+RATE_GUEST_CALLS = int(os.getenv("GAIA_RATE_GUEST_CALLS", "5"))
+RATE_GUEST_WINDOW= int(os.getenv("GAIA_RATE_GUEST_WINDOW","60"))

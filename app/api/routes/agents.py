@@ -12,19 +12,31 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 
 from app.api.routes.auth import require_auth
-from app.config.data import AGENTS_DIR, CONN_FILE, MEMORY_DIR, SKILLS_DIR
+from app.auth.auth import get_user_role
+from app.config.data import AGENTS_DIR, DB_FILE, MEMORY_DIR, SKILLS_DIR
+from app.config.session import RATE_CHAT_CALLS, RATE_CHAT_WINDOW
 from app.middleware.locale import get_locale
+from app.middleware.ratelimit import RateLimiter
 from app.models.agent import Agent
 from app.services.chat import auto_update_memory, stream_chat
+from app.storage.chat import ChatStorage
 from app.storage.guest import GuestMemoryAdapter, get_session, is_guest
+from app.storage.knowledge import KnowledgeStorage
 from app.storage.storage import AgentStorage, ConnectionStorage, MemoryStorage, SkillStorage
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
 
-_agents  = AgentStorage(AGENTS_DIR)
-_conns   = ConnectionStorage(CONN_FILE)
-_skills  = SkillStorage(SKILLS_DIR)
-_memory  = MemoryStorage(MEMORY_DIR)
+_agents       = AgentStorage(AGENTS_DIR)
+_conns        = ConnectionStorage(DB_FILE)
+_skills       = SkillStorage(SKILLS_DIR)
+_memory       = MemoryStorage(MEMORY_DIR)
+_chat         = ChatStorage(DB_FILE)
+_knowledge    = KnowledgeStorage(DB_FILE)
+_chat_limiter = RateLimiter(calls=RATE_CHAT_CALLS, window=RATE_CHAT_WINDOW)
+
+
+def _conn_owner(user: str) -> str | None:
+    return None if get_user_role(user) == "admin" else user
 
 _VALID_SCOPES = {"public", "private", "all"}
 _LOCALE_FIELDS = ("name", "description", "system_prompt")
@@ -98,7 +110,7 @@ async def get_agent(
 ) -> Dict[str, Any]:
     if is_guest(user):
         s = get_session(user)
-        a = next((a for a in s.agents if a.get("id") == agent_id), None) or _agents.get(agent_id)
+        a = next((a for a in s.agents if a.get("id") == agent_id), None) or _agents.get(agent_id, scope="public")
         if not a:
             raise HTTPException(status_code=404, detail="Agente no encontrado")
         return _apply_locale(a, get_locale())
@@ -134,7 +146,7 @@ async def export_agent(
     """fmt: openai | claude | github"""
     if is_guest(user):
         s = get_session(user)
-        a = next((ag for ag in s.agents if ag.get("id") == agent_id), None) or _agents.get(agent_id)
+        a = next((ag for ag in s.agents if ag.get("id") == agent_id), None) or _agents.get(agent_id, scope="public")
         memory_store = GuestMemoryAdapter(s)
     else:
         a = _agents.get(agent_id)
@@ -205,11 +217,14 @@ async def export_agent(
 
 @router.post("/{agent_id}/chat")
 async def chat(
-    agent_id: str, request: Request, user: str = Depends(require_auth)
+    agent_id: str,
+    request: Request,
+    user: str = Depends(require_auth),
+    _rl: None = Depends(_chat_limiter),
 ) -> StreamingResponse:
     if is_guest(user):
         s = get_session(user)
-        a = next((a for a in s.agents if a.get("id") == agent_id), None) or _agents.get(agent_id)
+        a = next((a for a in s.agents if a.get("id") == agent_id), None) or _agents.get(agent_id, scope="public")
     else:
         a = _agents.get(agent_id)
     if not a:
@@ -218,14 +233,15 @@ async def chat(
 
     body = await request.json()
     history: List[Dict[str, Any]] = body.get("messages") or []
+    conversation_id: str = str(body.get("conversation_id") or "").strip()
 
     if is_guest(user):
         s = get_session(user)
         conn_id = a.get("connection_id") or ""
-        conn = next((c for c in s.connections if c.get("id") == conn_id), None) or _conns.get(conn_id)
+        conn = next((c for c in s.connections if c.get("id") == conn_id), None)
         memory_store = GuestMemoryAdapter(s)
     else:
-        conn = _conns.get(a.get("connection_id") or "")
+        conn = _conns.get(a.get("connection_id") or "", _conn_owner(user))
         memory_store = _memory
 
     if not conn:
@@ -236,7 +252,7 @@ async def chat(
     done_event: List[dict] = []
 
     async def _gen():
-        async for chunk in stream_chat(a, conn, history, _skills, memory_store):
+        async for chunk in stream_chat(a, conn, history, _skills, memory_store, _knowledge):
             yield chunk
             if chunk.startswith("data: "):
                 try:
@@ -257,6 +273,17 @@ async def chat(
             conn_id = conn.get("id") or ""
             if conn_id and (tok_in or tok_out):
                 _conns.add_tokens(conn_id, tok_in, tok_out)
+            if conversation_id:
+                reply = ev.get("reply", "")
+                user_msg = next(
+                    (m for m in reversed(history) if m.get("role") == "user"), None
+                )
+                if user_msg:
+                    _chat.add_message(conversation_id, "user", str(user_msg.get("content") or ""))
+                if reply:
+                    _chat.add_message(conversation_id, "assistant", reply)
+                    title = str(user_msg.get("content") or "")[:80] if user_msg else ""
+                    _chat.touch_conversation(conversation_id, title)
         if a.get("use_memory"):
             await auto_update_memory(a, conn, history, ev.get("reply", ""), memory_store)
 

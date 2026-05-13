@@ -19,7 +19,7 @@ from app.auth.auth import (
     _load_users,
     _save_users,
 )
-from app.config.session import REGISTER_MAX, REGISTER_WINDOW
+from app.config.session import REGISTER_MAX, REGISTER_WINDOW, REGISTRATION_MODE, SECURE_COOKIES
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -61,6 +61,10 @@ def require_admin(username: str = Depends(require_auth)) -> str:
 
 @router.post("/register")
 async def register(request: Request, response: Response) -> Dict[str, Any]:
+    if REGISTRATION_MODE == "closed":
+        raise HTTPException(status_code=403, detail="El registro está desactivado.")
+    if REGISTRATION_MODE == "invite":
+        raise HTTPException(status_code=403, detail="El registro requiere invitación de un administrador.")
     _check_register_rate(_client_ip(request))
     body = await request.json()
     username = str(body.get("username") or "").strip()
@@ -79,7 +83,7 @@ async def register(request: Request, response: Response) -> Dict[str, Any]:
     _record_register(_client_ip(request))
     from app.auth.auth import create_token
     token = create_token(username)
-    response.set_cookie("ga_token", token, httponly=True, samesite="lax", max_age=43200)
+    response.set_cookie("ga_token", token, httponly=True, samesite="lax", secure=SECURE_COOKIES, max_age=43200)
     return {"ok": True, "username": username}
 
 
@@ -89,7 +93,7 @@ async def guest_login(response: Response) -> Dict[str, Any]:
     from app.storage.guest import new_guest_id
     guest_id = new_guest_id()
     token = create_token(guest_id)
-    response.set_cookie("ga_token", token, httponly=True, samesite="lax", max_age=43200)
+    response.set_cookie("ga_token", token, httponly=True, samesite="lax", secure=SECURE_COOKIES, max_age=43200)
     return {"ok": True, "username": guest_id}
 
 

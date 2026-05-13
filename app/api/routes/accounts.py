@@ -8,14 +8,19 @@ import httpx
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.api.routes.auth import require_auth
-from app.config.data import ACCOUNTS_DIR, AGENTS_DIR, CONN_FILE, SKILLS_DIR
+from app.auth.auth import get_user_role
+from app.config.data import AGENTS_DIR, DB_FILE, SKILLS_DIR
 from app.storage.accounts import AccountStorage
 from app.storage.storage import AgentStorage, ConnectionStorage, SkillStorage
 
 router = APIRouter(prefix="/api/accounts", tags=["accounts"])
 
-_storage = AccountStorage(ACCOUNTS_DIR)
-_conn_storage = ConnectionStorage(CONN_FILE)
+_storage = AccountStorage(DB_FILE)
+_conn_storage = ConnectionStorage(DB_FILE)
+
+
+def _owner(user: str) -> str:
+    return "admin" if get_user_role(user) == "admin" else user
 _agent_storage = AgentStorage(AGENTS_DIR)
 _skill_storage = SkillStorage(SKILLS_DIR)
 
@@ -108,8 +113,8 @@ async def _fetch_models(provider: str, api_key: str, host: str = "") -> List[str
 
 
 @router.get("")
-async def list_accounts(_: str = Depends(require_auth)) -> List[Dict[str, Any]]:
-    linked = {a["provider"]: a for a in _storage.list()}
+async def list_accounts(user: str = Depends(require_auth)) -> List[Dict[str, Any]]:
+    linked = {a["provider"]: a for a in _storage.list(_owner(user))}
     result = []
     for p in _PROVIDERS:
         if p in linked:
@@ -121,7 +126,7 @@ async def list_accounts(_: str = Depends(require_auth)) -> List[Dict[str, Any]]:
 
 @router.put("/{provider}")
 async def link_account(
-    provider: str, request: Request, _: str = Depends(require_auth)
+    provider: str, request: Request, user: str = Depends(require_auth)
 ) -> Dict[str, Any]:
     if provider not in _PROVIDERS:
         raise HTTPException(status_code=400, detail=f"Proveedor no soportado: {provider}")
@@ -133,7 +138,7 @@ async def link_account(
     data: Dict[str, Any] = {"api_key": api_key}
     if host:
         data["host"] = host
-    saved = _storage.save(provider, data)
+    saved = _storage.save(provider, data, _owner(user))
     if saved.get("api_key"):
         saved["api_key_masked"] = saved["api_key"][:6] + "..." + saved["api_key"][-4:]
         del saved["api_key"]
@@ -142,9 +147,9 @@ async def link_account(
 
 @router.delete("/{provider}")
 async def unlink_account(
-    provider: str, _: str = Depends(require_auth)
+    provider: str, user: str = Depends(require_auth)
 ) -> Dict[str, Any]:
-    if not _storage.delete(provider):
+    if not _storage.delete(provider, _owner(user)):
         raise HTTPException(status_code=404, detail="Cuenta no vinculada")
     return {"ok": True}
 
@@ -165,11 +170,11 @@ async def test_account(
 
 @router.post("/{provider}/sync")
 async def sync_account(
-    provider: str, _: str = Depends(require_auth)
+    provider: str, user: str = Depends(require_auth)
 ) -> Dict[str, Any]:
     if provider not in _PROVIDERS:
         raise HTTPException(status_code=400, detail=f"Proveedor no soportado: {provider}")
-    account = _storage.get(provider)
+    account = _storage.get(provider, _owner(user))
     if not account:
         raise HTTPException(status_code=404, detail="Cuenta no vinculada")
 
@@ -181,7 +186,8 @@ async def sync_account(
     models = await _fetch_models(provider, api_key, host)
 
     # 2. Create / update one connection per model
-    existing_conns = _conn_storage.list()
+    owner = _owner(user)
+    existing_conns = _conn_storage.list(owner)
     existing_by_model: Dict[str, Any] = {
         c["model"]: c for c in existing_conns
         if c.get("type") == provider and c.get("model")
@@ -204,7 +210,7 @@ async def sync_account(
             connections_updated += 1
         else:
             connections_created += 1
-        saved_conn = _conn_storage.save(conn_data)
+        saved_conn = _conn_storage.save(conn_data, owner_id=owner)
         provider_conn_ids.add(saved_conn["id"])
 
     # Include pre-existing connections of this provider that weren't in the model list
@@ -240,7 +246,7 @@ async def sync_account(
     account["models"] = models
     account["last_synced_at"] = _now()
     account["sync_summary"] = summary_data
-    saved = _storage.save(provider, account)
+    saved = _storage.save(provider, account, _owner(user))
 
     if saved.get("api_key"):
         saved["api_key_masked"] = saved["api_key"][:6] + "..." + saved["api_key"][-4:]
