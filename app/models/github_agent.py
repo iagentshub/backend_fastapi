@@ -29,12 +29,13 @@ class GitHubAgent(Agent):
         return d
 
     def export(self, fmt: str = "github") -> tuple[str, str, str]:
-        parts = [f"# {self.name}"]
-        if self.description:
-            parts += ["", self.description]
+        desc = (self.description or self.copilot_topic or self.name).replace('"', '\\"')
+        fm = ["---", f"name: {self.name}", f'description: "{desc}"']
         if self.copilot_topic:
-            parts += ["", f"**Topic:** {self.copilot_topic}"]
+            fm.append(f"topic: {self.copilot_topic}")
+        fm.append("---")
+        body: list[str] = [""]
         if self.system_prompt:
-            parts += ["", self.system_prompt]
-        content = "\n".join(parts).strip()
-        return content, "text/markdown; charset=utf-8", "copilot-instructions.md"
+            body.append(self.system_prompt)
+        content = "\n".join(fm + body).strip() + "\n"
+        return content, "text/markdown; charset=utf-8", f"{self.id}.md"

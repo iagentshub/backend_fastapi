@@ -189,9 +189,10 @@ class Agent:
         """
         if fmt == "claude":
             fm: List[str] = ["---", f"name: {self.name}"]
-            if self.description:
-                fm.append(f'description: "{self.description.replace(chr(34), chr(92) + chr(34))}"')
-            fm.append(f"model: {self.model or 'claude-sonnet-4-6'}")
+            desc = (self.description or self.name).replace(chr(34), chr(92) + chr(34))
+            fm.append(f'description: "{desc}"')
+            if self.model:
+                fm.append(f"model: {self.model}")
             fm.append("---")
             body: List[str] = [""]
             if self.system_prompt:
@@ -214,25 +215,12 @@ class Agent:
             return json.dumps(payload, indent=2, ensure_ascii=False), "application/json", f"{self.id}-openai.json"
 
         if fmt == "github":
-            parts = [f"# {self.name}"]
-            if self.description:
-                parts += ["", self.description]
+            desc = (self.description or self.name).replace(chr(34), chr(92) + chr(34))
+            fm: List[str] = ["---", f"name: {self.name}", f'description: "{desc}"', "---"]
+            body: List[str] = [""]
             if self.system_prompt:
-                parts += ["", self.system_prompt]
-            if self.routines:
-                parts += ["", "## Routines"]
-                for r in self.routines:
-                    parts.append(f"\n### {r.get('name', 'Routine')}")
-                    tt = r.get("trigger_type", "manual")
-                    if tt == "cron" and r.get("schedule"):
-                        parts.append(f"- **Trigger**: cron `{r['schedule']}`")
-                    else:
-                        parts.append(f"- **Trigger**: {tt}")
-                    if r.get("description"):
-                        parts.append(f"- **Description**: {r['description']}")
-                    if r.get("prompt"):
-                        parts.append(f"- **Prompt**: {r['prompt']}")
-            content = "\n".join(parts).strip()
-            return content, "text/markdown; charset=utf-8", "copilot-instructions.md"
+                body.append(self.system_prompt)
+            content = "\n".join(fm + body).strip() + "\n"
+            return content, "text/markdown; charset=utf-8", f"{self.id}.md"
 
         raise NotImplementedError(f"Export format {fmt!r} not supported for agent_type={self.agent_type!r}")
