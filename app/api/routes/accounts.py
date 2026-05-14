@@ -33,6 +33,14 @@ _PROVIDER_LABELS = {
     "nvidia": "NVIDIA NIM",
     "google": "Google Gemini",
 }
+_PROVIDER_TYPE_IDS: dict[str, str] = {
+    "anthropic": "claude",
+    "google":    "gemini",
+    "openai":    "openai",
+    "ollama":    "ollama",
+    "nvidia":    "nvidia",
+    "github":    "github",
+}
 
 
 def _now() -> str:
@@ -186,11 +194,12 @@ async def sync_account(
     models = await _fetch_models(provider, api_key, host)
 
     # 2. Create / update one connection per model
+    type_id = _PROVIDER_TYPE_IDS.get(provider, provider)
     owner = _owner(user)
     existing_conns = _conn_storage.list(owner)
     existing_by_model: Dict[str, Any] = {
         c["model"]: c for c in existing_conns
-        if c.get("type") == provider and c.get("model")
+        if c.get("type") == type_id and c.get("model")
     }
     connections_created = 0
     connections_updated = 0
@@ -199,7 +208,7 @@ async def sync_account(
     for model_id in models:
         conn_data: Dict[str, Any] = {
             "name": f"{label} / {model_id}",
-            "type": provider,
+            "type": type_id,
             "api_key": api_key,
             "model": model_id,
         }
@@ -215,7 +224,7 @@ async def sync_account(
 
     # Include pre-existing connections of this provider that weren't in the model list
     for c in existing_conns:
-        if c.get("type") == provider:
+        if c.get("type") == type_id:
             provider_conn_ids.add(c["id"])
 
     # 3. Find private agents linked to this provider's connections
