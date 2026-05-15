@@ -99,6 +99,6 @@ def test_save_sets_owner_id_when_previously_missing(storage):
 
 
 def test_summary_includes_owner_id(storage):
-    agent = storage.save(_AGENT, owner_id="alice")
+    storage.save(_AGENT, owner_id="alice")
     listed = storage.list()
     assert listed[0]["owner_id"] == "alice"

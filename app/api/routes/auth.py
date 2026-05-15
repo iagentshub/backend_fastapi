@@ -212,7 +212,7 @@ admin_router = APIRouter(prefix="/api/admin", tags=["admin"])
 @admin_router.get("/stats")
 async def admin_stats(_: str = Depends(require_admin)) -> Dict[str, Any]:
     from app.config.data import AGENTS_DIR, DB_FILE
-    from app.storage.db import PH, close_db, open_db
+    from app.storage.db import close_db, open_db
 
     conn = open_db(DB_FILE)
     try:

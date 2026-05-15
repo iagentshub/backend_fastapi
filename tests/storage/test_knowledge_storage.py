@@ -173,7 +173,6 @@ def test_extract_txt_latin1():
 
 def test_extract_pdf_missing_dep():
     """Si pypdf no está instalado, debe lanzar ValueError descriptivo."""
-    import sys
     import importlib
     # Simula pypdf ausente si no está instalado
     pypdf_available = importlib.util.find_spec("pypdf") is not None

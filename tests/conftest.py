@@ -87,7 +87,7 @@ def admin_client(client, patch_data_dir):
     """Client authenticated as admin user."""
     from app.auth.auth import create_token, get_user_by_username, register_user
     from app.config.data import DB_FILE
-    from app.storage.db import IS_PG, PH, close_db, open_db
+    from app.storage.db import PH, close_db, open_db
 
     if not get_user_by_username("testadmin"):
         register_user("testadmin", "pass1234", email="testadmin@example.com")
