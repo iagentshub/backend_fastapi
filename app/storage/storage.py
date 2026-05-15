@@ -10,6 +10,7 @@ from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 from app.models.agent import Agent
+from app.storage.crypto import decrypt, encrypt
 
 import yaml
 
@@ -101,6 +102,8 @@ class ConnectionStorage:
 
     def _row_to_dict(self, row: Any) -> Dict[str, Any]:
         d: Dict[str, Any] = json.loads(row["data"])
+        if d.get("api_key"):
+            d["api_key"] = decrypt(d["api_key"])
         d["tokens_in"] = row["tokens_in"]
         d["tokens_out"] = row["tokens_out"]
         return d
@@ -152,6 +155,9 @@ class ConnectionStorage:
         else:
             payload.setdefault("created_at", _now())
         payload["updated_at"] = _now()
+        stored = dict(payload)
+        if stored.get("api_key"):
+            stored["api_key"] = encrypt(stored["api_key"])
         conn = self._conn()
         try:
             if self._IS_PG:
@@ -162,11 +168,11 @@ class ConnectionStorage:
                     f"tokens_in=EXCLUDED.tokens_in, tokens_out=EXCLUDED.tokens_out, updated_at=EXCLUDED.updated_at",
                     (
                         conn_id, owner_id,
-                        json.dumps(payload, ensure_ascii=False),
-                        int(payload.get("tokens_in") or 0),
-                        int(payload.get("tokens_out") or 0),
-                        payload["created_at"],
-                        payload["updated_at"],
+                        json.dumps(stored, ensure_ascii=False),
+                        int(stored.get("tokens_in") or 0),
+                        int(stored.get("tokens_out") or 0),
+                        stored["created_at"],
+                        stored["updated_at"],
                     ),
                 )
             else:
@@ -176,11 +182,11 @@ class ConnectionStorage:
                     f"VALUES ({PH}, {PH}, {PH}, {PH}, {PH}, {PH}, {PH})",
                     (
                         conn_id, owner_id,
-                        json.dumps(payload, ensure_ascii=False),
-                        int(payload.get("tokens_in") or 0),
-                        int(payload.get("tokens_out") or 0),
-                        payload["created_at"],
-                        payload["updated_at"],
+                        json.dumps(stored, ensure_ascii=False),
+                        int(stored.get("tokens_in") or 0),
+                        int(stored.get("tokens_out") or 0),
+                        stored["created_at"],
+                        stored["updated_at"],
                     ),
                 )
             conn.commit()

@@ -113,6 +113,26 @@ The `done` event always includes a `tokens` field with the breakdown of tokens c
 
 ---
 
+## Settings
+
+Per-user preferences (theme and language). Both endpoints require authentication.
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/settings` | Get the current user's preferences (`theme`, `language`) |
+| `PUT` | `/api/settings` | Update one or both preferences |
+
+**PUT body** (all fields optional):
+```json
+{ "theme": "noir", "language": "es" }
+```
+
+Valid values: `theme` — `noir`, `marble`, `ember`, `ocean`, `forest`, `dusk`; `language` — `es`, `en`.
+
+Preferences are stored per user in the database. Changing them on one device is reflected on all others at next login.
+
+---
+
 ## Connections
 
 | Method | Endpoint | Description |

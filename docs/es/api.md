@@ -113,6 +113,26 @@ El evento `done` incluye siempre un campo `tokens` con el desglose de tokens con
 
 ---
 
+## Preferencias
+
+Preferencias por usuario (tema e idioma). Ambos endpoints requieren autenticación.
+
+| Método | Endpoint | Descripción |
+|---|---|---|
+| `GET` | `/api/settings` | Obtener las preferencias del usuario actual (`theme`, `language`) |
+| `PUT` | `/api/settings` | Actualizar una o ambas preferencias |
+
+**Cuerpo del PUT** (todos los campos son opcionales):
+```json
+{ "theme": "noir", "language": "es" }
+```
+
+Valores válidos: `theme` — `noir`, `marble`, `ember`, `ocean`, `forest`, `dusk`; `language` — `es`, `en`.
+
+Las preferencias se guardan por usuario en la base de datos. Cambiarlas en un dispositivo se refleja en todos los demás al iniciar sesión.
+
+---
+
 ## Conexiones
 
 | Método | Endpoint | Descripción |

@@ -85,6 +85,7 @@ CREATE TABLE IF NOT EXISTS users (
     is_active          INTEGER NOT NULL DEFAULT 1,
     is_verified        INTEGER NOT NULL DEFAULT 1,
     verification_token TEXT,
+    preferences        TEXT,
     created_at         TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_users_email ON users (email);
@@ -154,6 +155,7 @@ CREATE TABLE IF NOT EXISTS users (
     is_active          SMALLINT NOT NULL DEFAULT 1,
     is_verified        SMALLINT NOT NULL DEFAULT 1,
     verification_token TEXT,
+    preferences        TEXT,
     created_at         TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_users_email ON users (email);
@@ -206,6 +208,7 @@ def _migrate_sqlite(conn: sqlite3.Connection) -> None:
         ("is_active", "INTEGER NOT NULL DEFAULT 1"),
         ("is_verified", "INTEGER NOT NULL DEFAULT 1"),
         ("verification_token", "TEXT"),
+        ("preferences", "TEXT"),
     ]:
         if col not in user_cols:
             try:

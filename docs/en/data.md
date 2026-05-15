@@ -7,18 +7,30 @@
 
 # Data
 
-The backend stores all information in an external data directory mounted into the service. No database is used.
+The backend stores most information in an SQLite database and an external data directory mounted into the service.
 
 ---
 
-## What it contains
+## Database
+
+The SQLite database (`hub.db`) stores all structured data:
+
+| Table | Contents |
+|---|---|
+| `users` | User accounts — credentials, role, and per-user preferences (theme, language) |
+| `accounts` | Provider API keys linked per user (Anthropic, OpenAI, GitHub, Ollama, NVIDIA, Google) — keys encrypted at rest |
+| `connections` | Named AI connections with model selection and cumulative token usage — API keys encrypted at rest |
+| `knowledge_items` | Knowledge base entries |
+| `conversations` | Conversation history (id, title, timestamps) |
+| `messages` | Individual messages linked to conversations |
+
+---
+
+## File directory
 
 | Path | Contents |
 |---|---|
-| `settings.json` | System configuration (fallback JWT secret) |
-| `users.json` | Registered user accounts |
 | `agents/` | Agent configurations (instructions, model, assigned skills) |
-| `connections/` | AI provider credentials, including the cumulative token usage counter per connection |
 | `memory/` | Memory accumulated by each agent between conversations |
 | `skills/public/` | Skills synced from the skills repository |
 | `skills/private/` | Installation-specific private skills |
@@ -27,7 +39,7 @@ The backend stores all information in an external data directory mounted into th
 
 ## What is committed
 
-Only `settings.json` is included in the repository as a default value. All other data is not committed: it contains installation-specific information.
+None of the runtime data is committed to the repository. The database and data directory contain installation-specific information.
 
 ---
 

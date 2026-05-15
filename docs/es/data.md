@@ -7,18 +7,30 @@
 
 # Datos
 
-El backend guarda toda la información en un directorio de datos externo montado en el servicio. No se utiliza ninguna base de datos.
+El backend guarda la mayor parte de la información en una base de datos SQLite y en un directorio de datos externo montado en el servicio.
 
 ---
 
-## Qué contiene
+## Base de datos
+
+La base de datos SQLite (`hub.db`) almacena todos los datos estructurados:
+
+| Tabla | Contenido |
+|---|---|
+| `users` | Cuentas de usuario — credenciales, rol y preferencias por usuario (tema, idioma) |
+| `accounts` | API keys de proveedor vinculadas por usuario (Anthropic, OpenAI, GitHub, Ollama, NVIDIA, Google) — keys cifradas en reposo |
+| `connections` | Conexiones de IA con nombre, selección de modelo y consumo acumulado de tokens — API keys cifradas en reposo |
+| `knowledge_items` | Elementos de la base de conocimiento |
+| `conversations` | Historial de conversaciones (id, título, fechas) |
+| `messages` | Mensajes individuales ligados a conversaciones |
+
+---
+
+## Directorio de ficheros
 
 | Ruta | Contenido |
 |---|---|
-| `settings.json` | Configuración del sistema (secreto JWT de emergencia) |
-| `users.json` | Cuentas de usuario registradas |
 | `agents/` | Configuraciones de los agentes (instrucciones, modelo, skills asignadas) |
-| `connections/` | Credenciales de los proveedores de IA, incluyendo el consumo acumulado de tokens por conexión |
 | `memory/` | Memoria acumulada por cada agente entre conversaciones |
 | `skills/public/` | Skills sincronizadas desde el repositorio de skills |
 | `skills/private/` | Skills privadas de la instalación |
@@ -27,7 +39,7 @@ El backend guarda toda la información en un directorio de datos externo montado
 
 ## Qué se versiona
 
-Solo `settings.json` se incluye en el repositorio como valor por defecto. El resto de los datos no se versiona: contiene información específica de cada instalación.
+Ningún dato de runtime se incluye en el repositorio. La base de datos y el directorio de datos contienen información específica de cada instalación.
 
 ---
 

@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from app.storage.crypto import decrypt, encrypt
 from app.storage.db import IS_PG, PH, close_db, open_db
 
 
@@ -88,7 +89,12 @@ class AccountStorage:
                 (owner_id, provider),
             )
             row = cur.fetchone()
-            return json.loads(row["data"]) if row else None
+            if not row:
+                return None
+            d = json.loads(row["data"])
+            if d.get("api_key"):
+                d["api_key"] = decrypt(d["api_key"])
+            return d
         finally:
             close_db(conn)
 
@@ -98,9 +104,12 @@ class AccountStorage:
         data.setdefault("linked_at", existing.get("linked_at") or _now())
         if not data.get("api_key") and existing.get("api_key"):
             data["api_key"] = existing["api_key"]
+        stored = dict(data)
+        if stored.get("api_key"):
+            stored["api_key"] = encrypt(stored["api_key"])
         conn = self._conn()
         try:
-            self._upsert_with_conn(conn, owner_id, provider, data)
+            self._upsert_with_conn(conn, owner_id, provider, stored)
         finally:
             close_db(conn)
         return data
@@ -130,7 +139,7 @@ class AccountStorage:
             for row in cur.fetchall():
                 d: Dict[str, Any] = json.loads(row["data"])
                 if d.get("api_key"):
-                    d["api_key_masked"] = _mask(d["api_key"])
+                    d["api_key_masked"] = _mask(decrypt(d["api_key"]))
                     del d["api_key"]
                 result.append(d)
             return result
