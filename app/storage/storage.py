@@ -28,47 +28,76 @@ def _now() -> str:
 # ─── ConnectionStorage ────────────────────────────────────────────────────────
 
 class ConnectionStorage:
-    """SQLite-backed connection storage. Accepts the DB file path."""
+    """DB-backed connection storage. Accepts the DB file path."""
 
     def __init__(self, db_path: Path) -> None:
-        from app.storage.db import open_db
-        self._db = open_db(Path(db_path))
+        from app.storage.db import IS_PG, PH, close_db, open_db
+        self._db_path = Path(db_path)
+        self._IS_PG = IS_PG
+        self._PH = PH
+        self._open_db = open_db
+        self._close_db = close_db
         self._migrate_json()
 
-    def _migrate_json(self) -> None:
-        """One-time import from connections.json if SQLite table is empty."""
-        if self._db.execute("SELECT COUNT(*) FROM connections").fetchone()[0]:
-            return
-        from app.config.data import DATA_DIR
-        old = DATA_DIR / "connections" / "connections.json"
-        if not old.exists():
-            return
-        try:
-            items = json.loads(old.read_text(encoding="utf-8"))
-            for item in items:
-                self._upsert(item)
-            old.rename(old.with_suffix(".migrated"))
-        except Exception:
-            pass
+    def _conn(self):
+        return self._open_db(self._db_path)
 
-    def _upsert(self, payload: Dict[str, Any], owner_id: str = "admin") -> None:
+    def _migrate_json(self) -> None:
+        """One-time import from connections.json if the table is empty."""
+        conn = self._conn()
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT COUNT(*) FROM connections")
+            if cur.fetchone()[0]:
+                return
+            from app.config.data import DATA_DIR
+            old = DATA_DIR / "connections" / "connections.json"
+            if not old.exists():
+                return
+            try:
+                items = json.loads(old.read_text(encoding="utf-8"))
+                for item in items:
+                    self._upsert_with_conn(conn, item)
+                old.rename(old.with_suffix(".migrated"))
+            except Exception:
+                pass
+        finally:
+            self._close_db(conn)
+
+    def _upsert_with_conn(self, conn, payload: Dict[str, Any], owner_id: str = "admin") -> None:
+        PH = self._PH
         conn_id = str(payload.get("id") or "").strip() or uuid4().hex[:12]
         payload["id"] = conn_id
-        self._db.execute(
-            "INSERT OR REPLACE INTO connections "
-            "(id, owner_id, data, tokens_in, tokens_out, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (
-                conn_id,
-                owner_id,
-                json.dumps(payload, ensure_ascii=False),
-                int(payload.get("tokens_in") or 0),
-                int(payload.get("tokens_out") or 0),
-                str(payload.get("created_at") or _now()),
-                str(payload.get("updated_at") or _now()),
-            ),
-        )
-        self._db.commit()
+        if self._IS_PG:
+            conn.cursor().execute(
+                f"INSERT INTO connections (id, owner_id, data, tokens_in, tokens_out, created_at, updated_at) "
+                f"VALUES ({PH}, {PH}, {PH}, {PH}, {PH}, {PH}, {PH}) "
+                f"ON CONFLICT (id) DO UPDATE SET owner_id=EXCLUDED.owner_id, data=EXCLUDED.data, "
+                f"tokens_in=EXCLUDED.tokens_in, tokens_out=EXCLUDED.tokens_out, updated_at=EXCLUDED.updated_at",
+                (
+                    conn_id, owner_id,
+                    json.dumps(payload, ensure_ascii=False),
+                    int(payload.get("tokens_in") or 0),
+                    int(payload.get("tokens_out") or 0),
+                    str(payload.get("created_at") or _now()),
+                    str(payload.get("updated_at") or _now()),
+                ),
+            )
+        else:
+            conn.execute(
+                f"INSERT OR REPLACE INTO connections "
+                f"(id, owner_id, data, tokens_in, tokens_out, created_at, updated_at) "
+                f"VALUES ({PH}, {PH}, {PH}, {PH}, {PH}, {PH}, {PH})",
+                (
+                    conn_id, owner_id,
+                    json.dumps(payload, ensure_ascii=False),
+                    int(payload.get("tokens_in") or 0),
+                    int(payload.get("tokens_out") or 0),
+                    str(payload.get("created_at") or _now()),
+                    str(payload.get("updated_at") or _now()),
+                ),
+            )
+        conn.commit()
 
     def _row_to_dict(self, row: Any) -> Dict[str, Any]:
         d: Dict[str, Any] = json.loads(row["data"])
@@ -77,31 +106,42 @@ class ConnectionStorage:
         return d
 
     def list(self, owner_id: Optional[str] = None) -> List[Dict[str, Any]]:
-        """owner_id=None → admin, ve todo. owner_id=str → solo sus conexiones."""
-        if owner_id is None:
-            rows = self._db.execute(
-                "SELECT * FROM connections ORDER BY created_at ASC"
-            ).fetchall()
-        else:
-            rows = self._db.execute(
-                "SELECT * FROM connections WHERE owner_id = ? ORDER BY created_at ASC",
-                (owner_id,),
-            ).fetchall()
-        return [self._row_to_dict(r) for r in rows]
+        """owner_id=None → admin sees all. owner_id=str → own connections only."""
+        PH = self._PH
+        conn = self._conn()
+        try:
+            cur = conn.cursor()
+            if owner_id is None:
+                cur.execute("SELECT * FROM connections ORDER BY created_at ASC")
+            else:
+                cur.execute(
+                    f"SELECT * FROM connections WHERE owner_id = {PH} ORDER BY created_at ASC",
+                    (owner_id,),
+                )
+            rows = cur.fetchall()
+            return [self._row_to_dict(r) for r in rows]
+        finally:
+            self._close_db(conn)
 
     def get(self, conn_id: str, owner_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        if owner_id is None:
-            row = self._db.execute(
-                "SELECT * FROM connections WHERE id = ?", (conn_id,)
-            ).fetchone()
-        else:
-            row = self._db.execute(
-                "SELECT * FROM connections WHERE id = ? AND owner_id = ?",
-                (conn_id, owner_id),
-            ).fetchone()
-        return self._row_to_dict(row) if row else None
+        PH = self._PH
+        conn = self._conn()
+        try:
+            cur = conn.cursor()
+            if owner_id is None:
+                cur.execute(f"SELECT * FROM connections WHERE id = {PH}", (conn_id,))
+            else:
+                cur.execute(
+                    f"SELECT * FROM connections WHERE id = {PH} AND owner_id = {PH}",
+                    (conn_id, owner_id),
+                )
+            row = cur.fetchone()
+            return self._row_to_dict(row) if row else None
+        finally:
+            self._close_db(conn)
 
     def save(self, payload: Dict[str, Any], owner_id: str = "admin") -> Dict[str, Any]:
+        PH = self._PH
         conn_id = str(payload.get("id") or "").strip() or uuid4().hex[:12]
         payload["id"] = conn_id
         existing = self.get(conn_id, owner_id)
@@ -112,55 +152,87 @@ class ConnectionStorage:
         else:
             payload.setdefault("created_at", _now())
         payload["updated_at"] = _now()
-        self._db.execute(
-            "INSERT OR REPLACE INTO connections "
-            "(id, owner_id, data, tokens_in, tokens_out, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?)",
-            (
-                conn_id,
-                owner_id,
-                json.dumps(payload, ensure_ascii=False),
-                int(payload.get("tokens_in") or 0),
-                int(payload.get("tokens_out") or 0),
-                payload["created_at"],
-                payload["updated_at"],
-            ),
-        )
-        self._db.commit()
+        conn = self._conn()
+        try:
+            if self._IS_PG:
+                conn.cursor().execute(
+                    f"INSERT INTO connections (id, owner_id, data, tokens_in, tokens_out, created_at, updated_at) "
+                    f"VALUES ({PH}, {PH}, {PH}, {PH}, {PH}, {PH}, {PH}) "
+                    f"ON CONFLICT (id) DO UPDATE SET owner_id=EXCLUDED.owner_id, data=EXCLUDED.data, "
+                    f"tokens_in=EXCLUDED.tokens_in, tokens_out=EXCLUDED.tokens_out, updated_at=EXCLUDED.updated_at",
+                    (
+                        conn_id, owner_id,
+                        json.dumps(payload, ensure_ascii=False),
+                        int(payload.get("tokens_in") or 0),
+                        int(payload.get("tokens_out") or 0),
+                        payload["created_at"],
+                        payload["updated_at"],
+                    ),
+                )
+            else:
+                conn.execute(
+                    f"INSERT OR REPLACE INTO connections "
+                    f"(id, owner_id, data, tokens_in, tokens_out, created_at, updated_at) "
+                    f"VALUES ({PH}, {PH}, {PH}, {PH}, {PH}, {PH}, {PH})",
+                    (
+                        conn_id, owner_id,
+                        json.dumps(payload, ensure_ascii=False),
+                        int(payload.get("tokens_in") or 0),
+                        int(payload.get("tokens_out") or 0),
+                        payload["created_at"],
+                        payload["updated_at"],
+                    ),
+                )
+            conn.commit()
+        finally:
+            self._close_db(conn)
         return payload
 
     def add_tokens(self, conn_id: str, input_tokens: int, output_tokens: int) -> None:
-        self._db.execute(
-            "UPDATE connections "
-            "SET tokens_in = tokens_in + ?, tokens_out = tokens_out + ? "
-            "WHERE id = ?",
-            (input_tokens, output_tokens, conn_id),
-        )
-        self._db.commit()
-        row = self._db.execute(
-            "SELECT data, tokens_in, tokens_out FROM connections WHERE id = ?",
-            (conn_id,),
-        ).fetchone()
-        if row:
-            d: Dict[str, Any] = json.loads(row["data"])
-            d["tokens_in"] = row["tokens_in"]
-            d["tokens_out"] = row["tokens_out"]
-            self._db.execute(
-                "UPDATE connections SET data = ? WHERE id = ?",
-                (json.dumps(d, ensure_ascii=False), conn_id),
+        PH = self._PH
+        conn = self._conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                f"UPDATE connections "
+                f"SET tokens_in = tokens_in + {PH}, tokens_out = tokens_out + {PH} "
+                f"WHERE id = {PH}",
+                (input_tokens, output_tokens, conn_id),
             )
-            self._db.commit()
+            conn.commit()
+            cur.execute(
+                f"SELECT data, tokens_in, tokens_out FROM connections WHERE id = {PH}",
+                (conn_id,),
+            )
+            row = cur.fetchone()
+            if row:
+                d: Dict[str, Any] = json.loads(row["data"])
+                d["tokens_in"] = row["tokens_in"]
+                d["tokens_out"] = row["tokens_out"]
+                cur.execute(
+                    f"UPDATE connections SET data = {PH} WHERE id = {PH}",
+                    (json.dumps(d, ensure_ascii=False), conn_id),
+                )
+                conn.commit()
+        finally:
+            self._close_db(conn)
 
     def delete(self, conn_id: str, owner_id: Optional[str] = None) -> bool:
-        if owner_id is None:
-            cur = self._db.execute("DELETE FROM connections WHERE id = ?", (conn_id,))
-        else:
-            cur = self._db.execute(
-                "DELETE FROM connections WHERE id = ? AND owner_id = ?",
-                (conn_id, owner_id),
-            )
-        self._db.commit()
-        return cur.rowcount > 0
+        PH = self._PH
+        conn = self._conn()
+        try:
+            cur = conn.cursor()
+            if owner_id is None:
+                cur.execute(f"DELETE FROM connections WHERE id = {PH}", (conn_id,))
+            else:
+                cur.execute(
+                    f"DELETE FROM connections WHERE id = {PH} AND owner_id = {PH}",
+                    (conn_id, owner_id),
+                )
+            conn.commit()
+            return cur.rowcount > 0
+        finally:
+            self._close_db(conn)
 
 
 # ─── AgentStorage ─────────────────────────────────────────────────────────────

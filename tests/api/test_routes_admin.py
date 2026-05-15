@@ -5,7 +5,7 @@ from __future__ import annotations
 def _register(username, password="pass1234"):
     """Registra un usuario directamente, sin pasar por HTTP, para no contaminar cookies."""
     from app.auth.auth import register_user
-    register_user(username, password)
+    register_user(username, password, email=f"{username}@example.com")
 
 
 def test_list_users_as_admin(admin_client, reset_rate_limiter):
@@ -25,7 +25,7 @@ def test_list_users_no_password_hash(admin_client, reset_rate_limiter):
 
 
 def test_list_users_forbidden_for_standard(client, reset_rate_limiter):
-    client.post("/api/auth/register", json={"username": "stduser2", "password": "pass1234"})
+    client.post("/api/auth/register", json={"email": "stduser2@example.com", "password": "pass1234"})
     r = client.get("/api/admin/users")
     assert r.status_code == 403
 
@@ -56,6 +56,6 @@ def test_admin_cannot_self_delete(admin_client):
 def test_delete_user_forbidden_for_standard(client, reset_rate_limiter):
     _register("victim_user")
     # autenticarse como otro usuario estándar
-    client.post("/api/auth/register", json={"username": "attacker", "password": "pass1234"})
+    client.post("/api/auth/register", json={"email": "attacker@example.com", "password": "pass1234"})
     r = client.delete("/api/admin/users/victim_user")
     assert r.status_code == 403

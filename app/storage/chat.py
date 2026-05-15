@@ -1,10 +1,12 @@
-"""Chat history storage — SQLite conversations and messages."""
+"""Chat history storage — SQLite/PostgreSQL conversations and messages."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
+
+from app.storage.db import IS_PG, PH, close_db, open_db
 
 
 def _now() -> str:
@@ -13,33 +15,45 @@ def _now() -> str:
 
 class ChatStorage:
     def __init__(self, db_path: Path) -> None:
-        from app.storage.db import open_db
-        self._db = open_db(Path(db_path))
+        self._db_path = Path(db_path)
+
+    def _conn(self):
+        return open_db(self._db_path)
 
     # ── Conversations ──────────────────────────────────────────────────────────
 
     def list_conversations(
         self, user_id: str, agent_id: str, limit: int = 50
     ) -> List[Dict[str, Any]]:
-        rows = self._db.execute(
-            "SELECT id, user_id, agent_id, title, created_at, updated_at "
-            "FROM conversations WHERE user_id = ? AND agent_id = ? "
-            "ORDER BY updated_at DESC LIMIT ?",
-            (user_id, agent_id, limit),
-        ).fetchall()
-        return [dict(r) for r in rows]
+        conn = self._conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                f"SELECT id, user_id, agent_id, title, created_at, updated_at "
+                f"FROM conversations WHERE user_id = {PH} AND agent_id = {PH} "
+                f"ORDER BY updated_at DESC LIMIT {PH}",
+                (user_id, agent_id, limit),
+            )
+            return [dict(r) for r in cur.fetchall()]
+        finally:
+            close_db(conn)
 
     def new_conversation(
         self, user_id: str, agent_id: str, title: str = ""
     ) -> Dict[str, Any]:
         conv_id = uuid4().hex
         now = _now()
-        self._db.execute(
-            "INSERT INTO conversations (id, user_id, agent_id, title, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (conv_id, user_id, agent_id, title or "", now, now),
-        )
-        self._db.commit()
+        conn = self._conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                f"INSERT INTO conversations (id, user_id, agent_id, title, created_at, updated_at) "
+                f"VALUES ({PH}, {PH}, {PH}, {PH}, {PH}, {PH})",
+                (conv_id, user_id, agent_id, title or "", now, now),
+            )
+            conn.commit()
+        finally:
+            close_db(conn)
         return {
             "id": conv_id,
             "user_id": user_id,
@@ -52,37 +66,61 @@ class ChatStorage:
     def get_conversation(
         self, conv_id: str, user_id: str
     ) -> Optional[Dict[str, Any]]:
-        row = self._db.execute(
-            "SELECT id, user_id, agent_id, title, created_at, updated_at "
-            "FROM conversations WHERE id = ? AND user_id = ?",
-            (conv_id, user_id),
-        ).fetchone()
-        return dict(row) if row else None
+        conn = self._conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                f"SELECT id, user_id, agent_id, title, created_at, updated_at "
+                f"FROM conversations WHERE id = {PH} AND user_id = {PH}",
+                (conv_id, user_id),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+        finally:
+            close_db(conn)
 
     def touch_conversation(self, conv_id: str, title: str = "") -> None:
         """Update updated_at; set title only if it was empty."""
         now = _now()
-        if title:
-            self._db.execute(
-                "UPDATE conversations "
-                "SET updated_at = ?, title = CASE WHEN title = '' THEN ? ELSE title END "
-                "WHERE id = ?",
-                (now, title, conv_id),
-            )
-        else:
-            self._db.execute(
-                "UPDATE conversations SET updated_at = ? WHERE id = ?",
-                (now, conv_id),
-            )
-        self._db.commit()
+        conn = self._conn()
+        try:
+            cur = conn.cursor()
+            if title:
+                if IS_PG:
+                    cur.execute(
+                        f"UPDATE conversations "
+                        f"SET updated_at = {PH}, title = CASE WHEN title = '' THEN {PH} ELSE title END "
+                        f"WHERE id = {PH}",
+                        (now, title, conv_id),
+                    )
+                else:
+                    cur.execute(
+                        f"UPDATE conversations "
+                        f"SET updated_at = {PH}, title = CASE WHEN title = '' THEN {PH} ELSE title END "
+                        f"WHERE id = {PH}",
+                        (now, title, conv_id),
+                    )
+            else:
+                cur.execute(
+                    f"UPDATE conversations SET updated_at = {PH} WHERE id = {PH}",
+                    (now, conv_id),
+                )
+            conn.commit()
+        finally:
+            close_db(conn)
 
     def delete_conversation(self, conv_id: str, user_id: str) -> bool:
-        cur = self._db.execute(
-            "DELETE FROM conversations WHERE id = ? AND user_id = ?",
-            (conv_id, user_id),
-        )
-        self._db.commit()
-        return cur.rowcount > 0
+        conn = self._conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                f"DELETE FROM conversations WHERE id = {PH} AND user_id = {PH}",
+                (conv_id, user_id),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+        finally:
+            close_db(conn)
 
     # ── Messages ───────────────────────────────────────────────────────────────
 
@@ -91,12 +129,17 @@ class ChatStorage:
     ) -> Dict[str, Any]:
         msg_id = uuid4().hex
         now = _now()
-        self._db.execute(
-            "INSERT INTO messages (id, conversation_id, role, content, created_at) "
-            "VALUES (?, ?, ?, ?, ?)",
-            (msg_id, conv_id, role, content, now),
-        )
-        self._db.commit()
+        conn = self._conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                f"INSERT INTO messages (id, conversation_id, role, content, created_at) "
+                f"VALUES ({PH}, {PH}, {PH}, {PH}, {PH})",
+                (msg_id, conv_id, role, content, now),
+            )
+            conn.commit()
+        finally:
+            close_db(conn)
         return {
             "id": msg_id,
             "conversation_id": conv_id,
@@ -110,9 +153,14 @@ class ChatStorage:
     ) -> List[Dict[str, Any]]:
         if not self.get_conversation(conv_id, user_id):
             return []
-        rows = self._db.execute(
-            "SELECT id, role, content, created_at FROM messages "
-            "WHERE conversation_id = ? ORDER BY created_at ASC LIMIT ?",
-            (conv_id, limit),
-        ).fetchall()
-        return [dict(r) for r in rows]
+        conn = self._conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                f"SELECT id, role, content, created_at FROM messages "
+                f"WHERE conversation_id = {PH} ORDER BY created_at ASC LIMIT {PH}",
+                (conv_id, limit),
+            )
+            return [dict(r) for r in cur.fetchall()]
+        finally:
+            close_db(conn)

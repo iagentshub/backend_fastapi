@@ -1,4 +1,4 @@
-"""Tests de gestión de usuarios: registro, listado y borrado."""
+"""Tests for user management: registration, listing, deletion."""
 from __future__ import annotations
 
 import pytest
@@ -7,15 +7,15 @@ from app.auth.auth import delete_user, list_users, register_user
 
 
 def test_registro_ok(patch_data_dir):
-    register_user("newuser", "pass1234")
+    register_user("newuser", "pass1234", email="newuser@example.com")
     users = list_users()
     assert any(u["username"] == "newuser" for u in users)
 
 
 def test_registro_nombre_duplicado(patch_data_dir):
-    register_user("dup_user", "pass1")
+    register_user("dup_user", "pass1", email="dup_user@example.com")
     with pytest.raises(ValueError, match="ya está en uso"):
-        register_user("dup_user", "pass2")
+        register_user("dup_user", "pass2", email="dup_user2@example.com")
 
 
 def test_registro_email_duplicado(patch_data_dir):
@@ -25,18 +25,18 @@ def test_registro_email_duplicado(patch_data_dir):
 
 
 def test_registro_nombre_admin_permitido(patch_data_dir):
-    register_user("admin", "somepass")
+    register_user("admin", "somepass", email="admin@example.com")
     assert any(u["username"] == "admin" for u in list_users())
 
 
 def test_listado_sin_password_hash(patch_data_dir):
-    register_user("listed", "pass1234")
+    register_user("listed", "pass1234", email="listed@example.com")
     for u in list_users():
         assert "password_hash" not in u
 
 
 def test_borrado_ok(patch_data_dir):
-    register_user("to_delete", "pass1234")
+    register_user("to_delete", "pass1234", email="to_delete@example.com")
     assert delete_user("to_delete") is True
     assert not any(u["username"] == "to_delete" for u in list_users())
 

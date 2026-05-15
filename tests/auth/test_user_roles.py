@@ -1,19 +1,22 @@
 """Tests de roles de usuario."""
 from __future__ import annotations
 
+import app.config.data as cfg
 from app.auth.auth import get_user_role, register_user
+from app.storage.db import PH, close_db, open_db
 
 
 def test_rol_admin(patch_data_dir):
     register_user("adminuser", "pass1234")
-    import json as _json
-    from app.config.data import SETTINGS_FILE
-    users_path = SETTINGS_FILE.parent / "users.json"
-    users = _json.loads(users_path.read_text())
-    for u in users:
-        if u["username"] == "adminuser":
-            u["role"] = "admin"
-    users_path.write_text(_json.dumps(users))
+    conn = open_db(cfg.DB_FILE)
+    try:
+        conn.cursor().execute(
+            f"UPDATE users SET role = {PH} WHERE username = {PH}",
+            ("admin", "adminuser"),
+        )
+        conn.commit()
+    finally:
+        close_db(conn)
     assert get_user_role("adminuser") == "admin"
 
 

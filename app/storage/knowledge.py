@@ -1,4 +1,4 @@
-"""Storage y extracción de texto para items de conocimiento (URLs + documentos)."""
+"""Storage and text extraction for knowledge items (URLs + documents)."""
 from __future__ import annotations
 
 import threading
@@ -9,7 +9,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
 
-from app.storage.db import open_db
+from app.storage.db import PH, close_db, open_db
 
 
 # ── HTML text extractor ────────────────────────────────────────────────────────
@@ -44,11 +44,11 @@ class _TextParser(HTMLParser):
 
 # ── Public helpers ─────────────────────────────────────────────────────────────
 
-MAX_CONTENT = 500_000  # caracteres máximos almacenados por item
+MAX_CONTENT = 500_000  # max characters stored per item
 
 
 def fetch_url_text(url: str) -> str:
-    """Descarga una URL y devuelve su texto plano (máx 2 MB)."""
+    """Download a URL and return its plain text (max 2 MB)."""
     import urllib.request
 
     parsed = urlparse(url)
@@ -79,7 +79,7 @@ def fetch_url_text(url: str) -> str:
 
 
 def extract_document_text(content_bytes: bytes, filename: str, mime: str = "") -> str:
-    """Extrae texto de un fichero TXT, MD o PDF."""
+    """Extract text from a TXT, MD, or PDF file."""
     name_lower = (filename or "").lower()
     is_pdf = name_lower.endswith(".pdf") or "pdf" in mime.lower()
 
@@ -105,8 +105,11 @@ def extract_document_text(content_bytes: bytes, filename: str, mime: str = "") -
 
 class KnowledgeStorage:
     def __init__(self, db_path: Path) -> None:
-        self._db = open_db(db_path)
+        self._db_path = db_path
         self._lock = threading.Lock()
+
+    def _conn(self):
+        return open_db(self._db_path)
 
     def list(
         self, owner_id: Optional[str], type: Optional[str] = None
@@ -118,28 +121,40 @@ class KnowledgeStorage:
         params: list = []
         where: list = []
         if owner_id is not None:
-            where.append("owner_id = ?")
+            where.append(f"owner_id = {PH}")
             params.append(owner_id)
         if type:
-            where.append("type = ?")
+            where.append(f"type = {PH}")
             params.append(type)
         if where:
             query += " WHERE " + " AND ".join(where)
         query += " ORDER BY created_at DESC"
-        return [dict(r) for r in self._db.execute(query, params).fetchall()]
+        conn = self._conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(query, params)
+            return [dict(r) for r in cur.fetchall()]
+        finally:
+            close_db(conn)
 
     def get(self, item_id: str, owner_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        if owner_id is not None:
-            row = self._db.execute(
-                "SELECT * FROM knowledge_items WHERE id = ? AND owner_id = ?",
-                (item_id, owner_id),
-            ).fetchone()
-        else:
-            row = self._db.execute(
-                "SELECT * FROM knowledge_items WHERE id = ?",
-                (item_id,),
-            ).fetchone()
-        return dict(row) if row else None
+        conn = self._conn()
+        try:
+            cur = conn.cursor()
+            if owner_id is not None:
+                cur.execute(
+                    f"SELECT * FROM knowledge_items WHERE id = {PH} AND owner_id = {PH}",
+                    (item_id, owner_id),
+                )
+            else:
+                cur.execute(
+                    f"SELECT * FROM knowledge_items WHERE id = {PH}",
+                    (item_id,),
+                )
+            row = cur.fetchone()
+            return dict(row) if row else None
+        finally:
+            close_db(conn)
 
     def save(
         self,
@@ -153,24 +168,34 @@ class KnowledgeStorage:
         now = datetime.now(timezone.utc).isoformat()
         item_id = uuid.uuid4().hex[:16]
         with self._lock:
-            self._db.execute(
-                "INSERT INTO knowledge_items "
-                "(id, owner_id, type, title, source, content, char_count, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (item_id, owner_id, type, title, source, content, len(content), now, now),
-            )
-            self._db.commit()
+            conn = self._conn()
+            try:
+                cur = conn.cursor()
+                cur.execute(
+                    f"INSERT INTO knowledge_items "
+                    f"(id, owner_id, type, title, source, content, char_count, created_at, updated_at) "
+                    f"VALUES ({PH}, {PH}, {PH}, {PH}, {PH}, {PH}, {PH}, {PH}, {PH})",
+                    (item_id, owner_id, type, title, source, content, len(content), now, now),
+                )
+                conn.commit()
+            finally:
+                close_db(conn)
         return self.get(item_id)  # type: ignore[return-value]
 
     def delete(self, item_id: str, owner_id: Optional[str]) -> bool:
-        if owner_id is not None:
-            cur = self._db.execute(
-                "DELETE FROM knowledge_items WHERE id = ? AND owner_id = ?",
-                (item_id, owner_id),
-            )
-        else:
-            cur = self._db.execute(
-                "DELETE FROM knowledge_items WHERE id = ?", (item_id,)
-            )
-        self._db.commit()
-        return cur.rowcount > 0
+        conn = self._conn()
+        try:
+            cur = conn.cursor()
+            if owner_id is not None:
+                cur.execute(
+                    f"DELETE FROM knowledge_items WHERE id = {PH} AND owner_id = {PH}",
+                    (item_id, owner_id),
+                )
+            else:
+                cur.execute(
+                    f"DELETE FROM knowledge_items WHERE id = {PH}", (item_id,)
+                )
+            conn.commit()
+            return cur.rowcount > 0
+        finally:
+            close_db(conn)
