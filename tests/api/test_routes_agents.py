@@ -58,3 +58,9 @@ def test_delete_agent_not_found(admin_client):
 def test_agents_requires_auth(client):
     r = client.get("/api/agents")
     assert r.status_code == 401
+
+
+def test_create_agent_stores_owner_id(admin_client):
+    r = admin_client.post("/api/agents", json=_AGENT_PAYLOAD)
+    assert r.status_code == 200
+    assert r.json()["owner_id"] == "testadmin"

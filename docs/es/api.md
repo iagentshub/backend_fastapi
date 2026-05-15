@@ -29,10 +29,40 @@ La autenticación usa **cookies HTTP-only** (`ga_token`). La respuesta de `/api/
 
 Todos los endpoints de admin requieren el rol `admin`.
 
+### Usuarios
+
 | Método | Endpoint | Descripción |
 |---|---|---|
 | `GET` | `/api/admin/users` | Listar todos los usuarios registrados (sin hashes de contraseña) |
+| `PATCH` | `/api/admin/users/{username}` | Actualizar campos del usuario (`role`, `is_active`) |
 | `DELETE` | `/api/admin/users/{username}` | Eliminar un usuario (no se puede eliminar a uno mismo) |
+
+### Agentes
+
+| Método | Endpoint | Descripción |
+|---|---|---|
+| `GET` | `/api/admin/agents` | Listar todos los agentes privados; cada item incluye `owner_id` y `owner_email` |
+| `DELETE` | `/api/admin/agents/{id}?scope=private` | Eliminar un agente privado |
+
+### Conexiones
+
+| Método | Endpoint | Descripción |
+|---|---|---|
+| `GET` | `/api/admin/connections` | Listar todas las conexiones; cada item incluye `owner_email` y totales de tokens |
+| `DELETE` | `/api/admin/connections/{id}` | Eliminar una conexión (elimina también el historial de tokens asociado) |
+
+### Conocimiento
+
+| Método | Endpoint | Descripción |
+|---|---|---|
+| `GET` | `/api/admin/knowledge` | Listar todos los elementos de conocimiento; cada item incluye `owner_email` y `char_count` |
+| `DELETE` | `/api/admin/knowledge/{id}` | Eliminar un elemento de conocimiento |
+
+### Estadísticas
+
+| Método | Endpoint | Descripción |
+|---|---|---|
+| `GET` | `/api/admin/stats` | Contadores agregados: usuarios, agentes, conexiones, conocimiento y tokens totales |
 
 ---
 

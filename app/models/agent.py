@@ -109,6 +109,7 @@ class Agent:
     # ── Audit ─────────────────────────────────────────────────────────────────
     created_at: str = ""
     updated_at: str = ""
+    owner_id: Optional[str] = None
 
     # ── Factory ───────────────────────────────────────────────────────────────
 
@@ -150,6 +151,7 @@ class Agent:
             routines=[r for r in (data.get("routines") or []) if isinstance(r, dict)],
             created_at=str(data.get("created_at") or ""),
             updated_at=str(data.get("updated_at") or ""),
+            owner_id=str(data["owner_id"]).strip() or None if data.get("owner_id") else None,
         )
 
     # ── Serialisation ─────────────────────────────────────────────────────────
@@ -178,6 +180,7 @@ class Agent:
             "routines": self.routines,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
+            "owner_id": self.owner_id,
         }
 
     # ── Export ────────────────────────────────────────────────────────────────

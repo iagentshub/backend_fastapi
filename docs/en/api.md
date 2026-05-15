@@ -29,10 +29,40 @@ Authentication uses **HTTP-only cookies** (`ga_token`). The `/api/auth/me` respo
 
 All admin endpoints require the `admin` role.
 
+### Users
+
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/api/admin/users` | List all registered users (password hashes excluded) |
+| `PATCH` | `/api/admin/users/{username}` | Update user fields (`role`, `is_active`) |
 | `DELETE` | `/api/admin/users/{username}` | Delete a user (cannot self-delete) |
+
+### Agents
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/admin/agents` | List all private agents; each item includes `owner_id` and `owner_email` |
+| `DELETE` | `/api/admin/agents/{id}?scope=private` | Delete a private agent |
+
+### Connections
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/admin/connections` | List all connections; each item includes `owner_email` and token totals |
+| `DELETE` | `/api/admin/connections/{id}` | Delete a connection (removes associated token history) |
+
+### Knowledge
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/admin/knowledge` | List all knowledge items; each item includes `owner_email` and `char_count` |
+| `DELETE` | `/api/admin/knowledge/{id}` | Delete a knowledge item |
+
+### Stats
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/admin/stats` | Aggregate counters: users, agents, connections, knowledge items, total tokens |
 
 ---
 

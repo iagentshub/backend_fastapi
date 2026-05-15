@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response
 
 from app.auth.auth import (
+    admin_update_user,
     create_token,
     decode_token,
     delete_user,
@@ -18,9 +19,17 @@ from app.auth.auth import (
     hash_password,
     list_users,
     register_user_email,
+    send_verification_email,
+    verify_email_token,
     verify_password,
 )
-from app.config.session import REGISTER_MAX, REGISTER_WINDOW, REGISTRATION_MODE, SECURE_COOKIES
+from app.config.session import (
+    EMAIL_VERIFY_ENABLED,
+    REGISTER_MAX,
+    REGISTER_WINDOW,
+    REGISTRATION_MODE,
+    SECURE_COOKIES,
+)
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -81,7 +90,7 @@ async def register(request: Request, response: Response) -> Dict[str, Any]:
         raise HTTPException(status_code=400, detail="La contraseña debe tener al menos 8 caracteres")
 
     try:
-        username = register_user_email(
+        username, verify_token = register_user_email(
             email,
             password,
             birth_date=birth_date,
@@ -93,9 +102,15 @@ async def register(request: Request, response: Response) -> Dict[str, Any]:
         raise HTTPException(status_code=409, detail=str(exc))
 
     _record_register(_client_ip(request))
+
+    if EMAIL_VERIFY_ENABLED and verify_token:
+        base_url = str(request.base_url).rstrip("/")
+        send_verification_email(email, verify_token, base_url)
+        return {"ok": True, "email": email, "pending_verification": True}
+
     token = create_token(username)
     response.set_cookie("ga_token", token, httponly=True, samesite="lax", secure=SECURE_COOKIES, max_age=43200)
-    return {"ok": True, "email": email}
+    return {"ok": True, "email": email, "pending_verification": False}
 
 
 @router.post("/login")
@@ -112,9 +127,21 @@ async def login(request: Request, response: Response) -> Dict[str, Any]:
         raise HTTPException(status_code=401, detail="Credenciales incorrectas")
     if not user.get("is_active", 1):
         raise HTTPException(status_code=403, detail="Cuenta desactivada")
+    if EMAIL_VERIFY_ENABLED and not user.get("is_verified", 1):
+        raise HTTPException(status_code=403, detail="Cuenta pendiente de verificación. Revisa tu correo.")
     token = create_token(user["username"])
     response.set_cookie("ga_token", token, httponly=True, samesite="lax", secure=SECURE_COOKIES, max_age=43200)
     return {"ok": True, "username": user["username"]}
+
+
+@router.get("/verify")
+async def verify_email(token: str, response: Response) -> Dict[str, Any]:
+    username = verify_email_token(token)
+    if not username:
+        raise HTTPException(status_code=400, detail="Enlace de verificación inválido o expirado")
+    auth_token = create_token(username)
+    response.set_cookie("ga_token", auth_token, httponly=True, samesite="lax", secure=SECURE_COOKIES, max_age=43200)
+    return {"ok": True, "username": username}
 
 
 @router.post("/guest")
@@ -182,9 +209,92 @@ async def change_password(
 admin_router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 
+@admin_router.get("/stats")
+async def admin_stats(_: str = Depends(require_admin)) -> Dict[str, Any]:
+    from app.config.data import AGENTS_DIR, DB_FILE
+    from app.storage.db import PH, close_db, open_db
+
+    conn = open_db(DB_FILE)
+    try:
+        cur = conn.cursor()
+
+        cur.execute("SELECT COUNT(*), SUM(CASE WHEN is_active=1 THEN 1 ELSE 0 END), SUM(CASE WHEN is_verified=1 THEN 1 ELSE 0 END) FROM users")
+        u = cur.fetchone()
+        users_total, users_active, users_verified = (u[0] or 0, u[1] or 0, u[2] or 0)
+
+        cur.execute("SELECT COUNT(*), COALESCE(SUM(tokens_in),0), COALESCE(SUM(tokens_out),0) FROM connections")
+        c = cur.fetchone()
+        conns_total, tokens_in, tokens_out = (c[0] or 0, c[1] or 0, c[2] or 0)
+
+        cur.execute("SELECT COUNT(*) FROM knowledge_items")
+        knowledge_total = (cur.fetchone()[0] or 0)
+
+        cur.execute("SELECT COUNT(*) FROM conversations")
+        conversations_total = (cur.fetchone()[0] or 0)
+    finally:
+        close_db(conn)
+
+    agents_public = len(list(AGENTS_DIR.glob("public/*/config.json"))) if AGENTS_DIR.exists() else 0
+    agents_private = len(list(AGENTS_DIR.glob("private/*/config.json"))) if AGENTS_DIR.exists() else 0
+
+    return {
+        "users_total": users_total,
+        "users_active": users_active,
+        "users_verified": users_verified,
+        "connections_total": conns_total,
+        "tokens_in": tokens_in,
+        "tokens_out": tokens_out,
+        "knowledge_total": knowledge_total,
+        "conversations_total": conversations_total,
+        "agents_public": agents_public,
+        "agents_private": agents_private,
+    }
+
+
 @admin_router.get("/users")
-async def admin_list_users(_: str = Depends(require_admin)) -> List[Dict[str, Any]]:
-    return list_users()
+async def admin_list_users(
+    q: Optional[str] = None,
+    role: Optional[str] = None,
+    active: Optional[str] = None,
+    verified: Optional[str] = None,
+    _: str = Depends(require_admin),
+) -> List[Dict[str, Any]]:
+    users = list_users()
+    if q:
+        q_low = q.lower()
+        users = [u for u in users if q_low in (u.get("username") or "").lower() or q_low in (u.get("email") or "").lower()]
+    if role:
+        users = [u for u in users if u.get("role") == role]
+    if active is not None:
+        want = active.lower() in ("1", "true", "yes")
+        users = [u for u in users if bool(u.get("is_active", 1)) == want]
+    if verified is not None:
+        want = verified.lower() in ("1", "true", "yes")
+        users = [u for u in users if bool(u.get("is_verified", 1)) == want]
+    return users
+
+
+@admin_router.patch("/users/{username}")
+async def admin_patch_user(
+    username: str,
+    request: Request,
+    admin: str = Depends(require_admin),
+) -> Dict[str, Any]:
+    if username == admin:
+        raise HTTPException(status_code=400, detail="No puedes modificar tu propia cuenta")
+    body = await request.json()
+    updates: Dict[str, Any] = {}
+    if "is_active" in body:
+        updates["is_active"] = 1 if body["is_active"] else 0
+    if "role" in body:
+        if body["role"] not in ("admin", "standard"):
+            raise HTTPException(status_code=400, detail="Rol inválido")
+        updates["role"] = body["role"]
+    if not updates:
+        raise HTTPException(status_code=400, detail="Sin cambios")
+    if not admin_update_user(username, **updates):
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    return {"ok": True}
 
 
 @admin_router.delete("/users/{username}")
@@ -195,4 +305,128 @@ async def admin_delete_user(
         raise HTTPException(status_code=400, detail="No puedes eliminar tu propia cuenta")
     if not delete_user(username):
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    return {"ok": True}
+
+
+@admin_router.get("/connections")
+async def admin_list_connections(_: str = Depends(require_admin)) -> List[Dict[str, Any]]:
+    from app.config.data import DB_FILE
+    from app.storage.db import close_db, open_db
+    import json as _json
+
+    conn = open_db(DB_FILE)
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id, owner_id, data, tokens_in, tokens_out, created_at FROM connections ORDER BY created_at DESC")
+        rows = cur.fetchall()
+        cur.execute("SELECT username, email FROM users")
+        email_map = {r[0]: r[1] for r in cur.fetchall()}
+    finally:
+        close_db(conn)
+
+    result = []
+    for row in rows:
+        d = dict(row) if isinstance(row, dict) else {
+            "id": row[0], "owner_id": row[1], "data": row[2],
+            "tokens_in": row[3], "tokens_out": row[4], "created_at": row[5],
+        }
+        try:
+            data = _json.loads(d.get("data") or "{}")
+        except Exception:
+            data = {}
+        result.append({
+            "id": d["id"],
+            "owner_id": d["owner_id"],
+            "owner_email": email_map.get(d["owner_id"], d["owner_id"]),
+            "name": data.get("name", d["id"]),
+            "type": data.get("type", ""),
+            "tokens_in": d["tokens_in"],
+            "tokens_out": d["tokens_out"],
+            "created_at": d["created_at"],
+        })
+    return result
+
+
+@admin_router.delete("/connections/{conn_id}")
+async def admin_delete_connection(
+    conn_id: str, _: str = Depends(require_admin)
+) -> Dict[str, Any]:
+    from app.config.data import DB_FILE
+    from app.storage.storage import ConnectionStorage
+    if not ConnectionStorage(DB_FILE).delete(conn_id, owner_id=None):
+        raise HTTPException(status_code=404, detail="Conexión no encontrada")
+    return {"ok": True}
+
+
+@admin_router.get("/agents")
+async def admin_list_agents(_: str = Depends(require_admin)) -> List[Dict[str, Any]]:
+    from app.config.data import AGENTS_DIR, DB_FILE
+    from app.storage.storage import AgentStorage
+    from app.storage.db import close_db, open_db
+    agents = AgentStorage(AGENTS_DIR).list(scope="all")
+    conn = open_db(DB_FILE)
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT username, email FROM users")
+        email_map = {r[0]: r[1] for r in cur.fetchall()}
+        cur.execute("SELECT id, owner_id FROM connections")
+        conn_owner_map = {r[0]: r[1] for r in cur.fetchall()}
+    finally:
+        close_db(conn)
+    for a in agents:
+        owner = a.get("owner_id")
+        if not owner and a.get("connection_id"):
+            owner = conn_owner_map.get(a["connection_id"])
+        a["owner_email"] = email_map.get(owner, owner) if owner else None
+    return agents
+
+
+@admin_router.delete("/agents/{agent_id}")
+async def admin_delete_agent(
+    agent_id: str,
+    scope: str = "private",
+    _: str = Depends(require_admin),
+) -> Dict[str, Any]:
+    import re as _re
+    import shutil
+    from app.config.data import AGENTS_DIR
+    if scope not in ("public", "private"):
+        raise HTTPException(status_code=400, detail="scope debe ser 'public' o 'private'")
+    safe_id = _re.sub(r"[^a-z0-9_\-]", "-", agent_id.lower()).strip("-")
+    agent_dir = AGENTS_DIR / scope / safe_id
+    if not agent_dir.exists():
+        raise HTTPException(status_code=404, detail="Agente no encontrado")
+    shutil.rmtree(agent_dir)
+    return {"ok": True}
+
+
+@admin_router.get("/knowledge")
+async def admin_list_knowledge(_: str = Depends(require_admin)) -> List[Dict[str, Any]]:
+    from app.config.data import DB_FILE
+    from app.storage.db import close_db, open_db
+    from app.storage.knowledge import KnowledgeStorage
+
+    conn = open_db(DB_FILE)
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT username, email FROM users")
+        email_map = {r[0]: r[1] for r in cur.fetchall()}
+    finally:
+        close_db(conn)
+
+    items = KnowledgeStorage(DB_FILE).list(owner_id=None)
+    for item in items:
+        item["owner_email"] = email_map.get(item.get("owner_id", ""), item.get("owner_id", ""))
+        item.pop("content", None)
+    return items
+
+
+@admin_router.delete("/knowledge/{item_id}")
+async def admin_delete_knowledge(
+    item_id: str, _: str = Depends(require_admin)
+) -> Dict[str, Any]:
+    from app.config.data import DB_FILE
+    from app.storage.knowledge import KnowledgeStorage
+    if not KnowledgeStorage(DB_FILE).delete(item_id, owner_id=None):
+        raise HTTPException(status_code=404, detail="Elemento no encontrado")
     return {"ok": True}

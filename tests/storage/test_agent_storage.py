@@ -76,3 +76,29 @@ def test_delete_existing(storage):
 
 def test_delete_nonexistent(storage):
     assert storage.delete("ghost-agent") is False
+
+
+def test_save_stores_owner_id(storage):
+    agent = storage.save(_AGENT, owner_id="alice")
+    assert agent["owner_id"] == "alice"
+
+
+def test_save_preserves_owner_id_on_update(storage):
+    agent = storage.save(_AGENT, owner_id="alice")
+    agent["description"] = "updated"
+    updated = storage.save(agent, owner_id="bob")
+    assert updated["owner_id"] == "alice"
+
+
+def test_save_sets_owner_id_when_previously_missing(storage):
+    agent = storage.save(_AGENT)
+    assert agent["owner_id"] is None
+    agent["description"] = "updated"
+    updated = storage.save(agent, owner_id="alice")
+    assert updated["owner_id"] == "alice"
+
+
+def test_summary_includes_owner_id(storage):
+    agent = storage.save(_AGENT, owner_id="alice")
+    listed = storage.list()
+    assert listed[0]["owner_id"] == "alice"

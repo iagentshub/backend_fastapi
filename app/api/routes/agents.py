@@ -99,7 +99,7 @@ async def save_agent(
         s.agents.append(agent)
         return agent
     try:
-        return _agents.save(payload, scope)
+        return _agents.save(payload, scope, owner_id=user)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
 

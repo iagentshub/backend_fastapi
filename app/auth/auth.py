@@ -7,11 +7,19 @@ import re
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+import secrets
+
 import bcrypt as _bcrypt
 from jose import JWTError, jwt
 
 from app.config.data import DB_FILE, SETTINGS_FILE
-from app.config.session import JWT_ALGORITHM, JWT_EXPIRE_HOURS, JWT_SECRET_ENV, JWT_UNSAFE_SECRETS
+from app.config.session import (
+    EMAIL_VERIFY_ENABLED,
+    JWT_ALGORITHM,
+    JWT_EXPIRE_HOURS,
+    JWT_SECRET_ENV,
+    JWT_UNSAFE_SECRETS,
+)
 from app.storage.db import IS_PG, PH, close_db, open_db
 
 # ── Settings ───────────────────────────────────────────────────────────────────
@@ -83,18 +91,9 @@ def get_user_by_username(username: str) -> Optional[dict]:
     return _get_user_by("username", username)
 
 
-def _gen_username(email: str, conn) -> str:
-    """Generate a unique username from an email address."""
-    base = re.sub(r"[^a-z0-9]+", "_", email.split("@")[0].lower()).strip("_") or "user"
-    candidate = base
-    suffix = 2
-    while True:
-        cur = conn.cursor()
-        cur.execute(f"SELECT 1 FROM users WHERE username = {PH}", (candidate,))
-        if not cur.fetchone():
-            return candidate
-        candidate = f"{base}_{suffix}"
-        suffix += 1
+def _gen_username(email: str, _conn=None) -> str:
+    """Username is the full email address."""
+    return email
 
 
 def register_user(username: str, password: str, email: str = "") -> None:
@@ -137,39 +136,68 @@ def register_user_email(
     country: Optional[str] = None,
     phone: Optional[str] = None,
     display_name: Optional[str] = None,
-) -> str:
-    """Register user by email, auto-generating a unique username. Returns the username."""
+) -> tuple[str, Optional[str]]:
+    """Register user by email. Username = full email. Returns (username, verification_token).
+
+    verification_token is None when EMAIL_VERIFY_ENABLED is False (user auto-verified).
+    """
+    username = email  # username IS the full email address
     conn = open_db(DB_FILE)
     try:
         cur = conn.cursor()
         cur.execute(f"SELECT 1 FROM users WHERE email = {PH}", (email,))
         if cur.fetchone():
             raise ValueError("El correo electrónico ya está registrado")
-        username = _gen_username(email, conn)
         now = datetime.now(timezone.utc).isoformat()
+        token: Optional[str] = None
+        is_verified = 1
+        if EMAIL_VERIFY_ENABLED:
+            token = secrets.token_urlsafe(32)
+            is_verified = 0
         cur.execute(
             "INSERT INTO users "
             "(username, email, password_hash, display_name, birth_date, gender, "
-            f"country, phone, role, is_active, created_at) "
-            f"VALUES ({PH}, {PH}, {PH}, {PH}, {PH}, {PH}, {PH}, {PH}, {PH}, {PH}, {PH})",
+            f"country, phone, role, is_active, is_verified, verification_token, created_at) "
+            f"VALUES ({PH},{PH},{PH},{PH},{PH},{PH},{PH},{PH},{PH},{PH},{PH},{PH},{PH})",
             (
-                username,
-                email,
-                hash_password(password),
-                display_name,
-                birth_date,
-                gender,
-                country,
-                phone,
-                "standard",
-                1,
-                now,
+                username, email, hash_password(password), display_name,
+                birth_date, gender, country, phone,
+                "standard", 1, is_verified, token, now,
             ),
+        )
+        conn.commit()
+        return username, token
+    finally:
+        close_db(conn)
+
+
+def verify_email_token(token: str) -> Optional[str]:
+    """Mark user as verified by their token. Returns the username on success, None if invalid."""
+    conn = open_db(DB_FILE)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            f"SELECT username FROM users WHERE verification_token = {PH} AND is_verified = 0",
+            (token,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        username = row["username"] if isinstance(row, dict) else row[0]
+        cur.execute(
+            f"UPDATE users SET is_verified = 1, verification_token = NULL WHERE username = {PH}",
+            (username,),
         )
         conn.commit()
         return username
     finally:
         close_db(conn)
+
+
+def send_verification_email(email: str, token: str, base_url: str = "") -> None:
+    """Send a verification email. Currently a no-op — implement when SMTP is configured."""
+    # TODO: configure SMTP via GAIA_SMTP_* env vars and implement here
+    pass
 
 
 def get_or_create_oauth_user(provider: str, sub: str, email: str, name: str) -> str:
@@ -275,6 +303,27 @@ def update_user_profile(username: str, **fields) -> None:
         close_db(conn)
 
 
+def admin_update_user(username: str, **fields) -> bool:
+    """Admin-only: update is_active or role. Returns False if user not found."""
+    allowed = {"is_active", "role"}
+    updates = {k: v for k, v in fields.items() if k in allowed}
+    if not updates:
+        return True
+    conn = open_db(DB_FILE)
+    try:
+        cur = conn.cursor()
+        cur.execute(f"SELECT 1 FROM users WHERE username = {PH}", (username,))
+        if not cur.fetchone():
+            return False
+        set_clause = ", ".join(f"{col} = {PH}" for col in updates)
+        values = list(updates.values()) + [username]
+        cur.execute(f"UPDATE users SET {set_clause} WHERE username = {PH}", values)
+        conn.commit()
+        return True
+    finally:
+        close_db(conn)
+
+
 # ── JWT ────────────────────────────────────────────────────────────────────────
 
 
@@ -291,6 +340,81 @@ def decode_token(token: str) -> Optional[str]:
         return data.get("sub")
     except JWTError:
         return None
+
+
+# ── First-boot admin bootstrap ────────────────────────────────────────────────
+
+
+def ensure_admin_user() -> None:
+    """Guarantee that at least one admin user exists.
+
+    Priority:
+    1. If GAIA_ADMIN_EMAIL matches an existing user → promote them to admin (no password change unless reset mode).
+    2. If no admin exists → create one with GAIA_ADMIN_EMAIL.
+    3. If an admin already exists and GAIA_ADMIN_RESET=true → reset their password.
+    """
+    import logging
+    log = logging.getLogger("gaia.admin")
+
+    reset_mode = os.environ.get("GAIA_ADMIN_RESET", "").lower() in ("1", "true", "yes")
+    target_email = os.environ.get("GAIA_ADMIN_EMAIL", "admin@localhost")
+
+    conn = open_db(DB_FILE)
+    try:
+        cur = conn.cursor()
+
+        # Check if target email already has an account
+        cur.execute(f"SELECT username, role FROM users WHERE email = {PH}", (target_email,))
+        target_row = cur.fetchone()
+        target_user = dict(target_row) if target_row else None
+
+        if target_user and target_user.get("role") != "admin":
+            # Promote existing user to admin
+            cur.execute(f"UPDATE users SET role = {PH} WHERE email = {PH}", ("admin", target_email))
+            conn.commit()
+            log.warning("=" * 60)
+            log.warning(" iAgents Hub — %s promovido a administrador", target_email)
+            log.warning("=" * 60)
+            return
+
+        # Find any existing admin
+        cur.execute(f"SELECT username FROM users WHERE role = {PH} LIMIT 1", ("admin",))
+        existing = cur.fetchone()
+
+        if existing and not reset_mode:
+            return
+
+        password = secrets.token_urlsafe(12)
+        now = datetime.now(timezone.utc).isoformat()
+        log_email = target_email
+
+        if existing:
+            # Reset password of existing admin
+            admin_username = existing["username"] if isinstance(existing, dict) else existing[0]
+            cur.execute(
+                f"UPDATE users SET password_hash = {PH} WHERE username = {PH}",
+                (hash_password(password), admin_username),
+            )
+            log_email = admin_username
+        else:
+            cur.execute(
+                "INSERT INTO users "
+                "(username, email, password_hash, role, is_active, is_verified, created_at) "
+                f"VALUES ({PH},{PH},{PH},{PH},{PH},{PH},{PH})",
+                (target_email, target_email, hash_password(password), "admin", 1, 1, now),
+            )
+        conn.commit()
+    finally:
+        close_db(conn)
+
+    sep = "=" * 60
+    action = "contraseña reseteada" if reset_mode and existing else "cuenta creada"
+    log.warning(sep)
+    log.warning(" iAgents Hub — Administrador (%s)", action)
+    log.warning(" Email:      %s", log_email)
+    log.warning(" Contraseña: %s", password)
+    log.warning(" Accede a /login/ y cambia la contraseña desde /profile/")
+    log.warning(sep)
 
 
 # ── Compatibility shim ─────────────────────────────────────────────────────────

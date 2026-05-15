@@ -71,19 +71,21 @@ CREATE TABLE IF NOT EXISTS knowledge_items (
 CREATE INDEX IF NOT EXISTS idx_knowledge_owner
     ON knowledge_items(owner_id, type, created_at DESC);
 CREATE TABLE IF NOT EXISTS users (
-    username      TEXT PRIMARY KEY,
-    email         TEXT UNIQUE NOT NULL,
-    password_hash TEXT,
-    display_name  TEXT,
-    birth_date    TEXT,
-    gender        TEXT,
-    country       TEXT,
-    phone         TEXT,
-    provider      TEXT,
-    provider_sub  TEXT,
-    role          TEXT NOT NULL DEFAULT 'standard',
-    is_active     INTEGER NOT NULL DEFAULT 1,
-    created_at    TEXT NOT NULL
+    username           TEXT PRIMARY KEY,
+    email              TEXT UNIQUE NOT NULL,
+    password_hash      TEXT,
+    display_name       TEXT,
+    birth_date         TEXT,
+    gender             TEXT,
+    country            TEXT,
+    phone              TEXT,
+    provider           TEXT,
+    provider_sub       TEXT,
+    role               TEXT NOT NULL DEFAULT 'standard',
+    is_active          INTEGER NOT NULL DEFAULT 1,
+    is_verified        INTEGER NOT NULL DEFAULT 1,
+    verification_token TEXT,
+    created_at         TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_users_email ON users (email);
 """
@@ -138,19 +140,21 @@ CREATE TABLE IF NOT EXISTS knowledge_items (
 CREATE INDEX IF NOT EXISTS idx_knowledge_owner
     ON knowledge_items(owner_id, type, created_at DESC);
 CREATE TABLE IF NOT EXISTS users (
-    username      TEXT PRIMARY KEY,
-    email         TEXT UNIQUE NOT NULL,
-    password_hash TEXT,
-    display_name  TEXT,
-    birth_date    TEXT,
-    gender        TEXT,
-    country       TEXT,
-    phone         TEXT,
-    provider      TEXT,
-    provider_sub  TEXT,
-    role          TEXT NOT NULL DEFAULT 'standard',
-    is_active     SMALLINT NOT NULL DEFAULT 1,
-    created_at    TEXT NOT NULL
+    username           TEXT PRIMARY KEY,
+    email              TEXT UNIQUE NOT NULL,
+    password_hash      TEXT,
+    display_name       TEXT,
+    birth_date         TEXT,
+    gender             TEXT,
+    country            TEXT,
+    phone              TEXT,
+    provider           TEXT,
+    provider_sub       TEXT,
+    role               TEXT NOT NULL DEFAULT 'standard',
+    is_active          SMALLINT NOT NULL DEFAULT 1,
+    is_verified        SMALLINT NOT NULL DEFAULT 1,
+    verification_token TEXT,
+    created_at         TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_users_email ON users (email);
 """
@@ -200,6 +204,8 @@ def _migrate_sqlite(conn: sqlite3.Connection) -> None:
         ("provider", "TEXT"),
         ("provider_sub", "TEXT"),
         ("is_active", "INTEGER NOT NULL DEFAULT 1"),
+        ("is_verified", "INTEGER NOT NULL DEFAULT 1"),
+        ("verification_token", "TEXT"),
     ]:
         if col not in user_cols:
             try:

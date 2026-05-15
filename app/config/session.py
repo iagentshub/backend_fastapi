@@ -25,6 +25,11 @@ REGISTER_MAX    = int(os.getenv("GAIA_REGISTER_MAX",    "5"))     # registros po
 # invite → solo el admin puede crear usuarios vía /api/admin/users
 REGISTRATION_MODE: str = os.getenv("GAIA_REGISTRATION", "open").lower()
 
+# ── Verificación de email ──────────────────────────────────────────────────────
+# false (default) → usuarios verificados automáticamente al registrarse
+# true            → se envía un correo con enlace de verificación; sin verificar no pueden entrar
+EMAIL_VERIFY_ENABLED: bool = os.getenv("GAIA_EMAIL_VERIFY", "false").lower() == "true"
+
 # ── Cookies seguras ───────────────────────────────────────────────────────────
 # Se activan automáticamente si GAIA_FRONTEND_URL empieza por https://,
 # o explícitamente con GAIA_SECURE_COOKIES=true.

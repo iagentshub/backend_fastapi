@@ -287,7 +287,7 @@ class AgentStorage:
                 return a
         return None
 
-    def save(self, payload: Dict[str, Any], scope: str = "private") -> Dict[str, Any]:
+    def save(self, payload: Dict[str, Any], scope: str = "private", owner_id: Optional[str] = None) -> Dict[str, Any]:
         if scope == "public":
             raise ValueError("Los agentes públicos son de solo lectura")
         name = str(payload.get("name") or "").strip()
@@ -302,8 +302,10 @@ class AgentStorage:
         if p.exists():
             existing = json.loads(p.read_text(encoding="utf-8"))
             agent.created_at = existing.get("created_at", now)
+            agent.owner_id = existing.get("owner_id") or owner_id
         else:
             agent.created_at = now
+            agent.owner_id = owner_id
         agent.updated_at = now
         p.write_text(json.dumps(agent.to_dict(), indent=2, ensure_ascii=False), encoding="utf-8")
         return agent.to_dict()
@@ -344,6 +346,7 @@ class AgentStorage:
             "scope": a.get("scope", "private"),
             "created_at": a.get("created_at"),
             "updated_at": a.get("updated_at"),
+            "owner_id": a.get("owner_id"),
         }
 
 

@@ -59,3 +59,122 @@ def test_delete_user_forbidden_for_standard(client, reset_rate_limiter):
     client.post("/api/auth/register", json={"email": "attacker@example.com", "password": "pass1234"})
     r = client.delete("/api/admin/users/victim_user")
     assert r.status_code == 403
+
+
+# ── Admin agents ──────────────────────────────────────────────────────────────
+
+_AGENT_PAYLOAD = {
+    "name": "Admin Test Agent",
+    "system_prompt": "Test.",
+    "model": "gpt-4o",
+    "temperature": 0.7,
+}
+
+
+def test_admin_list_agents(admin_client):
+    admin_client.post("/api/agents", json=_AGENT_PAYLOAD)
+    r = admin_client.get("/api/admin/agents")
+    assert r.status_code == 200
+    agents = r.json()
+    assert isinstance(agents, list)
+    assert any(a["name"] == "Admin Test Agent" for a in agents)
+
+
+def test_admin_list_agents_has_owner_email(admin_client):
+    admin_client.post("/api/agents", json=_AGENT_PAYLOAD)
+    agents = admin_client.get("/api/admin/agents").json()
+    private = [a for a in agents if a.get("scope") == "private"]
+    assert private, "se esperaba al menos un agente privado"
+    assert private[0]["owner_email"] == "testadmin@example.com"
+
+
+def test_admin_delete_agent(admin_client):
+    created = admin_client.post("/api/agents", json=_AGENT_PAYLOAD).json()
+    r = admin_client.delete(f"/api/admin/agents/{created['id']}?scope=private")
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+    agents = admin_client.get("/api/admin/agents").json()
+    assert not any(a["id"] == created["id"] for a in agents)
+
+
+def test_admin_delete_agent_not_found(admin_client):
+    r = admin_client.delete("/api/admin/agents/ghost-agent?scope=private")
+    assert r.status_code == 404
+
+
+def test_admin_agents_forbidden_for_standard(client, reset_rate_limiter):
+    client.post("/api/auth/register", json={"email": "std@example.com", "password": "pass1234"})
+    r = client.get("/api/admin/agents")
+    assert r.status_code == 403
+
+
+# ── Admin connections ─────────────────────────────────────────────────────────
+# Se inserta directamente en la BD (misma ruta que usa el endpoint admin) para
+# evitar la divergencia con el _storage de module-level de connections.py.
+
+def _insert_connection(owner_id: str = "testadmin") -> str:
+    from app.config.data import DB_FILE
+    from app.storage.storage import ConnectionStorage
+    c = ConnectionStorage(DB_FILE).save(
+        {"type": "openai", "label": "test-conn", "api_key": "sk-test", "model": "gpt-4o"},
+        owner_id=owner_id,
+    )
+    return c["id"]
+
+
+def test_admin_list_connections(admin_client):
+    _insert_connection()
+    r = admin_client.get("/api/admin/connections")
+    assert r.status_code == 200
+    conns = r.json()
+    assert isinstance(conns, list)
+    assert len(conns) >= 1
+
+
+def test_admin_list_connections_has_owner_email(admin_client):
+    _insert_connection()
+    conns = admin_client.get("/api/admin/connections").json()
+    assert conns[0]["owner_email"] == "testadmin@example.com"
+
+
+def test_admin_delete_connection(admin_client):
+    conn_id = _insert_connection()
+    r = admin_client.delete(f"/api/admin/connections/{conn_id}")
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+    conns = admin_client.get("/api/admin/connections").json()
+    assert not any(c["id"] == conn_id for c in conns)
+
+
+def test_admin_delete_connection_not_found(admin_client):
+    r = admin_client.delete("/api/admin/connections/ghost-conn")
+    assert r.status_code == 404
+
+
+def test_admin_connections_forbidden_for_standard(client, reset_rate_limiter):
+    client.post("/api/auth/register", json={"email": "std2@example.com", "password": "pass1234"})
+    r = client.get("/api/admin/connections")
+    assert r.status_code == 403
+
+
+# ── Admin knowledge ───────────────────────────────────────────────────────────
+
+def test_admin_list_knowledge(admin_client):
+    r = admin_client.get("/api/admin/knowledge")
+    assert r.status_code == 200
+    assert isinstance(r.json(), list)
+
+
+def test_admin_knowledge_forbidden_for_standard(client, reset_rate_limiter):
+    client.post("/api/auth/register", json={"email": "std3@example.com", "password": "pass1234"})
+    r = client.get("/api/admin/knowledge")
+    assert r.status_code == 403
+
+
+# ── Admin stats ───────────────────────────────────────────────────────────────
+
+def test_admin_stats(admin_client):
+    r = admin_client.get("/api/admin/stats")
+    assert r.status_code == 200
+    stats = r.json()
+    assert "users" in stats or isinstance(stats, dict)
