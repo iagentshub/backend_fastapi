@@ -40,7 +40,7 @@ No se utiliza ninguna base de datos. Toda la información se guarda como fichero
 
 Existen dos formas de acceder a la plataforma:
 
-**Google Sign-In** — el método de acceso para usuarios registrados. No requiere gestionar contraseñas en el sistema.
+**Email y contraseña** — el método de acceso para usuarios registrados. Las cuentas se crean mediante el flujo de registro.
 
 **Acceso de invitado** — permite usar la plataforma sin necesidad de cuenta. El acceso de invitado tiene permisos limitados.
 

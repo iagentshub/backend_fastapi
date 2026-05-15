@@ -200,53 +200,6 @@ def send_verification_email(email: str, token: str, base_url: str = "") -> None:
     pass
 
 
-def get_or_create_oauth_user(provider: str, sub: str, email: str, name: str) -> str:
-    """Look up an OAuth user by (provider, sub). Create if absent. Returns username."""
-    conn = open_db(DB_FILE)
-    try:
-        cur = conn.cursor()
-        # psycopg2 doesn't support "provider" as column name trick — use explicit columns
-        cur.execute(
-            f"SELECT username FROM users WHERE provider = {PH} AND provider_sub = {PH}",
-            (provider, sub),
-        )
-        row = cur.fetchone()
-        if row:
-            return row["username"] if isinstance(row, dict) else row[0]
-
-        # Try to link by email
-        cur.execute(f"SELECT username FROM users WHERE email = {PH}", (email,))
-        row = cur.fetchone()
-        if row:
-            username = row["username"] if isinstance(row, dict) else row[0]
-            cur.execute(
-                f"UPDATE users SET provider = {PH}, provider_sub = {PH} WHERE username = {PH}",
-                (provider, sub, username),
-            )
-            conn.commit()
-            return username
-
-        # Create new OAuth user
-        username = email
-        now = datetime.now(timezone.utc).isoformat()
-        cur.execute(
-            "INSERT INTO users "
-            f"(username, email, display_name, role, is_active, created_at) "
-            f"VALUES ({PH}, {PH}, {PH}, {PH}, {PH}, {PH})",
-            (username, email, name, "standard", 1, now),
-        )
-        # Store provider info — columns added via migration if missing
-        try:
-            cur.execute(
-                f"UPDATE users SET provider = {PH}, provider_sub = {PH} WHERE username = {PH}",
-                (provider, sub, username),
-            )
-        except Exception:
-            pass
-        conn.commit()
-        return username
-    finally:
-        close_db(conn)
 
 
 def get_user_role(username: str) -> str:

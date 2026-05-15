@@ -40,7 +40,7 @@ No database is used. All information is stored as files in the data directory. T
 
 There are two ways to access the platform:
 
-**Google Sign-In** — the access method for registered users. No need to manage passwords in the system.
+**Email/password** — the access method for registered users. Accounts are created via the registration flow.
 
 **Guest access** — allows using the platform without an account. Guest access has limited permissions.
 

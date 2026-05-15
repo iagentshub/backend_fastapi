@@ -7,7 +7,6 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from app.auth.auth import ensure_admin_user
-from app.auth.login_google import router as google_router
 from app.config.cors import CORS_ORIGINS
 from app.api.routes import auth, connections, agents, skills, memory, settings, accounts, chats, knowledge
 from app.api.routes.auth import admin_router
@@ -34,7 +33,6 @@ def create_app() -> FastAPI:
 
     app.include_router(auth.router)
     app.include_router(admin_router)
-    app.include_router(google_router)
     app.include_router(connections.router)
     app.include_router(agents.router)
     app.include_router(skills.router)
