@@ -17,6 +17,8 @@ from __future__ import annotations
 import base64
 import hashlib
 
+from app.utils import flog
+
 _PREFIX = "enc:"
 _SALT = b"iagentshub-api-keys-v1"
 _ITERATIONS = 100_000
@@ -48,5 +50,6 @@ def decrypt(value: str) -> str:
         return value
     try:
         return _get_fernet().decrypt(value[len(_PREFIX):].encode("utf-8")).decode("utf-8")
-    except Exception:
+    except Exception as exc:
+        flog.warning(f"[crypto] Fallo al descifrar API key: {exc}")
         return value

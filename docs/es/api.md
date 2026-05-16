@@ -64,6 +64,21 @@ Todos los endpoints de admin requieren el rol `admin`.
 |---|---|---|
 | `GET` | `/api/admin/stats` | Contadores agregados: usuarios, agentes, conexiones, conocimiento y tokens totales |
 
+### Logs
+
+| Método | Endpoint | Auth | Descripción |
+|---|---|---|---|
+| `GET` | `/api/admin/logs` | Admin | Lista de fechas disponibles (`["YYYYMMDD", …]`), orden descendente |
+| `GET` | `/api/admin/logs/summary` | Admin | Resumen por fichero: fecha, tamaño, líneas, errores y warnings |
+| `GET` | `/api/admin/logs/{date}` | Admin | Contenido completo del fichero `{date}.log` como texto plano |
+| `POST` | `/api/admin/logs/client` | Usuario | Recibe una entrada de log desde el frontend y la escribe en el fichero del día |
+
+**`POST /api/admin/logs/client`** — cuerpo:
+```json
+{ "level": "INFO", "message": "texto del mensaje" }
+```
+Niveles válidos: `DEBUG`, `INFO`, `OK`, `WARNING`, `ERROR`. La entrada se escribe con la etiqueta `[frontend]` en el fichero de log del día.
+
 ---
 
 ## Agentes

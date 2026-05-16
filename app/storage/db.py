@@ -6,6 +6,8 @@ IS_PG=True   → psycopg2 ThreadedConnectionPool, path argument ignored.
 from __future__ import annotations
 
 import os
+
+from app.utils import flog
 import sqlite3
 import threading
 from pathlib import Path
@@ -214,8 +216,8 @@ def _migrate_sqlite(conn: sqlite3.Connection) -> None:
             try:
                 conn.execute(f"ALTER TABLE users ADD COLUMN {col} {definition}")
                 conn.commit()
-            except Exception:
-                pass
+            except Exception as exc:
+                flog.warning(f"[db] No se pudo añadir columna {col}: {exc}")
 
 
 def _migrate_users_json_sqlite(conn: sqlite3.Connection) -> None:
@@ -265,8 +267,8 @@ def _migrate_users_json_sqlite(conn: sqlite3.Connection) -> None:
             )
         conn.commit()
         users_json.rename(users_json.with_suffix(".migrated"))
-    except Exception:
-        pass
+    except Exception as exc:
+        flog.warning(f"[db] Importación users.json (SQLite) fallida: {exc}")
 
 
 def _open_sqlite(path: Path) -> sqlite3.Connection:
@@ -376,8 +378,8 @@ def _migrate_users_json_pg(conn: Any) -> None:
                 )
         conn.commit()
         users_json.rename(users_json.with_suffix(".migrated"))
-    except Exception:
-        pass
+    except Exception as exc:
+        flog.warning(f"[db] Importación users.json (PG) fallida: {exc}")
 
 
 def _open_pg() -> Any:
@@ -409,6 +411,6 @@ def close_db(conn: Any) -> None:
     if IS_PG and _pg_pool is not None:
         try:
             _pg_pool.putconn(conn)
-        except Exception:
-            pass
+        except Exception as exc:
+            flog.debug(f"[db] Error al liberar conexión PG al pool: {exc}")
     # SQLite: singleton is kept alive — nothing to do

@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+
+from app.utils import flog
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -29,7 +31,8 @@ def _get_prefs(username: str) -> dict:
         return {}
     try:
         return json.loads(row["preferences"])
-    except Exception:
+    except Exception as exc:
+        flog.warning(f"[settings] Preferencias corruptas para {username}: {exc}")
         return {}
 
 

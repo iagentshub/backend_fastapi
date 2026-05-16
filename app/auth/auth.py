@@ -2,6 +2,9 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
+
+from app.utils import flog
 import os
 from datetime import datetime, timedelta, timezone
 from typing import Optional
@@ -122,6 +125,7 @@ def register_user(username: str, password: str, email: str = "") -> None:
                 (username, email, hash_password(password), "standard", 1, now),
             )
         conn.commit()
+        flog.ok(f"Nuevo usuario: {email}")
     finally:
         close_db(conn)
 
@@ -165,6 +169,7 @@ def register_user_email(
             ),
         )
         conn.commit()
+        flog.ok(f"Nuevo usuario: {email}")
         return username, token
     finally:
         close_db(conn)
@@ -298,75 +303,92 @@ def decode_token(token: str) -> Optional[str]:
 
 
 def ensure_admin_user() -> None:
-    """Guarantee that at least one admin user exists.
+    """Garantiza que existe al menos un admin con el email de GAIA_ADMIN_EMAIL.
 
-    Priority:
-    1. If GAIA_ADMIN_EMAIL matches an existing user → promote them to admin (no password change unless reset mode).
-    2. If no admin exists → create one with GAIA_ADMIN_EMAIL.
-    3. If an admin already exists and GAIA_ADMIN_RESET=true → reset their password.
+    Lógica:
+    1. Si GAIA_ADMIN_EMAIL ya tiene cuenta → promoverla a admin si no lo es.
+       Con GAIA_ADMIN_RESET=true también resetea su contraseña.
+    2. Si GAIA_ADMIN_EMAIL no tiene cuenta → crearla como admin.
+    3. Si no se puede hacer nada con GAIA_ADMIN_EMAIL y ya hay otro admin
+       sin reset_mode → no tocar nada.
     """
-    import logging
-    log = logging.getLogger("gaia.admin")
-
     reset_mode = os.environ.get("GAIA_ADMIN_RESET", "").lower() in ("1", "true", "yes")
     target_email = os.environ.get("GAIA_ADMIN_EMAIL", "admin@localhost")
+
+    # If .admin_pass doesn't exist yet, force a one-time reset so gaia.sh can always display it
+    data_dir = os.environ.get("GAIA_DATA_DIR", "").strip()
+    _pass_file = Path(data_dir) / ".admin_pass" if data_dir else None
+    if not reset_mode and _pass_file and not _pass_file.exists():
+        reset_mode = True
 
     conn = open_db(DB_FILE)
     try:
         cur = conn.cursor()
 
-        # Check if target email already has an account
         cur.execute(f"SELECT username, role FROM users WHERE email = {PH}", (target_email,))
-        target_row = cur.fetchone()
-        target_user = dict(target_row) if target_row else None
+        row = cur.fetchone()
+        target = dict(row) if row else None
 
-        if target_user and target_user.get("role") != "admin":
-            # Promote existing user to admin
-            cur.execute(f"UPDATE users SET role = {PH} WHERE email = {PH}", ("admin", target_email))
-            conn.commit()
-            log.warning("=" * 60)
-            log.warning(" iAgents Hub — %s promovido a administrador", target_email)
-            log.warning("=" * 60)
-            return
+        if target:
+            if target["role"] != "admin":
+                cur.execute(f"UPDATE users SET role = {PH} WHERE email = {PH}", ("admin", target_email))
+                conn.commit()
+                if not reset_mode:
+                    sep = "=" * 60
+                    flog.warning(sep)
+                    flog.warning(f" iAgents Hub — {target_email} promovido a administrador")
+                    flog.warning(sep)
+                    return
 
-        # Find any existing admin
-        cur.execute(f"SELECT username FROM users WHERE role = {PH} LIMIT 1", ("admin",))
-        existing = cur.fetchone()
+            if not reset_mode:
+                return
 
-        if existing and not reset_mode:
-            return
-
-        password = secrets.token_urlsafe(12)
-        now = datetime.now(timezone.utc).isoformat()
-        log_email = target_email
-
-        if existing:
-            # Reset password of existing admin
-            admin_username = existing["username"] if isinstance(existing, dict) else existing[0]
+            # reset_mode: cambiar contraseña de la cuenta con target_email
+            password = secrets.token_urlsafe(12)
             cur.execute(
-                f"UPDATE users SET password_hash = {PH} WHERE username = {PH}",
-                (hash_password(password), admin_username),
+                f"UPDATE users SET password_hash = {PH} WHERE email = {PH}",
+                (hash_password(password), target_email),
             )
-            log_email = admin_username
+            conn.commit()
+            action = "contraseña reseteada"
         else:
+            # No hay cuenta con ese email
+            cur.execute(f"SELECT username FROM users WHERE role = {PH} LIMIT 1", ("admin",))
+            existing = cur.fetchone()
+            if existing and not reset_mode:
+                return
+
+            password = secrets.token_urlsafe(12)
+            now = datetime.now(timezone.utc).isoformat()
             cur.execute(
                 "INSERT INTO users "
                 "(username, email, password_hash, role, is_active, is_verified, created_at) "
                 f"VALUES ({PH},{PH},{PH},{PH},{PH},{PH},{PH})",
                 (target_email, target_email, hash_password(password), "admin", 1, 1, now),
             )
-        conn.commit()
+            conn.commit()
+            action = "cuenta creada"
+
     finally:
         close_db(conn)
 
+    # Persist plaintext password so gaia.sh can always display it
+    data_dir = os.environ.get("GAIA_DATA_DIR", "").strip()
+    if data_dir:
+        try:
+            p = Path(data_dir) / ".admin_pass"
+            p.write_text(password, encoding="utf-8")
+            p.chmod(0o600)
+        except OSError:
+            pass
+
     sep = "=" * 60
-    action = "contraseña reseteada" if reset_mode and existing else "cuenta creada"
-    log.warning(sep)
-    log.warning(" iAgents Hub — Administrador (%s)", action)
-    log.warning(" Email:      %s", log_email)
-    log.warning(" Contraseña: %s", password)
-    log.warning(" Accede a /login/ y cambia la contraseña desde /profile/")
-    log.warning(sep)
+    flog.warning(sep)
+    flog.warning(f" iAgents Hub — Administrador ({action})")
+    flog.warning(f" Email:      {target_email}")
+    flog.warning(f" Contraseña: {password}")
+    flog.warning(" Accede a /login/ y cambia la contraseña desde /profile/")
+    flog.warning(sep)
 
 
 # ── Compatibility shim ─────────────────────────────────────────────────────────

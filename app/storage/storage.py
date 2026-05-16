@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+
+from app.utils import flog
 import re
 import shutil
 from datetime import datetime, timezone
@@ -60,8 +62,8 @@ class ConnectionStorage:
                 for item in items:
                     self._upsert_with_conn(conn, item)
                 old.rename(old.with_suffix(".migrated"))
-            except Exception:
-                pass
+            except Exception as exc:
+                flog.warning(f"[storage] Migración de connections.json fallida: {exc}")
         finally:
             self._close_db(conn)
 
@@ -279,7 +281,8 @@ class AgentStorage:
                     a = json.loads(p.read_text(encoding="utf-8"))
                     a["scope"] = s
                     items.append(self._summary(a))
-                except Exception:
+                except Exception as exc:
+                    flog.warning(f"[storage] Agente corrupto en {p}: {exc}")
                     continue
         return items
 

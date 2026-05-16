@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import json
+
+from app.utils import flog
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
@@ -49,8 +51,8 @@ class AccountStorage:
                     d["provider"] = provider
                     self._upsert_with_conn(conn, "admin", provider, d)
                     p.rename(p.with_suffix(".migrated"))
-                except Exception:
-                    pass
+                except Exception as exc:
+                    flog.warning(f"[accounts] Migración de {p.name} fallida: {exc}")
         finally:
             close_db(conn)
 
