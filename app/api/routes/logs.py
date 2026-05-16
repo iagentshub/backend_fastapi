@@ -72,7 +72,7 @@ async def logs_summary(_: str = Depends(require_admin)) -> List[Dict]:
     for p in sorted(d.glob("*.log"), reverse=True):
         try:
             text = p.read_text(encoding="utf-8")
-            lines = [l for l in text.splitlines() if l.strip()]
+            lines = [ln for ln in text.splitlines() if ln.strip()]
             counts = _count_levels(lines)
             result.append({
                 "date": p.stem,

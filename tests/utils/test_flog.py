@@ -154,7 +154,7 @@ def test_args_se_sustituyen(captured):
 def test_multiples_llamadas_acumulan(captured):
     info("linea 1")
     info("linea 2")
-    lines = [l for l in captured.getvalue().strip().split("\n") if l]
+    lines = [ln for ln in captured.getvalue().strip().split("\n") if ln]
     assert len(lines) == 2
     assert "linea 1" in lines[0]
     assert "linea 2" in lines[1]
