@@ -69,9 +69,27 @@ Todos los endpoints de admin requieren el rol `admin`.
 | Método | Endpoint | Auth | Descripción |
 |---|---|---|---|
 | `GET` | `/api/admin/logs` | Admin | Lista de fechas disponibles (`["YYYYMMDD", …]`), orden descendente |
-| `GET` | `/api/admin/logs/summary` | Admin | Resumen por fichero: fecha, tamaño, líneas, errores y warnings |
+| `GET` | `/api/admin/logs/summary` | Admin | Resumen por fichero con desglose BE/FE — ver estructura más abajo |
 | `GET` | `/api/admin/logs/{date}` | Admin | Contenido completo del fichero `{date}.log` como texto plano |
 | `POST` | `/api/admin/logs/client` | Usuario | Recibe una entrada de log desde el frontend y la escribe en el fichero del día |
+
+**`GET /api/admin/logs/summary`** — respuesta (array):
+```json
+[
+  {
+    "date": "20260516",
+    "size_bytes": 4096,
+    "lines": 120,
+    "warnings": 3,
+    "errors": 1,
+    "be_warnings": 2,
+    "be_errors": 1,
+    "fe_warnings": 1,
+    "fe_errors": 0
+  }
+]
+```
+Los campos `be_*` / `fe_*` desglosan los totales por origen: backend (líneas sin `[frontend]`) y frontend (líneas con `[frontend]`).
 
 **`POST /api/admin/logs/client`** — cuerpo:
 ```json
