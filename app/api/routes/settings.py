@@ -16,9 +16,14 @@ from app.storage.db import open_db, PH
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 _PUBLIC_KEYS = {"theme", "language"}
-_DEFAULTS = {"theme": "noir", "language": "es"}
+_DEFAULTS = {"theme": "dark-red", "language": "es"}
 
-VALID_THEMES = {"noir", "marble", "ember", "ocean", "forest", "dusk"}
+VALID_THEMES = {
+    "dark-red", "dark-blue", "dark-orange", "dark-purple",
+    "light-red", "light-blue", "light-orange", "light-purple",
+    # legacy names kept for backward compatibility
+    "noir", "marble", "ember", "ocean", "forest", "dusk",
+}
 VALID_LANGUAGES = {"es", "en"}
 
 
