@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response
 
 from app.auth.auth import (
+    admin_set_password,
     admin_update_user,
     create_token,
     decode_token,
@@ -290,9 +291,14 @@ async def admin_patch_user(
         if body["role"] not in ("admin", "standard"):
             raise HTTPException(status_code=400, detail="Rol inválido")
         updates["role"] = body["role"]
-    if not updates:
+    new_pw = str(body.get("password") or "").strip()
+    if new_pw and len(new_pw) < 4:
+        raise HTTPException(status_code=400, detail="La contraseña debe tener al menos 4 caracteres")
+    if not updates and not new_pw:
         raise HTTPException(status_code=400, detail="Sin cambios")
-    if not admin_update_user(username, **updates):
+    if updates and not admin_update_user(username, **updates):
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    if new_pw and not admin_set_password(username, new_pw):
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
     return {"ok": True}
 
@@ -379,6 +385,34 @@ async def admin_list_agents(_: str = Depends(require_admin)) -> List[Dict[str, A
             owner = conn_owner_map.get(a["connection_id"])
         a["owner_email"] = email_map.get(owner, owner) if owner else None
     return agents
+
+
+@admin_router.put("/agents/{agent_id}")
+async def admin_update_agent(
+    agent_id: str,
+    request: Request,
+    _: str = Depends(require_admin),
+) -> Dict[str, Any]:
+    import re as _re
+    import shutil
+    from app.config.data import AGENTS_DIR
+    from app.storage.storage import AgentStorage
+    store = AgentStorage(AGENTS_DIR)
+    agent = store.get(agent_id, scope="private")
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agente no encontrado")
+    payload = await request.json()
+    protected = {"id", "owner_id", "created_at", "scope"}
+    updated = {**agent, **{k: v for k, v in payload.items() if k not in protected}}
+    new_name = str(updated.get("name") or "").strip()
+    if not new_name:
+        raise HTTPException(status_code=400, detail="El nombre es obligatorio")
+    new_id = _re.sub(r"[^a-z0-9_\-]", "-", new_name.lower()).strip("-")
+    if new_id != agent_id:
+        old_dir = AGENTS_DIR / "private" / _re.sub(r"[^a-z0-9_\-]", "-", agent_id.lower()).strip("-")
+        if old_dir.exists():
+            shutil.rmtree(old_dir)
+    return store.save(updated, "private", owner_id=agent.get("owner_id"))
 
 
 @admin_router.delete("/agents/{agent_id}")

@@ -178,3 +178,23 @@ def test_admin_stats(admin_client):
     assert r.status_code == 200
     stats = r.json()
     assert "users" in stats or isinstance(stats, dict)
+
+
+# ── Admin PATCH password ───────────────────────────────────────────────────────
+
+def test_admin_patch_password(admin_client):
+    _register("pw_target")
+    r = admin_client.patch("/api/admin/users/pw_target", json={"password": "newpass123"})
+    assert r.status_code == 200
+
+
+def test_admin_patch_short_password_rejected(admin_client):
+    _register("pw_short")
+    r = admin_client.patch("/api/admin/users/pw_short", json={"password": "ab"})
+    assert r.status_code == 400
+
+
+def test_admin_patch_empty_password_no_change(admin_client):
+    _register("pw_empty")
+    r = admin_client.patch("/api/admin/users/pw_empty", json={"password": ""})
+    assert r.status_code == 400

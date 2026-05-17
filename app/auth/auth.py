@@ -281,6 +281,24 @@ def admin_update_user(username: str, **fields) -> bool:
         close_db(conn)
 
 
+def admin_set_password(username: str, new_password: str) -> bool:
+    """Admin-only: set a new password for another user. Returns False if not found."""
+    conn = open_db(DB_FILE)
+    try:
+        cur = conn.cursor()
+        cur.execute(f"SELECT 1 FROM users WHERE username = {PH}", (username,))
+        if not cur.fetchone():
+            return False
+        cur.execute(
+            f"UPDATE users SET password_hash = {PH} WHERE username = {PH}",
+            (hash_password(new_password), username),
+        )
+        conn.commit()
+        return True
+    finally:
+        close_db(conn)
+
+
 # ── JWT ────────────────────────────────────────────────────────────────────────
 
 
