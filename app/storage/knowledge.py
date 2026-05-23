@@ -115,7 +115,7 @@ class KnowledgeStorage:
         self, owner_id: Optional[str], type: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         query = (
-            "SELECT id, owner_id, type, title, source, char_count, created_at, updated_at "
+            "SELECT id, owner_id, type, title, source, char_count, folder_id, created_at, updated_at "
             "FROM knowledge_items"
         )
         params: list = []
@@ -164,6 +164,7 @@ class KnowledgeStorage:
         source: str,
         content: str,
         owner_id: str,
+        folder_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         now = datetime.now(timezone.utc).isoformat()
         item_id = uuid.uuid4().hex[:16]
@@ -173,14 +174,33 @@ class KnowledgeStorage:
                 cur = conn.cursor()
                 cur.execute(
                     f"INSERT INTO knowledge_items "
-                    f"(id, owner_id, type, title, source, content, char_count, created_at, updated_at) "
-                    f"VALUES ({PH}, {PH}, {PH}, {PH}, {PH}, {PH}, {PH}, {PH}, {PH})",
-                    (item_id, owner_id, type, title, source, content, len(content), now, now),
+                    f"(id, owner_id, type, title, source, content, char_count, folder_id, created_at, updated_at) "
+                    f"VALUES ({PH}, {PH}, {PH}, {PH}, {PH}, {PH}, {PH}, {PH}, {PH}, {PH})",
+                    (item_id, owner_id, type, title, source, content, len(content), folder_id, now, now),
                 )
                 conn.commit()
             finally:
                 close_db(conn)
         return self.get(item_id)  # type: ignore[return-value]
+
+    def move(self, item_id: str, folder_id: Optional[str], owner_id: Optional[str]) -> bool:
+        conn = self._conn()
+        try:
+            cur = conn.cursor()
+            if owner_id is not None:
+                cur.execute(
+                    f"UPDATE knowledge_items SET folder_id = {PH} WHERE id = {PH} AND owner_id = {PH}",
+                    (folder_id, item_id, owner_id),
+                )
+            else:
+                cur.execute(
+                    f"UPDATE knowledge_items SET folder_id = {PH} WHERE id = {PH}",
+                    (folder_id, item_id),
+                )
+            conn.commit()
+            return cur.rowcount > 0
+        finally:
+            close_db(conn)
 
     def delete(self, item_id: str, owner_id: Optional[str]) -> bool:
         conn = self._conn()
@@ -195,6 +215,98 @@ class KnowledgeStorage:
                 cur.execute(
                     f"DELETE FROM knowledge_items WHERE id = {PH}", (item_id,)
                 )
+            conn.commit()
+            return cur.rowcount > 0
+        finally:
+            close_db(conn)
+
+
+class FolderStorage:
+    def __init__(self, db_path: Path) -> None:
+        self._db_path = db_path
+        self._lock = threading.Lock()
+
+    def _conn(self):
+        return open_db(self._db_path)
+
+    def list(self, owner_id: str, section: Optional[str] = None) -> List[Dict[str, Any]]:
+        params: list = [owner_id]
+        query = f"SELECT id, owner_id, section, name, created_at FROM knowledge_folders WHERE owner_id = {PH}"
+        if section:
+            query += f" AND section = {PH}"
+            params.append(section)
+        query += " ORDER BY name ASC"
+        conn = self._conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(query, params)
+            return [dict(r) for r in cur.fetchall()]
+        finally:
+            close_db(conn)
+
+    def get(self, folder_id: str, owner_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        conn = self._conn()
+        try:
+            cur = conn.cursor()
+            if owner_id is not None:
+                cur.execute(
+                    f"SELECT * FROM knowledge_folders WHERE id = {PH} AND owner_id = {PH}",
+                    (folder_id, owner_id),
+                )
+            else:
+                cur.execute(
+                    f"SELECT * FROM knowledge_folders WHERE id = {PH}", (folder_id,)
+                )
+            row = cur.fetchone()
+            return dict(row) if row else None
+        finally:
+            close_db(conn)
+
+    def create(self, owner_id: str, section: str, name: str) -> Dict[str, Any]:
+        now = datetime.now(timezone.utc).isoformat()
+        folder_id = uuid.uuid4().hex[:16]
+        with self._lock:
+            conn = self._conn()
+            try:
+                cur = conn.cursor()
+                cur.execute(
+                    f"INSERT INTO knowledge_folders (id, owner_id, section, name, created_at) "
+                    f"VALUES ({PH}, {PH}, {PH}, {PH}, {PH})",
+                    (folder_id, owner_id, section, name.strip(), now),
+                )
+                conn.commit()
+            finally:
+                close_db(conn)
+        return self.get(folder_id)  # type: ignore[return-value]
+
+    def rename(self, folder_id: str, owner_id: str, name: str) -> Optional[Dict[str, Any]]:
+        conn = self._conn()
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                f"UPDATE knowledge_folders SET name = {PH} WHERE id = {PH} AND owner_id = {PH}",
+                (name.strip(), folder_id, owner_id),
+            )
+            conn.commit()
+            if cur.rowcount == 0:
+                return None
+        finally:
+            close_db(conn)
+        return self.get(folder_id)
+
+    def delete(self, folder_id: str, owner_id: str) -> bool:
+        conn = self._conn()
+        try:
+            cur = conn.cursor()
+            # Move items to root before deleting folder
+            cur.execute(
+                f"UPDATE knowledge_items SET folder_id = NULL WHERE folder_id = {PH} AND owner_id = {PH}",
+                (folder_id, owner_id),
+            )
+            cur.execute(
+                f"DELETE FROM knowledge_folders WHERE id = {PH} AND owner_id = {PH}",
+                (folder_id, owner_id),
+            )
             conn.commit()
             return cur.rowcount > 0
         finally:

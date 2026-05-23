@@ -1,21 +1,28 @@
 """Rutas de skills."""
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel
 
 from app.api.routes.auth import require_auth
-from app.config.data import SKILLS_DIR
+from app.config.data import DB_FILE, SKILLS_DIR
 from app.storage.guest import get_session, is_guest
+from app.storage.knowledge import FolderStorage
 from app.storage.storage import SkillStorage
 
 router = APIRouter(prefix="/api/skills", tags=["skills"])
 
 _storage = SkillStorage(SKILLS_DIR)
+_folders = FolderStorage(DB_FILE)
 
 _VALID_SCOPES = {"public", "private", "all"}
+
+
+class SkillFolderMove(BaseModel):
+    folder_id: Optional[str] = None
 
 
 def _check_scope(scope: str) -> None:
@@ -70,6 +77,19 @@ async def save_skill(
         return _storage.save(scope, payload)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
+
+
+@router.patch("/private/{skill_id}/folder")
+async def move_skill_folder(
+    skill_id: str,
+    body: SkillFolderMove,
+    user: str = Depends(require_auth),
+) -> Dict[str, Any]:
+    if is_guest(user):
+        raise HTTPException(status_code=403, detail="Los invitados no pueden mover skills")
+    if not _storage.move_folder(skill_id, body.folder_id):
+        raise HTTPException(status_code=404, detail="Skill no encontrada")
+    return {"ok": True}
 
 
 @router.delete("/{scope}/{skill_id}")

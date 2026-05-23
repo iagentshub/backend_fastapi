@@ -1,30 +1,33 @@
-"""Rutas de conocimiento: URLs y documentos adjuntables a agentes."""
+"""Rutas de conocimiento: URLs, documentos y carpetas."""
 from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from pydantic import BaseModel
 
 from app.api.routes.auth import require_auth
 from app.auth.auth import get_user_role
 from app.config.data import DB_FILE
 from app.storage.guest import get_session, is_guest
-from app.storage.knowledge import KnowledgeStorage, extract_document_text, fetch_url_text
+from app.storage.knowledge import FolderStorage, KnowledgeStorage, extract_document_text, fetch_url_text
 
 router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
 
 _storage = KnowledgeStorage(DB_FILE)
+_folders = FolderStorage(DB_FILE)
 
 _ALLOWED_EXTS = {".txt", ".md", ".pdf"}
+_VALID_SECTIONS = {"document", "url", "skill"}
 
 
 def _owner(user: str) -> Optional[str]:
     return None if get_user_role(user) == "admin" else user
 
 
-def _guest_item(*, type: str, title: str, source: str, content: str) -> Dict[str, Any]:
+def _guest_item(*, type: str, title: str, source: str, content: str, folder_id: Optional[str] = None) -> Dict[str, Any]:
     now = datetime.now(timezone.utc).isoformat()
     return {
         "id": uuid4().hex[:16],
@@ -33,10 +36,78 @@ def _guest_item(*, type: str, title: str, source: str, content: str) -> Dict[str
         "source": source,
         "content": content,
         "char_count": len(content),
+        "folder_id": folder_id,
         "created_at": now,
         "updated_at": now,
     }
 
+
+# ── Folder endpoints ───────────────────────────────────────────────────────────
+
+class FolderCreate(BaseModel):
+    section: str
+    name: str
+
+
+class FolderRename(BaseModel):
+    name: str
+
+
+@router.get("/folders", response_model=List[Dict[str, Any]])
+async def list_folders(
+    section: Optional[str] = None,
+    user: str = Depends(require_auth),
+) -> List[Dict[str, Any]]:
+    if is_guest(user):
+        return []
+    return _folders.list(_owner(user) or user, section)
+
+
+@router.post("/folders", response_model=Dict[str, Any])
+async def create_folder(
+    body: FolderCreate,
+    user: str = Depends(require_auth),
+) -> Dict[str, Any]:
+    if is_guest(user):
+        raise HTTPException(status_code=403, detail="Los invitados no pueden crear carpetas")
+    if body.section not in _VALID_SECTIONS:
+        raise HTTPException(status_code=422, detail=f"Sección no válida: {body.section}")
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="El nombre no puede estar vacío")
+    return _folders.create(_owner(user) or user, body.section, name)
+
+
+@router.patch("/folders/{folder_id}", response_model=Dict[str, Any])
+async def rename_folder(
+    folder_id: str,
+    body: FolderRename,
+    user: str = Depends(require_auth),
+) -> Dict[str, Any]:
+    if is_guest(user):
+        raise HTTPException(status_code=403, detail="Los invitados no pueden renombrar carpetas")
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(status_code=422, detail="El nombre no puede estar vacío")
+    result = _folders.rename(folder_id, _owner(user) or user, name)
+    if result is None:
+        raise HTTPException(status_code=404, detail="Carpeta no encontrada")
+    return result
+
+
+@router.delete("/folders/{folder_id}")
+async def delete_folder(
+    folder_id: str,
+    user: str = Depends(require_auth),
+) -> Dict[str, bool]:
+    if is_guest(user):
+        raise HTTPException(status_code=403, detail="Los invitados no pueden eliminar carpetas")
+    if not _folders.delete(folder_id, _owner(user) or user):
+        raise HTTPException(status_code=404, detail="Carpeta no encontrada")
+    return {"ok": True}
+
+
+# ── Item endpoints ─────────────────────────────────────────────────────────────
 
 @router.get("", response_model=List[Dict[str, Any]])
 async def list_items(
@@ -49,6 +120,23 @@ async def list_items(
     return _storage.list(_owner(user), type)
 
 
+class ItemMove(BaseModel):
+    folder_id: Optional[str] = None
+
+
+@router.patch("/{item_id}")
+async def move_item(
+    item_id: str,
+    body: ItemMove,
+    user: str = Depends(require_auth),
+) -> Dict[str, bool]:
+    if is_guest(user):
+        raise HTTPException(status_code=403, detail="Los invitados no pueden mover items")
+    if not _storage.move(item_id, body.folder_id, _owner(user)):
+        raise HTTPException(status_code=404, detail="Item no encontrado")
+    return {"ok": True}
+
+
 @router.post("/url")
 async def add_url(
     request: Request,
@@ -57,6 +145,7 @@ async def add_url(
     body = await request.json()
     url = str(body.get("url") or "").strip()
     title = str(body.get("title") or "").strip() or url
+    folder_id: Optional[str] = body.get("folder_id") or None
     if not url:
         raise HTTPException(status_code=422, detail="URL requerida")
     try:
@@ -70,12 +159,13 @@ async def add_url(
         get_session(user).knowledge.append(item)
         return item
     owner = _owner(user) or "admin"
-    return _storage.save(type="url", title=title, source=url, content=content, owner_id=owner)
+    return _storage.save(type="url", title=title, source=url, content=content, owner_id=owner, folder_id=folder_id)
 
 
 @router.post("/document")
 async def upload_document(
     file: UploadFile = File(...),
+    folder_id: Optional[str] = Form(None),
     user: str = Depends(require_auth),
 ) -> Dict[str, Any]:
     filename = file.filename or "documento"
@@ -105,6 +195,7 @@ async def upload_document(
         source=filename,
         content=content,
         owner_id=owner,
+        folder_id=folder_id or None,
     )
 
 

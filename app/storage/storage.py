@@ -401,6 +401,7 @@ class SkillStorage:
                 try:
                     skill = self._read(p)
                     skill["scope"] = s
+                    skill.setdefault("folder_id", None)
                     items.append({k: v for k, v in skill.items() if k != "content"})
                 except Exception:
                     continue
@@ -444,7 +445,8 @@ class SkillStorage:
         skill_id = _slug(name)
         d = self.root_dir / scope / skill_id
         d.mkdir(exist_ok=True)
-        data = {
+        folder_id = payload.get("folder_id") or None
+        data: Dict[str, Any] = {
             "id": skill_id,
             "name": name,
             "description": str(payload.get("description") or "").strip(),
@@ -452,10 +454,27 @@ class SkillStorage:
             "category": str(payload.get("category") or "").strip() or None,
             "content": str(payload.get("content") or "").strip(),
         }
+        if folder_id:
+            data["folder_id"] = folder_id
         self._write(d / "SKILL.md", data)
         result = self._read(d / "SKILL.md")
         result["scope"] = scope
+        result.setdefault("folder_id", None)
         return result
+
+    def move_folder(self, skill_id: str, folder_id: Optional[str]) -> bool:
+        p = self._safe_path("private", skill_id, "SKILL.md")
+        if not p.exists():
+            p = self._safe_path("private", _slug(skill_id), "SKILL.md")
+        if not p.exists():
+            return False
+        data = self._read(p)
+        if folder_id:
+            data["folder_id"] = folder_id
+        else:
+            data.pop("folder_id", None)
+        self._write(p, data)
+        return True
 
     def delete(self, scope: str, skill_id: str) -> bool:
         if scope == "public":

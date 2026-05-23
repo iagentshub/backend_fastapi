@@ -67,11 +67,21 @@ CREATE TABLE IF NOT EXISTS knowledge_items (
     source     TEXT NOT NULL,
     content    TEXT NOT NULL,
     char_count INTEGER NOT NULL DEFAULT 0,
+    folder_id  TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_knowledge_owner
     ON knowledge_items(owner_id, type, created_at DESC);
+CREATE TABLE IF NOT EXISTS knowledge_folders (
+    id         TEXT PRIMARY KEY,
+    owner_id   TEXT NOT NULL,
+    section    TEXT NOT NULL,
+    name       TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_kf_owner
+    ON knowledge_folders(owner_id, section);
 CREATE TABLE IF NOT EXISTS users (
     username           TEXT PRIMARY KEY,
     email              TEXT UNIQUE NOT NULL,
@@ -137,11 +147,21 @@ CREATE TABLE IF NOT EXISTS knowledge_items (
     source     TEXT NOT NULL,
     content    TEXT NOT NULL,
     char_count INTEGER NOT NULL DEFAULT 0,
+    folder_id  TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_knowledge_owner
     ON knowledge_items(owner_id, type, created_at DESC);
+CREATE TABLE IF NOT EXISTS knowledge_folders (
+    id         TEXT PRIMARY KEY,
+    owner_id   TEXT NOT NULL,
+    section    TEXT NOT NULL,
+    name       TEXT NOT NULL,
+    created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_kf_owner
+    ON knowledge_folders(owner_id, section);
 CREATE TABLE IF NOT EXISTS users (
     username           TEXT PRIMARY KEY,
     email              TEXT UNIQUE NOT NULL,
@@ -197,7 +217,13 @@ def _migrate_sqlite(conn: sqlite3.Connection) -> None:
         """)
         conn.commit()
 
-    # 3. Add users table columns that may be missing in older DBs
+    # 3. Add folder_id to knowledge_items if missing
+    ki_cols = {row[1] for row in conn.execute("PRAGMA table_info(knowledge_items)")}
+    if "folder_id" not in ki_cols:
+        conn.execute("ALTER TABLE knowledge_items ADD COLUMN folder_id TEXT")
+        conn.commit()
+
+    # 4. Add users table columns that may be missing in older DBs
     user_cols = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
     for col, definition in [
         ("birth_date", "TEXT"),
@@ -323,12 +349,22 @@ def _ensure_pg_pool() -> Any:
                     stmt = statement.strip()
                     if stmt:
                         cur.execute(stmt)
+            _migrate_pg(conn)
             _migrate_users_json_pg(conn)
             conn.commit()
         finally:
             pool.putconn(conn)
         _pg_pool = pool
     return _pg_pool
+
+
+def _migrate_pg(conn: Any) -> None:
+    """Incremental migrations for pre-existing PostgreSQL databases."""
+    with conn.cursor() as cur:
+        cur.execute(
+            "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS folder_id TEXT"
+        )
+    conn.commit()
 
 
 def _migrate_users_json_pg(conn: Any) -> None:
