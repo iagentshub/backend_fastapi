@@ -13,11 +13,13 @@ from app.auth.auth import get_user_role
 from app.config.data import DB_FILE
 from app.storage.guest import get_session, is_guest
 from app.storage.knowledge import FolderStorage, KnowledgeStorage, extract_document_text, fetch_url_text
+from app.storage.teams import TeamStorage as _TeamStorage
 
 router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
 
 _storage = KnowledgeStorage(DB_FILE)
 _folders = FolderStorage(DB_FILE)
+_sharing_ts = _TeamStorage(DB_FILE)
 
 _ALLOWED_EXTS = {".txt", ".md", ".pdf"}
 _VALID_SECTIONS = {"document", "url", "skill"}
@@ -117,7 +119,17 @@ async def list_items(
     if is_guest(user):
         items = get_session(user).knowledge
         return [i for i in items if not type or i["type"] == type]
-    return _storage.list(_owner(user), type)
+    items = _storage.list(_owner(user), type)
+    role = get_user_role(user)
+    if role not in ("admin",):
+        shared_ids = set(_sharing_ts.get_user_shared_resource_ids(user, "knowledge"))
+        own_ids = {i["id"] for i in items}
+        for kid in (shared_ids - own_ids):
+            k = _storage.get(kid)
+            if k and (not type or k.get("type") == type):
+                k["_shared"] = True
+                items.append(k)
+    return items
 
 
 class ItemMove(BaseModel):

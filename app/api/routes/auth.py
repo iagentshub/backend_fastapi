@@ -28,6 +28,7 @@ from app.auth.auth import (
     verify_email_token,
     verify_password,
 )
+from app.config.data import DB_FILE as _DB_FILE
 from app.config.session import (
     EMAIL_VERIFY_ENABLED,
     REGISTER_MAX,
@@ -35,6 +36,9 @@ from app.config.session import (
     REGISTRATION_MODE,
     SECURE_COOKIES,
 )
+from app.storage.teams import TeamStorage as _TeamStorage
+
+_teams = _TeamStorage(_DB_FILE)
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -177,6 +181,9 @@ async def me(username: str = Depends(require_auth)) -> Dict[str, Any]:
     payload: Dict[str, Any] = {"username": username, "role": role, "auth_method": auth_method}
     if role == "admin" and WEBMAIL_URL:
         payload["webmail_url"] = WEBMAIL_URL
+    if not is_guest(username):
+        managed = _teams.list_managed_teams(username)
+        payload["manages_teams"] = len(managed) > 0
     return payload
 
 
@@ -327,7 +334,7 @@ async def admin_patch_user(
     if "is_active" in body:
         updates["is_active"] = 1 if body["is_active"] else 0
     if "role" in body:
-        if body["role"] not in ("admin", "standard"):
+        if body["role"] not in ("admin", "gestor", "standard"):
             raise HTTPException(status_code=400, detail="Rol inválido")
         updates["role"] = body["role"]
     new_pw = str(body.get("password") or "").strip()
@@ -508,4 +515,109 @@ async def admin_delete_knowledge(
     from app.storage.knowledge import KnowledgeStorage
     if not KnowledgeStorage(DB_FILE).delete(item_id, owner_id=None):
         raise HTTPException(status_code=404, detail="Elemento no encontrado")
+    return {"ok": True}
+
+
+@admin_router.get("/gestores")
+async def admin_list_gestores(_: str = Depends(require_admin)) -> List[Dict[str, Any]]:
+    users = list_users()
+    gestores = [u for u in users if u.get("role") == "gestor"]
+    for g in gestores:
+        g["managed_teams"] = _teams.list_managed_teams(g["username"])
+    return gestores
+
+
+@admin_router.get("/teams")
+async def admin_list_teams(_: str = Depends(require_admin)) -> List[Dict[str, Any]]:
+    from app.config.data import DB_FILE
+    from app.storage.db import close_db, open_db
+    conn = open_db(DB_FILE)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT t.id, t.name, t.created_by, t.created_at, "
+            "COUNT(DISTINCT tm.username) AS member_count, "
+            "COUNT(DISTINCT rt.resource_id || '|' || rt.resource_type) AS resource_count "
+            "FROM teams t "
+            "LEFT JOIN team_members tm ON t.id = tm.team_id "
+            "LEFT JOIN resource_teams rt ON t.id = rt.team_id "
+            "GROUP BY t.id, t.name, t.created_by, t.created_at "
+            "ORDER BY t.created_at DESC"
+        )
+        rows = cur.fetchall()
+    finally:
+        close_db(conn)
+    return [
+        {
+            "id": r[0], "name": r[1], "created_by": r[2],
+            "created_at": r[3], "member_count": r[4], "resource_count": r[5],
+        }
+        for r in rows
+    ]
+
+
+@admin_router.get("/teams/{team_id}")
+async def admin_get_team(
+    team_id: str, _: str = Depends(require_admin)
+) -> Dict[str, Any]:
+    from app.config.data import AGENTS_DIR, DB_FILE, SKILLS_DIR
+    from app.storage.storage import AgentStorage, SkillStorage
+    from app.storage.db import close_db, open_db
+
+    team = _teams.get_team(team_id)
+    if not team:
+        raise HTTPException(status_code=404, detail="Equipo no encontrado")
+    members = _teams.list_members(team_id)
+
+    # Gather shared resources across all types
+    resources = []
+    for rtype in ("agent", "skill", "connection", "knowledge"):
+        for r in _teams.get_team_shared_resources(team_id, rtype):
+            resources.append(dict(r))
+
+    # Enrich with names where possible
+    _agent_store = AgentStorage(AGENTS_DIR)
+    _skill_store = SkillStorage(SKILLS_DIR)
+    conn = open_db(DB_FILE)
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT id, data FROM connections")
+        import json as _json
+        conn_names = {}
+        for row in cur.fetchall():
+            try:
+                conn_names[row[0]] = _json.loads(row[1] or "{}").get("name", row[0])
+            except Exception:
+                conn_names[row[0]] = row[0]
+        cur.execute("SELECT id, title FROM knowledge_items")
+        know_names = {row[0]: row[1] for row in cur.fetchall()}
+    finally:
+        close_db(conn)
+
+    for r in resources:
+        rid = r["resource_id"]
+        rtype = r["resource_type"]
+        if rtype == "agent":
+            a = _agent_store.get(rid, scope="private") or _agent_store.get(rid, scope="public")
+            r["name"] = a["name"] if a else rid
+        elif rtype == "skill":
+            sk = _skill_store.get_any(rid)
+            r["name"] = sk["name"] if sk else rid
+        elif rtype == "connection":
+            r["name"] = conn_names.get(rid, rid)
+        elif rtype == "knowledge":
+            r["name"] = know_names.get(rid, rid)
+        else:
+            r["name"] = rid
+
+    return {"team": team, "members": members, "resources": resources}
+
+
+@admin_router.delete("/teams/{team_id}")
+async def admin_delete_team(
+    team_id: str, _: str = Depends(require_admin)
+) -> Dict[str, Any]:
+    if not _teams.get_team(team_id):
+        raise HTTPException(status_code=404, detail="Equipo no encontrado")
+    _teams.delete_team(team_id)
     return {"ok": True}

@@ -436,7 +436,15 @@ class SkillStorage:
         skill["scope"] = scope
         return skill
 
-    def save(self, scope: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    def get_any(self, skill_id: str) -> Optional[Dict[str, Any]]:
+        """Fetch a skill from any scope. Used for team-shared access."""
+        for scope in ("public", "private"):
+            result = self.get(scope, skill_id)
+            if result:
+                return result
+        return None
+
+    def save(self, scope: str, payload: Dict[str, Any], owner_id: Optional[str] = None) -> Dict[str, Any]:
         if scope == "public":
             raise ValueError("Las skills públicas son de solo lectura")
         name = str(payload.get("name") or "").strip()
@@ -456,6 +464,8 @@ class SkillStorage:
         }
         if folder_id:
             data["folder_id"] = folder_id
+        if owner_id:
+            data["owner_id"] = owner_id
         self._write(d / "SKILL.md", data)
         result = self._read(d / "SKILL.md")
         result["scope"] = scope

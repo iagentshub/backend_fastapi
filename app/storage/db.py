@@ -103,6 +103,42 @@ CREATE TABLE IF NOT EXISTS users (
     created_at         TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_users_email ON users (email);
+CREATE TABLE IF NOT EXISTS teams (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    created_by  TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    UNIQUE(name, created_by)
+);
+CREATE TABLE IF NOT EXISTS team_members (
+    team_id     TEXT NOT NULL,
+    username    TEXT NOT NULL,
+    is_manager  INTEGER NOT NULL DEFAULT 0,
+    permissions TEXT NOT NULL DEFAULT '{}',
+    joined_at   TEXT NOT NULL,
+    PRIMARY KEY (team_id, username)
+);
+CREATE INDEX IF NOT EXISTS idx_team_members_username ON team_members(username);
+CREATE TABLE IF NOT EXISTS team_invitations (
+    id              TEXT PRIMARY KEY,
+    team_id         TEXT NOT NULL,
+    invited_email   TEXT NOT NULL,
+    invited_by      TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'pending',
+    expires_at      TEXT NOT NULL,
+    created_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_team_inv_email ON team_invitations(invited_email, status);
+CREATE TABLE IF NOT EXISTS resource_teams (
+    resource_type TEXT NOT NULL,
+    resource_id   TEXT NOT NULL,
+    team_id       TEXT NOT NULL,
+    shared_by     TEXT NOT NULL,
+    shared_at     TEXT NOT NULL,
+    PRIMARY KEY (resource_type, resource_id, team_id)
+);
+CREATE INDEX IF NOT EXISTS idx_rt_team     ON resource_teams(team_id, resource_type);
+CREATE INDEX IF NOT EXISTS idx_rt_resource ON resource_teams(resource_type, resource_id);
 """
 
 _SCHEMA_PG = """
@@ -185,6 +221,42 @@ CREATE TABLE IF NOT EXISTS users (
     created_at         TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_users_email ON users (email);
+CREATE TABLE IF NOT EXISTS teams (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    created_by  TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    UNIQUE(name, created_by)
+);
+CREATE TABLE IF NOT EXISTS team_members (
+    team_id     TEXT NOT NULL,
+    username    TEXT NOT NULL,
+    is_manager  SMALLINT NOT NULL DEFAULT 0,
+    permissions TEXT NOT NULL DEFAULT '{}',
+    joined_at   TEXT NOT NULL,
+    PRIMARY KEY (team_id, username)
+);
+CREATE INDEX IF NOT EXISTS idx_team_members_username ON team_members(username);
+CREATE TABLE IF NOT EXISTS team_invitations (
+    id              TEXT PRIMARY KEY,
+    team_id         TEXT NOT NULL,
+    invited_email   TEXT NOT NULL,
+    invited_by      TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'pending',
+    expires_at      TEXT NOT NULL,
+    created_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_team_inv_email ON team_invitations(invited_email, status);
+CREATE TABLE IF NOT EXISTS resource_teams (
+    resource_type TEXT NOT NULL,
+    resource_id   TEXT NOT NULL,
+    team_id       TEXT NOT NULL,
+    shared_by     TEXT NOT NULL,
+    shared_at     TEXT NOT NULL,
+    PRIMARY KEY (resource_type, resource_id, team_id)
+);
+CREATE INDEX IF NOT EXISTS idx_rt_team     ON resource_teams(team_id, resource_type);
+CREATE INDEX IF NOT EXISTS idx_rt_resource ON resource_teams(resource_type, resource_id);
 """
 
 # ── SQLite backend ─────────────────────────────────────────────────────────────
@@ -227,7 +299,39 @@ def _migrate_sqlite(conn: sqlite3.Connection) -> None:
         conn.execute("ALTER TABLE knowledge_items ADD COLUMN folder_id TEXT")
         conn.commit()
 
-    # 4. Add users table columns that may be missing in older DBs
+    # 4. Create team tables if missing (new feature)
+    existing_tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if "teams" not in existing_tables:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS teams (
+                id          TEXT PRIMARY KEY,
+                name        TEXT NOT NULL,
+                created_by  TEXT NOT NULL,
+                created_at  TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS team_members (
+                team_id     TEXT NOT NULL,
+                username    TEXT NOT NULL,
+                is_manager  INTEGER NOT NULL DEFAULT 0,
+                permissions TEXT NOT NULL DEFAULT '{}',
+                joined_at   TEXT NOT NULL,
+                PRIMARY KEY (team_id, username)
+            );
+            CREATE INDEX IF NOT EXISTS idx_team_members_username ON team_members(username);
+            CREATE TABLE IF NOT EXISTS team_invitations (
+                id              TEXT PRIMARY KEY,
+                team_id         TEXT NOT NULL,
+                invited_email   TEXT NOT NULL,
+                invited_by      TEXT NOT NULL,
+                status          TEXT NOT NULL DEFAULT 'pending',
+                expires_at      TEXT NOT NULL,
+                created_at      TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_team_inv_email ON team_invitations(invited_email, status);
+        """)
+        conn.commit()
+
+    # 5. Add users table columns that may be missing in older DBs
     user_cols = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
     for col, definition in [
         ("birth_date", "TEXT"),
@@ -250,6 +354,27 @@ def _migrate_sqlite(conn: sqlite3.Connection) -> None:
                 conn.commit()
             except Exception as exc:
                 flog.warning(f"[db] No se pudo añadir columna {col}: {exc}")
+
+    # 6. Create resource_teams if missing
+    if "resource_teams" not in existing_tables:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS resource_teams (
+                resource_type TEXT NOT NULL,
+                resource_id   TEXT NOT NULL,
+                team_id       TEXT NOT NULL,
+                shared_by     TEXT NOT NULL,
+                shared_at     TEXT NOT NULL,
+                PRIMARY KEY (resource_type, resource_id, team_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_rt_team ON resource_teams(team_id, resource_type);
+            CREATE INDEX IF NOT EXISTS idx_rt_resource ON resource_teams(resource_type, resource_id);
+        """)
+        conn.commit()
+
+    conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_teams_name_creator ON teams(name, created_by)"
+    )
+    conn.commit()
 
 
 def _migrate_users_json_sqlite(conn: sqlite3.Connection) -> None:
@@ -370,6 +495,61 @@ def _migrate_pg(conn: Any) -> None:
         cur.execute("ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS folder_id TEXT")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token TEXT")
         cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token_expires TEXT")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS teams (
+                id          TEXT PRIMARY KEY,
+                name        TEXT NOT NULL,
+                created_by  TEXT NOT NULL,
+                created_at  TEXT NOT NULL
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS team_members (
+                team_id     TEXT NOT NULL,
+                username    TEXT NOT NULL,
+                is_manager  SMALLINT NOT NULL DEFAULT 0,
+                permissions TEXT NOT NULL DEFAULT '{}',
+                joined_at   TEXT NOT NULL,
+                PRIMARY KEY (team_id, username)
+            )
+        """)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_team_members_username ON team_members(username)"
+        )
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS team_invitations (
+                id              TEXT PRIMARY KEY,
+                team_id         TEXT NOT NULL,
+                invited_email   TEXT NOT NULL,
+                invited_by      TEXT NOT NULL,
+                status          TEXT NOT NULL DEFAULT 'pending',
+                expires_at      TEXT NOT NULL,
+                created_at      TEXT NOT NULL
+            )
+        """)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_team_inv_email"
+            " ON team_invitations(invited_email, status)"
+        )
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS resource_teams (
+                resource_type TEXT NOT NULL,
+                resource_id   TEXT NOT NULL,
+                team_id       TEXT NOT NULL,
+                shared_by     TEXT NOT NULL,
+                shared_at     TEXT NOT NULL,
+                PRIMARY KEY (resource_type, resource_id, team_id)
+            )
+        """)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_rt_team ON resource_teams(team_id, resource_type)"
+        )
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_rt_resource ON resource_teams(resource_type, resource_id)"
+        )
+        cur.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_teams_name_creator ON teams(name, created_by)"
+        )
     conn.commit()
 
 

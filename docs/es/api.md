@@ -58,6 +58,14 @@ Todos los endpoints de admin requieren el rol `admin`.
 | `GET` | `/api/admin/knowledge` | Listar todos los elementos de conocimiento; cada item incluye `owner_email` y `char_count` |
 | `DELETE` | `/api/admin/knowledge/{id}` | Eliminar un elemento de conocimiento |
 
+### Grupos
+
+| Método | Endpoint | Descripción |
+|---|---|---|
+| `GET` | `/api/admin/teams` | Listar todos los grupos; cada item incluye `member_count` y `resource_count` |
+| `GET` | `/api/admin/teams/{id}` | Detalle de un grupo: info, lista de miembros y contenido compartido (con nombres resueltos) |
+| `DELETE` | `/api/admin/teams/{id}` | Eliminar un grupo y todos sus miembros, invitaciones y recursos compartidos |
+
 ### Estadísticas
 
 | Método | Endpoint | Descripción |
@@ -126,11 +134,13 @@ El evento `done` incluye siempre un campo `tokens` con el desglose de tokens con
 
 ## Skills
 
+Las skills tienen tres estados de visibilidad: **pública** (accesible a todos), **privada** (solo el propietario) y **compartida** (privada pero compartida con uno o más grupos — el receptor la ve con el badge `_shared: true`).
+
 | Método | Endpoint | Descripción |
 |---|---|---|
-| `GET` | `/api/skills` | Listar todas las skills disponibles (`?scope=all\|public\|private`) |
+| `GET` | `/api/skills` | Listar todas las skills disponibles (`?scope=all\|public\|private`); las skills compartidas con el usuario aparecen con `_shared: true` |
 | `GET` | `/api/skills/{scope}/{id}` | Obtener la definición de una skill concreta |
-| `POST` | `/api/skills/{scope}` | Guardar una skill (solo scope private) |
+| `POST` | `/api/skills/{scope}` | Guardar una skill (solo scope private); el campo `owner_id` se fija automáticamente al usuario autenticado |
 | `DELETE` | `/api/skills/{scope}/{id}` | Eliminar una skill (solo scope private) |
 
 ---
@@ -163,6 +173,48 @@ Preferencias por usuario (tema e idioma). Ambos endpoints requieren autenticaci�
 Valores válidos: `theme` — `noir`, `marble`, `ember`, `ocean`, `forest`, `dusk`; `language` — `es`, `en`.
 
 Las preferencias se guardan por usuario en la base de datos. Cambiarlas en un dispositivo se refleja en todos los demás al iniciar sesión.
+
+---
+
+## Equipos
+
+Gestión de grupos de colaboración. Los invitados no pueden crear ni unirse a equipos.
+
+| Método | Endpoint | Descripción |
+|---|---|---|
+| `GET` | `/api/teams/` | Listar los equipos del usuario autenticado |
+| `POST` | `/api/teams/` | Crear un equipo (el creador queda como gestor) |
+| `GET` | `/api/teams/{id}` | Obtener detalles de un equipo (requiere ser miembro) |
+| `PATCH` | `/api/teams/{id}` | Renombrar un equipo (requiere ser gestor) |
+| `DELETE` | `/api/teams/{id}` | Eliminar un equipo (requiere ser gestor) |
+| `GET` | `/api/teams/{id}/members` | Listar miembros con su rol y permisos |
+| `PATCH` | `/api/teams/{id}/members/{username}` | Actualizar rol o permisos de un miembro (requiere ser gestor) |
+| `DELETE` | `/api/teams/{id}/members/{username}` | Eliminar un miembro del equipo (requiere ser gestor) |
+| `GET` | `/api/teams/{id}/invitations` | Listar invitaciones activas del equipo |
+| `POST` | `/api/teams/{id}/invitations` | Enviar una invitación por email |
+| `DELETE` | `/api/teams/{id}/invitations/{token}` | Cancelar una invitación |
+| `GET` | `/api/teams/invitations/pending` | Listar invitaciones pendientes recibidas por el usuario |
+| `GET` | `/api/teams/invitations/received` | Listar todas las invitaciones recibidas (incluyendo aceptadas/rechazadas) |
+| `GET` | `/api/teams/invitations/sent` | Listar invitaciones enviadas por el usuario |
+| `POST` | `/api/teams/invitations/{token}/accept` | Aceptar una invitación (el usuario pasa a ser miembro) |
+| `POST` | `/api/teams/invitations/{token}/reject` | Rechazar una invitación |
+
+---
+
+## Compartición de recursos
+
+Permite compartir recursos privados (agentes, skills, conexiones, conocimiento) con equipos. Solo el propietario puede compartir/dejar de compartir su recurso.
+
+| Método | Endpoint | Descripción |
+|---|---|---|
+| `GET` | `/api/sharing/{type}/{resource_id}` | Listar los equipos con los que está compartido un recurso |
+| `POST` | `/api/sharing/{type}/{resource_id}` | Compartir un recurso con un equipo (`body: {"team_id": "..."}`) |
+| `DELETE` | `/api/sharing/{type}/{resource_id}/{team_id}` | Dejar de compartir un recurso con un equipo |
+| `GET` | `/api/sharing/by-team/{team_id}/{type}` | Recursos de un tipo compartidos con un equipo (requiere ser miembro) |
+
+Tipos válidos para `{type}`: `agent`, `skill`, `connection`, `knowledge`.
+
+Los recursos compartidos con el usuario aparecen en los listados normales (`/api/skills`, `/api/agents`, etc.) con el campo `_shared: true`. El receptor puede usarlos pero no editarlos ni exportarlos.
 
 ---
 

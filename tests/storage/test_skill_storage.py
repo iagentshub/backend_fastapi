@@ -102,3 +102,46 @@ def test_get_skill_frontmatter_id_case_insensitive(storage):
         encoding="utf-8",
     )
     assert storage.get("public", "monitor_blogs") is not None
+
+
+# ── owner_id + get_any ─────────────────────────────────────────────────────────
+
+def test_save_sets_owner_id(storage):
+    sk = storage.save("private", _SKILL, owner_id="alice")
+    assert sk.get("owner_id") == "alice"
+
+
+def test_owner_id_persisted(storage):
+    sk = storage.save("private", _SKILL, owner_id="alice")
+    # Re-read from disk via a fresh get()
+    found = storage.get("private", sk["id"])
+    assert found is not None
+    assert found.get("owner_id") == "alice"
+
+
+def test_save_without_owner_id_has_no_owner(storage):
+    sk = storage.save("private", _SKILL)
+    assert sk.get("owner_id") is None
+
+
+def test_get_any_finds_private_skill(storage):
+    sk = storage.save("private", _SKILL)
+    found = storage.get_any(sk["id"])
+    assert found is not None
+    assert found["name"] == _SKILL["name"]
+
+
+def test_get_any_finds_public_skill(storage):
+    skill_dir = storage.root_dir / "public" / "pub-skill"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text(
+        "---\nid: pub-skill\nname: Skill Publica\n---\n\nContenido.\n",
+        encoding="utf-8",
+    )
+    found = storage.get_any("pub-skill")
+    assert found is not None
+    assert found["name"] == "Skill Publica"
+
+
+def test_get_any_returns_none_for_missing(storage):
+    assert storage.get_any("ghost-skill-xyz") is None

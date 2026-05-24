@@ -11,6 +11,7 @@ from app.api.routes.auth import require_auth
 from app.auth.auth import get_user_role
 from app.connections import all_providers, get_provider
 from app.config.data import DB_FILE
+from app.storage.teams import TeamStorage as _TeamStorage
 from app.config.session import RATE_TEST_CALLS, RATE_TEST_WINDOW
 from app.middleware.ratelimit import RateLimiter
 from app.storage.guest import get_session, is_guest
@@ -20,6 +21,7 @@ router = APIRouter(prefix="/api/connections", tags=["connections"])
 
 _storage = ConnectionStorage(DB_FILE)
 _test_limiter = RateLimiter(calls=RATE_TEST_CALLS, window=RATE_TEST_WINDOW)
+_sharing_ts = _TeamStorage(DB_FILE)
 
 
 def _owner(user: str) -> str | None:
@@ -65,8 +67,17 @@ async def test_all_connections(
 async def list_connections(user: str = Depends(require_auth)) -> List[Dict[str, Any]]:
     if is_guest(user):
         return [{k: v for k, v in c.items() if k != "api_key"} for c in get_session(user).connections]
+    role = get_user_role(user)
     items = _storage.list(_owner(user))
-    return [{k: v for k, v in c.items() if k != "api_key"} for c in items]
+    if role not in ("admin",):
+        shared_ids = set(_sharing_ts.get_user_shared_resource_ids(user, "connection"))
+        own_ids = {i["id"] for i in items}
+        for rid in (shared_ids - own_ids):
+            c = _storage.get(rid)
+            if c:
+                c["_shared"] = True
+                items.append(c)
+    return [{k: v for k, v in c.items() if k not in ("api_key",)} for c in items]
 
 
 @router.post("")

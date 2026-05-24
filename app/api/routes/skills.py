@@ -8,15 +8,18 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 from app.api.routes.auth import require_auth
+from app.auth.auth import get_user_role
 from app.config.data import DB_FILE, SKILLS_DIR
 from app.storage.guest import get_session, is_guest
 from app.storage.knowledge import FolderStorage
 from app.storage.storage import SkillStorage
+from app.storage.teams import TeamStorage
 
 router = APIRouter(prefix="/api/skills", tags=["skills"])
 
 _storage = SkillStorage(SKILLS_DIR)
 _folders = FolderStorage(DB_FILE)
+_ts = TeamStorage(DB_FILE)
 
 _VALID_SCOPES = {"public", "private", "all"}
 
@@ -40,7 +43,24 @@ async def list_skills(
         public = _storage.list("public") if scope in ("public", "all") else []
         private = s.skills if scope in ("private", "all") else []
         return public + private
-    return _storage.list(scope)
+    items = _storage.list(scope)
+    if get_user_role(user) != "admin":
+        # Filter: public skills + own private skills + legacy private (no owner_id)
+        items = [
+            s for s in items
+            if s.get("scope") == "public"
+            or s.get("owner_id") is None
+            or s.get("owner_id") == user
+        ]
+        # Inject team-shared skills not already visible
+        shared_ids = set(_ts.get_user_shared_resource_ids(user, "skill"))
+        own_ids = {s["id"] for s in items}
+        for sid in shared_ids - own_ids:
+            sk = _storage.get_any(sid)
+            if sk:
+                sk["_shared"] = True
+                items.append(sk)
+    return items
 
 
 @router.get("/{scope}/{skill_id}")
@@ -74,7 +94,7 @@ async def save_skill(
         s.skills.append(skill)
         return skill
     try:
-        return _storage.save(scope, payload)
+        return _storage.save(scope, payload, owner_id=user)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
 

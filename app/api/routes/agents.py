@@ -14,6 +14,7 @@ from fastapi.responses import StreamingResponse
 from app.api.routes.auth import require_auth
 from app.auth.auth import get_user_role
 from app.config.data import AGENTS_DIR, DB_FILE, MEMORY_DIR, SKILLS_DIR
+from app.storage.teams import TeamStorage as _TeamStorage
 from app.config.session import RATE_CHAT_CALLS, RATE_CHAT_WINDOW
 from app.middleware.locale import get_locale
 from app.middleware.ratelimit import RateLimiter
@@ -33,6 +34,7 @@ _memory       = MemoryStorage(MEMORY_DIR)
 _chat         = ChatStorage(DB_FILE)
 _knowledge    = KnowledgeStorage(DB_FILE)
 _chat_limiter = RateLimiter(calls=RATE_CHAT_CALLS, window=RATE_CHAT_WINDOW)
+_sharing_ts   = _TeamStorage(DB_FILE)
 
 
 def _conn_owner(user: str) -> str | None:
@@ -81,7 +83,17 @@ async def list_agents(scope: str = "all", user: str = Depends(require_auth)) -> 
         public = _agents.list("public") if scope in ("public", "all") else []
         private = s.agents if scope in ("private", "all") else []
         return [_apply_locale(a, locale) for a in public + private]
-    return [_apply_locale(a, locale) for a in _agents.list(scope)]
+    agents = _agents.list(scope)
+    role = get_user_role(user)
+    if role not in ("admin", "guest"):
+        own = [a for a in agents if a.get("owner_id") == user]
+        shared_ids = set(_sharing_ts.get_user_shared_resource_ids(user, "agent"))
+        own_ids = {a["id"] for a in own}
+        extra = [a for a in agents if a["id"] in (shared_ids - own_ids)]
+        for a in extra:
+            a["_shared"] = True
+        agents = own + extra
+    return [_apply_locale(a, locale) for a in agents]
 
 
 @router.post("")
@@ -240,6 +252,13 @@ async def chat(
         a = _agents.get(agent_id)
     if not a:
         raise HTTPException(status_code=404, detail="Agente no encontrado")
+    # Team permission check
+    role = get_user_role(user)
+    if not is_guest(user) and role not in ("admin",):
+        from app.api.routes._team_filter import get_team_allowed_ids
+        allowed = get_team_allowed_ids(user, "agents", "use")
+        if allowed is not None and agent_id not in allowed:
+            raise HTTPException(status_code=403, detail="No tienes permiso para usar este agente")
     a = _apply_locale(a, get_locale())
 
     body = await request.json()
@@ -253,7 +272,14 @@ async def chat(
         memory_store = GuestMemoryAdapter(s)
         knowledge_store = GuestKnowledgeAdapter(s)
     else:
-        conn = _conns.get(a.get("connection_id") or "", _conn_owner(user))
+        conn_id = a.get("connection_id") or ""
+        # Team connection permission check (via_agent)
+        if role not in ("admin",):
+            from app.api.routes._team_filter import get_team_allowed_ids as _gta
+            conn_allowed = _gta(user, "connections", "via_agent")
+            if conn_allowed is not None and conn_id and conn_id not in conn_allowed:
+                raise HTTPException(status_code=403, detail="No tienes permiso para usar la conexión de este agente")
+        conn = _conns.get(conn_id, _conn_owner(user))
         memory_store = _memory
         knowledge_store = _knowledge
 

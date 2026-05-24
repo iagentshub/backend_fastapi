@@ -474,6 +474,87 @@ def admin_set_password(username: str, new_password: str) -> bool:
         close_db(conn)
 
 
+# ── Gestor role helpers ────────────────────────────────────────────────────────
+
+
+def promote_to_gestor(username: str) -> bool:
+    """Promote a standard user to gestor. Returns False if user not found or not standard."""
+    conn = open_db(DB_FILE)
+    try:
+        cur = conn.cursor()
+        cur.execute(f"SELECT role FROM users WHERE username = {PH}", (username,))
+        row = cur.fetchone()
+        if not row:
+            return False
+        role = (dict(row) if isinstance(row, dict) else {"role": row[0]})["role"]
+        if role not in ("standard",):
+            return False
+        cur.execute(
+            f"UPDATE users SET role = 'gestor' WHERE username = {PH}", (username,)
+        )
+        conn.commit()
+        return True
+    finally:
+        close_db(conn)
+
+
+def demote_if_no_teams(username: str) -> bool:
+    """Demote gestor back to standard if they manage no teams. Returns True if demoted."""
+    from app.config.data import DB_FILE as _DB
+    from app.storage.teams import TeamStorage
+
+    ts = TeamStorage(_DB)
+    managed = ts.list_managed_teams(username)
+    if managed:
+        return False
+    conn = open_db(DB_FILE)
+    try:
+        cur = conn.cursor()
+        cur.execute(f"SELECT role FROM users WHERE username = {PH}", (username,))
+        row = cur.fetchone()
+        if not row:
+            return False
+        role = (dict(row) if isinstance(row, dict) else {"role": row[0]})["role"]
+        if role != "gestor":
+            return False
+        cur.execute(
+            f"UPDATE users SET role = 'standard' WHERE username = {PH}", (username,)
+        )
+        conn.commit()
+        return True
+    finally:
+        close_db(conn)
+
+
+def send_team_invitation_email(
+    email: str,
+    team_name: str,
+    invited_by: str,
+    token: str,
+    base_url: str = "",
+) -> None:
+    from app.config.session import SMTP_HOST
+
+    accept_url = f"{base_url}/profile/?tab=teams&token={token}"
+    if not SMTP_HOST:
+        flog.info(f"[email] SMTP no configurado — invitación equipo '{team_name}': {accept_url}")
+        return
+
+    html = _build_email_html(
+        title="Invitación a equipo",
+        heading=f"Te han invitado al equipo «{team_name}»",
+        body_html=(
+            f"<strong>{invited_by}</strong> te ha invitado a unirte al equipo "
+            f"<strong>{team_name}</strong> en iAgents Hub.<br><br>"
+            "Acepta la invitación desde tu perfil o haz clic en el botón. "
+            "La invitación expira en <strong>48 horas</strong>."
+        ),
+        cta_url=accept_url,
+        cta_label="Ver invitación",
+    )
+    _send_smtp(email, f"Te invitaron al equipo «{team_name}» en iAgents Hub", html)
+
+
 # ── JWT ────────────────────────────────────────────────────────────────────────
 
 

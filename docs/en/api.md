@@ -58,6 +58,14 @@ All admin endpoints require the `admin` role.
 | `GET` | `/api/admin/knowledge` | List all knowledge items; each item includes `owner_email` and `char_count` |
 | `DELETE` | `/api/admin/knowledge/{id}` | Delete a knowledge item |
 
+### Groups
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/admin/teams` | List all groups; each item includes `member_count` and `resource_count` |
+| `GET` | `/api/admin/teams/{id}` | Group detail: info, member list, and shared content (with resolved names) |
+| `DELETE` | `/api/admin/teams/{id}` | Delete a group and all its members, invitations, and shared resources |
+
 ### Stats
 
 | Method | Endpoint | Description |
@@ -126,11 +134,13 @@ The `done` event always includes a `tokens` field with the breakdown of tokens c
 
 ## Skills
 
+Skills have three visibility states: **public** (accessible to everyone), **private** (owner only), and **shared** (private but shared with one or more groups — recipients see it with `_shared: true`).
+
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/skills` | List all available skills (`?scope=all\|public\|private`) |
+| `GET` | `/api/skills` | List all available skills (`?scope=all\|public\|private`); skills shared with the user appear with `_shared: true` |
 | `GET` | `/api/skills/{scope}/{id}` | Get a specific skill definition |
-| `POST` | `/api/skills/{scope}` | Save a skill (private scope only) |
+| `POST` | `/api/skills/{scope}` | Save a skill (private scope only); `owner_id` is automatically set to the authenticated user |
 | `DELETE` | `/api/skills/{scope}/{id}` | Delete a skill (private scope only) |
 
 ---
@@ -163,6 +173,48 @@ Per-user preferences (theme and language). Both endpoints require authentication
 Valid values: `theme` — `noir`, `marble`, `ember`, `ocean`, `forest`, `dusk`; `language` — `es`, `en`.
 
 Preferences are stored per user in the database. Changing them on one device is reflected on all others at next login.
+
+---
+
+## Teams
+
+Collaboration group management. Guests cannot create or join teams.
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/teams/` | List teams the authenticated user belongs to |
+| `POST` | `/api/teams/` | Create a team (creator is automatically added as manager) |
+| `GET` | `/api/teams/{id}` | Get team details (requires membership) |
+| `PATCH` | `/api/teams/{id}` | Rename a team (requires manager role) |
+| `DELETE` | `/api/teams/{id}` | Delete a team (requires manager role) |
+| `GET` | `/api/teams/{id}/members` | List members with their roles and permissions |
+| `PATCH` | `/api/teams/{id}/members/{username}` | Update a member's role or permissions (requires manager role) |
+| `DELETE` | `/api/teams/{id}/members/{username}` | Remove a member from the team (requires manager role) |
+| `GET` | `/api/teams/{id}/invitations` | List active invitations for the team |
+| `POST` | `/api/teams/{id}/invitations` | Send an invitation by email |
+| `DELETE` | `/api/teams/{id}/invitations/{token}` | Cancel an invitation |
+| `GET` | `/api/teams/invitations/pending` | List pending invitations received by the user |
+| `GET` | `/api/teams/invitations/received` | List all received invitations (including accepted/rejected) |
+| `GET` | `/api/teams/invitations/sent` | List invitations sent by the user |
+| `POST` | `/api/teams/invitations/{token}/accept` | Accept an invitation (user becomes a member) |
+| `POST` | `/api/teams/invitations/{token}/reject` | Reject an invitation |
+
+---
+
+## Resource Sharing
+
+Allows sharing private resources (agents, skills, connections, knowledge) with teams. Only the owner can share or unshare their resource.
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/sharing/{type}/{resource_id}` | List teams a resource is shared with |
+| `POST` | `/api/sharing/{type}/{resource_id}` | Share a resource with a team (`body: {"team_id": "..."}`) |
+| `DELETE` | `/api/sharing/{type}/{resource_id}/{team_id}` | Stop sharing a resource with a team |
+| `GET` | `/api/sharing/by-team/{team_id}/{type}` | Resources of a given type shared with a team (requires membership) |
+
+Valid values for `{type}`: `agent`, `skill`, `connection`, `knowledge`.
+
+Resources shared with the user appear in the standard listing endpoints (`/api/skills`, `/api/agents`, etc.) with `_shared: true`. Recipients can use them but cannot edit or export them.
 
 ---
 
