@@ -11,6 +11,8 @@ from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response
 from app.auth.auth import (
     admin_set_password,
     admin_update_user,
+    consume_reset_token,
+    create_password_reset_token,
     create_token,
     decode_token,
     delete_user,
@@ -20,6 +22,8 @@ from app.auth.auth import (
     hash_password,
     list_users,
     register_user_email,
+    send_account_status_email,
+    send_reset_email,
     send_verification_email,
     verify_email_token,
     verify_password,
@@ -163,13 +167,45 @@ async def logout(response: Response) -> Dict[str, Any]:
 @router.get("/me")
 async def me(username: str = Depends(require_auth)) -> Dict[str, Any]:
     from app.storage.guest import is_guest
+    from app.config.session import WEBMAIL_URL
     role = get_user_role(username)
     if is_guest(username):
         auth_method = "guest"
     else:
         user = get_user_by_username(username) or {}
         auth_method = user.get("provider") or "internal"
-    return {"username": username, "role": role, "auth_method": auth_method}
+    payload: Dict[str, Any] = {"username": username, "role": role, "auth_method": auth_method}
+    if role == "admin" and WEBMAIL_URL:
+        payload["webmail_url"] = WEBMAIL_URL
+    return payload
+
+
+@router.post("/forgot-password")
+async def forgot_password(request: Request) -> Dict[str, Any]:
+    body = await request.json()
+    email = str(body.get("email") or "").strip().lower()
+    if not email or not re.match(r"^[^\s@]+@[^\s@]+\.[^\s@]+$", email):
+        raise HTTPException(status_code=400, detail="Email inválido")
+    token = create_password_reset_token(email)
+    if token:
+        base_url = str(request.base_url).rstrip("/")
+        send_reset_email(email, token, base_url)
+    # Respuesta siempre igual para no revelar si el email existe
+    return {"ok": True}
+
+
+@router.post("/reset-password")
+async def reset_password(request: Request) -> Dict[str, Any]:
+    body = await request.json()
+    token = str(body.get("token") or "").strip()
+    new_password = str(body.get("password") or "").strip()
+    if not token or not new_password:
+        raise HTTPException(status_code=400, detail="Token y contraseña requeridos")
+    if len(new_password) < 8:
+        raise HTTPException(status_code=400, detail="La contraseña debe tener al menos 8 caracteres")
+    if not consume_reset_token(token, new_password):
+        raise HTTPException(status_code=400, detail="Enlace inválido o expirado")
+    return {"ok": True}
 
 
 @router.post("/change-password")
@@ -238,6 +274,8 @@ async def admin_stats(_: str = Depends(require_admin)) -> Dict[str, Any]:
     agents_public = len(list(AGENTS_DIR.glob("public/*/config.json"))) if AGENTS_DIR.exists() else 0
     agents_private = len(list(AGENTS_DIR.glob("private/*/config.json"))) if AGENTS_DIR.exists() else 0
 
+    from app.config.session import WEBMAIL_URL
+
     return {
         "users_total": users_total,
         "users_active": users_active,
@@ -249,6 +287,7 @@ async def admin_stats(_: str = Depends(require_admin)) -> Dict[str, Any]:
         "conversations_total": conversations_total,
         "agents_public": agents_public,
         "agents_private": agents_private,
+        "webmail_url": WEBMAIL_URL,
     }
 
 
@@ -300,6 +339,12 @@ async def admin_patch_user(
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
     if new_pw and not admin_set_password(username, new_pw):
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    if "is_active" in updates:
+        user = get_user_by_username(username)
+        email = user.get("email") if user else None
+        if email:
+            base_url = str(request.base_url).rstrip("/")
+            send_account_status_email(email, bool(updates["is_active"]), base_url)
     return {"ok": True}
 
 

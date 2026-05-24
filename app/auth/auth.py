@@ -198,10 +198,185 @@ def verify_email_token(token: str) -> Optional[str]:
         close_db(conn)
 
 
+def _build_email_html(title: str, heading: str, body_html: str, cta_url: str = "", cta_label: str = "") -> str:
+    cta_block = ""
+    if cta_url and cta_label:
+        cta_block = (
+            f'<a href="{cta_url}" style="display:inline-block;background:#dc2626;color:#fff;text-decoration:none;'
+            f'padding:12px 28px;border-radius:8px;font-size:14px;font-weight:600">{cta_label}</a>'
+            f'<p style="margin:28px 0 0;font-size:11px;color:#555">O copia este enlace en tu navegador:<br>'
+            f'<span style="color:#888;word-break:break-all">{cta_url}</span></p>'
+        )
+    return f"""<!DOCTYPE html>
+<html lang="es">
+<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
+<body style="margin:0;padding:0;background:#0f0f10;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">
+  <table width="100%" cellpadding="0" cellspacing="0" style="background:#0f0f10;padding:40px 16px">
+    <tr><td align="center">
+      <table width="480" cellpadding="0" cellspacing="0" style="background:#1a1a1b;border-radius:12px;padding:40px 36px;max-width:480px">
+        <tr><td>
+          <p style="margin:0 0 4px;font-size:20px;font-weight:700;color:#fff">iAgents<span style="color:#dc2626">Hub</span></p>
+          <p style="margin:0 0 32px;font-size:13px;color:#666">{title}</p>
+          <h1 style="margin:0 0 12px;font-size:22px;font-weight:600;color:#e8e8e8">{heading}</h1>
+          <div style="font-size:14px;color:#aaa;line-height:1.6;margin-bottom:28px">{body_html}</div>
+          {cta_block}
+        </td></tr>
+      </table>
+    </td></tr>
+  </table>
+</body>
+</html>"""
+
+
+def _send_smtp(to: str, subject: str, html: str) -> None:
+    """Send an HTML email via the configured SMTP server. Runs synchronously."""
+    import smtplib
+    import threading
+    from email.mime.multipart import MIMEMultipart
+    from email.mime.text import MIMEText
+
+    from app.config.session import SMTP_FROM, SMTP_HOST, SMTP_PASS, SMTP_PORT, SMTP_TLS, SMTP_USER
+
+    if not SMTP_HOST:
+        return
+
+    msg = MIMEMultipart("alternative")
+    msg["Subject"] = subject
+    msg["From"] = SMTP_FROM or SMTP_USER
+    msg["To"] = to
+    msg.attach(MIMEText(html, "html", "utf-8"))
+
+    def _send() -> None:
+        try:
+            if SMTP_TLS == "ssl":
+                server = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=15)
+            else:
+                server = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15)
+                if SMTP_TLS == "starttls":
+                    server.starttls()
+            if SMTP_USER and SMTP_PASS:
+                server.login(SMTP_USER, SMTP_PASS)
+            server.sendmail(msg["From"], [to], msg.as_string())
+            server.quit()
+            flog.ok(f"[email] Enviado a {to}: {subject}")
+        except Exception as exc:
+            flog.warning(f"[email] Error al enviar a {to}: {exc}")
+
+    threading.Thread(target=_send, daemon=True).start()
+
+
 def send_verification_email(email: str, token: str, base_url: str = "") -> None:
-    """Send a verification email. Currently a no-op — implement when SMTP is configured."""
-    # TODO: configure SMTP via GAIA_SMTP_* env vars and implement here
-    pass
+    from app.config.session import SMTP_HOST
+
+    verify_url = f"{base_url}/verify/?token={token}"
+
+    if not SMTP_HOST:
+        flog.info(f"[email] SMTP no configurado — enlace de verificación: {verify_url}")
+        return
+
+    html = _build_email_html(
+        title="Verifica tu cuenta",
+        heading="Confirma tu dirección de email",
+        body_html="Haz clic en el botón para activar tu cuenta en iAgents Hub.<br>El enlace expira en <strong>24 horas</strong>.",
+        cta_url=verify_url,
+        cta_label="Verificar cuenta",
+    )
+    _send_smtp(email, "Verifica tu cuenta en iAgents Hub", html)
+
+
+def send_reset_email(email: str, token: str, base_url: str = "") -> None:
+    from app.config.session import SMTP_HOST
+
+    reset_url = f"{base_url}/reset-password/?token={token}"
+
+    if not SMTP_HOST:
+        flog.info(f"[email] SMTP no configurado — enlace de recuperación: {reset_url}")
+        return
+
+    html = _build_email_html(
+        title="Recuperar contraseña",
+        heading="Restablecer contraseña",
+        body_html="Recibimos una solicitud para restablecer la contraseña de tu cuenta.<br>El enlace expira en <strong>1 hora</strong>. Si no fuiste tú, ignora este mensaje.",
+        cta_url=reset_url,
+        cta_label="Restablecer contraseña",
+    )
+    _send_smtp(email, "Recupera el acceso a iAgents Hub", html)
+
+
+def send_account_status_email(email: str, is_active: bool, base_url: str = "") -> None:
+    from app.config.session import SMTP_HOST
+
+    if not SMTP_HOST:
+        status = "reactivada" if is_active else "suspendida"
+        flog.info(f"[email] SMTP no configurado — cuenta {status}: {email}")
+        return
+
+    if is_active:
+        html = _build_email_html(
+            title="Estado de tu cuenta",
+            heading="Tu cuenta ha sido reactivada",
+            body_html="Un administrador ha reactivado tu acceso a iAgents Hub.<br>Ya puedes iniciar sesión con normalidad.",
+            cta_url=f"{base_url}/login/",
+            cta_label="Entrar",
+        )
+        _send_smtp(email, "Tu cuenta en iAgents Hub ha sido reactivada", html)
+    else:
+        html = _build_email_html(
+            title="Estado de tu cuenta",
+            heading="Tu cuenta ha sido suspendida",
+            body_html="Un administrador ha suspendido temporalmente tu acceso a iAgents Hub.<br>Si crees que es un error, contacta con el soporte.",
+        )
+        _send_smtp(email, "Tu cuenta en iAgents Hub ha sido suspendida", html)
+
+
+def create_password_reset_token(email: str) -> Optional[str]:
+    """Generate a reset token for the given email. Returns None if email not found."""
+    from app.config.session import PASSWORD_RESET_EXPIRE_HOURS
+
+    conn = open_db(DB_FILE)
+    try:
+        cur = conn.cursor()
+        cur.execute(f"SELECT username FROM users WHERE email = {PH} AND is_active = 1", (email,))
+        if not cur.fetchone():
+            return None
+        token = secrets.token_urlsafe(32)
+        expires = (datetime.now(timezone.utc) + timedelta(hours=PASSWORD_RESET_EXPIRE_HOURS)).isoformat()
+        cur.execute(
+            f"UPDATE users SET reset_token = {PH}, reset_token_expires = {PH} WHERE email = {PH}",
+            (token, expires, email),
+        )
+        conn.commit()
+        return token
+    finally:
+        close_db(conn)
+
+
+def consume_reset_token(token: str, new_password: str) -> bool:
+    """Verify token, apply new password, and invalidate token. Returns False if invalid/expired."""
+    conn = open_db(DB_FILE)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            f"SELECT email, reset_token_expires FROM users WHERE reset_token = {PH}",
+            (token,),
+        )
+        row = cur.fetchone()
+        if not row:
+            return False
+        d = dict(row) if isinstance(row, dict) else {"email": row[0], "reset_token_expires": row[1]}
+        expires = d.get("reset_token_expires") or ""
+        if not expires or datetime.fromisoformat(expires) < datetime.now(timezone.utc):
+            return False
+        cur.execute(
+            f"UPDATE users SET password_hash = {PH}, reset_token = NULL, reset_token_expires = NULL "
+            f"WHERE email = {PH}",
+            (hash_password(new_password), d["email"]),
+        )
+        conn.commit()
+        flog.ok(f"[auth] Contraseña reseteada para {d['email']}")
+        return True
+    finally:
+        close_db(conn)
 
 
 

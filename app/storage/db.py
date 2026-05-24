@@ -97,6 +97,8 @@ CREATE TABLE IF NOT EXISTS users (
     is_active          INTEGER NOT NULL DEFAULT 1,
     is_verified        INTEGER NOT NULL DEFAULT 1,
     verification_token TEXT,
+    reset_token        TEXT,
+    reset_token_expires TEXT,
     preferences        TEXT,
     created_at         TEXT NOT NULL
 );
@@ -177,6 +179,8 @@ CREATE TABLE IF NOT EXISTS users (
     is_active          SMALLINT NOT NULL DEFAULT 1,
     is_verified        SMALLINT NOT NULL DEFAULT 1,
     verification_token TEXT,
+    reset_token        TEXT,
+    reset_token_expires TEXT,
     preferences        TEXT,
     created_at         TEXT NOT NULL
 );
@@ -236,6 +240,8 @@ def _migrate_sqlite(conn: sqlite3.Connection) -> None:
         ("is_active", "INTEGER NOT NULL DEFAULT 1"),
         ("is_verified", "INTEGER NOT NULL DEFAULT 1"),
         ("verification_token", "TEXT"),
+        ("reset_token", "TEXT"),
+        ("reset_token_expires", "TEXT"),
         ("preferences", "TEXT"),
     ]:
         if col not in user_cols:
@@ -361,9 +367,9 @@ def _ensure_pg_pool() -> Any:
 def _migrate_pg(conn: Any) -> None:
     """Incremental migrations for pre-existing PostgreSQL databases."""
     with conn.cursor() as cur:
-        cur.execute(
-            "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS folder_id TEXT"
-        )
+        cur.execute("ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS folder_id TEXT")
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token TEXT")
+        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token_expires TEXT")
     conn.commit()
 
 

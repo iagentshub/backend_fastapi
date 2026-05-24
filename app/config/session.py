@@ -39,6 +39,24 @@ SECURE_COOKIES: bool = (
     or os.getenv("GAIA_SECURE_COOKIES", "").lower() == "true"
 )
 
+# ── SMTP (para verificación de email y recuperación de contraseña) ────────────
+# Funciona con cualquier servidor SMTP: Postfix propio, Exchange, Gmail, etc.
+# Deja GAIA_SMTP_HOST vacío para deshabilitar (los tokens se loguean en consola).
+SMTP_HOST: str = os.getenv("GAIA_SMTP_HOST", "")
+SMTP_PORT: int = int(os.getenv("GAIA_SMTP_PORT", "587"))
+SMTP_USER: str = os.getenv("GAIA_SMTP_USER", "")
+SMTP_PASS: str = os.getenv("GAIA_SMTP_PASS", "")
+SMTP_FROM: str = os.getenv("GAIA_SMTP_FROM", "") or os.getenv("GAIA_SMTP_USER", "")
+# Modo TLS: "starttls" (587, recomendado), "ssl" (465), "none" (25, solo redes internas)
+SMTP_TLS: str  = os.getenv("GAIA_SMTP_TLS", "starttls").lower()
+
+PASSWORD_RESET_EXPIRE_HOURS: int = int(os.getenv("GAIA_RESET_EXPIRE_HOURS", "1"))
+
+# ── Webmail ───────────────────────────────────────────────────────────────────
+# URL del cliente de correo web que se muestra en el panel de admin.
+# Ejemplos: Mailpit dev → http://localhost:8025 | Dondominio → https://webmail.dondominio.com
+WEBMAIL_URL: str = os.getenv("GAIA_WEBMAIL_URL", "")
+
 # ── Rate limiting ─────────────────────────────────────────────────────────────
 RATE_CHAT_CALLS  = int(os.getenv("GAIA_RATE_CHAT_CALLS",  "30"))   # peticiones
 RATE_CHAT_WINDOW = int(os.getenv("GAIA_RATE_CHAT_WINDOW", "60"))   # por segundos
