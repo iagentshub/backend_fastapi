@@ -22,7 +22,7 @@ _folders = FolderStorage(DB_FILE)
 _sharing_ts = _TeamStorage(DB_FILE)
 
 _ALLOWED_EXTS = {".txt", ".md", ".pdf"}
-_VALID_SECTIONS = {"document", "url", "skill"}
+_VALID_SECTIONS = {"document", "url", "skill", "agents", "memory"}
 
 
 def _owner(user: str) -> Optional[str]:

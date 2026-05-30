@@ -5,11 +5,12 @@ import io
 import json
 import re
 import zipfile
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
+from pydantic import BaseModel
 
 from app.api.routes.auth import require_auth
 from app.auth.auth import get_user_role
@@ -22,7 +23,7 @@ from app.models.agent import Agent
 from app.services.chat import auto_update_memory, stream_chat
 from app.storage.chat import ChatStorage
 from app.storage.guest import GuestKnowledgeAdapter, GuestMemoryAdapter, get_session, is_guest
-from app.storage.knowledge import KnowledgeStorage
+from app.storage.knowledge import FolderStorage, KnowledgeStorage
 from app.storage.storage import AgentStorage, ConnectionStorage, MemoryStorage, SkillStorage
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
@@ -33,8 +34,13 @@ _skills       = SkillStorage(SKILLS_DIR)
 _memory       = MemoryStorage(MEMORY_DIR)
 _chat         = ChatStorage(DB_FILE)
 _knowledge    = KnowledgeStorage(DB_FILE)
+_folders      = FolderStorage(DB_FILE)
 _chat_limiter = RateLimiter(calls=RATE_CHAT_CALLS, window=RATE_CHAT_WINDOW)
 _sharing_ts   = _TeamStorage(DB_FILE)
+
+
+class _AgentFolderMove(BaseModel):
+    folder_id: Optional[str] = None
 
 
 def _conn_owner(user: str) -> str | None:
@@ -148,6 +154,19 @@ async def delete_agent(
             raise HTTPException(status_code=404, detail="Agente no encontrado")
     except ValueError as e:
         raise HTTPException(status_code=403, detail=str(e))
+    return {"ok": True}
+
+
+@router.patch("/{agent_id}/folder")
+async def move_agent_folder(
+    agent_id: str,
+    body: _AgentFolderMove,
+    user: str = Depends(require_auth),
+) -> Dict[str, Any]:
+    if is_guest(user):
+        raise HTTPException(status_code=403, detail="Los invitados no pueden mover agentes")
+    if not _agents.move_folder(agent_id, body.folder_id):
+        raise HTTPException(status_code=404, detail="Agente no encontrado")
     return {"ok": True}
 
 

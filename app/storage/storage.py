@@ -302,9 +302,23 @@ class AgentStorage:
         name = str(payload.get("name") or "").strip()
         if not name:
             raise ValueError("name required")
+        folder_id = payload.get("folder_id") or None
         agent_id = _slug(name)
         now = _now()
-        agent = Agent.from_dict({**payload, "id": agent_id, "scope": scope})
+
+        # When a folder is specified and the base slug already exists in a different folder,
+        # generate a unique ID so both agents can coexist.
+        if folder_id:
+            existing_path = self._path(scope, agent_id)
+            if existing_path.exists():
+                try:
+                    existing_data = json.loads(existing_path.read_text(encoding="utf-8"))
+                    if existing_data.get("folder_id") != folder_id:
+                        agent_id = f"{agent_id}-{uuid4().hex[:6]}"
+                except Exception:
+                    pass
+
+        agent = Agent.from_dict({**payload, "id": agent_id, "scope": scope, "folder_id": folder_id})
         d = self._dir(scope, agent_id)
         d.mkdir(exist_ok=True)
         p = d / "config.json"
@@ -318,6 +332,18 @@ class AgentStorage:
         agent.updated_at = now
         p.write_text(json.dumps(agent.to_dict(), indent=2, ensure_ascii=False), encoding="utf-8")
         return agent.to_dict()
+
+    def move_folder(self, agent_id: str, folder_id: Optional[str]) -> bool:
+        p = self._path("private", agent_id)
+        if not p.exists():
+            return False
+        data = json.loads(p.read_text(encoding="utf-8"))
+        if folder_id:
+            data["folder_id"] = folder_id
+        else:
+            data.pop("folder_id", None)
+        p.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        return True
 
     def get_model(self, agent_id: str, scope: Optional[str] = None) -> Optional[Agent]:
         """Typed accessor — returns the correct Agent subclass."""
@@ -352,6 +378,7 @@ class AgentStorage:
             "skills": a.get("skills", []),
             "use_memory": a.get("use_memory", False),
             "memory_file": a.get("memory_file"),
+            "folder_id": a.get("folder_id"),
             "scope": a.get("scope", "private"),
             "created_at": a.get("created_at"),
             "updated_at": a.get("updated_at"),
@@ -503,6 +530,7 @@ class MemoryStorage:
     def __init__(self, root_dir: Path) -> None:
         self.root_dir = Path(root_dir)
         self.root_dir.mkdir(parents=True, exist_ok=True)
+        self._meta_path = self.root_dir / "_folder_meta.json"
 
     def _safe_name(self, filename: str) -> str:
         """Sanitiza el nombre de fichero para prevenir path traversal."""
@@ -510,7 +538,21 @@ class MemoryStorage:
         name = name or "memory"
         return f"{name}.md"
 
+    def _load_meta(self) -> Dict[str, Any]:
+        if self._meta_path.exists():
+            try:
+                import json
+                return json.loads(self._meta_path.read_text(encoding="utf-8"))
+            except Exception:
+                return {}
+        return {}
+
+    def _save_meta(self, meta: Dict[str, Any]) -> None:
+        import json
+        self._meta_path.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+
     def list(self) -> List[Dict[str, Any]]:
+        meta = self._load_meta()
         items = []
         for p in sorted(self.root_dir.glob("*.md")):
             stat = p.stat()
@@ -519,6 +561,7 @@ class MemoryStorage:
                 "filename": p.name,
                 "size": stat.st_size,
                 "updated_at": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
+                "folder_id": meta.get(p.name),
             })
         return items
 
@@ -533,16 +576,36 @@ class MemoryStorage:
         p = self.root_dir / filename
         p.write_text(content, encoding="utf-8")
         stat = p.stat()
+        meta = self._load_meta()
         return {
             "id": p.stem,
             "filename": p.name,
             "size": stat.st_size,
             "updated_at": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
+            "folder_id": meta.get(p.name),
         }
 
+    def move_folder(self, filename: str, folder_id: Optional[str]) -> bool:
+        safe = self._safe_name(filename)
+        p = self.root_dir / safe
+        if not p.exists():
+            return False
+        meta = self._load_meta()
+        if folder_id:
+            meta[safe] = folder_id
+        else:
+            meta.pop(safe, None)
+        self._save_meta(meta)
+        return True
+
     def delete(self, filename: str) -> bool:
-        p = self.root_dir / self._safe_name(filename)
+        safe = self._safe_name(filename)
+        p = self.root_dir / safe
         if not p.exists():
             return False
         p.unlink()
+        meta = self._load_meta()
+        if safe in meta:
+            meta.pop(safe)
+            self._save_meta(meta)
         return True

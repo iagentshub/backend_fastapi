@@ -50,6 +50,19 @@ async def save_memory(
     return _storage.save(filename, content)
 
 
+@router.patch("/{filename}")
+async def patch_memory(
+    filename: str, request: Request, user: str = Depends(require_auth)
+) -> Dict[str, Any]:
+    if is_guest(user):
+        return {"ok": True}
+    body = await request.json()
+    folder_id = body.get("folder_id") or None
+    if not _storage.move_folder(filename, folder_id):
+        raise HTTPException(status_code=404, detail="Archivo de memoria no encontrado")
+    return {"ok": True, "folder_id": folder_id}
+
+
 @router.delete("/{filename}")
 async def delete_memory(
     filename: str, user: str = Depends(require_auth)

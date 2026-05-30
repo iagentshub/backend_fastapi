@@ -106,6 +106,9 @@ class Agent:
     memory_file: Optional[str] = None
     routines: List[dict] = field(default_factory=list)
 
+    # ── Organisation ──────────────────────────────────────────────────────────
+    folder_id: Optional[str] = None
+
     # ── Audit ─────────────────────────────────────────────────────────────────
     created_at: str = ""
     updated_at: str = ""
@@ -149,6 +152,7 @@ class Agent:
             use_memory=bool(data.get("use_memory", False)),
             memory_file=str(data.get("memory_file") or "").strip() or None,
             routines=[r for r in (data.get("routines") or []) if isinstance(r, dict)],
+            folder_id=str(data.get("folder_id") or "").strip() or None,
             created_at=str(data.get("created_at") or ""),
             updated_at=str(data.get("updated_at") or ""),
             owner_id=str(data["owner_id"]).strip() or None if data.get("owner_id") else None,
@@ -178,6 +182,7 @@ class Agent:
             "use_memory": self.use_memory,
             "memory_file": self.memory_file,
             "routines": self.routines,
+            "folder_id": self.folder_id,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "owner_id": self.owner_id,
