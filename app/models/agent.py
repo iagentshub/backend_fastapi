@@ -109,6 +109,9 @@ class Agent:
     # ── Organisation ──────────────────────────────────────────────────────────
     folder_id: Optional[str] = None
 
+    # ── Runtime-only (not persisted) ──────────────────────────────────────────
+    resolved_skills: List[dict] = field(default_factory=list)
+
     # ── Audit ─────────────────────────────────────────────────────────────────
     created_at: str = ""
     updated_at: str = ""
@@ -156,6 +159,7 @@ class Agent:
             created_at=str(data.get("created_at") or ""),
             updated_at=str(data.get("updated_at") or ""),
             owner_id=str(data["owner_id"]).strip() or None if data.get("owner_id") else None,
+            resolved_skills=[r for r in (data.get("_resolved_skills") or []) if isinstance(r, dict)],
         )
 
     # ── Serialisation ─────────────────────────────────────────────────────────
@@ -230,5 +234,44 @@ class Agent:
                 body.append(self.system_prompt)
             content = "\n".join(fm + body).strip() + "\n"
             return content, "text/markdown; charset=utf-8", f"{self.id}.md"
+
+        if fmt == "mcp":
+            import re
+
+            def _to_fn_name(s: str) -> str:
+                slug = re.sub(r"[^a-z0-9]+", "_", s.lower()).strip("_")
+                return slug or "tool"
+
+            lines: List[str] = [
+                "from mcp.server.fastmcp import FastMCP",
+                "",
+                f'mcp = FastMCP("{self.name}")',
+            ]
+            if self.resolved_skills:
+                for sk in self.resolved_skills:
+                    fn = _to_fn_name(sk.get("name") or sk.get("id") or "tool")
+                    desc = (sk.get("description") or "").replace('"', '\\"')
+                    lines += [
+                        "",
+                        "",
+                        "@mcp.tool()",
+                        f'def {fn}(prompt: str) -> str:',
+                        f'    """{desc}"""',
+                        "    raise NotImplementedError",
+                    ]
+            else:
+                agent_fn = _to_fn_name(self.name)
+                desc = (self.description or self.name).replace('"', '\\"')
+                lines += [
+                    "",
+                    "",
+                    "@mcp.tool()",
+                    f'def {agent_fn}(prompt: str) -> str:',
+                    f'    """{desc}"""',
+                    "    raise NotImplementedError",
+                ]
+            lines += ["", "", 'if __name__ == "__main__":', "    mcp.run()"]
+            content = "\n".join(lines) + "\n"
+            return content, "text/x-python", f"{self.id}-mcp.py"
 
         raise NotImplementedError(f"Export format {fmt!r} not supported for agent_type={self.agent_type!r}")

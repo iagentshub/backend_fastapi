@@ -69,6 +69,7 @@ class OpenAIAgent(Agent):
             payload["presence_penalty"] = self.presence_penalty
         if self.seed is not None:
             payload["seed"] = self.seed
+        payload["tool_choice"] = self.tool_choice
         if self.json_schema:
             payload["response_format"] = {"type": "json_schema", "json_schema": self.json_schema}
         content = json.dumps(payload, indent=2, ensure_ascii=False)

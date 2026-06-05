@@ -174,7 +174,7 @@ async def move_agent_folder(
 async def export_agent(
     agent_id: str, fmt: str, user: str = Depends(require_auth)
 ) -> Response:
-    """fmt: openai | claude | github"""
+    """fmt: openai | claude | github | mcp"""
     if is_guest(user):
         s = get_session(user)
         a = next((ag for ag in s.agents if ag.get("id") == agent_id), None) or _agents.get(agent_id, scope="public")
@@ -186,18 +186,28 @@ async def export_agent(
         raise HTTPException(status_code=404, detail="Agente no encontrado")
     a = _apply_locale(a, get_locale())
 
-    # For non-Claude formats inject skills into system_prompt.
-    # Claude format ships skills as separate .claude/commands/ files instead.
-    if fmt != "claude":
-        skills_text = ""
-        for sid in (a.get("skills") or []):
-            for scope in ("public", "private"):
-                sk = _skills.get(scope, sid)
-                if sk:
-                    skills_text += f"\n\n## Skill: {sk.get('name', sid)}\n{sk.get('content', '')}"
-                    break
+    # Resolve skills once; each format decides how to embed them.
+    resolved_skills = []
+    for sid in (a.get("skills") or []):
+        for scope in ("public", "private"):
+            sk = _skills.get(scope, sid)
+            if sk:
+                resolved_skills.append(sk)
+                break
+
+    # OpenAI: inject skills as text into system_prompt.
+    # Claude/GitHub/MCP handle skills via dedicated file structures or resolved_skills.
+    if fmt == "openai":
+        skills_text = "".join(
+            f"\n\n## Skill: {sk.get('name', '')}\n{sk.get('content', '')}"
+            for sk in resolved_skills
+        )
         if skills_text:
             a = {**a, "system_prompt": (str(a.get("system_prompt") or "").strip() + skills_text).strip()}
+
+    # Pass resolved skills for MCP tool generation
+    if fmt == "mcp":
+        a = {**a, "_resolved_skills": resolved_skills}
 
     agent_obj = Agent.from_dict(a)
     try:
@@ -210,25 +220,19 @@ async def export_agent(
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.writestr(f".claude/agents/{slug}.md", content)
-            for sid in (a.get("skills") or []):
-                for scope in ("public", "private"):
-                    sk = _skills.get(scope, sid)
-                    if sk:
-                        sk_name = sk.get("name", sid)
-                        sk_slug = _name_slug(sk_name)
-                        sk_desc = str(sk.get("description") or "")[:200]
-                        skill_md = (
-                            f"---\nname: {sk_name}\ndescription: {sk_desc}\n---\n\n"
-                            f"{sk.get('content', '')}"
-                        )
-                        # Embed as Claude Code command (flat usage inside project)
-                        zf.writestr(f".claude/commands/{sk_slug}/Skill.md", skill_md)
-                        # Also embed as a ready-to-import skill ZIP (native claude.ai format)
-                        skill_zip_buf = io.BytesIO()
-                        with zipfile.ZipFile(skill_zip_buf, "w", zipfile.ZIP_DEFLATED) as szf:
-                            szf.writestr(f"{sk_slug}/Skill.md", skill_md)
-                        zf.writestr(f"skills/{sk_slug}.zip", skill_zip_buf.getvalue())
-                        break
+            for sk in resolved_skills:
+                sk_name = sk.get("name", "")
+                sk_slug = _name_slug(sk_name)
+                sk_desc = str(sk.get("description") or "")[:200]
+                skill_md = (
+                    f"---\nname: {sk_name}\ndescription: {sk_desc}\n---\n\n"
+                    f"{sk.get('content', '')}"
+                )
+                zf.writestr(f".claude/commands/{sk_slug}/Skill.md", skill_md)
+                skill_zip_buf = io.BytesIO()
+                with zipfile.ZipFile(skill_zip_buf, "w", zipfile.ZIP_DEFLATED) as szf:
+                    szf.writestr(f"{sk_slug}/Skill.md", skill_md)
+                zf.writestr(f"skills/{sk_slug}.zip", skill_zip_buf.getvalue())
             mem_file = a.get("memory_file") or f"{agent_id}.md"
             mem_content = memory_store.get(mem_file)
             if mem_content and mem_content.strip():
@@ -244,6 +248,15 @@ async def export_agent(
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.writestr(f".github/agents/{slug}.md", content)
+            for sk in resolved_skills:
+                sk_name = sk.get("name", "")
+                sk_slug = _name_slug(sk_name)
+                sk_desc = str(sk.get("description") or "")[:200]
+                skill_md = (
+                    f"---\nname: {sk_name}\ndescription: {sk_desc}\n---\n\n"
+                    f"{sk.get('content', '')}"
+                )
+                zf.writestr(f".github/skills/{sk_slug}/SKILL.md", skill_md)
         return Response(
             content=buf.getvalue(),
             media_type="application/zip",
