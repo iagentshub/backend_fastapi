@@ -1,6 +1,4 @@
 """Rate limiter simple basado en ventana deslizante, sin dependencias externas."""
-from __future__ import annotations
-
 import time
 from collections import defaultdict
 from typing import Callable
