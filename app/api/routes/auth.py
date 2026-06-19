@@ -306,7 +306,25 @@ async def admin_list_users(
     verified: Optional[str] = None,
     _: str = Depends(require_admin),
 ) -> List[Dict[str, Any]]:
+    from app.config.data import DB_FILE
+    from app.storage.db import close_db, open_db
     users = list_users()
+    # Agregar tokens consumidos por usuario
+    conn = open_db(DB_FILE)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT owner_id, COALESCE(SUM(tokens_in), 0), COALESCE(SUM(tokens_out), 0) "
+            "FROM connections GROUP BY owner_id"
+        )
+        token_map = {r[0]: {"tokens_in": r[1], "tokens_out": r[2]} for r in cur.fetchall()}
+    finally:
+        close_db(conn)
+    for u in users:
+        username = u.get("username")
+        tokens = token_map.get(username, {"tokens_in": 0, "tokens_out": 0})
+        u["tokens_in"] = tokens["tokens_in"]
+        u["tokens_out"] = tokens["tokens_out"]
     if q:
         q_low = q.lower()
         users = [u for u in users if q_low in (u.get("username") or "").lower() or q_low in (u.get("email") or "").lower()]
@@ -427,15 +445,23 @@ async def admin_list_agents(_: str = Depends(require_admin)) -> List[Dict[str, A
         cur = conn.cursor()
         cur.execute("SELECT username, email FROM users")
         email_map = {r[0]: r[1] for r in cur.fetchall()}
-        cur.execute("SELECT id, owner_id FROM connections")
-        conn_owner_map = {r[0]: r[1] for r in cur.fetchall()}
+        cur.execute("SELECT id, owner_id, tokens_in, tokens_out FROM connections")
+        conn_data = {r[0]: {"owner_id": r[1], "tokens_in": r[2], "tokens_out": r[3]} for r in cur.fetchall()}
     finally:
         close_db(conn)
     for a in agents:
+        conn_id = a.get("connection_id")
         owner = a.get("owner_id")
-        if not owner and a.get("connection_id"):
-            owner = conn_owner_map.get(a["connection_id"])
+        if not owner and conn_id and conn_id in conn_data:
+            owner = conn_data[conn_id]["owner_id"]
         a["owner_email"] = email_map.get(owner, owner) if owner else None
+        # Agregar tokens de la conexión asociada
+        if conn_id and conn_id in conn_data:
+            a["tokens_in"] = conn_data[conn_id]["tokens_in"]
+            a["tokens_out"] = conn_data[conn_id]["tokens_out"]
+        else:
+            a["tokens_in"] = 0
+            a["tokens_out"] = 0
     return agents
 
 
@@ -545,12 +571,25 @@ async def admin_list_teams(_: str = Depends(require_admin)) -> List[Dict[str, An
             "ORDER BY t.created_at DESC"
         )
         rows = cur.fetchall()
+        # Calcular tokens por equipo (suma de conexiones compartidas + conexiones de miembros)
+        cur.execute(
+            "SELECT t.id, "
+            "COALESCE(SUM(c.tokens_in), 0) AS tokens_in, "
+            "COALESCE(SUM(c.tokens_out), 0) AS tokens_out "
+            "FROM teams t "
+            "LEFT JOIN team_members tm ON t.id = tm.team_id "
+            "LEFT JOIN connections c ON tm.username = c.owner_id "
+            "GROUP BY t.id"
+        )
+        token_map = {r[0]: {"tokens_in": r[1], "tokens_out": r[2]} for r in cur.fetchall()}
     finally:
         close_db(conn)
     return [
         {
             "id": r[0], "name": r[1], "created_by": r[2],
             "created_at": r[3], "member_count": r[4], "resource_count": r[5],
+            "tokens_in": token_map.get(r[0], {}).get("tokens_in", 0),
+            "tokens_out": token_map.get(r[0], {}).get("tokens_out", 0),
         }
         for r in rows
     ]
