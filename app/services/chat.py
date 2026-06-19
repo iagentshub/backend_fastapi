@@ -1,4 +1,5 @@
 """Servicio de chat — streaming SSE hacia los proveedores LLM."""
+
 from __future__ import annotations
 
 import ipaddress
@@ -11,7 +12,12 @@ if TYPE_CHECKING:
     from app.models.agent import Agent
 from urllib.parse import urlparse
 
-from app.config.providers import ANTHROPIC_API_VERSION, OPENAI_COMPAT_URLS, PROVIDER_BASE_URLS, PROVIDER_DEFAULT_MODELS
+from app.config.providers import (
+    ANTHROPIC_API_VERSION,
+    OPENAI_COMPAT_URLS,
+    PROVIDER_BASE_URLS,
+    PROVIDER_DEFAULT_MODELS,
+)
 from app.config.security import PRIVATE_HOST_PREFIXES
 
 
@@ -41,7 +47,6 @@ def _validate_ollama_host(host: str) -> None:
         # No es una IP literal — es un hostname; se permite (el usuario lo configuró)
 
 
-
 async def stream_chat(
     agent: "Dict[str, Any] | Agent",
     conn: Dict[str, Any],
@@ -59,7 +64,9 @@ async def stream_chat(
     conn_type = str(conn.get("type") or "").lower()
     api_key = str(conn.get("api_key") or "")
     # Model: connection → agent → provider default
-    model = str(conn.get("model") or agent.model or PROVIDER_DEFAULT_MODELS.get(conn_type) or "")
+    model = str(
+        conn.get("model") or agent.model or PROVIDER_DEFAULT_MODELS.get(conn_type) or ""
+    )
     temperature = agent.temperature
     max_tokens = agent.max_tokens
     timeout = agent.timeout
@@ -70,7 +77,9 @@ async def stream_chat(
         for scope in ("public", "private"):
             sk = skill_storage.get(scope, sid)
             if sk:
-                system += f"\n\n## Skill: {sk.get('name', sid)}\n{sk.get('content', '')}"
+                system += (
+                    f"\n\n## Skill: {sk.get('name', sid)}\n{sk.get('content', '')}"
+                )
                 break
 
     # Knowledge injection (URLs + documents attached to the agent)
@@ -78,7 +87,9 @@ async def stream_chat(
         for kid in agent.knowledge:
             item = knowledge_storage.get(kid)
             if item and item.get("content"):
-                system += f"\n\n## Conocimiento: {item.get('title', kid)}\n{item['content']}"
+                system += (
+                    f"\n\n## Conocimiento: {item.get('title', kid)}\n{item['content']}"
+                )
 
     # Memory injection
     if agent.use_memory and memory_storage is not None:
@@ -111,7 +122,9 @@ async def stream_chat(
 
             def _stream_openai() -> tuple:
                 data = json.dumps(payload).encode()
-                req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+                req = urllib.request.Request(
+                    url, data=data, headers=headers, method="POST"
+                )
                 full_reply = ""
                 tok_in = tok_out = 0
                 with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -128,7 +141,9 @@ async def stream_chat(
                             continue
                         choices = obj.get("choices") or []
                         if choices:
-                            full_reply += choices[0].get("delta", {}).get("content") or ""
+                            full_reply += (
+                                choices[0].get("delta", {}).get("content") or ""
+                            )
                         usage = obj.get("usage") or {}
                         if usage:
                             tok_in = usage.get("prompt_tokens", tok_in)
@@ -136,10 +151,22 @@ async def stream_chat(
                 return full_reply, tok_in, tok_out
 
             reply, tok_in, tok_out = await asyncio.to_thread(_stream_openai)
-            yield _sse({"type": "done", "reply": reply, "tokens": {"in": tok_in, "out": tok_out}})
+            yield _sse(
+                {
+                    "type": "done",
+                    "reply": reply,
+                    "tokens": {"in": tok_in, "out": tok_out},
+                }
+            )
 
         elif conn_type == "claude":
-            url = (conn.get("url") or f"{PROVIDER_BASE_URLS['claude']}/messages").rstrip("/")
+            url = (
+                conn.get("url") or f"{PROVIDER_BASE_URLS['claude']}/messages"
+            ).strip()
+            # Asegurar que termina en /messages
+            if not url.endswith("/messages"):
+                url = url.rstrip("/") + "/messages"
+
             payload = {
                 "model": model,
                 "messages": history,
@@ -160,7 +187,9 @@ async def stream_chat(
 
             def _stream_claude() -> tuple:
                 data = json.dumps(payload).encode()
-                req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+                req = urllib.request.Request(
+                    url, data=data, headers=headers, method="POST"
+                )
                 full_reply = ""
                 tok_in = tok_out = 0
                 with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -184,7 +213,13 @@ async def stream_chat(
                 return full_reply, tok_in, tok_out
 
             reply, tok_in, tok_out = await asyncio.to_thread(_stream_claude)
-            yield _sse({"type": "done", "reply": reply, "tokens": {"in": tok_in, "out": tok_out}})
+            yield _sse(
+                {
+                    "type": "done",
+                    "reply": reply,
+                    "tokens": {"in": tok_in, "out": tok_out},
+                }
+            )
 
         elif conn_type == "ollama":
             host = str(conn.get("host") or "http://localhost:11434").rstrip("/")
@@ -203,8 +238,10 @@ async def stream_chat(
             def _call_ollama() -> tuple:
                 data = json.dumps(payload_o).encode()
                 req = urllib.request.Request(
-                    f"{host}/api/chat", data=data,
-                    headers={"Content-Type": "application/json"}, method="POST",
+                    f"{host}/api/chat",
+                    data=data,
+                    headers={"Content-Type": "application/json"},
+                    method="POST",
                 )
                 with urllib.request.urlopen(req, timeout=timeout) as resp:
                     body = json.loads(resp.read().decode("utf-8"))
@@ -213,10 +250,21 @@ async def stream_chat(
                 return body.get("message", {}).get("content") or "", tok_in, tok_out
 
             reply, tok_in, tok_out = await asyncio.to_thread(_call_ollama)
-            yield _sse({"type": "done", "reply": reply, "tokens": {"in": tok_in, "out": tok_out}})
+            yield _sse(
+                {
+                    "type": "done",
+                    "reply": reply,
+                    "tokens": {"in": tok_in, "out": tok_out},
+                }
+            )
 
         else:
-            yield _sse({"type": "error", "message": f"Tipo de conexión '{conn_type}' no soportado"})
+            yield _sse(
+                {
+                    "type": "error",
+                    "message": f"Tipo de conexión '{conn_type}' no soportado",
+                }
+            )
 
     except urllib.error.URLError as exc:
         yield _sse({"type": "error", "message": f"Error de conexión: {exc}"})
@@ -233,6 +281,7 @@ async def auto_update_memory(
 ) -> None:
     """Tras cada turno de chat, pide al LLM que actualice el fichero de memoria del agente."""
     from app.models.agent import Agent
+
     if not isinstance(agent, Agent):
         agent = Agent.from_dict(agent)
     mem_file = agent.memory_file or f"{agent.id}.md"
@@ -273,7 +322,9 @@ async def auto_update_memory(
 
     try:
         updated = ""
-        async for chunk in stream_chat(mem_agent, conn, [{"role": "user", "content": user_content}], None, None):
+        async for chunk in stream_chat(
+            mem_agent, conn, [{"role": "user", "content": user_content}], None, None
+        ):
             if chunk.startswith("data: "):
                 try:
                     ev = json.loads(chunk[6:].strip())

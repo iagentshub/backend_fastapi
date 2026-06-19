@@ -1,4 +1,5 @@
 """Anthropic / Claude provider — fields + test."""
+
 from __future__ import annotations
 
 import json
@@ -34,13 +35,22 @@ class AnthropicProvider(BaseProvider):
         if not api_key:
             return TestResult(False, "Falta la API Key")
         try:
-            payload = json.dumps({
-                "model": (config.get("model") or ANTHROPIC_TEST_MODEL).strip() or ANTHROPIC_TEST_MODEL,
-                "max_tokens": 1,
-                "messages": [{"role": "user", "content": "ping"}],
-            }).encode()
+            # Usar URL personalizada si está configurada
+            url = (config.get("url") or f"{_BASE_URL}/messages").strip()
+            # Asegurar que termina en /messages
+            if not url.endswith("/messages"):
+                url = url.rstrip("/") + "/messages"
+
+            payload = json.dumps(
+                {
+                    "model": (config.get("model") or ANTHROPIC_TEST_MODEL).strip()
+                    or ANTHROPIC_TEST_MODEL,
+                    "max_tokens": 1,
+                    "messages": [{"role": "user", "content": "ping"}],
+                }
+            ).encode()
             req = urllib.request.Request(
-                f"{_BASE_URL}/messages",
+                url,
                 data=payload,
                 headers={
                     "x-api-key": api_key,
