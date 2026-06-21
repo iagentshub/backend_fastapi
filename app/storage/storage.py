@@ -345,6 +345,15 @@ class AgentStorage:
         p.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
         return True
 
+    def add_tokens(self, agent_id: str, tokens_in: int, tokens_out: int) -> None:
+        p = self._path("private", agent_id)
+        if not p.exists():
+            return
+        data = json.loads(p.read_text(encoding="utf-8"))
+        data["tokens_in"] = int(data.get("tokens_in") or 0) + tokens_in
+        data["tokens_out"] = int(data.get("tokens_out") or 0) + tokens_out
+        p.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+
     def get_model(self, agent_id: str, scope: Optional[str] = None) -> Optional[Agent]:
         """Typed accessor — returns the correct Agent subclass."""
         data = self.get(agent_id, scope)

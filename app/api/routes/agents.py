@@ -344,6 +344,8 @@ async def chat(
             conn_id = conn.get("id") or ""
             if conn_id and (tok_in or tok_out):
                 _conns.add_tokens(conn_id, tok_in, tok_out)
+            if (tok_in or tok_out) and a.get("scope", "private") == "private":
+                _agents.add_tokens(agent_id, tok_in, tok_out)
             if conversation_id:
                 reply = ev.get("reply", "")
                 user_msg = next(
