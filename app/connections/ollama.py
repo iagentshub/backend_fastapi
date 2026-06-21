@@ -15,8 +15,8 @@ class OllamaProvider(BaseProvider):
     label = "Ollama"
     icon = ""
     fields = [
-        FieldDef("host", "URL del servidor", "text", "http://localhost:11434", required=True),
-        FieldDef("model", "Modelo por defecto", "text", "llama3"),
+        FieldDef("host", "URL del servidor", "text", "http://localhost:11434", False, "http://localhost:11434"),
+        FieldDef("model", "Modelo (opcional)", "text", "ej: llama3, mistral:latest"),
     ]
 
     @classmethod
@@ -36,9 +36,7 @@ class OllamaProvider(BaseProvider):
 
     @classmethod
     def test(cls, config: Dict[str, Any]) -> TestResult:
-        host = (config.get("host") or "").strip().rstrip("/")
-        if not host:
-            return TestResult(False, "Falta la URL del servidor")
+        host = (config.get("host") or "http://localhost:11434").strip().rstrip("/")
         try:
             data = cls._fetch_tags(host)
         except urllib.error.HTTPError as e:

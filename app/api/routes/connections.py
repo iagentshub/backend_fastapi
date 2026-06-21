@@ -2,6 +2,8 @@
 from __future__ import annotations
 
 import asyncio
+import json as _json
+import urllib.request
 from typing import Any, Dict, List, Set
 from uuid import uuid4
 
@@ -47,12 +49,117 @@ def _owner(user: str) -> str | None:
     return None if get_user_role(user) == "admin" else user
 
 
-# IMPORTANTE: las rutas literales (/providers, /test-all) deben definirse
+def _fetch_ollama_models(host: str) -> List[str]:
+    """Llama a /api/tags y devuelve los nombres de modelos instalados."""
+    for h in [host, host.replace("localhost", "host.docker.internal").replace("127.0.0.1", "host.docker.internal")]:
+        if h == host or h != host:  # always try primary first
+            pass
+        try:
+            req = urllib.request.Request(f"{h}/api/tags")
+            with urllib.request.urlopen(req, timeout=4) as r:
+                data = _json.loads(r.read())
+            return [m["name"] for m in (data.get("models") or []) if m.get("name")]
+        except Exception:
+            if h == host:
+                alt = host.replace("localhost", "host.docker.internal").replace("127.0.0.1", "host.docker.internal")
+                if alt == host:
+                    return []
+                try:
+                    req2 = urllib.request.Request(f"{alt}/api/tags")
+                    with urllib.request.urlopen(req2, timeout=4) as r:
+                        data = _json.loads(r.read())
+                    return [m["name"] for m in (data.get("models") or []) if m.get("name")]
+                except Exception:
+                    return []
+    return []
+
+
+async def _ollama_conns_to_models(ollama_conns: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """
+    Convierte todas las conexiones Ollama en una lista de entradas por modelo,
+    sin duplicados. Las conexiones con modelo específico tienen prioridad sobre
+    las generadas por expansión de la conexión base.
+    """
+    seen: set = set()
+    result: List[Dict[str, Any]] = []
+
+    # 1. Conexiones con modelo ya definido → mostrar directamente con nombre = modelo
+    for c in ollama_conns:
+        model = (c.get("model") or "").strip()
+        if not model:
+            continue
+        if model in seen:
+            continue
+        seen.add(model)
+        clean = {k: v for k, v in c.items() if k != "api_key"}
+        clean["name"] = model
+        result.append(clean)
+
+    # 2. Conexiones base (sin modelo) → expandir desde /api/tags y añadir los no vistos
+    base_conns = [c for c in ollama_conns if not (c.get("model") or "").strip()]
+    if base_conns:
+        base = base_conns[0]
+        host = (base.get("host") or "http://localhost:11434").rstrip("/")
+        models = await asyncio.to_thread(_fetch_ollama_models, host)
+        base_clean = {k: v for k, v in base.items() if k != "api_key"}
+        if models:
+            for model in models:
+                if model in seen:
+                    continue
+                seen.add(model)
+                result.append({**base_clean, "id": f"{base['id']}::{model}", "name": model, "model": model})
+        else:
+            # Ollama no responde o sin modelos: mostrar la conexión base tal cual
+            result.append(base_clean)
+
+    return result
+
+
+# IMPORTANTE: las rutas literales (/providers, /raw, /test-all) deben definirse
 # ANTES que las rutas con parámetros (/{conn_id}) para que FastAPI las priorice.
+
+@router.get("/raw")
+async def list_connections_raw(user: str = Depends(require_auth)) -> List[Dict[str, Any]]:
+    """Devuelve las conexiones tal como están en BD, sin expansión de modelos Ollama.
+    Usado por el perfil para gestionar credenciales base."""
+    if is_guest(user):
+        raw = get_session(user).connections
+    else:
+        role = get_user_role(user)
+        raw = _storage.list(_owner(user))
+        if role not in ("admin",):
+            shared_ids = set(_sharing_ts.get_user_shared_resource_ids(user, "connection"))
+            own_ids = {i["id"] for i in raw}
+            for rid in (shared_ids - own_ids):
+                c = _storage.get(rid)
+                if c:
+                    c["_shared"] = True
+                    raw.append(c)
+    return [{k: v for k, v in c.items() if k != "api_key"} for c in raw]
+
 
 @router.get("/providers")
 async def list_providers(_: str = Depends(require_auth)) -> List[Dict[str, Any]]:
     return all_providers()
+
+
+@router.post("/ollama-models")
+async def ollama_models(
+    request: Request,
+    _: str = Depends(require_auth),
+) -> Dict[str, Any]:
+    """Devuelve los modelos instalados en una instancia Ollama."""
+    import urllib.request, json as _json
+    body = await request.json()
+    host = (body.get("host") or "http://localhost:11434").strip().rstrip("/")
+    try:
+        req = urllib.request.Request(f"{host}/api/tags")
+        with urllib.request.urlopen(req, timeout=5) as r:
+            data = _json.loads(r.read())
+        models = [m["name"] for m in (data.get("models") or []) if m.get("name")]
+        return {"models": models}
+    except Exception as exc:
+        return {"models": [], "error": str(exc)}
 
 
 @router.post("/test-all")
@@ -84,18 +191,28 @@ async def test_all_connections(
 @router.get("")
 async def list_connections(user: str = Depends(require_auth)) -> List[Dict[str, Any]]:
     if is_guest(user):
-        return [{k: v for k, v in c.items() if k != "api_key"} for c in get_session(user).connections]
-    role = get_user_role(user)
-    items = _storage.list(_owner(user))
-    if role not in ("admin",):
-        shared_ids = set(_sharing_ts.get_user_shared_resource_ids(user, "connection"))
-        own_ids = {i["id"] for i in items}
-        for rid in (shared_ids - own_ids):
-            c = _storage.get(rid)
-            if c:
-                c["_shared"] = True
-                items.append(c)
-    return [{k: v for k, v in c.items() if k not in ("api_key",)} for c in items]
+        raw = get_session(user).connections
+    else:
+        role = get_user_role(user)
+        raw = _storage.list(_owner(user))
+        if role not in ("admin",):
+            shared_ids = set(_sharing_ts.get_user_shared_resource_ids(user, "connection"))
+            own_ids = {i["id"] for i in raw}
+            for rid in (shared_ids - own_ids):
+                c = _storage.get(rid)
+                if c:
+                    c["_shared"] = True
+                    raw.append(c)
+
+    non_ollama = [c for c in raw if c.get("type") != "ollama"]
+    ollama_raw = [c for c in raw if c.get("type") == "ollama"]
+
+    result: List[Dict[str, Any]] = [{k: v for k, v in c.items() if k != "api_key"} for c in non_ollama]
+
+    if ollama_raw:
+        result.extend(await _ollama_conns_to_models(ollama_raw))
+
+    return result
 
 
 @router.post("")

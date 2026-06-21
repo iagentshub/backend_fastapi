@@ -31,15 +31,15 @@ def _validate_ollama_host(host: str) -> None:
     if parsed.scheme not in ("http", "https"):
         raise ValueError(f"Protocolo no permitido para Ollama: {parsed.scheme!r}")
     hostname = (parsed.hostname or "").lower()
-    if hostname in ("localhost",):
-        return  # localhost es el caso de uso legítimo habitual
+    if hostname in ("localhost", "127.0.0.1", "::1"):
+        return  # loopback local — caso de uso legítimo para Ollama
     # Bloquear por prefijo de texto (cubre la mayoría de casos sin DNS)
     if any(hostname.startswith(p) for p in PRIVATE_HOST_PREFIXES):
         raise ValueError(f"Host Ollama no permitido: {hostname!r}")
-    # Bloquear mediante ipaddress si es una IP literal
+    # Bloquear mediante ipaddress si es una IP literal (excluye loopback ya permitido arriba)
     try:
         addr = ipaddress.ip_address(hostname)
-        if addr.is_private or addr.is_loopback or addr.is_link_local:
+        if addr.is_private or addr.is_link_local:
             raise ValueError(f"Host Ollama no permitido: {hostname!r}")
     except ValueError as exc:
         if "no permitido" in str(exc):

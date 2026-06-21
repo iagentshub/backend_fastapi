@@ -297,14 +297,20 @@ async def chat(
     history: List[Dict[str, Any]] = body.get("messages") or []
     conversation_id: str = str(body.get("conversation_id") or "").strip()
 
+    # Ollama virtual connections: "base_id::model_name"
+    raw_conn_id = a.get("connection_id") or ""
+    if "::" in raw_conn_id:
+        base_conn_id, ollama_model = raw_conn_id.split("::", 1)
+    else:
+        base_conn_id, ollama_model = raw_conn_id, None
+
     if is_guest(user):
         s = get_session(user)
-        conn_id = a.get("connection_id") or ""
-        conn = next((c for c in s.connections if c.get("id") == conn_id), None)
+        conn = next((c for c in s.connections if c.get("id") == base_conn_id), None)
         memory_store = GuestMemoryAdapter(s)
         knowledge_store = GuestKnowledgeAdapter(s)
     else:
-        conn_id = a.get("connection_id") or ""
+        conn_id = base_conn_id
         # Team connection permission check (via_agent)
         if role not in ("admin",):
             from app.api.routes._team_filter import get_team_allowed_ids as _gta
@@ -314,6 +320,9 @@ async def chat(
         conn = _conns.get(conn_id, _conn_owner(user))
         memory_store = _memory
         knowledge_store = _knowledge
+
+    if conn and ollama_model:
+        conn = {**conn, "model": ollama_model}
 
     if not conn:
         raise HTTPException(status_code=422, detail="El agente no tiene conexión configurada")
@@ -341,9 +350,8 @@ async def chat(
         tok_in = int(tokens.get("in") or 0)
         tok_out = int(tokens.get("out") or 0)
         if not is_guest(user):
-            conn_id = conn.get("id") or ""
-            if conn_id and (tok_in or tok_out):
-                _conns.add_tokens(conn_id, tok_in, tok_out)
+            if base_conn_id and (tok_in or tok_out):
+                _conns.add_tokens(base_conn_id, tok_in, tok_out)
             if (tok_in or tok_out) and a.get("scope", "private") == "private":
                 _agents.add_tokens(agent_id, tok_in, tok_out)
             if conversation_id:
