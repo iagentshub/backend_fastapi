@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import uuid
 
-import pytest
 from fastapi.testclient import TestClient
 
 
@@ -88,7 +87,6 @@ def test_share_skill_invalid_type(client):
 def test_share_skill_not_owner(client, tmp_path):
     """User B cannot share a skill owned by user A."""
     from app.api.app import create_app
-    from app.auth.auth import create_token, register_user
 
     app = create_app()
     alice_c = TestClient(app, raise_server_exceptions=True)

@@ -5,7 +5,6 @@ import io
 import zipfile
 
 import httpx
-import pytest
 
 from tests.e2e.conftest import create_agent, create_skill, zip_names, zip_read
 

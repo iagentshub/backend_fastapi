@@ -149,7 +149,8 @@ async def ollama_models(
     _: str = Depends(require_auth),
 ) -> Dict[str, Any]:
     """Devuelve los modelos instalados en una instancia Ollama."""
-    import urllib.request, json as _json
+    import urllib.request
+    import json as _json
     body = await request.json()
     host = (body.get("host") or "http://localhost:11434").strip().rstrip("/")
     try:

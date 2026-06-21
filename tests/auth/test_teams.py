@@ -1,7 +1,6 @@
 """Tests de funciones auth relacionadas con equipos."""
 from __future__ import annotations
 
-import pytest
 
 from app.auth.auth import (
     demote_if_no_teams,
@@ -78,7 +77,6 @@ def test_demote_non_gestor_user():
 
 def test_send_team_invitation_email_no_smtp(caplog):
     """Without SMTP configured, should log the invitation URL."""
-    import logging
     send_team_invitation_email(
         "invited@x.com",
         "Equipo Test",
