@@ -383,7 +383,7 @@ class AgentStorage:
             "model": a.get("model", ""),
             "temperature": a.get("temperature", 0.7),
             "max_tokens": a.get("max_tokens"),
-            "timeout": a.get("timeout", 120),
+            "timeout": a.get("timeout"),
             "skills": a.get("skills", []),
             "use_memory": a.get("use_memory", False),
             "memory_file": a.get("memory_file"),

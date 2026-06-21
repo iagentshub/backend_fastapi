@@ -97,7 +97,7 @@ class Agent:
     system_prompt: str = ""   # maps to: Claude→system, OpenAI→instructions, GitHub→MD body
     temperature: float = 0.7
     max_tokens: Optional[int] = None
-    timeout: int = 120        # consumed by chat.py but was not persisted before
+    timeout: Optional[int] = None   # None = usar preferencia global; 0 = indefinido
 
     # ── Composition ───────────────────────────────────────────────────────────
     skills: List[str] = field(default_factory=list)
@@ -149,7 +149,7 @@ class Agent:
             system_prompt=str(data.get("system_prompt") or "").strip(),
             temperature=float(data["temperature"]) if data.get("temperature") is not None else 0.7,
             max_tokens=int(data["max_tokens"]) if data.get("max_tokens") else None,
-            timeout=int(data["timeout"]) if data.get("timeout") is not None else 120,
+            timeout=int(data["timeout"]) if data.get("timeout") is not None else None,
             skills=[str(s) for s in (data.get("skills") or []) if s],
             knowledge=[str(k) for k in (data.get("knowledge") or []) if k],
             use_memory=bool(data.get("use_memory", False)),
