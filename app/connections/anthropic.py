@@ -22,7 +22,7 @@ _BASE_URL = PROVIDER_BASE_URLS["claude"]
 class AnthropicProvider(BaseProvider):
     type_id = "claude"
     label = "Anthropic (Claude)"
-    icon = "🟠"
+    icon = ""
     fields = [
         FieldDef("api_key", "API Key", "password", "sk-ant-...", required=True),
         FieldDef("model", "Modelo por defecto", "text", PROVIDER_DEFAULT_MODELS["claude"]),

@@ -16,7 +16,7 @@ _BASE_URL = PROVIDER_BASE_URLS["grok"]
 class GrokProvider(BaseProvider):
     type_id = "grok"
     label = "Grok (xAI)"
-    icon = "⚡"
+    icon = ""
     fields = [
         FieldDef("api_key", "API Key", "password", "xai-...", required=True),
         FieldDef("model", "Modelo por defecto", "text", PROVIDER_DEFAULT_MODELS["grok"]),

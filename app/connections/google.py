@@ -16,7 +16,7 @@ _BASE_URL = PROVIDER_BASE_URLS["gemini"]
 class GoogleProvider(BaseProvider):
     type_id = "gemini"
     label = "Google Gemini"
-    icon = "🔵"
+    icon = ""
     fields = [
         FieldDef("api_key", "API Key", "password", "AIza...", required=True),
         FieldDef("model", "Modelo por defecto", "text", PROVIDER_DEFAULT_MODELS["gemini"]),

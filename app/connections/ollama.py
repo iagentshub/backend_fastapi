@@ -13,7 +13,7 @@ from .base import BaseProvider, FieldDef, TestResult, register
 class OllamaProvider(BaseProvider):
     type_id = "ollama"
     label = "Ollama"
-    icon = "⚫"
+    icon = ""
     fields = [
         FieldDef("host", "URL del servidor", "text", "http://localhost:11434", required=True),
         FieldDef("model", "Modelo por defecto", "text", "llama3"),

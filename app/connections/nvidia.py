@@ -17,7 +17,7 @@ _TEST_MODEL = "meta/llama-3.1-8b-instruct"
 class NvidiaProvider(BaseProvider):
     type_id = "nvidia"
     label = "NVIDIA NIM"
-    icon = "🟩"
+    icon = ""
     fields = [
         FieldDef("api_key", "API Key", "password", "nvapi-...", required=True),
         FieldDef("model", "Modelo por defecto", "text", PROVIDER_DEFAULT_MODELS["nvidia"]),

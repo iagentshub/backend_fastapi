@@ -16,7 +16,7 @@ _BASE_URL = PROVIDER_BASE_URLS["qwen"]
 class QwenProvider(BaseProvider):
     type_id = "qwen"
     label = "Qwen (Alibaba)"
-    icon = "🟣"
+    icon = ""
     fields = [
         FieldDef("api_key", "API Key", "password", "sk-...", required=True),
         FieldDef("model", "Modelo por defecto", "text", PROVIDER_DEFAULT_MODELS["qwen"]),

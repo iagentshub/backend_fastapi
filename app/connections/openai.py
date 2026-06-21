@@ -16,7 +16,7 @@ _BASE_URL = PROVIDER_BASE_URLS["openai"]
 class OpenAIProvider(BaseProvider):
     type_id = "openai"
     label = "OpenAI"
-    icon = "🟢"
+    icon = ""
     fields = [
         FieldDef("api_key", "API Key", "password", "sk-...", required=True),
         FieldDef("model", "Modelo por defecto", "text", PROVIDER_DEFAULT_MODELS["openai"]),
