@@ -228,10 +228,10 @@ async def export_agent(
                     f"---\nname: {sk_name}\ndescription: {sk_desc}\n---\n\n"
                     f"{sk.get('content', '')}"
                 )
-                zf.writestr(f".claude/commands/{sk_slug}/Skill.md", skill_md)
+                zf.writestr(f".claude/skills/{sk_slug}/SKILL.md", skill_md)
                 skill_zip_buf = io.BytesIO()
                 with zipfile.ZipFile(skill_zip_buf, "w", zipfile.ZIP_DEFLATED) as szf:
-                    szf.writestr(f"{sk_slug}/Skill.md", skill_md)
+                    szf.writestr(f"{sk_slug}/SKILL.md", skill_md)
                 zf.writestr(f"skills/{sk_slug}.zip", skill_zip_buf.getvalue())
             mem_file = a.get("memory_file") or f"{agent_id}.md"
             mem_content = memory_store.get(mem_file)

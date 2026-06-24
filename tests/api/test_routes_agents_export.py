@@ -106,14 +106,15 @@ def test_claude_export_agent_frontmatter(admin_client):
     assert "You are a helpful assistant." in content
 
 
-def test_claude_export_skills_as_commands(admin_client):
+def test_claude_export_skills_as_skill_files(admin_client):
     skill = _create_skill(admin_client)
     agent = _create_agent(admin_client, {"skills": [skill["id"]]})
     r = admin_client.get(f"/api/agents/{agent['id']}/export/claude")
     names = _zip_names(r.content)
-    command_files = [n for n in names if n.startswith(".claude/commands/")]
+    skill_files = [n for n in names if n.startswith(".claude/skills/")]
     skill_zips = [n for n in names if n.startswith("skills/") and n.endswith(".zip")]
-    assert len(command_files) == 1, "Skill must appear as a .claude/commands/ file"
+    assert len(skill_files) == 1, "Skill must appear as a .claude/skills/ file"
+    assert skill_files[0].endswith("SKILL.md"), "Skill file must be named SKILL.md"
     assert len(skill_zips) == 1, "Skill must also have a native .zip for import"
     # Skill content must NOT be injected into the agent body
     agent_md = next(n for n in names if n.startswith(".claude/agents/"))

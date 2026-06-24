@@ -294,15 +294,20 @@ class FolderStorage:
             close_db(conn)
         return self.get(folder_id)
 
-    def delete(self, folder_id: str, owner_id: str) -> bool:
+    def delete(self, folder_id: str, owner_id: str, cascade: bool = False) -> bool:
         conn = self._conn()
         try:
             cur = conn.cursor()
-            # Move items to root before deleting folder
-            cur.execute(
-                f"UPDATE knowledge_items SET folder_id = NULL WHERE folder_id = {PH} AND owner_id = {PH}",
-                (folder_id, owner_id),
-            )
+            if cascade:
+                cur.execute(
+                    f"DELETE FROM knowledge_items WHERE folder_id = {PH} AND owner_id = {PH}",
+                    (folder_id, owner_id),
+                )
+            else:
+                cur.execute(
+                    f"UPDATE knowledge_items SET folder_id = NULL WHERE folder_id = {PH} AND owner_id = {PH}",
+                    (folder_id, owner_id),
+                )
             cur.execute(
                 f"DELETE FROM knowledge_folders WHERE id = {PH} AND owner_id = {PH}",
                 (folder_id, owner_id),

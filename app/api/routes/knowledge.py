@@ -10,15 +10,18 @@ from pydantic import BaseModel
 
 from app.api.routes.auth import require_auth
 from app.auth.auth import get_user_role
-from app.config.data import DB_FILE
+from app.config.data import AGENTS_DIR, DB_FILE, SKILLS_DIR
 from app.storage.guest import get_session, is_guest
 from app.storage.knowledge import FolderStorage, KnowledgeStorage, extract_document_text, fetch_url_text
+from app.storage.storage import AgentStorage, SkillStorage
 from app.storage.teams import TeamStorage as _TeamStorage
 
 router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
 
 _storage = KnowledgeStorage(DB_FILE)
 _folders = FolderStorage(DB_FILE)
+_agents  = AgentStorage(AGENTS_DIR)
+_skills  = SkillStorage(SKILLS_DIR)
 _sharing_ts = _TeamStorage(DB_FILE)
 
 _ALLOWED_EXTS = {".txt", ".md", ".pdf"}
@@ -100,11 +103,29 @@ async def rename_folder(
 @router.delete("/folders/{folder_id}")
 async def delete_folder(
     folder_id: str,
+    cascade: bool = False,
     user: str = Depends(require_auth),
 ) -> Dict[str, bool]:
     if is_guest(user):
         raise HTTPException(status_code=403, detail="Los invitados no pueden eliminar carpetas")
-    if not _folders.delete(folder_id, _owner(user) or user):
+    if cascade:
+        folder = _folders.get(folder_id)
+        section = (folder or {}).get("section", "")
+        if section == "agents":
+            for agent in _agents.list(scope="private"):
+                if agent.get("folder_id") == folder_id:
+                    try:
+                        _agents.delete(agent["id"])
+                    except Exception:
+                        pass
+        elif section == "skill":
+            for skill in _skills.list(scope="private"):
+                if skill.get("folder_id") == folder_id:
+                    try:
+                        _skills.delete("private", skill["id"])
+                    except Exception:
+                        pass
+    if not _folders.delete(folder_id, _owner(user) or user, cascade=cascade):
         raise HTTPException(status_code=404, detail="Carpeta no encontrada")
     return {"ok": True}
 
