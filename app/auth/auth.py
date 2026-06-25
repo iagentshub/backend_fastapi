@@ -558,9 +558,13 @@ def send_team_invitation_email(
 # ── JWT ────────────────────────────────────────────────────────────────────────
 
 
-def create_token(username: str) -> str:
+def create_token(username: str, workspace_id: Optional[str] = None) -> str:
     expire = datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRE_HOURS)
-    payload = {"sub": username, "exp": expire}
+    payload = {
+        "sub": username,
+        "wid": workspace_id or username,  # workspace personal = username
+        "exp": expire,
+    }
     return jwt.encode(payload, _secret(), algorithm=JWT_ALGORITHM)
 
 
@@ -571,6 +575,17 @@ def decode_token(token: str) -> Optional[str]:
         return data.get("sub")
     except JWTError:
         return None
+
+
+def decode_workspace_token(token: str) -> tuple[Optional[str], Optional[str]]:
+    """Return (username, workspace_id). workspace_id defaults to username if not present."""
+    try:
+        data = jwt.decode(token, _secret(), algorithms=[JWT_ALGORITHM])
+        username = data.get("sub")
+        workspace_id = data.get("wid") or username
+        return username, workspace_id
+    except JWTError:
+        return None, None
 
 
 # ── First-boot admin bootstrap ────────────────────────────────────────────────

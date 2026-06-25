@@ -15,6 +15,7 @@ from app.auth.auth import (
     create_password_reset_token,
     create_token,
     decode_token,
+    decode_workspace_token,
     delete_user,
     get_user_by_email,
     get_user_by_username,
@@ -37,12 +38,23 @@ from app.config.session import (
     SECURE_COOKIES,
 )
 from app.storage.teams import TeamStorage as _TeamStorage
+from app.storage.workspaces import WorkspaceStorage as _WorkspaceStorage
 
 _teams = _TeamStorage(_DB_FILE)
+_workspaces = _WorkspaceStorage(_DB_FILE)
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
 _rate_data: Dict[str, list] = defaultdict(list)
+
+
+class WorkspaceContext:
+    """Contexto de request con usuario y workspace activo."""
+    __slots__ = ("user", "workspace_id")
+
+    def __init__(self, user: str, workspace_id: str) -> None:
+        self.user = user
+        self.workspace_id = workspace_id
 
 
 def _client_ip(request: Request) -> str:
@@ -70,6 +82,24 @@ def require_auth(ga_token: Optional[str] = Cookie(default=None)) -> str:
     if not username:
         raise HTTPException(status_code=401, detail="Token inválido o expirado")
     return username
+
+
+def require_workspace(ga_token: Optional[str] = Cookie(default=None)) -> WorkspaceContext:
+    """Dependency: validates session token and returns WorkspaceContext(user, workspace_id).
+
+    Defense-in-depth: even with a valid JWT, verify that the user still belongs to the
+    workspace in the token (handles removed members and any token-creation bugs).
+    """
+    if not ga_token:
+        raise HTTPException(status_code=401, detail="No autenticado")
+    username, workspace_id = decode_workspace_token(ga_token)
+    if not username:
+        raise HTTPException(status_code=401, detail="Token inválido o expirado")
+    # Personal workspace: id == username, always accessible
+    if workspace_id != username and not _workspaces.can_access(workspace_id, username):
+        # Membership revoked or token tampered — fall back to personal workspace
+        workspace_id = username
+    return WorkspaceContext(user=username, workspace_id=workspace_id)
 
 
 def require_admin(username: str = Depends(require_auth)) -> str:
@@ -169,21 +199,35 @@ async def logout(response: Response) -> Dict[str, Any]:
 
 
 @router.get("/me")
-async def me(username: str = Depends(require_auth)) -> Dict[str, Any]:
+async def me(ctx: WorkspaceContext = Depends(require_workspace)) -> Dict[str, Any]:
     from app.storage.guest import is_guest
     from app.config.session import WEBMAIL_URL
+    username = ctx.user
+    workspace_id = ctx.workspace_id
     role = get_user_role(username)
     if is_guest(username):
         auth_method = "guest"
     else:
         user = get_user_by_username(username) or {}
         auth_method = user.get("provider") or "internal"
-    payload: Dict[str, Any] = {"username": username, "role": role, "auth_method": auth_method}
+    payload: Dict[str, Any] = {
+        "username": username,
+        "role": role,
+        "auth_method": auth_method,
+        "workspace_id": workspace_id,
+        "workspace_personal": workspace_id == username,
+    }
     if role == "admin" and WEBMAIL_URL:
         payload["webmail_url"] = WEBMAIL_URL
     if not is_guest(username):
         managed = _teams.list_managed_teams(username)
         payload["manages_teams"] = len(managed) > 0
+        if workspace_id != username:
+            ws = _workspaces.get(workspace_id)
+            payload["workspace_name"] = ws["name"] if ws else workspace_id
+        else:
+            user = get_user_by_username(username) or {}
+            payload["workspace_name"] = user.get("display_name") or username
     return payload
 
 

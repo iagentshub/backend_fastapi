@@ -8,7 +8,7 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 
-from app.api.routes.auth import require_auth
+from app.api.routes.auth import WorkspaceContext, require_auth, require_workspace
 from app.auth.auth import get_user_role
 from app.config.data import AGENTS_DIR, DB_FILE, SKILLS_DIR
 from app.storage.guest import get_session, is_guest
@@ -28,8 +28,8 @@ _ALLOWED_EXTS = {".txt", ".md", ".pdf"}
 _VALID_SECTIONS = {"document", "url", "skill", "agents", "memory"}
 
 
-def _owner(user: str) -> Optional[str]:
-    return None if get_user_role(user) == "admin" else user
+def _owner(user: str, workspace_id: str) -> Optional[str]:
+    return None if get_user_role(user) == "admin" else workspace_id
 
 
 def _guest_item(*, type: str, title: str, source: str, content: str, folder_id: Optional[str] = None) -> Dict[str, Any]:
@@ -61,18 +61,20 @@ class FolderRename(BaseModel):
 @router.get("/folders", response_model=List[Dict[str, Any]])
 async def list_folders(
     section: Optional[str] = None,
-    user: str = Depends(require_auth),
+    ctx: WorkspaceContext = Depends(require_workspace),
 ) -> List[Dict[str, Any]]:
+    user, workspace_id = ctx.user, ctx.workspace_id
     if is_guest(user):
         return []
-    return _folders.list(_owner(user) or user, section)
+    return _folders.list(_owner(user, workspace_id) or workspace_id, section)
 
 
 @router.post("/folders", response_model=Dict[str, Any])
 async def create_folder(
     body: FolderCreate,
-    user: str = Depends(require_auth),
+    ctx: WorkspaceContext = Depends(require_workspace),
 ) -> Dict[str, Any]:
+    user, workspace_id = ctx.user, ctx.workspace_id
     if is_guest(user):
         raise HTTPException(status_code=403, detail="Los invitados no pueden crear carpetas")
     if body.section not in _VALID_SECTIONS:
@@ -80,21 +82,22 @@ async def create_folder(
     name = body.name.strip()
     if not name:
         raise HTTPException(status_code=422, detail="El nombre no puede estar vacío")
-    return _folders.create(_owner(user) or user, body.section, name)
+    return _folders.create(_owner(user, workspace_id) or workspace_id, body.section, name)
 
 
 @router.patch("/folders/{folder_id}", response_model=Dict[str, Any])
 async def rename_folder(
     folder_id: str,
     body: FolderRename,
-    user: str = Depends(require_auth),
+    ctx: WorkspaceContext = Depends(require_workspace),
 ) -> Dict[str, Any]:
+    user, workspace_id = ctx.user, ctx.workspace_id
     if is_guest(user):
         raise HTTPException(status_code=403, detail="Los invitados no pueden renombrar carpetas")
     name = body.name.strip()
     if not name:
         raise HTTPException(status_code=422, detail="El nombre no puede estar vacío")
-    result = _folders.rename(folder_id, _owner(user) or user, name)
+    result = _folders.rename(folder_id, _owner(user, workspace_id) or workspace_id, name)
     if result is None:
         raise HTTPException(status_code=404, detail="Carpeta no encontrada")
     return result
@@ -104,8 +107,9 @@ async def rename_folder(
 async def delete_folder(
     folder_id: str,
     cascade: bool = False,
-    user: str = Depends(require_auth),
+    ctx: WorkspaceContext = Depends(require_workspace),
 ) -> Dict[str, bool]:
+    user, workspace_id = ctx.user, ctx.workspace_id
     if is_guest(user):
         raise HTTPException(status_code=403, detail="Los invitados no pueden eliminar carpetas")
     if cascade:
@@ -125,7 +129,7 @@ async def delete_folder(
                         _skills.delete("private", skill["id"])
                     except Exception:
                         pass
-    if not _folders.delete(folder_id, _owner(user) or user, cascade=cascade):
+    if not _folders.delete(folder_id, _owner(user, workspace_id) or workspace_id, cascade=cascade):
         raise HTTPException(status_code=404, detail="Carpeta no encontrada")
     return {"ok": True}
 
@@ -135,12 +139,13 @@ async def delete_folder(
 @router.get("", response_model=List[Dict[str, Any]])
 async def list_items(
     type: Optional[str] = None,
-    user: str = Depends(require_auth),
+    ctx: WorkspaceContext = Depends(require_workspace),
 ) -> List[Dict[str, Any]]:
+    user, workspace_id = ctx.user, ctx.workspace_id
     if is_guest(user):
         items = get_session(user).knowledge
         return [i for i in items if not type or i["type"] == type]
-    items = _storage.list(_owner(user), type)
+    items = _storage.list(_owner(user, workspace_id), type)
     role = get_user_role(user)
     if role not in ("admin",):
         shared_ids = set(_sharing_ts.get_user_shared_resource_ids(user, "knowledge"))
@@ -161,11 +166,12 @@ class ItemMove(BaseModel):
 async def move_item(
     item_id: str,
     body: ItemMove,
-    user: str = Depends(require_auth),
+    ctx: WorkspaceContext = Depends(require_workspace),
 ) -> Dict[str, bool]:
+    user, workspace_id = ctx.user, ctx.workspace_id
     if is_guest(user):
         raise HTTPException(status_code=403, detail="Los invitados no pueden mover items")
-    if not _storage.move(item_id, body.folder_id, _owner(user)):
+    if not _storage.move(item_id, body.folder_id, _owner(user, workspace_id)):
         raise HTTPException(status_code=404, detail="Item no encontrado")
     return {"ok": True}
 
@@ -173,8 +179,9 @@ async def move_item(
 @router.post("/url")
 async def add_url(
     request: Request,
-    user: str = Depends(require_auth),
+    ctx: WorkspaceContext = Depends(require_workspace),
 ) -> Dict[str, Any]:
+    user, workspace_id = ctx.user, ctx.workspace_id
     body = await request.json()
     url = str(body.get("url") or "").strip()
     title = str(body.get("title") or "").strip() or url
@@ -191,7 +198,7 @@ async def add_url(
         item = _guest_item(type="url", title=title, source=url, content=content)
         get_session(user).knowledge.append(item)
         return item
-    owner = _owner(user) or "admin"
+    owner = _owner(user, workspace_id) or workspace_id
     return _storage.save(type="url", title=title, source=url, content=content, owner_id=owner, folder_id=folder_id)
 
 
@@ -199,8 +206,9 @@ async def add_url(
 async def upload_document(
     file: UploadFile = File(...),
     folder_id: Optional[str] = Form(None),
-    user: str = Depends(require_auth),
+    ctx: WorkspaceContext = Depends(require_workspace),
 ) -> Dict[str, Any]:
+    user, workspace_id = ctx.user, ctx.workspace_id
     filename = file.filename or "documento"
     ext = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     if ext not in _ALLOWED_EXTS:
@@ -221,7 +229,7 @@ async def upload_document(
         item = _guest_item(type="document", title=filename, source=filename, content=content)
         get_session(user).knowledge.append(item)
         return item
-    owner = _owner(user) or "admin"
+    owner = _owner(user, workspace_id) or workspace_id
     return _storage.save(
         type="document",
         title=filename,
@@ -235,8 +243,9 @@ async def upload_document(
 @router.delete("/{item_id}")
 async def delete_item(
     item_id: str,
-    user: str = Depends(require_auth),
+    ctx: WorkspaceContext = Depends(require_workspace),
 ) -> Dict[str, bool]:
+    user, workspace_id = ctx.user, ctx.workspace_id
     if is_guest(user):
         s = get_session(user)
         before = len(s.knowledge)
@@ -244,6 +253,6 @@ async def delete_item(
         if len(s.knowledge) == before:
             raise HTTPException(status_code=404, detail="Item no encontrado")
         return {"ok": True}
-    if not _storage.delete(item_id, _owner(user)):
+    if not _storage.delete(item_id, _owner(user, workspace_id)):
         raise HTTPException(status_code=404, detail="Item no encontrado")
     return {"ok": True}

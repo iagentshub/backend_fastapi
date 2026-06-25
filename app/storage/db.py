@@ -139,6 +139,20 @@ CREATE TABLE IF NOT EXISTS resource_teams (
 );
 CREATE INDEX IF NOT EXISTS idx_rt_team     ON resource_teams(team_id, resource_type);
 CREATE INDEX IF NOT EXISTS idx_rt_resource ON resource_teams(resource_type, resource_id);
+CREATE TABLE IF NOT EXISTS workspaces (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    created_by  TEXT NOT NULL,
+    created_at  TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS workspace_members (
+    workspace_id TEXT NOT NULL,
+    username     TEXT NOT NULL,
+    role         TEXT NOT NULL DEFAULT 'member',
+    joined_at    TEXT NOT NULL,
+    PRIMARY KEY (workspace_id, username)
+);
+CREATE INDEX IF NOT EXISTS idx_ws_members_user ON workspace_members(username);
 """
 
 _SCHEMA_PG = """
@@ -257,6 +271,20 @@ CREATE TABLE IF NOT EXISTS resource_teams (
 );
 CREATE INDEX IF NOT EXISTS idx_rt_team     ON resource_teams(team_id, resource_type);
 CREATE INDEX IF NOT EXISTS idx_rt_resource ON resource_teams(resource_type, resource_id);
+CREATE TABLE IF NOT EXISTS workspaces (
+    id          TEXT PRIMARY KEY,
+    name        TEXT NOT NULL,
+    created_by  TEXT NOT NULL,
+    created_at  TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS workspace_members (
+    workspace_id TEXT NOT NULL,
+    username     TEXT NOT NULL,
+    role         TEXT NOT NULL DEFAULT 'member',
+    joined_at    TEXT NOT NULL,
+    PRIMARY KEY (workspace_id, username)
+);
+CREATE INDEX IF NOT EXISTS idx_ws_members_user ON workspace_members(username);
 """
 
 # ── SQLite backend ─────────────────────────────────────────────────────────────
@@ -368,6 +396,26 @@ def _migrate_sqlite(conn: sqlite3.Connection) -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_rt_team ON resource_teams(team_id, resource_type);
             CREATE INDEX IF NOT EXISTS idx_rt_resource ON resource_teams(resource_type, resource_id);
+        """)
+        conn.commit()
+
+    # 7. Create workspaces tables if missing
+    if "workspaces" not in existing_tables:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS workspaces (
+                id          TEXT PRIMARY KEY,
+                name        TEXT NOT NULL,
+                created_by  TEXT NOT NULL,
+                created_at  TEXT NOT NULL
+            );
+            CREATE TABLE IF NOT EXISTS workspace_members (
+                workspace_id TEXT NOT NULL,
+                username     TEXT NOT NULL,
+                role         TEXT NOT NULL DEFAULT 'member',
+                joined_at    TEXT NOT NULL,
+                PRIMARY KEY (workspace_id, username)
+            );
+            CREATE INDEX IF NOT EXISTS idx_ws_members_user ON workspace_members(username);
         """)
         conn.commit()
 
@@ -549,6 +597,26 @@ def _migrate_pg(conn: Any) -> None:
         )
         cur.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_teams_name_creator ON teams(name, created_by)"
+        )
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS workspaces (
+                id          TEXT PRIMARY KEY,
+                name        TEXT NOT NULL,
+                created_by  TEXT NOT NULL,
+                created_at  TEXT NOT NULL
+            )
+        """)
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS workspace_members (
+                workspace_id TEXT NOT NULL,
+                username     TEXT NOT NULL,
+                role         TEXT NOT NULL DEFAULT 'member',
+                joined_at    TEXT NOT NULL,
+                PRIMARY KEY (workspace_id, username)
+            )
+        """)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ws_members_user ON workspace_members(username)"
         )
     conn.commit()
 

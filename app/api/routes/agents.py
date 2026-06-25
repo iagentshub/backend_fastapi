@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from app.api.routes.auth import require_auth
+from app.api.routes.auth import WorkspaceContext, require_auth, require_workspace
 from app.auth.auth import get_user_role
 from app.config.data import AGENTS_DIR, DB_FILE, MEMORY_DIR, SKILLS_DIR
 from app.storage.teams import TeamStorage as _TeamStorage
@@ -81,9 +81,10 @@ def _apply_locale(agent: Dict[str, Any], locale: str) -> Dict[str, Any]:
 
 
 @router.get("")
-async def list_agents(scope: str = "all", user: str = Depends(require_auth)) -> List[Dict[str, Any]]:
+async def list_agents(scope: str = "all", ctx: WorkspaceContext = Depends(require_workspace)) -> List[Dict[str, Any]]:
     _check_scope(scope)
     locale = get_locale()
+    user, workspace_id = ctx.user, ctx.workspace_id
     if is_guest(user):
         s = get_session(user)
         public = _agents.list("public") if scope in ("public", "all") else []
@@ -92,7 +93,7 @@ async def list_agents(scope: str = "all", user: str = Depends(require_auth)) -> 
     agents = _agents.list(scope)
     role = get_user_role(user)
     if role not in ("admin", "guest"):
-        own = [a for a in agents if a.get("owner_id") == user]
+        own = [a for a in agents if a.get("owner_id") == workspace_id]
         shared_ids = set(_sharing_ts.get_user_shared_resource_ids(user, "agent"))
         own_ids = {a["id"] for a in own}
         extra = [a for a in agents if a["id"] in (shared_ids - own_ids)]
@@ -104,8 +105,9 @@ async def list_agents(scope: str = "all", user: str = Depends(require_auth)) -> 
 
 @router.post("")
 async def save_agent(
-    request: Request, user: str = Depends(require_auth)
+    request: Request, ctx: WorkspaceContext = Depends(require_workspace)
 ) -> Dict[str, Any]:
+    user, workspace_id = ctx.user, ctx.workspace_id
     payload = await request.json()
     scope = str(payload.pop("scope", "private") or "private")
     if scope not in ("public", "private"):
@@ -117,15 +119,16 @@ async def save_agent(
         s.agents.append(agent)
         return agent
     try:
-        return _agents.save(payload, scope, owner_id=user)
+        return _agents.save(payload, scope, owner_id=workspace_id)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
 
 @router.get("/{agent_id}")
 async def get_agent(
-    agent_id: str, user: str = Depends(require_auth)
+    agent_id: str, ctx: WorkspaceContext = Depends(require_workspace)
 ) -> Dict[str, Any]:
+    user = ctx.user
     if is_guest(user):
         s = get_session(user)
         a = next((a for a in s.agents if a.get("id") == agent_id), None) or _agents.get(agent_id, scope="public")
@@ -140,8 +143,9 @@ async def get_agent(
 
 @router.delete("/{agent_id}")
 async def delete_agent(
-    agent_id: str, user: str = Depends(require_auth)
+    agent_id: str, ctx: WorkspaceContext = Depends(require_workspace)
 ) -> Dict[str, Any]:
+    user, workspace_id = ctx.user, ctx.workspace_id
     if is_guest(user):
         s = get_session(user)
         before = len(s.agents)
@@ -149,6 +153,9 @@ async def delete_agent(
         if len(s.agents) == before:
             raise HTTPException(status_code=404, detail="Agente no encontrado")
         return {"ok": True}
+    a = _agents.get(agent_id)
+    if a and get_user_role(user) != "admin" and a.get("owner_id") != workspace_id:
+        raise HTTPException(status_code=403, detail="No tienes permiso para eliminar este agente")
     try:
         if not _agents.delete(agent_id):
             raise HTTPException(status_code=404, detail="Agente no encontrado")
@@ -161,9 +168,9 @@ async def delete_agent(
 async def move_agent_folder(
     agent_id: str,
     body: _AgentFolderMove,
-    user: str = Depends(require_auth),
+    ctx: WorkspaceContext = Depends(require_workspace),
 ) -> Dict[str, Any]:
-    if is_guest(user):
+    if is_guest(ctx.user):
         raise HTTPException(status_code=403, detail="Los invitados no pueden mover agentes")
     if not _agents.move_folder(agent_id, body.folder_id):
         raise HTTPException(status_code=404, detail="Agente no encontrado")
@@ -172,9 +179,10 @@ async def move_agent_folder(
 
 @router.get("/{agent_id}/export/{fmt}")
 async def export_agent(
-    agent_id: str, fmt: str, user: str = Depends(require_auth)
+    agent_id: str, fmt: str, ctx: WorkspaceContext = Depends(require_workspace)
 ) -> Response:
     """fmt: openai | claude | github | mcp"""
+    user = ctx.user
     if is_guest(user):
         s = get_session(user)
         a = next((ag for ag in s.agents if ag.get("id") == agent_id), None) or _agents.get(agent_id, scope="public")
@@ -274,9 +282,10 @@ async def export_agent(
 async def chat(
     agent_id: str,
     request: Request,
-    user: str = Depends(require_auth),
+    ctx: WorkspaceContext = Depends(require_workspace),
     _rl: None = Depends(_chat_limiter),
 ) -> StreamingResponse:
+    user, workspace_id = ctx.user, ctx.workspace_id
     if is_guest(user):
         s = get_session(user)
         a = next((a for a in s.agents if a.get("id") == agent_id), None) or _agents.get(agent_id, scope="public")
@@ -317,7 +326,11 @@ async def chat(
             conn_allowed = _gta(user, "connections", "via_agent")
             if conn_allowed is not None and conn_id and conn_id not in conn_allowed:
                 raise HTTPException(status_code=403, detail="No tienes permiso para usar la conexión de este agente")
-        conn = _conns.get(conn_id, _conn_owner(user))
+        # Look up connection by workspace scope (owner = workspace_id for team, or user for personal)
+        conn = _conns.get(conn_id, None if get_user_role(user) == "admin" else workspace_id)
+        if not conn:
+            # Fallback: allow using own-user connections when in a team workspace (agent might belong to another member)
+            conn = _conns.get(conn_id, user)
         memory_store = _memory
         knowledge_store = _knowledge
 
