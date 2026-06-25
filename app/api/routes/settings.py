@@ -1,10 +1,10 @@
-"""Rutas de configuración por usuario (tema, idioma)."""
+"""Rutas de configuración por usuario (tema, idioma, layout de dashboard)."""
 from __future__ import annotations
 
 import json
 
 from app.utils import flog
-from typing import Optional
+from typing import List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -17,6 +17,7 @@ router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 _PUBLIC_KEYS = {"theme", "language"}
 _DEFAULTS = {"theme": "dark-red", "language": "es"}
+_KNOWN_WIDGETS = {"summary", "token-usage", "activity", "conn-status", "recent"}
 
 VALID_THEMES = {
     "dark-red", "dark-blue", "dark-orange", "dark-purple",
@@ -55,6 +56,14 @@ class SettingsUpdate(BaseModel):
     language: Optional[str] = None
 
 
+class DashboardLayoutUpdate(BaseModel):
+    layout: List[str]
+
+
+class DashboardConfigUpdate(BaseModel):
+    config: dict
+
+
 @router.get("")
 async def get_settings(username: str = Depends(require_auth)) -> dict:
     prefs = _get_prefs(username)
@@ -77,3 +86,40 @@ async def update_settings(
         prefs["language"] = body.language
     _save_prefs(username, prefs)
     return {k: prefs.get(k, _DEFAULTS[k]) for k in _PUBLIC_KEYS}
+
+
+@router.get("/dashboard-layout")
+async def get_dashboard_layout(username: str = Depends(require_auth)) -> dict:
+    prefs = _get_prefs(username)
+    return {"layout": prefs.get("dashboard_layout", None)}
+
+
+@router.put("/dashboard-layout")
+async def update_dashboard_layout(
+    body: DashboardLayoutUpdate,
+    username: str = Depends(require_auth),
+) -> dict:
+    unknown = [w for w in body.layout if w not in _KNOWN_WIDGETS]
+    if unknown:
+        raise HTTPException(status_code=422, detail=f"Widgets desconocidos: {unknown}")
+    prefs = _get_prefs(username)
+    prefs["dashboard_layout"] = body.layout
+    _save_prefs(username, prefs)
+    return {"layout": body.layout}
+
+
+@router.get("/dashboard-config")
+async def get_dashboard_config(username: str = Depends(require_auth)) -> dict:
+    prefs = _get_prefs(username)
+    return {"config": prefs.get("dashboard_config", {})}
+
+
+@router.put("/dashboard-config")
+async def update_dashboard_config(
+    body: DashboardConfigUpdate,
+    username: str = Depends(require_auth),
+) -> dict:
+    prefs = _get_prefs(username)
+    prefs["dashboard_config"] = body.config
+    _save_prefs(username, prefs)
+    return {"config": body.config}

@@ -214,11 +214,14 @@ async def test_all_connections(
         conns = [c for c in conns if c.get("id") in ids]
 
     async def _test_one(conn: Dict[str, Any]) -> Dict[str, Any]:
+        import time as _time
         provider = get_provider(conn.get("type") or "")
         if not provider:
-            return {"id": conn["id"], "ok": False, "message": "Sin proveedor de test", "detail": ""}
+            return {"id": conn["id"], "ok": False, "message": "Sin proveedor de test", "detail": "", "latency_ms": None}
+        t0 = _time.perf_counter()
         result = await asyncio.to_thread(provider.test, conn)
-        return {"id": conn["id"], "ok": result.ok, "message": result.message, "detail": result.detail}
+        latency_ms = round((_time.perf_counter() - t0) * 1000)
+        return {"id": conn["id"], "ok": result.ok, "message": result.message, "detail": result.detail, "latency_ms": latency_ms}
 
     return list(await asyncio.gather(*[_test_one(c) for c in conns]))
 
