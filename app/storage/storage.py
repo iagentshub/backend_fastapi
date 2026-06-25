@@ -197,6 +197,7 @@ class ConnectionStorage:
         return payload
 
     def add_tokens(self, conn_id: str, input_tokens: int, output_tokens: int) -> None:
+        from datetime import date
         PH = self._PH
         conn = self._conn()
         try:
@@ -209,7 +210,7 @@ class ConnectionStorage:
             )
             conn.commit()
             cur.execute(
-                f"SELECT data, tokens_in, tokens_out FROM connections WHERE id = {PH}",
+                f"SELECT data, tokens_in, tokens_out, owner_id FROM connections WHERE id = {PH}",
                 (conn_id,),
             )
             row = cur.fetchone()
@@ -221,6 +222,22 @@ class ConnectionStorage:
                     f"UPDATE connections SET data = {PH} WHERE id = {PH}",
                     (json.dumps(d, ensure_ascii=False), conn_id),
                 )
+                total = input_tokens + output_tokens
+                if total > 0:
+                    today = date.today().isoformat()
+                    owner = row["owner_id"]
+                    if self._IS_PG:
+                        cur.execute(
+                            "INSERT INTO token_daily (day, owner_id, tokens) VALUES (%s, %s, %s) "
+                            "ON CONFLICT (day, owner_id) DO UPDATE SET tokens = token_daily.tokens + EXCLUDED.tokens",
+                            (today, owner, total),
+                        )
+                    else:
+                        cur.execute(
+                            "INSERT INTO token_daily (day, owner_id, tokens) VALUES (?, ?, ?) "
+                            "ON CONFLICT(day, owner_id) DO UPDATE SET tokens = token_daily.tokens + excluded.tokens",
+                            (today, owner, total),
+                        )
                 conn.commit()
         finally:
             self._close_db(conn)

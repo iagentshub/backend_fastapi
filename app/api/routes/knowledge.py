@@ -8,21 +8,18 @@ from uuid import uuid4
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from pydantic import BaseModel
 
-from app.api.routes.auth import WorkspaceContext, require_auth, require_workspace
+from app.api.routes.auth import WorkspaceContext, require_workspace
 from app.auth.auth import get_user_role
 from app.config.data import AGENTS_DIR, DB_FILE, SKILLS_DIR
 from app.storage.guest import get_session, is_guest
 from app.storage.knowledge import FolderStorage, KnowledgeStorage, extract_document_text, fetch_url_text
 from app.storage.storage import AgentStorage, SkillStorage
-from app.storage.teams import TeamStorage as _TeamStorage
-
 router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
 
 _storage = KnowledgeStorage(DB_FILE)
 _folders = FolderStorage(DB_FILE)
 _agents  = AgentStorage(AGENTS_DIR)
 _skills  = SkillStorage(SKILLS_DIR)
-_sharing_ts = _TeamStorage(DB_FILE)
 
 _ALLOWED_EXTS = {".txt", ".md", ".pdf"}
 _VALID_SECTIONS = {"document", "url", "skill", "agents", "memory"}
@@ -148,7 +145,8 @@ async def list_items(
     items = _storage.list(_owner(user, workspace_id), type)
     role = get_user_role(user)
     if role not in ("admin",):
-        shared_ids = set(_sharing_ts.get_user_shared_resource_ids(user, "knowledge"))
+        from app.storage.groups import GroupStorage as _GS
+        shared_ids = set(_GS(DB_FILE).get_user_shared_resource_ids(user, "knowledge", workspace_id))
         own_ids = {i["id"] for i in items}
         for kid in (shared_ids - own_ids):
             k = _storage.get(kid)

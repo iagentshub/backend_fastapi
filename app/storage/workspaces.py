@@ -201,3 +201,117 @@ class WorkspaceStorage:
             return True
         member = self.get_member(workspace_id, username)
         return member is not None and member.get("role") in ("owner", "admin")
+
+    # ── Invitaciones ───────────────────────────────────────────────────────────
+
+    def invite_user(self, workspace_id: str, username: str, invited_by: str) -> Optional[Dict[str, Any]]:
+        inv_id = uuid4().hex[:16]
+        now = _now()
+        conn = open_db(self._path)
+        try:
+            cur = conn.cursor()
+            if PH == "%s":
+                cur.execute(
+                    "INSERT INTO workspace_invitations (id, workspace_id, invited_by, username, status, created_at) "
+                    "VALUES (%s, %s, %s, %s, 'pending', %s) "
+                    "ON CONFLICT (workspace_id, username) DO NOTHING",
+                    (inv_id, workspace_id, invited_by, username, now),
+                )
+            else:
+                cur.execute(
+                    "INSERT OR IGNORE INTO workspace_invitations (id, workspace_id, invited_by, username, status, created_at) "
+                    "VALUES (?, ?, ?, ?, 'pending', ?)",
+                    (inv_id, workspace_id, invited_by, username, now),
+                )
+            conn.commit()
+            if cur.rowcount == 0:
+                return None  # Already invited or already a member
+            return {"id": inv_id, "workspace_id": workspace_id, "invited_by": invited_by,
+                    "username": username, "status": "pending", "created_at": now}
+        finally:
+            close_db(conn)
+
+    def list_invitations(self, workspace_id: str) -> List[Dict[str, Any]]:
+        conn = open_db(self._path)
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                f"SELECT * FROM workspace_invitations WHERE workspace_id = {PH} AND status = 'pending' "
+                f"ORDER BY created_at DESC",
+                (workspace_id,),
+            )
+            return [dict(r) for r in cur.fetchall()]
+        finally:
+            close_db(conn)
+
+    def list_my_invitations(self, username: str) -> List[Dict[str, Any]]:
+        conn = open_db(self._path)
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                f"SELECT wi.*, w.name AS workspace_name FROM workspace_invitations wi "
+                f"LEFT JOIN workspaces w ON w.id = wi.workspace_id "
+                f"WHERE wi.username = {PH} AND wi.status = 'pending' ORDER BY wi.created_at DESC",
+                (username,),
+            )
+            return [dict(r) for r in cur.fetchall()]
+        finally:
+            close_db(conn)
+
+    def cancel_invitation(self, inv_id: str, workspace_id: str) -> bool:
+        conn = open_db(self._path)
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                f"DELETE FROM workspace_invitations WHERE id = {PH} AND workspace_id = {PH}",
+                (inv_id, workspace_id),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+        finally:
+            close_db(conn)
+
+    def accept_invitation(self, inv_id: str, username: str) -> Optional[str]:
+        """Acepta la invitación y añade al usuario como miembro. Devuelve workspace_id."""
+        conn = open_db(self._path)
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                f"SELECT * FROM workspace_invitations WHERE id = {PH} AND username = {PH} AND status = 'pending'",
+                (inv_id, username),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            workspace_id = dict(row)["workspace_id"]
+            now = _now()
+            if PH == "%s":
+                cur.execute(
+                    "INSERT INTO workspace_members (workspace_id, username, role, joined_at) "
+                    "VALUES (%s, %s, 'member', %s) ON CONFLICT (workspace_id, username) DO NOTHING",
+                    (workspace_id, username, now),
+                )
+            else:
+                cur.execute(
+                    "INSERT OR IGNORE INTO workspace_members (workspace_id, username, role, joined_at) "
+                    "VALUES (?, ?, 'member', ?)",
+                    (workspace_id, username, now),
+                )
+            cur.execute(f"DELETE FROM workspace_invitations WHERE id = {PH}", (inv_id,))
+            conn.commit()
+            return workspace_id
+        finally:
+            close_db(conn)
+
+    def reject_invitation(self, inv_id: str, username: str) -> bool:
+        conn = open_db(self._path)
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                f"DELETE FROM workspace_invitations WHERE id = {PH} AND username = {PH}",
+                (inv_id, username),
+            )
+            conn.commit()
+            return cur.rowcount > 0
+        finally:
+            close_db(conn)

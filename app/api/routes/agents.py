@@ -12,10 +12,9 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from app.api.routes.auth import WorkspaceContext, require_auth, require_workspace
+from app.api.routes.auth import WorkspaceContext, require_workspace
 from app.auth.auth import get_user_role
 from app.config.data import AGENTS_DIR, DB_FILE, MEMORY_DIR, SKILLS_DIR
-from app.storage.teams import TeamStorage as _TeamStorage
 from app.config.session import RATE_CHAT_CALLS, RATE_CHAT_WINDOW
 from app.middleware.locale import get_locale
 from app.middleware.ratelimit import RateLimiter
@@ -36,7 +35,6 @@ _chat         = ChatStorage(DB_FILE)
 _knowledge    = KnowledgeStorage(DB_FILE)
 _folders      = FolderStorage(DB_FILE)
 _chat_limiter = RateLimiter(calls=RATE_CHAT_CALLS, window=RATE_CHAT_WINDOW)
-_sharing_ts   = _TeamStorage(DB_FILE)
 
 
 class _AgentFolderMove(BaseModel):
@@ -93,8 +91,10 @@ async def list_agents(scope: str = "all", ctx: WorkspaceContext = Depends(requir
     agents = _agents.list(scope)
     role = get_user_role(user)
     if role not in ("admin", "guest"):
+        from app.storage.groups import GroupStorage
+        gs = GroupStorage(DB_FILE)
         own = [a for a in agents if a.get("owner_id") == workspace_id]
-        shared_ids = set(_sharing_ts.get_user_shared_resource_ids(user, "agent"))
+        shared_ids = set(gs.get_user_shared_resource_ids(user, "agent", workspace_id))
         own_ids = {a["id"] for a in own}
         extra = [a for a in agents if a["id"] in (shared_ids - own_ids)]
         for a in extra:
@@ -293,13 +293,7 @@ async def chat(
         a = _agents.get(agent_id)
     if not a:
         raise HTTPException(status_code=404, detail="Agente no encontrado")
-    # Team permission check
     role = get_user_role(user)
-    if not is_guest(user) and role not in ("admin",):
-        from app.api.routes._team_filter import get_team_allowed_ids
-        allowed = get_team_allowed_ids(user, "agents", "use")
-        if allowed is not None and agent_id not in allowed:
-            raise HTTPException(status_code=403, detail="No tienes permiso para usar este agente")
     a = _apply_locale(a, get_locale())
 
     body = await request.json()
@@ -320,16 +314,8 @@ async def chat(
         knowledge_store = GuestKnowledgeAdapter(s)
     else:
         conn_id = base_conn_id
-        # Team connection permission check (via_agent)
-        if role not in ("admin",):
-            from app.api.routes._team_filter import get_team_allowed_ids as _gta
-            conn_allowed = _gta(user, "connections", "via_agent")
-            if conn_allowed is not None and conn_id and conn_id not in conn_allowed:
-                raise HTTPException(status_code=403, detail="No tienes permiso para usar la conexión de este agente")
-        # Look up connection by workspace scope (owner = workspace_id for team, or user for personal)
-        conn = _conns.get(conn_id, None if get_user_role(user) == "admin" else workspace_id)
+        conn = _conns.get(conn_id, None if role == "admin" else workspace_id)
         if not conn:
-            # Fallback: allow using own-user connections when in a team workspace (agent might belong to another member)
             conn = _conns.get(conn_id, user)
         memory_store = _memory
         knowledge_store = _knowledge

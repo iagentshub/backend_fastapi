@@ -11,7 +11,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from app.utils import flog
 from app.auth.auth import ensure_admin_user
 from app.config.cors import CORS_ORIGINS
-from app.api.routes import auth, connections, agents, skills, memory, settings, accounts, chats, knowledge, logs, teams, sharing, workspaces
+from app.api.routes import auth, connections, agents, skills, memory, settings, accounts, chats, knowledge, logs, sharing, workspaces, groups
 from app.api.routes.auth import admin_router
 from app.middleware.locale import LocaleMiddleware
 
@@ -63,8 +63,8 @@ def create_app() -> FastAPI:
     app.include_router(chats.router)
     app.include_router(knowledge.router)
     app.include_router(logs.router)
-    app.include_router(teams.router)
     app.include_router(sharing.router)
     app.include_router(workspaces.router)
+    app.include_router(groups.router)
 
     return app

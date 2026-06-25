@@ -15,7 +15,6 @@ from app.auth.auth import get_user_role
 from app.connections import all_providers, get_provider
 from app.config.data import AGENTS_DIR, DB_FILE, SKILLS_DIR
 from app.storage.knowledge import KnowledgeStorage
-from app.storage.teams import TeamStorage as _TeamStorage
 from app.config.session import RATE_TEST_CALLS, RATE_TEST_WINDOW
 from app.middleware.ratelimit import RateLimiter
 from app.storage.guest import get_session, is_guest
@@ -41,7 +40,6 @@ _agent_storage  = AgentStorage(AGENTS_DIR)
 _skill_storage  = SkillStorage(SKILLS_DIR)
 _know_storage   = KnowledgeStorage(DB_FILE)
 _test_limiter   = RateLimiter(calls=RATE_TEST_CALLS, window=RATE_TEST_WINDOW)
-_sharing_ts     = _TeamStorage(DB_FILE)
 
 
 def _owner(user: str, workspace_id: str) -> str | None:
@@ -157,7 +155,8 @@ async def list_connections_raw(ctx: WorkspaceContext = Depends(require_workspace
             raw = _storage.list(None)
         else:
             raw = _list_accessible(user, workspace_id)
-            shared_ids = set(_sharing_ts.get_user_shared_resource_ids(user, "connection"))
+            from app.storage.groups import GroupStorage as _GS
+            shared_ids = set(_GS(DB_FILE).get_user_shared_resource_ids(user, "connection", workspace_id))
             own_ids = {i["id"] for i in raw}
             for rid in (shared_ids - own_ids):
                 c = _storage.get(rid)
@@ -235,7 +234,8 @@ async def list_connections(ctx: WorkspaceContext = Depends(require_workspace)) -
             raw = _storage.list(None)
         else:
             raw = _list_accessible(user, workspace_id)
-            shared_ids = set(_sharing_ts.get_user_shared_resource_ids(user, "connection"))
+            from app.storage.groups import GroupStorage as _GS
+            shared_ids = set(_GS(DB_FILE).get_user_shared_resource_ids(user, "connection", workspace_id))
             own_ids = {i["id"] for i in raw}
             for rid in (shared_ids - own_ids):
                 c = _storage.get(rid)
@@ -553,3 +553,72 @@ async def test_connection(
         return {"ok": False, "message": f"Tipo '{conn.get('type')}' sin proveedor de test"}
     result = await asyncio.to_thread(provider.test, conn)
     return {"ok": result.ok, "message": result.message, "detail": result.detail}
+
+
+@router.get("/tokens-daily")
+async def get_tokens_daily(
+    days: int = 14,
+    ctx: WorkspaceContext = Depends(require_workspace),
+) -> List[Dict[str, Any]]:
+    import datetime as _dt
+    from app.config.data import DB_FILE
+    from app.storage.db import IS_PG, close_db, open_db
+
+    days = max(1, min(days, 90))
+    cutoff = (_dt.date.today() - _dt.timedelta(days=days - 1)).isoformat()
+    today = _dt.date.today().isoformat()
+    workspace_id = ctx.workspace_id
+    db = open_db(DB_FILE)
+    try:
+        cur = db.cursor()
+        try:
+            if IS_PG:
+                cur.execute(
+                    "SELECT day, SUM(tokens) FROM token_daily "
+                    "WHERE owner_id = %s AND day >= %s GROUP BY day ORDER BY day ASC",
+                    (workspace_id, cutoff),
+                )
+            else:
+                cur.execute(
+                    "SELECT day, SUM(tokens) FROM token_daily "
+                    "WHERE owner_id = ? AND day >= ? GROUP BY day ORDER BY day ASC",
+                    (workspace_id, cutoff),
+                )
+            rows = cur.fetchall()
+            # First-run backfill: seed today from cumulative totals if empty
+            if not rows:
+                if IS_PG:
+                    cur.execute(
+                        "INSERT INTO token_daily (day, owner_id, tokens) "
+                        "SELECT %s, owner_id, tokens_in + tokens_out FROM connections "
+                        "WHERE owner_id = %s AND tokens_in + tokens_out > 0 "
+                        "ON CONFLICT (day, owner_id) DO NOTHING",
+                        (today, workspace_id),
+                    )
+                else:
+                    cur.execute(
+                        "INSERT OR IGNORE INTO token_daily (day, owner_id, tokens) "
+                        "SELECT ?, owner_id, tokens_in + tokens_out FROM connections "
+                        "WHERE owner_id = ? AND tokens_in + tokens_out > 0",
+                        (today, workspace_id),
+                    )
+                db.commit()
+                if IS_PG:
+                    cur.execute(
+                        "SELECT day, SUM(tokens) FROM token_daily "
+                        "WHERE owner_id = %s AND day >= %s GROUP BY day ORDER BY day ASC",
+                        (workspace_id, cutoff),
+                    )
+                else:
+                    cur.execute(
+                        "SELECT day, SUM(tokens) FROM token_daily "
+                        "WHERE owner_id = ? AND day >= ? GROUP BY day ORDER BY day ASC",
+                        (workspace_id, cutoff),
+                    )
+                rows = cur.fetchall()
+        except Exception:
+            rows = []
+    finally:
+        close_db(db)
+    return [{"day": r[0], "tokens": r[1]} for r in rows]
+

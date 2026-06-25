@@ -5,7 +5,7 @@ from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends, HTTPException, Response
 
-from app.api.routes.auth import WorkspaceContext, require_auth, require_workspace
+from app.api.routes.auth import WorkspaceContext, require_workspace
 from app.auth.auth import create_token, get_user_role
 from app.config.data import DB_FILE
 from app.config.session import SECURE_COOKIES
@@ -194,3 +194,84 @@ async def update_member_role(
     if not _ws.update_member_role(workspace_id, username, role):
         raise HTTPException(status_code=404, detail="Miembro no encontrado")
     return {"ok": True, "workspace_id": workspace_id, "username": username, "role": role}
+
+
+# ── Invitaciones ───────────────────────────────────────────────────────────────
+
+@router.get("/my-invitations")
+async def my_invitations(ctx: WorkspaceContext = Depends(require_workspace)) -> List[Dict[str, Any]]:
+    _assert_not_guest(ctx.user)
+    return _ws.list_my_invitations(ctx.user)
+
+
+@router.post("/invitations/{inv_id}/accept")
+async def accept_invitation(
+    inv_id: str,
+    ctx: WorkspaceContext = Depends(require_workspace),
+) -> Dict[str, Any]:
+    _assert_not_guest(ctx.user)
+    workspace_id = _ws.accept_invitation(inv_id, ctx.user)
+    if not workspace_id:
+        raise HTTPException(status_code=404, detail="Invitacion no encontrada")
+    return {"ok": True, "workspace_id": workspace_id}
+
+
+@router.post("/invitations/{inv_id}/reject")
+async def reject_invitation(
+    inv_id: str,
+    ctx: WorkspaceContext = Depends(require_workspace),
+) -> Dict[str, Any]:
+    _assert_not_guest(ctx.user)
+    if not _ws.reject_invitation(inv_id, ctx.user):
+        raise HTTPException(status_code=404, detail="Invitacion no encontrada")
+    return {"ok": True}
+
+
+@router.get("/{workspace_id}/invitations")
+async def list_workspace_invitations(
+    workspace_id: str,
+    ctx: WorkspaceContext = Depends(require_workspace),
+) -> List[Dict[str, Any]]:
+    _assert_not_guest(ctx.user)
+    if not _ws.can_manage(workspace_id, ctx.user) and get_user_role(ctx.user) != "admin":
+        raise HTTPException(status_code=403, detail="Sin permisos")
+    return _ws.list_invitations(workspace_id)
+
+
+@router.post("/{workspace_id}/invitations")
+async def invite_member(
+    workspace_id: str,
+    body: Dict[str, Any],
+    ctx: WorkspaceContext = Depends(require_workspace),
+) -> Dict[str, Any]:
+    _assert_not_guest(ctx.user)
+    if not _ws.can_manage(workspace_id, ctx.user) and get_user_role(ctx.user) != "admin":
+        raise HTTPException(status_code=403, detail="Sin permisos para invitar miembros")
+    if not _ws.get(workspace_id):
+        raise HTTPException(status_code=404, detail="Workspace no encontrado")
+    username = str(body.get("username") or "").strip().lower()
+    if not username:
+        raise HTTPException(status_code=400, detail="El username es obligatorio")
+    from app.auth.auth import get_user_by_username
+    if not get_user_by_username(username):
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    if _ws.is_member(workspace_id, username):
+        raise HTTPException(status_code=409, detail="El usuario ya es miembro de este workspace")
+    result = _ws.invite_user(workspace_id, username, ctx.user)
+    if result is None:
+        raise HTTPException(status_code=409, detail="Ya existe una invitacion pendiente para este usuario")
+    return result
+
+
+@router.delete("/{workspace_id}/invitations/{inv_id}")
+async def cancel_workspace_invitation(
+    workspace_id: str,
+    inv_id: str,
+    ctx: WorkspaceContext = Depends(require_workspace),
+) -> Dict[str, Any]:
+    _assert_not_guest(ctx.user)
+    if not _ws.can_manage(workspace_id, ctx.user) and get_user_role(ctx.user) != "admin":
+        raise HTTPException(status_code=403, detail="Sin permisos")
+    if not _ws.cancel_invitation(inv_id, workspace_id):
+        raise HTTPException(status_code=404, detail="Invitacion no encontrada")
+    return {"ok": True}

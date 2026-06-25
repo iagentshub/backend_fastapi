@@ -103,42 +103,33 @@ CREATE TABLE IF NOT EXISTS users (
     created_at         TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_users_email ON users (email);
-CREATE TABLE IF NOT EXISTS teams (
-    id          TEXT PRIMARY KEY,
-    name        TEXT NOT NULL,
-    created_by  TEXT NOT NULL,
-    created_at  TEXT NOT NULL,
-    UNIQUE(name, created_by)
+CREATE TABLE IF NOT EXISTS workspace_groups (
+    id           TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    name         TEXT NOT NULL,
+    created_by   TEXT NOT NULL,
+    created_at   TEXT NOT NULL,
+    UNIQUE(workspace_id, name)
 );
-CREATE TABLE IF NOT EXISTS team_members (
-    team_id     TEXT NOT NULL,
-    username    TEXT NOT NULL,
-    is_manager  INTEGER NOT NULL DEFAULT 0,
-    permissions TEXT NOT NULL DEFAULT '{}',
-    joined_at   TEXT NOT NULL,
-    PRIMARY KEY (team_id, username)
+CREATE INDEX IF NOT EXISTS idx_ws_groups_ws ON workspace_groups(workspace_id);
+CREATE TABLE IF NOT EXISTS workspace_group_members (
+    group_id     TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    username     TEXT NOT NULL,
+    joined_at    TEXT NOT NULL,
+    PRIMARY KEY (group_id, username)
 );
-CREATE INDEX IF NOT EXISTS idx_team_members_username ON team_members(username);
-CREATE TABLE IF NOT EXISTS team_invitations (
-    id              TEXT PRIMARY KEY,
-    team_id         TEXT NOT NULL,
-    invited_email   TEXT NOT NULL,
-    invited_by      TEXT NOT NULL,
-    status          TEXT NOT NULL DEFAULT 'pending',
-    expires_at      TEXT NOT NULL,
-    created_at      TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_team_inv_email ON team_invitations(invited_email, status);
-CREATE TABLE IF NOT EXISTS resource_teams (
+CREATE INDEX IF NOT EXISTS idx_wsgm_user ON workspace_group_members(username);
+CREATE TABLE IF NOT EXISTS resource_groups (
     resource_type TEXT NOT NULL,
     resource_id   TEXT NOT NULL,
-    team_id       TEXT NOT NULL,
+    group_id      TEXT NOT NULL,
     shared_by     TEXT NOT NULL,
     shared_at     TEXT NOT NULL,
-    PRIMARY KEY (resource_type, resource_id, team_id)
+    PRIMARY KEY (resource_type, resource_id, group_id)
 );
-CREATE INDEX IF NOT EXISTS idx_rt_team     ON resource_teams(team_id, resource_type);
-CREATE INDEX IF NOT EXISTS idx_rt_resource ON resource_teams(resource_type, resource_id);
+CREATE INDEX IF NOT EXISTS idx_rg_group    ON resource_groups(group_id, resource_type);
+CREATE INDEX IF NOT EXISTS idx_rg_resource ON resource_groups(resource_type, resource_id);
 CREATE TABLE IF NOT EXISTS workspaces (
     id          TEXT PRIMARY KEY,
     name        TEXT NOT NULL,
@@ -153,6 +144,23 @@ CREATE TABLE IF NOT EXISTS workspace_members (
     PRIMARY KEY (workspace_id, username)
 );
 CREATE INDEX IF NOT EXISTS idx_ws_members_user ON workspace_members(username);
+CREATE TABLE IF NOT EXISTS token_daily (
+    day      TEXT NOT NULL,
+    owner_id TEXT NOT NULL,
+    tokens   INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (day, owner_id)
+);
+CREATE INDEX IF NOT EXISTS idx_token_daily_owner ON token_daily(owner_id, day DESC);
+CREATE TABLE IF NOT EXISTS workspace_invitations (
+    id           TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    invited_by   TEXT NOT NULL,
+    username     TEXT NOT NULL,
+    status       TEXT NOT NULL DEFAULT 'pending',
+    created_at   TEXT NOT NULL,
+    UNIQUE(workspace_id, username)
+);
+CREATE INDEX IF NOT EXISTS idx_ws_inv_user ON workspace_invitations(username, status);
 """
 
 _SCHEMA_PG = """
@@ -235,42 +243,33 @@ CREATE TABLE IF NOT EXISTS users (
     created_at         TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_users_email ON users (email);
-CREATE TABLE IF NOT EXISTS teams (
-    id          TEXT PRIMARY KEY,
-    name        TEXT NOT NULL,
-    created_by  TEXT NOT NULL,
-    created_at  TEXT NOT NULL,
-    UNIQUE(name, created_by)
+CREATE TABLE IF NOT EXISTS workspace_groups (
+    id           TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    name         TEXT NOT NULL,
+    created_by   TEXT NOT NULL,
+    created_at   TEXT NOT NULL,
+    UNIQUE(workspace_id, name)
 );
-CREATE TABLE IF NOT EXISTS team_members (
-    team_id     TEXT NOT NULL,
-    username    TEXT NOT NULL,
-    is_manager  SMALLINT NOT NULL DEFAULT 0,
-    permissions TEXT NOT NULL DEFAULT '{}',
-    joined_at   TEXT NOT NULL,
-    PRIMARY KEY (team_id, username)
+CREATE INDEX IF NOT EXISTS idx_ws_groups_ws ON workspace_groups(workspace_id);
+CREATE TABLE IF NOT EXISTS workspace_group_members (
+    group_id     TEXT NOT NULL,
+    workspace_id TEXT NOT NULL,
+    username     TEXT NOT NULL,
+    joined_at    TEXT NOT NULL,
+    PRIMARY KEY (group_id, username)
 );
-CREATE INDEX IF NOT EXISTS idx_team_members_username ON team_members(username);
-CREATE TABLE IF NOT EXISTS team_invitations (
-    id              TEXT PRIMARY KEY,
-    team_id         TEXT NOT NULL,
-    invited_email   TEXT NOT NULL,
-    invited_by      TEXT NOT NULL,
-    status          TEXT NOT NULL DEFAULT 'pending',
-    expires_at      TEXT NOT NULL,
-    created_at      TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_team_inv_email ON team_invitations(invited_email, status);
-CREATE TABLE IF NOT EXISTS resource_teams (
+CREATE INDEX IF NOT EXISTS idx_wsgm_user ON workspace_group_members(username);
+CREATE TABLE IF NOT EXISTS resource_groups (
     resource_type TEXT NOT NULL,
     resource_id   TEXT NOT NULL,
-    team_id       TEXT NOT NULL,
+    group_id      TEXT NOT NULL,
     shared_by     TEXT NOT NULL,
     shared_at     TEXT NOT NULL,
-    PRIMARY KEY (resource_type, resource_id, team_id)
+    PRIMARY KEY (resource_type, resource_id, group_id)
 );
-CREATE INDEX IF NOT EXISTS idx_rt_team     ON resource_teams(team_id, resource_type);
-CREATE INDEX IF NOT EXISTS idx_rt_resource ON resource_teams(resource_type, resource_id);
+CREATE INDEX IF NOT EXISTS idx_rg_group    ON resource_groups(group_id, resource_type);
+CREATE INDEX IF NOT EXISTS idx_rg_resource ON resource_groups(resource_type, resource_id);
 CREATE TABLE IF NOT EXISTS workspaces (
     id          TEXT PRIMARY KEY,
     name        TEXT NOT NULL,
@@ -285,6 +284,23 @@ CREATE TABLE IF NOT EXISTS workspace_members (
     PRIMARY KEY (workspace_id, username)
 );
 CREATE INDEX IF NOT EXISTS idx_ws_members_user ON workspace_members(username);
+CREATE TABLE IF NOT EXISTS token_daily (
+    day      TEXT NOT NULL,
+    owner_id TEXT NOT NULL,
+    tokens   INTEGER NOT NULL DEFAULT 0,
+    PRIMARY KEY (day, owner_id)
+);
+CREATE INDEX IF NOT EXISTS idx_token_daily_owner ON token_daily(owner_id, day DESC);
+CREATE TABLE IF NOT EXISTS workspace_invitations (
+    id           TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    invited_by   TEXT NOT NULL,
+    username     TEXT NOT NULL,
+    status       TEXT NOT NULL DEFAULT 'pending',
+    created_at   TEXT NOT NULL,
+    UNIQUE(workspace_id, username)
+);
+CREATE INDEX IF NOT EXISTS idx_ws_inv_user ON workspace_invitations(username, status);
 """
 
 # ── SQLite backend ─────────────────────────────────────────────────────────────
@@ -423,6 +439,77 @@ def _migrate_sqlite(conn: sqlite3.Connection) -> None:
         "CREATE UNIQUE INDEX IF NOT EXISTS idx_teams_name_creator ON teams(name, created_by)"
     )
     conn.commit()
+
+    # Refresh existing_tables after previous migrations
+    existing_tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+
+    # 8. Create token_daily table if missing
+    if "token_daily" not in existing_tables:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS token_daily (
+                day      TEXT NOT NULL,
+                owner_id TEXT NOT NULL,
+                tokens   INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (day, owner_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_token_daily_owner ON token_daily(owner_id, day DESC);
+        """)
+        conn.commit()
+
+    # 9. Create workspace_invitations table if missing
+    existing_tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if "workspace_invitations" not in existing_tables:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS workspace_invitations (
+                id           TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                invited_by   TEXT NOT NULL,
+                username     TEXT NOT NULL,
+                status       TEXT NOT NULL DEFAULT 'pending',
+                created_at   TEXT NOT NULL,
+                UNIQUE(workspace_id, username)
+            );
+            CREATE INDEX IF NOT EXISTS idx_ws_inv_user ON workspace_invitations(username, status);
+        """)
+        conn.commit()
+
+    # 10. Migrate teams → workspace_groups (drop old tables, create new)
+    existing_tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    if "workspace_groups" not in existing_tables:
+        conn.executescript("""
+            DROP TABLE IF EXISTS resource_teams;
+            DROP TABLE IF EXISTS team_invitations;
+            DROP TABLE IF EXISTS team_members;
+            DROP TABLE IF EXISTS teams;
+            CREATE TABLE IF NOT EXISTS workspace_groups (
+                id           TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                name         TEXT NOT NULL,
+                created_by   TEXT NOT NULL,
+                created_at   TEXT NOT NULL,
+                UNIQUE(workspace_id, name)
+            );
+            CREATE INDEX IF NOT EXISTS idx_ws_groups_ws ON workspace_groups(workspace_id);
+            CREATE TABLE IF NOT EXISTS workspace_group_members (
+                group_id     TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                username     TEXT NOT NULL,
+                joined_at    TEXT NOT NULL,
+                PRIMARY KEY (group_id, username)
+            );
+            CREATE INDEX IF NOT EXISTS idx_wsgm_user ON workspace_group_members(username);
+            CREATE TABLE IF NOT EXISTS resource_groups (
+                resource_type TEXT NOT NULL,
+                resource_id   TEXT NOT NULL,
+                group_id      TEXT NOT NULL,
+                shared_by     TEXT NOT NULL,
+                shared_at     TEXT NOT NULL,
+                PRIMARY KEY (resource_type, resource_id, group_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_rg_group    ON resource_groups(group_id, resource_type);
+            CREATE INDEX IF NOT EXISTS idx_rg_resource ON resource_groups(resource_type, resource_id);
+        """)
+        conn.commit()
 
 
 def _migrate_users_json_sqlite(conn: sqlite3.Connection) -> None:
@@ -618,6 +705,69 @@ def _migrate_pg(conn: Any) -> None:
         cur.execute(
             "CREATE INDEX IF NOT EXISTS idx_ws_members_user ON workspace_members(username)"
         )
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS token_daily (
+                day      TEXT NOT NULL,
+                owner_id TEXT NOT NULL,
+                tokens   INTEGER NOT NULL DEFAULT 0,
+                PRIMARY KEY (day, owner_id)
+            )
+        """)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_token_daily_owner ON token_daily(owner_id, day DESC)"
+        )
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS workspace_invitations (
+                id           TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                invited_by   TEXT NOT NULL,
+                username     TEXT NOT NULL,
+                status       TEXT NOT NULL DEFAULT 'pending',
+                created_at   TEXT NOT NULL,
+                UNIQUE(workspace_id, username)
+            )
+        """)
+        cur.execute(
+            "CREATE INDEX IF NOT EXISTS idx_ws_inv_user ON workspace_invitations(username, status)"
+        )
+        # 10. Migrate teams → workspace_groups
+        cur.execute("DROP TABLE IF EXISTS resource_teams CASCADE")
+        cur.execute("DROP TABLE IF EXISTS team_invitations CASCADE")
+        cur.execute("DROP TABLE IF EXISTS team_members CASCADE")
+        cur.execute("DROP TABLE IF EXISTS teams CASCADE")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS workspace_groups (
+                id           TEXT PRIMARY KEY,
+                workspace_id TEXT NOT NULL,
+                name         TEXT NOT NULL,
+                created_by   TEXT NOT NULL,
+                created_at   TEXT NOT NULL,
+                UNIQUE(workspace_id, name)
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_ws_groups_ws ON workspace_groups(workspace_id)")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS workspace_group_members (
+                group_id     TEXT NOT NULL,
+                workspace_id TEXT NOT NULL,
+                username     TEXT NOT NULL,
+                joined_at    TEXT NOT NULL,
+                PRIMARY KEY (group_id, username)
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_wsgm_user ON workspace_group_members(username)")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS resource_groups (
+                resource_type TEXT NOT NULL,
+                resource_id   TEXT NOT NULL,
+                group_id      TEXT NOT NULL,
+                shared_by     TEXT NOT NULL,
+                shared_at     TEXT NOT NULL,
+                PRIMARY KEY (resource_type, resource_id, group_id)
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_rg_group ON resource_groups(group_id, resource_type)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_rg_resource ON resource_groups(resource_type, resource_id)")
     conn.commit()
 
 

@@ -37,10 +37,10 @@ from app.config.session import (
     REGISTRATION_MODE,
     SECURE_COOKIES,
 )
-from app.storage.teams import TeamStorage as _TeamStorage
+from app.storage.groups import GroupStorage as _GroupStorage
 from app.storage.workspaces import WorkspaceStorage as _WorkspaceStorage
 
-_teams = _TeamStorage(_DB_FILE)
+_groups = _GroupStorage(_DB_FILE)
 _workspaces = _WorkspaceStorage(_DB_FILE)
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
@@ -220,8 +220,6 @@ async def me(ctx: WorkspaceContext = Depends(require_workspace)) -> Dict[str, An
     if role == "admin" and WEBMAIL_URL:
         payload["webmail_url"] = WEBMAIL_URL
     if not is_guest(username):
-        managed = _teams.list_managed_teams(username)
-        payload["manages_teams"] = len(managed) > 0
         if workspace_id != username:
             ws = _workspaces.get(workspace_id)
             payload["workspace_name"] = ws["name"] if ws else workspace_id
@@ -299,6 +297,7 @@ admin_router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 @admin_router.get("/stats")
 async def admin_stats(_: str = Depends(require_admin)) -> Dict[str, Any]:
+    import datetime as _dt
     from app.config.data import AGENTS_DIR, DB_FILE
     from app.storage.db import close_db, open_db
 
@@ -319,6 +318,41 @@ async def admin_stats(_: str = Depends(require_admin)) -> Dict[str, Any]:
 
         cur.execute("SELECT COUNT(*) FROM conversations")
         conversations_total = (cur.fetchone()[0] or 0)
+
+        from app.storage.db import IS_PG
+        _PH = "%s" if IS_PG else "?"
+        cutoff = (_dt.date.today() - _dt.timedelta(days=13)).isoformat()
+        today = _dt.date.today().isoformat()
+        try:
+            cur.execute(
+                f"SELECT day, SUM(tokens) FROM token_daily WHERE day >= {_PH} GROUP BY day ORDER BY day ASC",
+                (cutoff,),
+            )
+            tokens_daily = [{"day": r[0], "tokens": r[1]} for r in cur.fetchall()]
+            # First-run backfill: seed today from cumulative connection totals
+            if not tokens_daily and (tokens_in + tokens_out) > 0:
+                if IS_PG:
+                    cur.execute(
+                        "INSERT INTO token_daily (day, owner_id, tokens) "
+                        "SELECT %s, owner_id, tokens_in + tokens_out FROM connections "
+                        "WHERE tokens_in + tokens_out > 0 ON CONFLICT (day, owner_id) DO NOTHING",
+                        (today,),
+                    )
+                else:
+                    cur.execute(
+                        "INSERT OR IGNORE INTO token_daily (day, owner_id, tokens) "
+                        "SELECT ?, owner_id, tokens_in + tokens_out FROM connections "
+                        "WHERE tokens_in + tokens_out > 0",
+                        (today,),
+                    )
+                conn.commit()
+                cur.execute(
+                    f"SELECT day, SUM(tokens) FROM token_daily WHERE day >= {_PH} GROUP BY day ORDER BY day ASC",
+                    (cutoff,),
+                )
+                tokens_daily = [{"day": r[0], "tokens": r[1]} for r in cur.fetchall()]
+        except Exception:
+            tokens_daily = []
     finally:
         close_db(conn)
 
@@ -339,6 +373,7 @@ async def admin_stats(_: str = Depends(require_admin)) -> Dict[str, Any]:
         "agents_public": agents_public,
         "agents_private": agents_private,
         "webmail_url": WEBMAIL_URL,
+        "tokens_daily": tokens_daily,
     }
 
 
@@ -588,119 +623,118 @@ async def admin_delete_knowledge(
     return {"ok": True}
 
 
-@admin_router.get("/gestores")
-async def admin_list_gestores(_: str = Depends(require_admin)) -> List[Dict[str, Any]]:
-    users = list_users()
-    gestores = [u for u in users if u.get("role") == "gestor"]
-    for g in gestores:
-        g["managed_teams"] = _teams.list_managed_teams(g["username"])
-    return gestores
-
-
-@admin_router.get("/teams")
-async def admin_list_teams(_: str = Depends(require_admin)) -> List[Dict[str, Any]]:
+@admin_router.get("/groups")
+async def admin_list_groups(_: str = Depends(require_admin)) -> List[Dict[str, Any]]:
     from app.config.data import DB_FILE
     from app.storage.db import close_db, open_db
     conn = open_db(DB_FILE)
     try:
         cur = conn.cursor()
         cur.execute(
-            "SELECT t.id, t.name, t.created_by, t.created_at, "
-            "COUNT(DISTINCT tm.username) AS member_count, "
-            "COUNT(DISTINCT rt.resource_id || '|' || rt.resource_type) AS resource_count "
-            "FROM teams t "
-            "LEFT JOIN team_members tm ON t.id = tm.team_id "
-            "LEFT JOIN resource_teams rt ON t.id = rt.team_id "
-            "GROUP BY t.id, t.name, t.created_by, t.created_at "
-            "ORDER BY t.created_at DESC"
+            "SELECT wg.id, wg.workspace_id, wg.name, wg.created_by, wg.created_at, "
+            "COUNT(DISTINCT wgm.username) AS member_count, "
+            "COUNT(DISTINCT rg.resource_id || '|' || rg.resource_type) AS resource_count "
+            "FROM workspace_groups wg "
+            "LEFT JOIN workspace_group_members wgm ON wg.id = wgm.group_id "
+            "LEFT JOIN resource_groups rg ON wg.id = rg.group_id "
+            "GROUP BY wg.id ORDER BY wg.created_at DESC"
         )
         rows = cur.fetchall()
-        # Calcular tokens por equipo (suma de conexiones compartidas + conexiones de miembros)
-        cur.execute(
-            "SELECT t.id, "
-            "COALESCE(SUM(c.tokens_in), 0) AS tokens_in, "
-            "COALESCE(SUM(c.tokens_out), 0) AS tokens_out "
-            "FROM teams t "
-            "LEFT JOIN team_members tm ON t.id = tm.team_id "
-            "LEFT JOIN connections c ON tm.username = c.owner_id "
-            "GROUP BY t.id"
-        )
-        token_map = {r[0]: {"tokens_in": r[1], "tokens_out": r[2]} for r in cur.fetchall()}
     finally:
         close_db(conn)
     return [
         {
-            "id": r[0], "name": r[1], "created_by": r[2],
-            "created_at": r[3], "member_count": r[4], "resource_count": r[5],
-            "tokens_in": token_map.get(r[0], {}).get("tokens_in", 0),
-            "tokens_out": token_map.get(r[0], {}).get("tokens_out", 0),
+            "id": r[0], "workspace_id": r[1], "name": r[2],
+            "created_by": r[3], "created_at": r[4],
+            "member_count": r[5], "resource_count": r[6],
         }
         for r in rows
     ]
 
 
-@admin_router.get("/teams/{team_id}")
-async def admin_get_team(
-    team_id: str, _: str = Depends(require_admin)
+@admin_router.delete("/groups/{group_id}")
+async def admin_delete_group(
+    group_id: str, _: str = Depends(require_admin)
 ) -> Dict[str, Any]:
-    from app.config.data import AGENTS_DIR, DB_FILE, SKILLS_DIR
-    from app.storage.storage import AgentStorage, SkillStorage
+    if not _groups.get(group_id):
+        raise HTTPException(status_code=404, detail="Grupo no encontrado")
+    _groups.delete(group_id)
+    return {"ok": True}
+
+
+@admin_router.get("/workspaces")
+async def admin_list_workspaces(_: str = Depends(require_admin)) -> List[Dict[str, Any]]:
+    import json as _json
+    from app.config.data import AGENTS_DIR, DB_FILE
     from app.storage.db import close_db, open_db
 
-    team = _teams.get_team(team_id)
-    if not team:
-        raise HTTPException(status_code=404, detail="Equipo no encontrado")
-    members = _teams.list_members(team_id)
-
-    # Gather shared resources across all types
-    resources = []
-    for rtype in ("agent", "skill", "connection", "knowledge"):
-        for r in _teams.get_team_shared_resources(team_id, rtype):
-            resources.append(dict(r))
-
-    # Enrich with names where possible
-    _agent_store = AgentStorage(AGENTS_DIR)
-    _skill_store = SkillStorage(SKILLS_DIR)
     conn = open_db(DB_FILE)
     try:
         cur = conn.cursor()
-        cur.execute("SELECT id, data FROM connections")
-        import json as _json
-        conn_names = {}
-        for row in cur.fetchall():
-            try:
-                conn_names[row[0]] = _json.loads(row[1] or "{}").get("name", row[0])
-            except Exception:
-                conn_names[row[0]] = row[0]
-        cur.execute("SELECT id, title FROM knowledge_items")
-        know_names = {row[0]: row[1] for row in cur.fetchall()}
+        cur.execute("SELECT id, name, created_by, created_at FROM workspaces ORDER BY created_at DESC")
+        workspaces = [
+            {"id": r[0], "name": r[1], "created_by": r[2], "created_at": r[3]}
+            for r in cur.fetchall()
+        ]
+        cur.execute("SELECT workspace_id, COUNT(*) FROM workspace_members GROUP BY workspace_id")
+        member_counts = {r[0]: r[1] for r in cur.fetchall()}
+        cur.execute(
+            "SELECT owner_id, COUNT(*), COALESCE(SUM(tokens_in), 0), COALESCE(SUM(tokens_out), 0) "
+            "FROM connections GROUP BY owner_id"
+        )
+        conn_stats = {r[0]: {"count": r[1], "tokens_in": r[2], "tokens_out": r[3]} for r in cur.fetchall()}
+        cur.execute("SELECT owner_id, COUNT(*) FROM knowledge_items GROUP BY owner_id")
+        know_counts = {r[0]: r[1] for r in cur.fetchall()}
     finally:
         close_db(conn)
 
-    for r in resources:
-        rid = r["resource_id"]
-        rtype = r["resource_type"]
-        if rtype == "agent":
-            a = _agent_store.get(rid, scope="private") or _agent_store.get(rid, scope="public")
-            r["name"] = a["name"] if a else rid
-        elif rtype == "skill":
-            sk = _skill_store.get_any(rid)
-            r["name"] = sk["name"] if sk else rid
-        elif rtype == "connection":
-            r["name"] = conn_names.get(rid, rid)
-        elif rtype == "knowledge":
-            r["name"] = know_names.get(rid, rid)
-        else:
-            r["name"] = rid
+    agent_counts: Dict[str, int] = {}
+    if AGENTS_DIR.exists():
+        for cfg_path in AGENTS_DIR.glob("private/*/config.json"):
+            try:
+                data = _json.loads(cfg_path.read_text())
+                owner = data.get("owner_id")
+                if owner:
+                    agent_counts[owner] = agent_counts.get(owner, 0) + 1
+            except Exception:
+                pass
 
-    return {"team": team, "members": members, "resources": resources}
+    result = []
+    for ws in workspaces:
+        ws_id = ws["id"]
+        stats = conn_stats.get(ws_id, {"count": 0, "tokens_in": 0, "tokens_out": 0})
+        result.append({
+            **ws,
+            "member_count": member_counts.get(ws_id, 0),
+            "connections_count": stats["count"],
+            "tokens_in": stats["tokens_in"],
+            "tokens_out": stats["tokens_out"],
+            "knowledge_count": know_counts.get(ws_id, 0),
+            "agents_count": agent_counts.get(ws_id, 0),
+        })
+    return result
 
 
-@admin_router.delete("/teams/{team_id}")
-async def admin_delete_team(
-    team_id: str, _: str = Depends(require_admin)
+@admin_router.delete("/workspaces/{workspace_id}")
+async def admin_delete_workspace(
+    workspace_id: str, _: str = Depends(require_admin)
 ) -> Dict[str, Any]:
-    if not _teams.get_team(team_id):
-        raise HTTPException(status_code=404, detail="Equipo no encontrado")
-    _teams.delete_team(team_id)
+    if not _workspaces.get(workspace_id):
+        raise HTTPException(status_code=404, detail="Workspace no encontrado")
+    _workspaces.delete(workspace_id)
     return {"ok": True}
+
+
+@admin_router.post("/impersonate/{username}")
+async def admin_impersonate(
+    username: str,
+    response: Response,
+    admin: str = Depends(require_admin),
+) -> Dict[str, Any]:
+    if username == admin:
+        raise HTTPException(status_code=400, detail="Ya eres este usuario")
+    if not get_user_by_username(username):
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    token = create_token(username)
+    response.set_cookie("ga_token", token, httponly=True, samesite="lax", secure=SECURE_COOKIES, max_age=43200)
+    return {"ok": True, "username": username}
