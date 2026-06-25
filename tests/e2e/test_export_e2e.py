@@ -59,9 +59,9 @@ def test_e2e_claude_export_zip_contents(auth_client):
     agent_files = [n for n in names if n.startswith(".claude/agents/")]
     assert len(agent_files) == 1
 
-    # Skill as command
-    command_files = [n for n in names if n.startswith(".claude/commands/")]
-    assert len(command_files) == 1
+    # Skill in .claude/skills/
+    skill_files = [n for n in names if n.startswith(".claude/skills/") and n.endswith("SKILL.md")]
+    assert len(skill_files) == 1
 
     # Skill as importable ZIP
     skill_zips = [n for n in names if n.startswith("skills/") and n.endswith(".zip")]

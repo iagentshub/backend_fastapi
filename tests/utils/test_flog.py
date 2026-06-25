@@ -99,8 +99,11 @@ def test_sin_propagacion():
 
 
 def test_un_solo_handler():
-    # El logger tiene exactamente un handler (el de stdout)
-    assert len(flog_mod._L.handlers) == 1
+    # El logger tiene exactamente un handler propio (el de stdout).
+    # pytest inyecta sus propios handlers en todos los loggers; los excluimos
+    # comparando el tipo exacto, ya que los handlers de pytest son subclases.
+    real = [h for h in flog_mod._L.handlers if type(h) is logging.StreamHandler]
+    assert len(real) == 1
 
 
 def test_nivel_debug():
