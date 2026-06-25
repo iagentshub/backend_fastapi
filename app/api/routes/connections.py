@@ -49,6 +49,32 @@ def _owner(user: str, workspace_id: str) -> str | None:
     return None if get_user_role(user) == "admin" else workspace_id
 
 
+def _list_accessible(user: str, workspace_id: str) -> List[Dict[str, Any]]:
+    """Lista conexiones del workspace activo + personales del usuario (en workspace de equipo).
+
+    En workspace personal (workspace_id == user) devuelve solo las propias.
+    En workspace de equipo incluye también las personales marcadas con _personal_key=True.
+    """
+    ws_conns = _storage.list(workspace_id)
+    if workspace_id == user:
+        return ws_conns
+    personal_conns = _storage.list(user)
+    seen = {c["id"] for c in ws_conns}
+    for c in personal_conns:
+        if c["id"] not in seen:
+            c["_personal_key"] = True
+            ws_conns.append(c)
+    return ws_conns
+
+
+def _get_conn_any(conn_id: str, user: str, workspace_id: str) -> Dict[str, Any] | None:
+    """Obtiene una conexión buscando primero en el workspace activo y después en el personal."""
+    conn = _storage.get(conn_id, workspace_id)
+    if conn is None and workspace_id != user:
+        conn = _storage.get(conn_id, user)
+    return conn
+
+
 def _fetch_ollama_models(host: str) -> List[str]:
     """Llama a /api/tags y devuelve los nombres de modelos instalados."""
     for h in [host, host.replace("localhost", "host.docker.internal").replace("127.0.0.1", "host.docker.internal")]:
@@ -127,8 +153,10 @@ async def list_connections_raw(ctx: WorkspaceContext = Depends(require_workspace
         raw = get_session(user).connections
     else:
         role = get_user_role(user)
-        raw = _storage.list(_owner(user, workspace_id))
-        if role not in ("admin",):
+        if role == "admin":
+            raw = _storage.list(None)
+        else:
+            raw = _list_accessible(user, workspace_id)
             shared_ids = set(_sharing_ts.get_user_shared_resource_ids(user, "connection"))
             own_ids = {i["id"] for i in raw}
             for rid in (shared_ids - own_ids):
@@ -177,7 +205,12 @@ async def test_all_connections(
         else {}
     )
     ids = body.get("ids") or None
-    conns = get_session(user).connections if is_guest(user) else _storage.list(_owner(user, workspace_id))
+    if is_guest(user):
+        conns = get_session(user).connections
+    elif get_user_role(user) == "admin":
+        conns = _storage.list(None)
+    else:
+        conns = _list_accessible(user, workspace_id)
     if ids:
         conns = [c for c in conns if c.get("id") in ids]
 
@@ -198,8 +231,10 @@ async def list_connections(ctx: WorkspaceContext = Depends(require_workspace)) -
         raw = get_session(user).connections
     else:
         role = get_user_role(user)
-        raw = _storage.list(_owner(user, workspace_id))
-        if role not in ("admin",):
+        if role == "admin":
+            raw = _storage.list(None)
+        else:
+            raw = _list_accessible(user, workspace_id)
             shared_ids = set(_sharing_ts.get_user_shared_resource_ids(user, "connection"))
             own_ids = {i["id"] for i in raw}
             for rid in (shared_ids - own_ids):
@@ -225,6 +260,7 @@ async def save_connection(
 ) -> Dict[str, Any]:
     user, workspace_id = ctx.user, ctx.workspace_id
     payload = await request.json()
+    scope = payload.pop("scope", "workspace")
     if not get_provider(payload.get("type") or ""):
         raise HTTPException(status_code=422, detail="Tipo de conexión no válido")
     if is_guest(user):
@@ -233,7 +269,8 @@ async def save_connection(
         s.connections = [c for c in s.connections if c.get("id") != conn["id"]]
         s.connections.append(conn)
         return {k: v for k, v in conn.items() if k != "api_key"}
-    conn = _storage.save(payload, owner_id=workspace_id)
+    owner = user if scope == "personal" else workspace_id
+    conn = _storage.save(payload, owner_id=owner)
     return {k: v for k, v in conn.items() if k != "api_key"}
 
 
@@ -244,8 +281,10 @@ async def get_connection(
     user, workspace_id = ctx.user, ctx.workspace_id
     if is_guest(user):
         conn = next((c for c in get_session(user).connections if c.get("id") == conn_id), None)
+    elif get_user_role(user) == "admin":
+        conn = _storage.get(conn_id, None)
     else:
-        conn = _storage.get(conn_id, _owner(user, workspace_id))
+        conn = _get_conn_any(conn_id, user, workspace_id)
     if not conn:
         raise HTTPException(status_code=404, detail="Conexión no encontrada")
     return conn
@@ -263,7 +302,11 @@ async def delete_connection(
         if len(s.connections) == before:
             raise HTTPException(status_code=404, detail="Conexión no encontrada")
         return {"ok": True}
-    if not _storage.delete(conn_id, _owner(user, workspace_id)):
+    # Try workspace connection first, then personal fallback
+    deleted = _storage.delete(conn_id, _owner(user, workspace_id))
+    if not deleted and workspace_id != user:
+        deleted = _storage.delete(conn_id, user)
+    if not deleted:
         raise HTTPException(status_code=404, detail="Conexión no encontrada")
     return {"ok": True}
 
@@ -275,7 +318,7 @@ async def hub_sync(
 ) -> Dict[str, Any]:
     """Sincroniza agentes, skills, conocimiento y conexiones desde un hub remoto."""
     user, workspace_id = ctx.user, ctx.workspace_id
-    conn = _storage.get(conn_id, _owner(user, workspace_id))
+    conn = _get_conn_any(conn_id, user, workspace_id) if get_user_role(user) != "admin" else _storage.get(conn_id, None)
     if not conn:
         raise HTTPException(status_code=404, detail="Conexión no encontrada")
     if conn.get("type") != "iagentshub":
@@ -435,7 +478,7 @@ async def import_models(
 ) -> Dict[str, Any]:
     """Descubre modelos de la conexión-credencial y crea una conexión por modelo."""
     user, workspace_id = ctx.user, ctx.workspace_id
-    conn = _storage.get(conn_id, _owner(user, workspace_id))
+    conn = _get_conn_any(conn_id, user, workspace_id) if get_user_role(user) != "admin" else _storage.get(conn_id, None)
     if not conn:
         raise HTTPException(status_code=404, detail="Conexión no encontrada")
 
@@ -457,7 +500,7 @@ async def import_models(
     if not models:
         raise HTTPException(status_code=502, detail="No se encontraron modelos en este proveedor")
 
-    owner = _owner(user, workspace_id)
+    owner = conn.get("owner_id") or (_owner(user, workspace_id) or workspace_id)
     existing = _storage.list(owner)
     # Existing imported connections for this credential
     existing_by_model = {
@@ -499,8 +542,10 @@ async def test_connection(
     user, workspace_id = ctx.user, ctx.workspace_id
     if is_guest(user):
         conn = next((c for c in get_session(user).connections if c.get("id") == conn_id), None)
+    elif get_user_role(user) == "admin":
+        conn = _storage.get(conn_id, None)
     else:
-        conn = _storage.get(conn_id, _owner(user, workspace_id))
+        conn = _get_conn_any(conn_id, user, workspace_id)
     if not conn:
         raise HTTPException(status_code=404, detail="Conexión no encontrada")
     provider = get_provider(conn.get("type") or "")
