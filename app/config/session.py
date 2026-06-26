@@ -60,7 +60,9 @@ WEBMAIL_URL: str = os.getenv("GAIA_WEBMAIL_URL", "")
 # ── Rate limiting ─────────────────────────────────────────────────────────────
 RATE_CHAT_CALLS  = int(os.getenv("GAIA_RATE_CHAT_CALLS",  "30"))   # peticiones
 RATE_CHAT_WINDOW = int(os.getenv("GAIA_RATE_CHAT_WINDOW", "60"))   # por segundos
-RATE_TEST_CALLS  = int(os.getenv("GAIA_RATE_TEST_CALLS",  "10"))
-RATE_TEST_WINDOW = int(os.getenv("GAIA_RATE_TEST_WINDOW", "60"))
+RATE_TEST_CALLS     = int(os.getenv("GAIA_RATE_TEST_CALLS",     "10"))
+RATE_TEST_WINDOW    = int(os.getenv("GAIA_RATE_TEST_WINDOW",    "60"))
+RATE_TESTALL_CALLS  = int(os.getenv("GAIA_RATE_TESTALL_CALLS",  "30"))
+RATE_TESTALL_WINDOW = int(os.getenv("GAIA_RATE_TESTALL_WINDOW", "60"))
 RATE_GUEST_CALLS = int(os.getenv("GAIA_RATE_GUEST_CALLS", "5"))
 RATE_GUEST_WINDOW= int(os.getenv("GAIA_RATE_GUEST_WINDOW","60"))
