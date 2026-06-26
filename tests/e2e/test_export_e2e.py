@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import json
 import zipfile
 
 import httpx
@@ -16,11 +17,11 @@ def test_e2e_openai_export_real_http(auth_client):
     r = auth_client.get(f"/api/agents/{agent['id']}/export/openai")
 
     assert r.status_code == 200
-    assert "application/json" in r.headers["content-type"]
+    assert r.headers["content-type"] == "application/zip"
     assert "attachment" in r.headers["content-disposition"]
-    assert r.headers["content-disposition"].endswith('-openai.json"')
+    assert "-openai.zip" in r.headers["content-disposition"]
 
-    payload = r.json()
+    payload = json.loads(zip_read(r.content, "agent.json"))
     assert payload["tool_choice"] == "required"
     assert payload["instructions"] == "You are a test assistant."
 
@@ -30,7 +31,7 @@ def test_e2e_openai_export_skills_in_instructions(auth_client):
     agent = create_agent(auth_client, {"skills": [skill["id"]]})
     r = auth_client.get(f"/api/agents/{agent['id']}/export/openai")
     assert r.status_code == 200
-    instructions = r.json()["instructions"]
+    instructions = json.loads(zip_read(r.content, "agent.json"))["instructions"]
     assert "Slack" in instructions
     assert "slack send" in instructions
 
@@ -116,12 +117,20 @@ def test_e2e_github_export_no_skills(auth_client):
 
 # ── MCP ───────────────────────────────────────────────────────────────────────
 
+def _mcp_server_path(content: bytes) -> str:
+    names = zip_names(content)
+    server_files = [n for n in names if n.endswith("-server.py")]
+    assert len(server_files) == 1, f"Expected one -server.py, got: {names}"
+    return server_files[0]
+
+
 def test_e2e_mcp_export_real_http(auth_client):
     agent = create_agent(auth_client)
     r = auth_client.get(f"/api/agents/{agent['id']}/export/mcp")
 
     assert r.status_code == 200
-    assert "-mcp.py" in r.headers["content-disposition"]
+    assert r.headers["content-type"] == "application/zip"
+    assert "-mcp.zip" in r.headers["content-disposition"]
 
 
 def test_e2e_mcp_export_valid_python(auth_client):
@@ -129,7 +138,7 @@ def test_e2e_mcp_export_valid_python(auth_client):
     agent = create_agent(auth_client, {"skills": [skill["id"]]})
     r = auth_client.get(f"/api/agents/{agent['id']}/export/mcp")
 
-    code = r.text
+    code = zip_read(r.content, _mcp_server_path(r.content))
     assert "from mcp.server.fastmcp import FastMCP" in code
     assert "@mcp.tool()" in code
     assert "def send_email" in code
@@ -147,7 +156,7 @@ def test_e2e_mcp_export_multiple_skills(auth_client):
     s2 = create_skill(auth_client, "Write File", "Write a file.", "open(path,'w').write()")
     agent = create_agent(auth_client, {"skills": [s1["id"], s2["id"]]})
     r = auth_client.get(f"/api/agents/{agent['id']}/export/mcp")
-    code = r.text
+    code = zip_read(r.content, _mcp_server_path(r.content))
     assert code.count("@mcp.tool()") == 2
     assert "def read_file" in code
     assert "def write_file" in code

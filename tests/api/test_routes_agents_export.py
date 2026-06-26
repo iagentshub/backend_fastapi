@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import io
+import json
 import zipfile
 
 
@@ -47,12 +48,19 @@ def _zip_read(content: bytes, path: str) -> str:
 
 # ── OpenAI export ─────────────────────────────────────────────────────────────
 
+def test_openai_export_is_zip(admin_client):
+    agent = _create_agent(admin_client, {"agent_type": "openai"})
+    r = admin_client.get(f"/api/agents/{agent['id']}/export/openai")
+    assert r.status_code == 200
+    assert r.headers["content-type"] == "application/zip"
+    assert zipfile.is_zipfile(io.BytesIO(r.content))
+
+
 def test_openai_export_basic(admin_client):
     agent = _create_agent(admin_client, {"agent_type": "openai", "tool_choice": "required"})
     r = admin_client.get(f"/api/agents/{agent['id']}/export/openai")
     assert r.status_code == 200
-    assert r.headers["content-type"].startswith("application/json")
-    payload = r.json()
+    payload = json.loads(_zip_read(r.content, "agent.json"))
     assert payload["name"] == "My Agent"
     assert payload["instructions"] == "You are a helpful assistant."
     assert payload["tool_choice"] == "required"
@@ -62,7 +70,7 @@ def test_openai_export_default_tool_choice(admin_client):
     agent = _create_agent(admin_client, {"agent_type": "openai"})
     r = admin_client.get(f"/api/agents/{agent['id']}/export/openai")
     assert r.status_code == 200
-    payload = r.json()
+    payload = json.loads(_zip_read(r.content, "agent.json"))
     assert "tool_choice" in payload
     assert payload["tool_choice"] == "auto"
 
@@ -72,7 +80,7 @@ def test_openai_export_injects_skills(admin_client):
     agent = _create_agent(admin_client, {"agent_type": "openai", "skills": [skill["id"]]})
     r = admin_client.get(f"/api/agents/{agent['id']}/export/openai")
     assert r.status_code == 200
-    instructions = r.json()["instructions"]
+    instructions = json.loads(_zip_read(r.content, "agent.json"))["instructions"]
     assert "GitHub Ops" in instructions
     assert "gh pr list" in instructions
 
@@ -178,18 +186,25 @@ def test_github_export_no_skills(admin_client):
 
 # ── MCP export ────────────────────────────────────────────────────────────────
 
-def test_mcp_export_is_python_file(admin_client):
+def _mcp_server_path(content: bytes) -> str:
+    names = _zip_names(content)
+    server_files = [n for n in names if n.endswith("-server.py")]
+    assert len(server_files) == 1, f"Expected one -server.py, got: {names}"
+    return server_files[0]
+
+
+def test_mcp_export_is_zip(admin_client):
     agent = _create_agent(admin_client)
     r = admin_client.get(f"/api/agents/{agent['id']}/export/mcp")
     assert r.status_code == 200
-    disp = r.headers.get("content-disposition", "")
-    assert disp.endswith('-mcp.py"')
+    assert r.headers["content-type"] == "application/zip"
+    assert zipfile.is_zipfile(io.BytesIO(r.content))
 
 
 def test_mcp_export_fastmcp_boilerplate(admin_client):
     agent = _create_agent(admin_client)
     r = admin_client.get(f"/api/agents/{agent['id']}/export/mcp")
-    code = r.text
+    code = _zip_read(r.content, _mcp_server_path(r.content))
     assert "from mcp.server.fastmcp import FastMCP" in code
     assert 'FastMCP("My Agent")' in code
     assert "@mcp.tool()" in code
@@ -207,7 +222,7 @@ def test_mcp_export_one_tool_per_skill(admin_client):
     }).json()
     agent = _create_agent(admin_client, {"skills": [skill1["id"], skill2["id"]]})
     r = admin_client.get(f"/api/agents/{agent['id']}/export/mcp")
-    code = r.text
+    code = _zip_read(r.content, _mcp_server_path(r.content))
     assert code.count("@mcp.tool()") == 2
     assert "def github_ops" in code
     assert "def slack_messaging" in code
@@ -217,7 +232,7 @@ def test_mcp_export_no_skills_fallback(admin_client):
     """Agent without skills still produces a valid tool stub."""
     agent = _create_agent(admin_client)
     r = admin_client.get(f"/api/agents/{agent['id']}/export/mcp")
-    code = r.text
+    code = _zip_read(r.content, _mcp_server_path(r.content))
     assert "@mcp.tool()" in code
     assert "def " in code
 
@@ -226,8 +241,71 @@ def test_mcp_export_skill_description_as_docstring(admin_client):
     skill = _create_skill(admin_client)
     agent = _create_agent(admin_client, {"skills": [skill["id"]]})
     r = admin_client.get(f"/api/agents/{agent['id']}/export/mcp")
-    code = r.text
+    code = _zip_read(r.content, _mcp_server_path(r.content))
     assert "GitHub operations via gh CLI." in code
+
+
+# ── Knowledge export (all formats) ───────────────────────────────────────────
+
+def _create_knowledge(client, title="Doc de prueba", content="Contenido de prueba."):
+    r = client.post("/api/knowledge/text", json={"title": title, "content": content})
+    assert r.status_code == 200, r.text
+    return r.json()
+
+
+def test_claude_export_includes_knowledge(admin_client):
+    doc = _create_knowledge(admin_client)
+    agent = _create_agent(admin_client, {"knowledge": [doc["id"]]})
+    r = admin_client.get(f"/api/agents/{agent['id']}/export/claude")
+    names = _zip_names(r.content)
+    knowledge_files = [n for n in names if n.startswith("knowledge/")]
+    assert len(knowledge_files) == 1
+    content = _zip_read(r.content, knowledge_files[0])
+    assert "Doc de prueba" in content
+    assert "Contenido de prueba." in content
+
+
+def test_github_export_includes_knowledge(admin_client):
+    doc = _create_knowledge(admin_client)
+    agent = _create_agent(admin_client, {"knowledge": [doc["id"]]})
+    r = admin_client.get(f"/api/agents/{agent['id']}/export/github")
+    names = _zip_names(r.content)
+    knowledge_files = [n for n in names if n.startswith("knowledge/")]
+    assert len(knowledge_files) == 1
+
+
+def test_github_export_includes_memory(admin_client):
+    agent = _create_agent(admin_client)
+    admin_client.post(f"/api/memory/{agent['id']}.md", json={"content": "Memoria de prueba"})
+    r = admin_client.get(f"/api/agents/{agent['id']}/export/github")
+    names = _zip_names(r.content)
+    assert ".github/COPILOT_INSTRUCTIONS.md" in names
+
+
+def test_openai_export_includes_knowledge(admin_client):
+    doc = _create_knowledge(admin_client)
+    agent = _create_agent(admin_client, {"agent_type": "openai", "knowledge": [doc["id"]]})
+    r = admin_client.get(f"/api/agents/{agent['id']}/export/openai")
+    names = _zip_names(r.content)
+    knowledge_files = [n for n in names if n.startswith("knowledge/")]
+    assert len(knowledge_files) == 1
+
+
+def test_mcp_export_includes_knowledge(admin_client):
+    doc = _create_knowledge(admin_client)
+    agent = _create_agent(admin_client, {"knowledge": [doc["id"]]})
+    r = admin_client.get(f"/api/agents/{agent['id']}/export/mcp")
+    names = _zip_names(r.content)
+    knowledge_files = [n for n in names if n.startswith("knowledge/")]
+    assert len(knowledge_files) == 1
+
+
+def test_export_no_knowledge_no_folder(admin_client):
+    """Agents with no knowledge produce no knowledge/ folder."""
+    agent = _create_agent(admin_client)
+    for fmt in ("claude", "github", "openai", "mcp"):
+        r = admin_client.get(f"/api/agents/{agent['id']}/export/{fmt}")
+        assert not any(n.startswith("knowledge/") for n in _zip_names(r.content)), fmt
 
 
 # ── Unknown format ────────────────────────────────────────────────────────────

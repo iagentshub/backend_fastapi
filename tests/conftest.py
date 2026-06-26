@@ -35,8 +35,10 @@ def patch_data_dir(tmp_data_dir, tmp_path, monkeypatch):
     while keeping shared fixtures (settings.json, etc.) from tmp_data_dir.
     Forces SQLite mode (DATABASE_URL='').
     """
-    # Per-test isolated DB — avoids cross-test username/data collisions
+    # Per-test isolated DB and memory dir — avoids cross-test data collisions
     db_file = tmp_path / "hub.db"
+    memory_dir = tmp_path / "memory"
+    memory_dir.mkdir()
 
     monkeypatch.setenv("DATABASE_URL", "")
     monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_data_dir))
@@ -48,8 +50,17 @@ def patch_data_dir(tmp_data_dir, tmp_path, monkeypatch):
     monkeypatch.setattr(cfg, "CONN_FILE", tmp_data_dir / "connections" / "connections.json")
     monkeypatch.setattr(cfg, "AGENTS_DIR", tmp_data_dir / "agents")
     monkeypatch.setattr(cfg, "SKILLS_DIR", tmp_data_dir / "skills")
-    monkeypatch.setattr(cfg, "MEMORY_DIR", tmp_data_dir / "memory")
+    monkeypatch.setattr(cfg, "MEMORY_DIR", memory_dir)
     monkeypatch.setattr(cfg, "SETTINGS_FILE", tmp_data_dir / "settings.json")
+
+    # MemoryStorage is instantiated at module import time with the original MEMORY_DIR.
+    # Patch the live instances so each test gets an isolated memory directory.
+    from app.storage.storage import MemoryStorage
+    isolated_memory = MemoryStorage(memory_dir)
+    import app.api.routes.memory as memory_routes
+    import app.api.routes.agents as agents_routes
+    monkeypatch.setattr(memory_routes, "_storage", isolated_memory)
+    monkeypatch.setattr(agents_routes, "_memory", isolated_memory)
 
     # Patch auth module paths
     import app.auth.auth as auth_mod

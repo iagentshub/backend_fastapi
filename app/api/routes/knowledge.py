@@ -174,6 +174,29 @@ async def move_item(
     return {"ok": True}
 
 
+@router.post("/text")
+async def add_text(
+    request: Request,
+    ctx: WorkspaceContext = Depends(require_workspace),
+) -> Dict[str, Any]:
+    user, workspace_id = ctx.user, ctx.workspace_id
+    body = await request.json()
+    title = str(body.get("title") or "").strip()
+    content = str(body.get("content") or "").strip()
+    source = str(body.get("source") or title).strip()
+    folder_id: Optional[str] = body.get("folder_id") or None
+    if not title:
+        raise HTTPException(status_code=422, detail="Título requerido")
+    if not content:
+        raise HTTPException(status_code=422, detail="Contenido requerido")
+    if is_guest(user):
+        item = _guest_item(type="text", title=title, source=source, content=content)
+        get_session(user).knowledge.append(item)
+        return item
+    owner = _owner(user, workspace_id) or workspace_id
+    return _storage.save(type="text", title=title, source=source, content=content, owner_id=owner, folder_id=folder_id)
+
+
 @router.post("/url")
 async def add_url(
     request: Request,

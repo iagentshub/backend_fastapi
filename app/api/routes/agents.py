@@ -187,15 +187,17 @@ async def export_agent(
         s = get_session(user)
         a = next((ag for ag in s.agents if ag.get("id") == agent_id), None) or _agents.get(agent_id, scope="public")
         memory_store = GuestMemoryAdapter(s)
+        knowledge_store: Any = GuestKnowledgeAdapter(s)
     else:
         a = _agents.get(agent_id)
         memory_store = _memory
+        knowledge_store = _knowledge
     if not a:
         raise HTTPException(status_code=404, detail="Agente no encontrado")
     a = _apply_locale(a, get_locale())
 
-    # Resolve skills once; each format decides how to embed them.
-    resolved_skills = []
+    # Resolve skills
+    resolved_skills: List[Dict[str, Any]] = []
     for sid in (a.get("skills") or []):
         for scope in ("public", "private"):
             sk = _skills.get(scope, sid)
@@ -203,8 +205,21 @@ async def export_agent(
                 resolved_skills.append(sk)
                 break
 
+    # Resolve knowledge items
+    resolved_knowledge: List[Dict[str, Any]] = []
+    for kid in (a.get("knowledge") or []):
+        try:
+            item = knowledge_store.get(kid)
+            if item:
+                resolved_knowledge.append(item)
+        except Exception:
+            pass
+
+    # Resolve memory
+    mem_file = a.get("memory_file") or f"{agent_id}.md"
+    mem_content = (memory_store.get(mem_file) or "").strip()
+
     # OpenAI: inject skills as text into system_prompt.
-    # Claude/GitHub/MCP handle skills via dedicated file structures or resolved_skills.
     if fmt == "openai":
         skills_text = "".join(
             f"\n\n## Skill: {sk.get('name', '')}\n{sk.get('content', '')}"
@@ -213,7 +228,7 @@ async def export_agent(
         if skills_text:
             a = {**a, "system_prompt": (str(a.get("system_prompt") or "").strip() + skills_text).strip()}
 
-    # Pass resolved skills for MCP tool generation
+    # MCP: pass resolved skills for tool generation.
     if fmt == "mcp":
         a = {**a, "_resolved_skills": resolved_skills}
 
@@ -223,28 +238,43 @@ async def export_agent(
     except NotImplementedError:
         raise HTTPException(status_code=400, detail=f"Formato '{fmt}' no soportado para tipo '{agent_obj.agent_type}'")
 
+    slug = _name_slug(agent_obj.name)
+
+    def _skill_md(sk: Dict[str, Any]) -> str:
+        sk_name = sk.get("name", "")
+        sk_desc = str(sk.get("description") or "")[:200]
+        return f"---\nname: {sk_name}\ndescription: {sk_desc}\n---\n\n{sk.get('content', '')}"
+
+    def _knowledge_md(item: Dict[str, Any]) -> str:
+        title = item.get("title") or "item"
+        source = item.get("source") or ""
+        ktype = item.get("type") or "text"
+        body = item.get("content") or ""
+        header = f"# {title}\n\n"
+        if source:
+            header += f"> Source: {source}  \n> Type: {ktype}\n\n"
+        return header + body
+
+    def _add_knowledge(zf: zipfile.ZipFile, prefix: str = "knowledge/") -> None:
+        for item in resolved_knowledge:
+            kslug = _name_slug(item.get("title") or "item")
+            zf.writestr(f"{prefix}{kslug}.md", _knowledge_md(item))
+
     if fmt == "claude":
-        slug = _name_slug(agent_obj.name)
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.writestr(f".claude/agents/{slug}.md", content)
             for sk in resolved_skills:
-                sk_name = sk.get("name", "")
-                sk_slug = _name_slug(sk_name)
-                sk_desc = str(sk.get("description") or "")[:200]
-                skill_md = (
-                    f"---\nname: {sk_name}\ndescription: {sk_desc}\n---\n\n"
-                    f"{sk.get('content', '')}"
-                )
+                sk_slug = _name_slug(sk.get("name", ""))
+                skill_md = _skill_md(sk)
                 zf.writestr(f".claude/skills/{sk_slug}/SKILL.md", skill_md)
                 skill_zip_buf = io.BytesIO()
                 with zipfile.ZipFile(skill_zip_buf, "w", zipfile.ZIP_DEFLATED) as szf:
                     szf.writestr(f"{sk_slug}/SKILL.md", skill_md)
                 zf.writestr(f"skills/{sk_slug}.zip", skill_zip_buf.getvalue())
-            mem_file = a.get("memory_file") or f"{agent_id}.md"
-            mem_content = memory_store.get(mem_file)
-            if mem_content and mem_content.strip():
-                zf.writestr(".claude/CLAUDE.md", mem_content.strip())
+            if mem_content:
+                zf.writestr(".claude/CLAUDE.md", mem_content)
+            _add_knowledge(zf)
         return Response(
             content=buf.getvalue(),
             media_type="application/zip",
@@ -252,23 +282,45 @@ async def export_agent(
         )
 
     if fmt == "github":
-        slug = _name_slug(agent_obj.name)
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
             zf.writestr(f".github/agents/{slug}.md", content)
             for sk in resolved_skills:
-                sk_name = sk.get("name", "")
-                sk_slug = _name_slug(sk_name)
-                sk_desc = str(sk.get("description") or "")[:200]
-                skill_md = (
-                    f"---\nname: {sk_name}\ndescription: {sk_desc}\n---\n\n"
-                    f"{sk.get('content', '')}"
-                )
-                zf.writestr(f".github/skills/{sk_slug}/SKILL.md", skill_md)
+                sk_slug = _name_slug(sk.get("name", ""))
+                zf.writestr(f".github/skills/{sk_slug}/SKILL.md", _skill_md(sk))
+            if mem_content:
+                zf.writestr(".github/COPILOT_INSTRUCTIONS.md", mem_content)
+            _add_knowledge(zf)
         return Response(
             content=buf.getvalue(),
             media_type="application/zip",
             headers={"Content-Disposition": f'attachment; filename="{slug}-copilot.zip"'},
+        )
+
+    if fmt == "openai":
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("agent.json", content)
+            if mem_content:
+                zf.writestr("memory.md", mem_content)
+            _add_knowledge(zf)
+        return Response(
+            content=buf.getvalue(),
+            media_type="application/zip",
+            headers={"Content-Disposition": f'attachment; filename="{slug}-openai.zip"'},
+        )
+
+    if fmt == "mcp":
+        buf = io.BytesIO()
+        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr(f"{slug}-server.py", content)
+            if mem_content:
+                zf.writestr("memory.md", mem_content)
+            _add_knowledge(zf)
+        return Response(
+            content=buf.getvalue(),
+            media_type="application/zip",
+            headers={"Content-Disposition": f'attachment; filename="{slug}-mcp.zip"'},
         )
 
     return Response(
