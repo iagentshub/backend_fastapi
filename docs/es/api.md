@@ -156,61 +156,75 @@ Las skills tienen tres estados de visibilidad: **pública** (accesible a todos),
 
 ---
 
-## Preferencias
+## Configuración del usuario
 
-Preferencias por usuario (tema e idioma). Ambos endpoints requieren autenticación.
+Preferencias y configuración del dashboard por usuario. Todos los endpoints requieren autenticación.
 
 | Método | Endpoint | Descripción |
 |---|---|---|
 | `GET` | `/api/settings` | Obtener las preferencias del usuario actual (`theme`, `language`) |
 | `PUT` | `/api/settings` | Actualizar una o ambas preferencias |
+| `GET` | `/api/settings/dashboard-layout` | Obtener el orden de paneles del dashboard (`{"layout": ["summary","token-usage",…]}`) |
+| `PUT` | `/api/settings/dashboard-layout` | Guardar el orden de paneles; valida que los IDs correspondan a widgets conocidos |
+| `GET` | `/api/settings/dashboard-config` | Obtener la configuración por widget (`{"config": {"token-usage": {…}, …}}`) |
+| `PUT` | `/api/settings/dashboard-config` | Guardar la configuración por widget para el usuario actual |
 
-**Cuerpo del PUT** (todos los campos son opcionales):
+**Cuerpo del PUT `/api/settings`** (todos los campos son opcionales):
 ```json
-{ "theme": "noir", "language": "es" }
+{ "theme": "dark-red", "language": "es" }
 ```
 
-Valores válidos: `theme` — `noir`, `marble`, `ember`, `ocean`, `forest`, `dusk`; `language` — `es`, `en`.
+Valores válidos de `theme`: `dark-red`, `dark-blue`, `dark-orange`, `dark-purple`, `light-red`, `light-blue`, `light-orange`, `light-purple`. Los nombres legacy `noir`, `marble`, `ember`, `ocean`, `forest`, `dusk` siguen siendo válidos por compatibilidad. Valores válidos de `language`: `es`, `en`.
+
+**Ejemplo de cuerpo del PUT `/api/settings/dashboard-layout`**:
+```json
+{ "layout": ["summary", "token-usage", "activity", "conn-status", "recent"] }
+```
+
+**Ejemplo de cuerpo del PUT `/api/settings/dashboard-config`**:
+```json
+{ "config": { "token-usage": { "vizType": "bars", "groupBy": "connection", "scope": "all", "limit": 5 } } }
+```
 
 Las preferencias se guardan por usuario en la base de datos. Cambiarlas en un dispositivo se refleja en todos los demás al iniciar sesión.
 
 ---
 
-## Equipos
+## Grupos
 
-Gestión de grupos de colaboración. Los invitados no pueden crear ni unirse a equipos.
+Gestión de grupos dentro de workspaces. Los grupos son subconjuntos de usuarios de un workspace y sirven para compartir recursos entre sus miembros.
+
+### Grupos de usuario
 
 | Método | Endpoint | Descripción |
 |---|---|---|
-| `GET` | `/api/teams/` | Listar los equipos del usuario autenticado |
-| `POST` | `/api/teams/` | Crear un equipo (el creador queda como gestor) |
-| `GET` | `/api/teams/{id}` | Obtener detalles de un equipo (requiere ser miembro) |
-| `PATCH` | `/api/teams/{id}` | Renombrar un equipo (requiere ser gestor) |
-| `DELETE` | `/api/teams/{id}` | Eliminar un equipo (requiere ser gestor) |
-| `GET` | `/api/teams/{id}/members` | Listar miembros con su rol y permisos |
-| `PATCH` | `/api/teams/{id}/members/{username}` | Actualizar rol o permisos de un miembro (requiere ser gestor) |
-| `DELETE` | `/api/teams/{id}/members/{username}` | Eliminar un miembro del equipo (requiere ser gestor) |
-| `GET` | `/api/teams/{id}/invitations` | Listar invitaciones activas del equipo |
-| `POST` | `/api/teams/{id}/invitations` | Enviar una invitación por email |
-| `DELETE` | `/api/teams/{id}/invitations/{token}` | Cancelar una invitación |
-| `GET` | `/api/teams/invitations/pending` | Listar invitaciones pendientes recibidas por el usuario |
-| `GET` | `/api/teams/invitations/received` | Listar todas las invitaciones recibidas (incluyendo aceptadas/rechazadas) |
-| `GET` | `/api/teams/invitations/sent` | Listar invitaciones enviadas por el usuario |
-| `POST` | `/api/teams/invitations/{token}/accept` | Aceptar una invitación (el usuario pasa a ser miembro) |
-| `POST` | `/api/teams/invitations/{token}/reject` | Rechazar una invitación |
+| `GET` | `/api/workspaces/{workspace_id}/groups` | Listar los grupos del workspace |
+| `POST` | `/api/workspaces/{workspace_id}/groups` | Crear un grupo en el workspace |
+| `PATCH` | `/api/workspaces/{workspace_id}/groups/{group_id}` | Renombrar un grupo |
+| `DELETE` | `/api/workspaces/{workspace_id}/groups/{group_id}` | Eliminar un grupo |
+| `GET` | `/api/workspaces/{workspace_id}/groups/{group_id}/members` | Listar los miembros del grupo |
+| `POST` | `/api/workspaces/{workspace_id}/groups/{group_id}/members` | Añadir un miembro al grupo |
+| `DELETE` | `/api/workspaces/{workspace_id}/groups/{group_id}/members/{username}` | Eliminar un miembro del grupo |
+
+### Grupos (admin)
+
+| Método | Endpoint | Descripción |
+|---|---|---|
+| `GET` | `/api/admin/groups` | Listar todos los grupos; cada item incluye `member_count` y `resource_count` |
+| `DELETE` | `/api/admin/groups/{group_id}` | Eliminar un grupo y todos sus miembros y recursos compartidos |
 
 ---
 
 ## Compartición de recursos
 
-Permite compartir recursos privados (agentes, skills, conexiones, conocimiento) con equipos. Solo el propietario puede compartir/dejar de compartir su recurso.
+Permite compartir recursos privados (agentes, skills, conexiones, conocimiento) con grupos. Solo el propietario puede compartir/dejar de compartir su recurso.
 
 | Método | Endpoint | Descripción |
 |---|---|---|
-| `GET` | `/api/sharing/{type}/{resource_id}` | Listar los equipos con los que está compartido un recurso |
-| `POST` | `/api/sharing/{type}/{resource_id}` | Compartir un recurso con un equipo (`body: {"team_id": "..."}`) |
-| `DELETE` | `/api/sharing/{type}/{resource_id}/{team_id}` | Dejar de compartir un recurso con un equipo |
-| `GET` | `/api/sharing/by-team/{team_id}/{type}` | Recursos de un tipo compartidos con un equipo (requiere ser miembro) |
+| `GET` | `/api/sharing/{type}/{resource_id}` | Listar los grupos con los que está compartido un recurso |
+| `POST` | `/api/sharing/{type}/{resource_id}` | Compartir un recurso con un grupo (`body: {"group_id": "..."}`) |
+| `DELETE` | `/api/sharing/{type}/{resource_id}/{group_id}` | Dejar de compartir un recurso con un grupo |
+| `GET` | `/api/sharing/by-group/{group_id}/{type}` | Recursos de un tipo compartidos con un grupo (requiere ser miembro) |
 
 Tipos válidos para `{type}`: `agent`, `skill`, `connection`, `knowledge`.
 
@@ -228,4 +242,5 @@ Los recursos compartidos con el usuario aparecen en los listados normales (`/api
 | `POST` | `/api/connections` | Añadir o actualizar una conexión |
 | `DELETE` | `/api/connections/{id}` | Eliminar una conexión |
 | `POST` | `/api/connections/{id}/test` | Testar una conexión concreta |
-| `POST` | `/api/connections/test-all` | Testar todas (o las indicadas) las conexiones |
+| `POST` | `/api/connections/test-all` | Testar todas (o las indicadas) las conexiones; cada resultado incluye `latency_ms` (entero en milisegundos, `null` si no hay proveedor de test) |
+| `GET` | `/api/connections/tokens-daily` | Obtener el historial de consumo de tokens diario (`?days=N`, por defecto 14) |

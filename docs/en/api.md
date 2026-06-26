@@ -156,61 +156,70 @@ Skills have three visibility states: **public** (accessible to everyone), **priv
 
 ---
 
-## Settings
+## User settings
 
-Per-user preferences (theme and language). Both endpoints require authentication.
+Per-user preferences and dashboard configuration. All endpoints require authentication.
 
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/api/settings` | Get the current user's preferences (`theme`, `language`) |
 | `PUT` | `/api/settings` | Update one or both preferences |
+| `GET` | `/api/settings/dashboard-layout` | Get the dashboard panel order (`{"layout": ["summary","token-usage",…]}`) |
+| `PUT` | `/api/settings/dashboard-layout` | Save the panel order; validates that IDs correspond to known widgets |
+| `GET` | `/api/settings/dashboard-config` | Get per-widget configuration (`{"config": {"token-usage": {…}, …}}`) |
+| `PUT` | `/api/settings/dashboard-config` | Save per-widget configuration for the current user |
 
-**PUT body** (all fields optional):
+**PUT `/api/settings` body** (all fields optional):
 ```json
-{ "theme": "noir", "language": "es" }
+{ "theme": "dark-red", "language": "es" }
 ```
 
-Valid values: `theme` — `noir`, `marble`, `ember`, `ocean`, `forest`, `dusk`; `language` — `es`, `en`.
+Valid `theme` values: `dark-red`, `dark-blue`, `dark-orange`, `dark-purple`, `light-red`, `light-blue`, `light-orange`, `light-purple`. Legacy names `noir`, `marble`, `ember`, `ocean`, `forest`, `dusk` remain valid for backward compatibility. Valid `language` values: `es`, `en`.
 
-Preferences are stored per user in the database. Changing them on one device is reflected on all others at next login.
+**Example PUT `/api/settings/dashboard-layout` body**:
+```json
+{ "layout": ["summary", "token-usage", "activity", "conn-status", "recent"] }
+```
+
+Known widget IDs: `summary`, `token-usage`, `activity`, `conn-status`, `recent`.
 
 ---
 
-## Teams
+## Groups
 
-Collaboration group management. Guests cannot create or join teams.
+Group management within workspaces. Groups are subsets of workspace members used to share resources.
+
+### User groups
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/teams/` | List teams the authenticated user belongs to |
-| `POST` | `/api/teams/` | Create a team (creator is automatically added as manager) |
-| `GET` | `/api/teams/{id}` | Get team details (requires membership) |
-| `PATCH` | `/api/teams/{id}` | Rename a team (requires manager role) |
-| `DELETE` | `/api/teams/{id}` | Delete a team (requires manager role) |
-| `GET` | `/api/teams/{id}/members` | List members with their roles and permissions |
-| `PATCH` | `/api/teams/{id}/members/{username}` | Update a member's role or permissions (requires manager role) |
-| `DELETE` | `/api/teams/{id}/members/{username}` | Remove a member from the team (requires manager role) |
-| `GET` | `/api/teams/{id}/invitations` | List active invitations for the team |
-| `POST` | `/api/teams/{id}/invitations` | Send an invitation by email |
-| `DELETE` | `/api/teams/{id}/invitations/{token}` | Cancel an invitation |
-| `GET` | `/api/teams/invitations/pending` | List pending invitations received by the user |
-| `GET` | `/api/teams/invitations/received` | List all received invitations (including accepted/rejected) |
-| `GET` | `/api/teams/invitations/sent` | List invitations sent by the user |
-| `POST` | `/api/teams/invitations/{token}/accept` | Accept an invitation (user becomes a member) |
-| `POST` | `/api/teams/invitations/{token}/reject` | Reject an invitation |
+| `GET` | `/api/workspaces/{workspace_id}/groups` | List groups in the workspace |
+| `POST` | `/api/workspaces/{workspace_id}/groups` | Create a group in the workspace |
+| `PATCH` | `/api/workspaces/{workspace_id}/groups/{group_id}` | Rename a group |
+| `DELETE` | `/api/workspaces/{workspace_id}/groups/{group_id}` | Delete a group |
+| `GET` | `/api/workspaces/{workspace_id}/groups/{group_id}/members` | List group members |
+| `POST` | `/api/workspaces/{workspace_id}/groups/{group_id}/members` | Add a member to the group |
+| `DELETE` | `/api/workspaces/{workspace_id}/groups/{group_id}/members/{username}` | Remove a member from the group |
+
+### Groups (admin)
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/admin/groups` | List all groups; each item includes `member_count` and `resource_count` |
+| `DELETE` | `/api/admin/groups/{group_id}` | Delete a group and all its members and shared resources |
 
 ---
 
 ## Resource Sharing
 
-Allows sharing private resources (agents, skills, connections, knowledge) with teams. Only the owner can share or unshare their resource.
+Allows sharing private resources (agents, skills, connections, knowledge) with groups. Only the owner can share or unshare their resource.
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/sharing/{type}/{resource_id}` | List teams a resource is shared with |
-| `POST` | `/api/sharing/{type}/{resource_id}` | Share a resource with a team (`body: {"team_id": "..."}`) |
-| `DELETE` | `/api/sharing/{type}/{resource_id}/{team_id}` | Stop sharing a resource with a team |
-| `GET` | `/api/sharing/by-team/{team_id}/{type}` | Resources of a given type shared with a team (requires membership) |
+| `GET` | `/api/sharing/{type}/{resource_id}` | List groups a resource is shared with |
+| `POST` | `/api/sharing/{type}/{resource_id}` | Share a resource with a group (`body: {"group_id": "..."}`) |
+| `DELETE` | `/api/sharing/{type}/{resource_id}/{group_id}` | Stop sharing a resource with a group |
+| `GET` | `/api/sharing/by-group/{group_id}/{type}` | Resources of a given type shared with a group (requires membership) |
 
 Valid values for `{type}`: `agent`, `skill`, `connection`, `knowledge`.
 
@@ -223,9 +232,10 @@ Resources shared with the user appear in the standard listing endpoints (`/api/s
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/api/connections/providers` | List all available provider types (with field definitions) |
-| `GET` | `/api/connections` | List configured connections (API keys excluded); each item includes `tokens_in` and `tokens_out` fields with the cumulative token usage |
+| `GET` | `/api/connections` | List configured connections (API keys excluded); each item includes `tokens_in` and `tokens_out` with cumulative token usage |
 | `GET` | `/api/connections/{id}` | Get details of a single connection |
 | `POST` | `/api/connections` | Add or update a connection |
 | `DELETE` | `/api/connections/{id}` | Remove a connection |
 | `POST` | `/api/connections/{id}/test` | Test a single connection |
-| `POST` | `/api/connections/test-all` | Test all (or selected) connections |
+| `POST` | `/api/connections/test-all` | Test all (or selected) connections; each result includes `latency_ms` (integer in milliseconds, `null` if no test provider is available) |
+| `GET` | `/api/connections/tokens-daily` | Get the daily token consumption history (`?days=N`, default 14) |
