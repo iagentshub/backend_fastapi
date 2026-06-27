@@ -11,18 +11,22 @@ from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response
 from app.auth.auth import (
     admin_set_password,
     admin_update_user,
+    cancel_user_deletion,
     consume_reset_token,
     create_password_reset_token,
     create_token,
     decode_token,
     decode_workspace_token,
     delete_user,
+    get_owned_workspaces,
     get_user_by_email,
     get_user_by_username,
     get_user_role,
     hash_password,
     list_users,
+    purge_user_data,
     register_user_email,
+    schedule_user_deletion,
     send_account_status_email,
     send_reset_email,
     send_verification_email,
@@ -288,6 +292,63 @@ async def change_password(
     finally:
         close_db(conn)
     return {"ok": True}
+
+
+# ── GDPR ──────────────────────────────────────────────────────────────────────
+
+
+@router.get("/me/deletion-status")
+async def get_deletion_status(username: str = Depends(require_auth)) -> Dict[str, Any]:
+    user = get_user_by_username(username)
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    return {
+        "scheduled": user.get("deletion_requested_at") is not None,
+        "deletion_date": user.get("deletion_requested_at"),
+    }
+
+
+@router.post("/me/request-deletion")
+async def request_account_deletion(
+    username: str = Depends(require_auth),
+) -> Dict[str, Any]:
+    owned = get_owned_workspaces(username)
+    if owned:
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "message": "Transfiere o elimina tus workspaces antes de borrar la cuenta",
+                "workspaces": owned,
+            },
+        )
+    schedule_user_deletion(username)
+    return {"ok": True, "message": "Cuenta programada para eliminación en 30 días"}
+
+
+@router.post("/me/cancel-deletion")
+async def cancel_account_deletion(request: Request) -> Dict[str, Any]:
+    body = await request.json()
+    token = str(body.get("token", "")).strip()
+    if not token or not cancel_user_deletion(token):
+        raise HTTPException(status_code=400, detail="Token inválido o expirado")
+    return {"ok": True}
+
+
+@router.get("/me/export")
+async def export_my_data(username: str = Depends(require_auth)):
+    from fastapi.responses import StreamingResponse
+    from app.services.gdpr import export_user_data
+    from datetime import datetime, timezone
+
+    buf = export_user_data(username)
+    date_str = datetime.now(timezone.utc).strftime("%Y%m%d")
+    safe_name = username.split("@")[0].replace(" ", "_")
+    filename = f"export_{safe_name}_{date_str}.zip"
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
 
 
 # ── Admin ─────────────────────────────────────────────────────────────────────

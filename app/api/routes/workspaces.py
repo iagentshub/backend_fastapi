@@ -3,10 +3,11 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, Depends, HTTPException, Response
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from app.api.routes.auth import WorkspaceContext, require_workspace
 from app.auth.auth import create_token, get_user_role
+from app.api.routes.auth import require_auth
 from app.config.data import DB_FILE
 from app.config.session import SECURE_COOKIES
 from app.storage.guest import is_guest
@@ -274,4 +275,29 @@ async def cancel_workspace_invitation(
         raise HTTPException(status_code=403, detail="Sin permisos")
     if not _ws.cancel_invitation(inv_id, workspace_id):
         raise HTTPException(status_code=404, detail="Invitacion no encontrada")
+    return {"ok": True}
+
+
+@router.post("/{workspace_id}/transfer-ownership")
+async def transfer_workspace_ownership(
+    workspace_id: str,
+    request: Request,
+    username: str = Depends(require_auth),
+) -> Dict[str, Any]:
+    """Transfiere la propiedad del workspace a otro miembro existente."""
+    body = await request.json()
+    new_owner = str(body.get("username", "")).strip()
+    if not new_owner:
+        raise HTTPException(status_code=400, detail="Se requiere 'username' del nuevo propietario")
+    if new_owner == username:
+        raise HTTPException(status_code=400, detail="Ya eres el propietario")
+
+    ws = _ws.get(workspace_id)
+    if not ws:
+        raise HTTPException(status_code=404, detail="Workspace no encontrado")
+    if ws.get("created_by") != username and get_user_role(username) != "admin":
+        raise HTTPException(status_code=403, detail="Solo el propietario puede transferir el workspace")
+
+    if not _ws.transfer_ownership(workspace_id, new_owner):
+        raise HTTPException(status_code=400, detail="El usuario no es miembro de este workspace")
     return {"ok": True}

@@ -98,6 +98,30 @@ class WorkspaceStorage:
         finally:
             close_db(conn)
 
+    def transfer_ownership(self, workspace_id: str, new_owner: str) -> bool:
+        """Transfer ownership to an existing member. Returns False if not a member."""
+        conn = open_db(self._path)
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                f"SELECT 1 FROM workspace_members WHERE workspace_id = {PH} AND username = {PH}",
+                (workspace_id, new_owner),
+            )
+            if not cur.fetchone():
+                return False
+            cur.execute(
+                f"UPDATE workspaces SET created_by = {PH} WHERE id = {PH}",
+                (new_owner, workspace_id),
+            )
+            cur.execute(
+                f"UPDATE workspace_members SET role = {PH} WHERE workspace_id = {PH} AND username = {PH}",
+                ("owner", workspace_id, new_owner),
+            )
+            conn.commit()
+            return True
+        finally:
+            close_db(conn)
+
     # ── Members ────────────────────────────────────────────────────────────────
 
     def list_members(self, workspace_id: str) -> List[Dict[str, Any]]:

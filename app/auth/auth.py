@@ -14,7 +14,7 @@ import secrets
 import bcrypt as _bcrypt
 from jose import JWTError, jwt
 
-from app.config.data import DB_FILE, SETTINGS_FILE
+from app.config.data import AGENTS_DIR, DB_FILE, SETTINGS_FILE, SKILLS_DIR
 from app.config.session import (
     EMAIL_VERIFY_ENABLED,
     JWT_ALGORITHM,
@@ -303,6 +303,33 @@ def send_reset_email(email: str, token: str, base_url: str = "") -> None:
     _send_smtp(email, "Recupera el acceso a iAgents Hub", html)
 
 
+def send_deletion_scheduled_email(email: str, cancel_token: str, deletion_at: str, base_url: str = "") -> None:
+    from app.config.session import SMTP_HOST
+
+    cancel_url = f"{base_url}/profile/?deletion_token={cancel_token}"
+    try:
+        date_str = datetime.fromisoformat(deletion_at).strftime("%d/%m/%Y")
+    except Exception:
+        date_str = deletion_at[:10]
+
+    if not SMTP_HOST:
+        flog.info(f"[email] SMTP no configurado — enlace cancelación: {cancel_url}")
+        return
+
+    html = _build_email_html(
+        title="Eliminación de cuenta programada",
+        heading="Tu cuenta será eliminada el " + date_str,
+        body_html=(
+            "Hemos recibido una solicitud para eliminar tu cuenta de iAgents Hub.<br>"
+            f"Todos tus datos se borrarán permanentemente el <strong>{date_str}</strong>.<br><br>"
+            "Si cambiaste de opinión, cancela la eliminación antes de esa fecha."
+        ),
+        cta_url=cancel_url,
+        cta_label="Cancelar eliminación",
+    )
+    _send_smtp(email, "Eliminación de tu cuenta en iAgents Hub programada", html)
+
+
 def send_account_status_email(email: str, is_active: bool, base_url: str = "") -> None:
     from app.config.session import SMTP_HOST
 
@@ -415,6 +442,131 @@ def delete_user(username: str) -> bool:
         return cur.rowcount > 0
     finally:
         close_db(conn)
+
+
+# ── GDPR ──────────────────────────────────────────────────────────────────────
+
+
+def get_owned_workspaces(username: str) -> list:
+    """Return workspaces where the user is owner (created_by)."""
+    conn = open_db(DB_FILE)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            f"SELECT id, name FROM workspaces WHERE created_by = {PH}",
+            (username,),
+        )
+        return [dict(r) for r in cur.fetchall()]
+    finally:
+        close_db(conn)
+
+
+def schedule_user_deletion(username: str) -> str:
+    """Schedule account deletion 30 days from now. Returns cancellation token."""
+    token = secrets.token_urlsafe(32)
+    deletion_at = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
+    conn = open_db(DB_FILE)
+    try:
+        conn.cursor().execute(
+            f"UPDATE users SET deletion_requested_at = {PH}, deletion_token = {PH} WHERE username = {PH}",
+            (deletion_at, token, username),
+        )
+        conn.commit()
+    finally:
+        close_db(conn)
+    user = get_user_by_username(username)
+    if user:
+        send_deletion_scheduled_email(user["email"], token, deletion_at)
+    flog.info(f"[gdpr] Borrado programado para {username} el {deletion_at}")
+    return token
+
+
+def cancel_user_deletion(token: str) -> bool:
+    """Cancel a scheduled deletion via token. Returns True if found and cancelled."""
+    conn = open_db(DB_FILE)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            f"UPDATE users SET deletion_requested_at = NULL, deletion_token = NULL WHERE deletion_token = {PH}",
+            (token,),
+        )
+        conn.commit()
+        return cur.rowcount > 0
+    finally:
+        close_db(conn)
+
+
+def purge_user_data(username: str) -> None:
+    """Hard-delete all user data from DB (cascade) and filesystem."""
+    import shutil as _shutil
+    import json as _json
+
+    conn = open_db(DB_FILE)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            f"DELETE FROM messages WHERE conversation_id IN (SELECT id FROM conversations WHERE user_id = {PH})",
+            (username,),
+        )
+        cur.execute(f"DELETE FROM conversations WHERE user_id = {PH}", (username,))
+        cur.execute(f"DELETE FROM knowledge_items WHERE owner_id = {PH}", (username,))
+        cur.execute(f"DELETE FROM knowledge_folders WHERE owner_id = {PH}", (username,))
+        cur.execute(f"DELETE FROM connections WHERE owner_id = {PH}", (username,))
+        cur.execute(f"DELETE FROM token_daily WHERE owner_id = {PH}", (username,))
+        cur.execute(f"DELETE FROM accounts WHERE owner_id = {PH}", (username,))
+        cur.execute(f"DELETE FROM resource_groups WHERE shared_by = {PH}", (username,))
+        cur.execute(f"DELETE FROM workspace_group_members WHERE username = {PH}", (username,))
+        cur.execute(f"DELETE FROM workspace_invitations WHERE username = {PH}", (username,))
+        cur.execute(f"DELETE FROM workspace_members WHERE username = {PH}", (username,))
+        cur.execute(f"DELETE FROM workspaces WHERE created_by = {PH}", (username,))
+        cur.execute(f"DELETE FROM users WHERE username = {PH}", (username,))
+        conn.commit()
+        flog.ok(f"[gdpr] BD purgada para {username}")
+    except Exception as exc:
+        conn.rollback()
+        flog.error(f"[gdpr] Error purgando BD de {username}: {exc}")
+        raise
+    finally:
+        close_db(conn)
+
+    for base_dir in (AGENTS_DIR, SKILLS_DIR):
+        for scope_dir in (base_dir / "private", base_dir / "public"):
+            if not scope_dir.exists():
+                continue
+            for item_dir in scope_dir.iterdir():
+                cfg = item_dir / "config.json"
+                if not cfg.exists():
+                    continue
+                try:
+                    if _json.loads(cfg.read_text()).get("owner_id") == username:
+                        _shutil.rmtree(item_dir, ignore_errors=True)
+                except Exception:
+                    pass
+
+    flog.ok(f"[gdpr] Purga completa de {username}")
+
+
+def purge_expired_deletions() -> int:
+    """Hard-delete accounts whose 30-day grace period has passed. Returns count."""
+    now = datetime.now(timezone.utc).isoformat()
+    conn = open_db(DB_FILE)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            f"SELECT username FROM users WHERE deletion_requested_at IS NOT NULL AND deletion_requested_at <= {PH}",
+            (now,),
+        )
+        usernames = [r["username"] for r in cur.fetchall()]
+    finally:
+        close_db(conn)
+
+    for username in usernames:
+        try:
+            purge_user_data(username)
+        except Exception as exc:
+            flog.error(f"[gdpr] No se pudo purgar {username}: {exc}")
+
+    return len(usernames)
 
 
 def update_user_profile(username: str, **fields) -> None:

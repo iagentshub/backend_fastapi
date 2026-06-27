@@ -1,6 +1,7 @@
 """API principal — GAIA Backend."""
 from __future__ import annotations
 
+import asyncio
 import time
 from contextlib import asynccontextmanager
 
@@ -9,7 +10,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.utils import flog
-from app.auth.auth import ensure_admin_user
+from app.auth.auth import ensure_admin_user, purge_expired_deletions
 from app.config.cors import CORS_ORIGINS
 from app.api.routes import auth, connections, agents, skills, memory, settings, accounts, chats, knowledge, logs, sharing, workspaces, groups
 from app.api.routes.auth import admin_router
@@ -31,11 +32,25 @@ class _RequestLogger(BaseHTTPMiddleware):
         return response
 
 
+async def _gdpr_purge_loop() -> None:
+    """Purga cuentas con el período de gracia expirado cada 6 horas."""
+    while True:
+        await asyncio.sleep(6 * 3600)
+        try:
+            n = purge_expired_deletions()
+            if n:
+                flog.ok(f"[gdpr] {n} cuenta(s) eliminadas definitivamente")
+        except Exception as exc:
+            flog.error(f"[gdpr] Error en purga automática: {exc}")
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     ensure_admin_user()
+    purge_task = asyncio.create_task(_gdpr_purge_loop())
     flog.ok("iAgents Hub arrancado")
     yield
+    purge_task.cancel()
     flog.info("iAgents Hub detenido")
 
 
