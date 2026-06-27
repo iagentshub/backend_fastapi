@@ -13,7 +13,7 @@ from app.utils import flog
 from app.auth.auth import ensure_admin_user, purge_expired_deletions
 from app.config.cors import CORS_ORIGINS
 from app.api.routes import auth, connections, agents, skills, memory, settings, accounts, chats, knowledge, logs, sharing, workspaces, groups
-from app.api.routes.auth import admin_router
+from app.api.routes.auth import admin_router, users_router
 from app.middleware.locale import LocaleMiddleware
 
 
@@ -69,6 +69,7 @@ def create_app() -> FastAPI:
 
     app.include_router(auth.router)
     app.include_router(admin_router)
+    app.include_router(users_router)
     app.include_router(connections.router)
     app.include_router(agents.router)
     app.include_router(skills.router)

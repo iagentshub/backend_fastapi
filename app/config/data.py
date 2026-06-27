@@ -18,3 +18,4 @@ SETTINGS_FILE = DATA_DIR / "settings.json"
 # Legacy paths — referenced only by storage migration helpers
 CONN_FILE     = DATA_DIR / "connections" / "connections.json"
 ACCOUNTS_DIR  = DATA_DIR / "accounts"
+AVATARS_DIR   = DATA_DIR / "avatars"

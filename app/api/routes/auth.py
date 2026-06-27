@@ -350,6 +350,161 @@ async def export_my_data(username: str = Depends(require_auth)):
     )
 
 
+# ── Social profile ────────────────────────────────────────────────────────────
+
+_ALLOWED_LANGUAGES = {"es", "en", "fr", "de", "pt", "it", "zh", "ja", "ar"}
+_MAX_AVATAR_BYTES = 2 * 1024 * 1024  # 2 MB
+_ALLOWED_AVATAR_EXT = {".jpg", ".jpeg", ".png", ".webp"}
+
+
+def _get_social_fields(username: str) -> Dict[str, Any]:
+    import json
+    from app.config.data import DB_FILE
+    from app.storage.db import PH, close_db, open_db
+
+    conn = open_db(DB_FILE)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT avatar, bio, languages, email_public, github, cv, created_at "
+            f"FROM users WHERE username = {PH}",
+            (username,),
+        )
+        row = cur.fetchone()
+    finally:
+        close_db(conn)
+    if not row:
+        return {}
+    try:
+        langs = json.loads(row[2] or "[]")
+    except Exception:
+        langs = []
+    return {
+        "avatar_url": f"/api/users/{username}/avatar" if row[0] else None,
+        "bio": row[1],
+        "languages": langs,
+        "email_public": row[3],
+        "github": row[4],
+        "cv": row[5],
+        "joined_at": row[6],
+    }
+
+
+@router.put("/me/profile")
+async def update_profile(
+    request: Request,
+    username: str = Depends(require_auth),
+) -> Dict[str, Any]:
+    import json
+    from app.storage.db import PH, close_db, open_db
+    from app.config.data import DB_FILE
+
+    body = await request.json()
+    bio = str(body.get("bio") or "").strip()[:500] or None
+    raw_langs = body.get("languages") or []
+    languages = json.dumps([lang for lang in raw_langs if lang in _ALLOWED_LANGUAGES])
+    email_public = str(body.get("email_public") or "").strip()[:200] or None
+    github = str(body.get("github") or "").strip()[:100] or None
+    cv = str(body.get("cv") or "").strip()[:20000] or None
+
+    conn = open_db(DB_FILE)
+    try:
+        conn.execute(
+            f"UPDATE users SET bio={PH}, languages={PH}, email_public={PH}, github={PH}, cv={PH} "
+            f"WHERE username={PH}",
+            (bio, languages, email_public, github, cv, username),
+        )
+        conn.commit()
+    finally:
+        close_db(conn)
+    return {"ok": True}
+
+
+@router.post("/me/avatar")
+async def upload_avatar(
+    request: Request,
+    username: str = Depends(require_auth),
+) -> Dict[str, Any]:
+    from pathlib import Path as _Path
+    from fastapi import UploadFile
+    from fastapi.datastructures import FormData
+    from app.storage.db import PH, close_db, open_db
+    from app.config.data import AVATARS_DIR, DB_FILE
+
+    form: FormData = await request.form()
+    file: UploadFile = form.get("avatar")  # type: ignore[assignment]
+    if not file:
+        raise HTTPException(status_code=400, detail="Campo 'avatar' requerido")
+
+    ext = _Path(file.filename or "").suffix.lower()
+    if ext not in _ALLOWED_AVATAR_EXT:
+        raise HTTPException(status_code=400, detail="Formato no permitido. Usa jpg, png o webp.")
+
+    data = await file.read()
+    if len(data) > _MAX_AVATAR_BYTES:
+        raise HTTPException(status_code=400, detail="El avatar no puede superar 2 MB.")
+
+    AVATARS_DIR.mkdir(parents=True, exist_ok=True)
+    dest = AVATARS_DIR / f"{username}{ext}"
+    dest.write_bytes(data)
+
+    conn = open_db(DB_FILE)
+    try:
+        conn.execute(
+            f"UPDATE users SET avatar={PH} WHERE username={PH}",
+            (str(dest), username),
+        )
+        conn.commit()
+    finally:
+        close_db(conn)
+    return {"ok": True, "avatar_url": f"/api/users/{username}/avatar"}
+
+
+users_router = APIRouter(prefix="/api/users", tags=["users"])
+
+
+@users_router.get("/{username}/avatar")
+async def get_avatar(username: str, _: str = Depends(require_auth)):
+    from fastapi.responses import FileResponse, Response
+    from app.config.data import DB_FILE
+    from app.storage.db import PH, close_db, open_db
+
+    conn = open_db(DB_FILE)
+    try:
+        cur = conn.cursor()
+        cur.execute(f"SELECT avatar FROM users WHERE username={PH}", (username,))
+        row = cur.fetchone()
+    finally:
+        close_db(conn)
+
+    if not row or not row[0]:
+        return Response(status_code=204)
+
+    from pathlib import Path as _Path
+    path = _Path(row[0])
+    if not path.exists():
+        return Response(status_code=204)
+
+    suffix = path.suffix.lower()
+    media = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "webp": "image/webp"}
+    return FileResponse(path, media_type=media.get(suffix.lstrip("."), "image/jpeg"))
+
+
+@users_router.get("/{username}")
+async def get_public_profile(
+    username: str,
+    _: str = Depends(require_auth),
+) -> Dict[str, Any]:
+    user = get_user_by_username(username)
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    fields = _get_social_fields(username)
+    return {
+        "username": username,
+        **fields,
+    }
+
+
 # ── Admin ─────────────────────────────────────────────────────────────────────
 
 admin_router = APIRouter(prefix="/api/admin", tags=["admin"])

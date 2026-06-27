@@ -517,6 +517,50 @@ def _migrate_sqlite(conn: sqlite3.Connection) -> None:
         """)
         conn.commit()
 
+    # 11. Social profile fields + follow + stars
+    existing_tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    user_cols = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
+    for col, definition in [
+        ("avatar", "TEXT"),
+        ("bio", "TEXT"),
+        ("languages", "TEXT NOT NULL DEFAULT '[]'"),
+        ("email_public", "TEXT"),
+        ("github", "TEXT"),
+        ("cv", "TEXT"),
+    ]:
+        if col not in user_cols:
+            try:
+                conn.execute(f"ALTER TABLE users ADD COLUMN {col} {definition}")
+                conn.commit()
+            except Exception as exc:
+                flog.warning(f"[db] No se pudo añadir columna {col}: {exc}")
+
+    if "user_follows" not in existing_tables:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS user_follows (
+                follower    TEXT NOT NULL,
+                following   TEXT NOT NULL,
+                created_at  TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (follower, following)
+            );
+            CREATE INDEX IF NOT EXISTS idx_uf_follower  ON user_follows(follower);
+            CREATE INDEX IF NOT EXISTS idx_uf_following ON user_follows(following);
+        """)
+        conn.commit()
+
+    if "resource_stars" not in existing_tables:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS resource_stars (
+                username      TEXT NOT NULL,
+                resource_type TEXT NOT NULL,
+                resource_id   TEXT NOT NULL,
+                created_at    TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (username, resource_type, resource_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_rs_resource ON resource_stars(resource_type, resource_id);
+        """)
+        conn.commit()
+
 
 def _migrate_users_json_sqlite(conn: sqlite3.Connection) -> None:
     """Import users.json into the users table if it exists and the table is empty."""
@@ -776,6 +820,36 @@ def _migrate_pg(conn: Any) -> None:
         """)
         cur.execute("CREATE INDEX IF NOT EXISTS idx_rg_group ON resource_groups(group_id, resource_type)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_rg_resource ON resource_groups(resource_type, resource_id)")
+        # 11. Social profile fields + follow + stars
+        for col, definition in [
+            ("avatar", "TEXT"),
+            ("bio", "TEXT"),
+            ("languages", "TEXT NOT NULL DEFAULT '[]'"),
+            ("email_public", "TEXT"),
+            ("github", "TEXT"),
+            ("cv", "TEXT"),
+        ]:
+            cur.execute(f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {col} {definition}")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS user_follows (
+                follower    TEXT NOT NULL,
+                following   TEXT NOT NULL,
+                created_at  TEXT NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (follower, following)
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_uf_follower  ON user_follows(follower)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_uf_following ON user_follows(following)")
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS resource_stars (
+                username      TEXT NOT NULL,
+                resource_type TEXT NOT NULL,
+                resource_id   TEXT NOT NULL,
+                created_at    TEXT NOT NULL DEFAULT NOW(),
+                PRIMARY KEY (username, resource_type, resource_id)
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_rs_resource ON resource_stars(resource_type, resource_id)")
     conn.commit()
 
 

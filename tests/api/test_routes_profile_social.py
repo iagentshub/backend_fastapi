@@ -1,0 +1,131 @@
+"""Tests fase 1 — perfil social: PUT /me/profile, POST /me/avatar, GET /users/{username}."""
+from __future__ import annotations
+
+import io
+
+
+def _register_and_login(client, username="socialuser", password="pass1234"):
+    from app.auth.auth import create_token, register_user
+    register_user(username, password, email=f"{username}@example.com")
+    client.cookies.set("ga_token", create_token(username))
+    return username
+
+
+def test_actualizar_perfil_campos_basicos(client):
+    _register_and_login(client)
+    r = client.put("/api/auth/me/profile", json={
+        "bio": "Desarrollador de agentes IA",
+        "languages": ["es", "en"],
+        "email_public": "public@example.com",
+        "github": "myghuser",
+        "cv": "# Mi CV\n\nExperiencia en Python.",
+    })
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+
+
+def test_perfil_publico_devuelve_campos(client):
+    _register_and_login(client, "perfiluser")
+    client.put("/api/auth/me/profile", json={
+        "bio": "Bio pública",
+        "languages": ["es"],
+        "github": "perfilgh",
+    })
+    r = client.get("/api/users/perfiluser")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["username"] == "perfiluser"
+    assert data["bio"] == "Bio pública"
+    assert "es" in data["languages"]
+    assert data["github"] == "perfilgh"
+    assert "joined_at" in data
+
+
+def test_perfil_publico_requiere_auth(client):
+    from app.auth.auth import register_user
+    register_user("targetuser", "pass1234", email="target@example.com")
+    r = client.get("/api/users/targetuser")
+    assert r.status_code == 401
+
+
+def test_perfil_publico_usuario_inexistente(client):
+    _register_and_login(client, "looker")
+    r = client.get("/api/users/noexiste_xyz")
+    assert r.status_code == 404
+
+
+def test_campos_opcionales_vacios(client):
+    _register_and_login(client, "emptyprofile")
+    r = client.get("/api/users/emptyprofile")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["bio"] is None
+    assert data["github"] is None
+    assert data["email_public"] is None
+    assert data["cv"] is None
+    assert data["avatar_url"] is None
+    assert data["languages"] == []
+
+
+def test_idiomas_invalidos_filtrados(client):
+    _register_and_login(client, "languser")
+    client.put("/api/auth/me/profile", json={"languages": ["es", "xx", "klingon", "en"]})
+    r = client.get("/api/users/languser")
+    assert r.status_code == 200
+    langs = r.json()["languages"]
+    assert "es" in langs
+    assert "en" in langs
+    assert "xx" not in langs
+    assert "klingon" not in langs
+
+
+def test_avatar_subida_y_lectura(client):
+    _register_and_login(client, "avataruser")
+    png_bytes = (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+        b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00"
+        b"\x00\x01\x01\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+    r = client.post(
+        "/api/auth/me/avatar",
+        files={"avatar": ("test.png", io.BytesIO(png_bytes), "image/png")},
+    )
+    assert r.status_code == 200
+    assert "/api/users/avataruser/avatar" in r.json()["avatar_url"]
+
+    r2 = client.get("/api/users/avataruser/avatar")
+    assert r2.status_code == 200
+    assert r2.headers["content-type"] == "image/png"
+
+
+def test_avatar_formato_no_permitido(client):
+    _register_and_login(client, "badavataruser")
+    r = client.post(
+        "/api/auth/me/avatar",
+        files={"avatar": ("virus.exe", io.BytesIO(b"MZ"), "application/octet-stream")},
+    )
+    assert r.status_code == 400
+
+
+def test_avatar_sin_fichero_devuelve_204(client):
+    from app.auth.auth import register_user
+    register_user("noavataruser", "pass1234", email="noavatar@example.com")
+    _register_and_login(client, "viewer2")
+    r = client.get("/api/users/noavataruser/avatar")
+    assert r.status_code == 204
+
+
+def test_perfil_publico_avatar_url_presente_tras_subida(client):
+    _register_and_login(client, "avprofile")
+    png_bytes = (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+        b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00"
+        b"\x00\x01\x01\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+    client.post(
+        "/api/auth/me/avatar",
+        files={"avatar": ("av.png", io.BytesIO(png_bytes), "image/png")},
+    )
+    r = client.get("/api/users/avprofile")
+    assert r.status_code == 200
+    assert r.json()["avatar_url"] is not None
