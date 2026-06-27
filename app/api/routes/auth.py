@@ -24,7 +24,6 @@ from app.auth.auth import (
     get_user_role,
     hash_password,
     list_users,
-    purge_user_data,
     register_user_email,
     schedule_user_deletion,
     send_account_status_email,

@@ -6,8 +6,6 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-import pytest
-
 from app.auth.auth import (
     cancel_user_deletion,
     get_owned_workspaces,
