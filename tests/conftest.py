@@ -52,9 +52,6 @@ def patch_data_dir(tmp_data_dir, tmp_path, monkeypatch):
     monkeypatch.setattr(cfg, "SKILLS_DIR", tmp_data_dir / "skills")
     monkeypatch.setattr(cfg, "MEMORY_DIR", memory_dir)
     monkeypatch.setattr(cfg, "SETTINGS_FILE", tmp_data_dir / "settings.json")
-    avatars_dir = tmp_path / "avatars"
-    avatars_dir.mkdir()
-    monkeypatch.setattr(cfg, "AVATARS_DIR", avatars_dir)
 
     # MemoryStorage is instantiated at module import time with the original MEMORY_DIR.
     # Patch the live instances so each test gets an isolated memory directory.

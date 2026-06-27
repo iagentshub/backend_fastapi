@@ -561,6 +561,31 @@ def _migrate_sqlite(conn: sqlite3.Connection) -> None:
         """)
         conn.commit()
 
+    # 12. Resource social catalog
+    if "resource_social" not in existing_tables:
+        conn.executescript("""
+            CREATE TABLE IF NOT EXISTS resource_social (
+                resource_type      TEXT NOT NULL,
+                resource_id        TEXT NOT NULL,
+                owner              TEXT NOT NULL,
+                name               TEXT NOT NULL DEFAULT '',
+                description        TEXT NOT NULL DEFAULT '',
+                is_public          INTEGER NOT NULL DEFAULT 0,
+                category           TEXT NOT NULL DEFAULT 'Other',
+                trial_missing_deps TEXT NOT NULL DEFAULT 'warn',
+                fork_of_user       TEXT,
+                fork_of_id         TEXT,
+                linked_to_user     TEXT,
+                linked_to_id       TEXT,
+                stars_count        INTEGER NOT NULL DEFAULT 0,
+                updated_at         TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (resource_type, resource_id, owner)
+            );
+            CREATE INDEX IF NOT EXISTS idx_rsoc_public ON resource_social(is_public, resource_type, category);
+            CREATE INDEX IF NOT EXISTS idx_rsoc_owner  ON resource_social(owner, resource_type);
+        """)
+        conn.commit()
+
 
 def _migrate_users_json_sqlite(conn: sqlite3.Connection) -> None:
     """Import users.json into the users table if it exists and the table is empty."""
@@ -850,6 +875,28 @@ def _migrate_pg(conn: Any) -> None:
             )
         """)
         cur.execute("CREATE INDEX IF NOT EXISTS idx_rs_resource ON resource_stars(resource_type, resource_id)")
+        # 12. Resource social catalog
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS resource_social (
+                resource_type      TEXT NOT NULL,
+                resource_id        TEXT NOT NULL,
+                owner              TEXT NOT NULL,
+                name               TEXT NOT NULL DEFAULT '',
+                description        TEXT NOT NULL DEFAULT '',
+                is_public          BOOLEAN NOT NULL DEFAULT FALSE,
+                category           TEXT NOT NULL DEFAULT 'Other',
+                trial_missing_deps TEXT NOT NULL DEFAULT 'warn',
+                fork_of_user       TEXT,
+                fork_of_id         TEXT,
+                linked_to_user     TEXT,
+                linked_to_id       TEXT,
+                stars_count        INTEGER NOT NULL DEFAULT 0,
+                updated_at         TIMESTAMP WITH TIME ZONE DEFAULT now(),
+                PRIMARY KEY (resource_type, resource_id, owner)
+            )
+        """)
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_rsoc_public ON resource_social(is_public, resource_type, category)")
+        cur.execute("CREATE INDEX IF NOT EXISTS idx_rsoc_owner ON resource_social(owner, resource_type)")
     conn.commit()
 
 

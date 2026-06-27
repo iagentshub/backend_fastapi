@@ -425,11 +425,12 @@ async def upload_avatar(
     request: Request,
     username: str = Depends(require_auth),
 ) -> Dict[str, Any]:
+    import base64
     from pathlib import Path as _Path
     from fastapi import UploadFile
     from fastapi.datastructures import FormData
+    from app.config.data import DB_FILE
     from app.storage.db import PH, close_db, open_db
-    from app.config.data import AVATARS_DIR, DB_FILE
 
     form: FormData = await request.form()
     file: UploadFile = form.get("avatar")  # type: ignore[assignment]
@@ -444,15 +445,13 @@ async def upload_avatar(
     if len(data) > _MAX_AVATAR_BYTES:
         raise HTTPException(status_code=400, detail="El avatar no puede superar 2 MB.")
 
-    AVATARS_DIR.mkdir(parents=True, exist_ok=True)
-    dest = AVATARS_DIR / f"{username}{ext}"
-    dest.write_bytes(data)
+    encoded = base64.b64encode(data).decode("ascii")
 
     conn = open_db(DB_FILE)
     try:
         conn.execute(
             f"UPDATE users SET avatar={PH} WHERE username={PH}",
-            (str(dest), username),
+            (encoded, username),
         )
         conn.commit()
     finally:
@@ -465,7 +464,8 @@ users_router = APIRouter(prefix="/api/users", tags=["users"])
 
 @users_router.get("/{username}/avatar")
 async def get_avatar(username: str, _: str = Depends(require_auth)):
-    from fastapi.responses import FileResponse, Response
+    import base64
+    from fastapi.responses import Response
     from app.config.data import DB_FILE
     from app.storage.db import PH, close_db, open_db
 
@@ -480,14 +480,14 @@ async def get_avatar(username: str, _: str = Depends(require_auth)):
     if not row or not row[0]:
         return Response(status_code=204)
 
-    from pathlib import Path as _Path
-    path = _Path(row[0])
-    if not path.exists():
+    try:
+        data = base64.b64decode(row[0])
+    except Exception:
         return Response(status_code=204)
 
-    suffix = path.suffix.lower()
-    media = {"jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png", "webp": "image/webp"}
-    return FileResponse(path, media_type=media.get(suffix.lstrip("."), "image/jpeg"))
+    # Canvas always exports PNG; detect jpeg by magic bytes as fallback
+    mime = "image/jpeg" if data[:2] == b"\xff\xd8" else "image/png"
+    return Response(content=data, media_type=mime)
 
 
 @users_router.get("/{username}")

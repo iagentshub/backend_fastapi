@@ -14,6 +14,7 @@ from app.auth.auth import ensure_admin_user, purge_expired_deletions
 from app.config.cors import CORS_ORIGINS
 from app.api.routes import auth, connections, agents, skills, memory, settings, accounts, chats, knowledge, logs, sharing, workspaces, groups
 from app.api.routes.auth import admin_router, users_router
+from app.api.routes.social import router as social_router
 from app.middleware.locale import LocaleMiddleware
 
 
@@ -82,5 +83,6 @@ def create_app() -> FastAPI:
     app.include_router(sharing.router)
     app.include_router(workspaces.router)
     app.include_router(groups.router)
+    app.include_router(social_router)
 
     return app
