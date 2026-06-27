@@ -281,6 +281,121 @@ async def user_resources(
         close_db(conn)
 
 
+@router.post("/api/users/{target}/follow")
+async def follow_user(
+    target: str,
+    username: str = Depends(require_auth),
+) -> Dict[str, Any]:
+    if target == username:
+        raise HTTPException(status_code=400, detail="No puedes seguirte a ti mismo")
+    conn = open_db(_cfg.DB_FILE)
+    try:
+        cur = conn.cursor()
+        cur.execute(f"SELECT 1 FROM users WHERE username = {PH}", (target,))
+        if not cur.fetchone():
+            raise HTTPException(status_code=404, detail="Usuario no encontrado")
+        if IS_PG:
+            cur.execute(
+                "INSERT INTO user_follows (follower, following) VALUES (%s, %s) "
+                "ON CONFLICT DO NOTHING",
+                (username, target),
+            )
+        else:
+            cur.execute(
+                "INSERT OR IGNORE INTO user_follows (follower, following) VALUES (?, ?)",
+                (username, target),
+            )
+        conn.commit()
+    finally:
+        close_db(conn)
+    return {"ok": True}
+
+
+@router.delete("/api/users/{target}/follow")
+async def unfollow_user(
+    target: str,
+    username: str = Depends(require_auth),
+) -> Dict[str, Any]:
+    conn = open_db(_cfg.DB_FILE)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            f"DELETE FROM user_follows WHERE follower = {PH} AND following = {PH}",
+            (username, target),
+        )
+        conn.commit()
+    finally:
+        close_db(conn)
+    return {"ok": True}
+
+
+@router.get("/api/users/{target}/follow-status")
+async def follow_status(
+    target: str,
+    username: str = Depends(require_auth),
+) -> Dict[str, Any]:
+    conn = open_db(_cfg.DB_FILE)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            f"SELECT 1 FROM user_follows WHERE follower = {PH} AND following = {PH}",
+            (username, target),
+        )
+        is_following = cur.fetchone() is not None
+        cur.execute(
+            f"SELECT COUNT(*) FROM user_follows WHERE following = {PH}",
+            (target,),
+        )
+        followers_count = cur.fetchone()[0]
+        cur.execute(
+            f"SELECT COUNT(*) FROM user_follows WHERE follower = {PH}",
+            (target,),
+        )
+        following_count = cur.fetchone()[0]
+    finally:
+        close_db(conn)
+    return {
+        "following": is_following,
+        "followers_count": followers_count,
+        "following_count": following_count,
+    }
+
+
+@router.get("/api/feed")
+async def get_feed(
+    limit: int = 40,
+    offset: int = 0,
+    type: Optional[str] = None,
+    username: str = Depends(require_auth),
+) -> List[Dict[str, Any]]:
+    limit = min(limit, 100)
+    conn = open_db(_cfg.DB_FILE)
+    try:
+        cur = conn.cursor()
+        conditions: List[str] = [
+            f"owner IN (SELECT following FROM user_follows WHERE follower = {PH})",
+            f"is_public = {PH}",
+        ]
+        params: List[Any] = [username, _PUBLIC_VAL]
+        if type and type != "all":
+            conditions.append(f"resource_type = {PH}")
+            params.append(type)
+        where = " AND ".join(conditions)
+        params.extend([limit, offset])
+        cur.execute(
+            f"SELECT resource_type, resource_id, owner, name, description, category, "
+            f"stars_count, updated_at "
+            f"FROM resource_social "
+            f"WHERE {where} "
+            f"ORDER BY updated_at DESC "
+            f"LIMIT {PH} OFFSET {PH}",
+            params,
+        )
+        return [dict(r) for r in cur.fetchall()]
+    finally:
+        close_db(conn)
+
+
 @router.post("/api/{resource_type}/{resource_id}/star")
 async def star_resource(
     resource_type: str,

@@ -363,6 +363,9 @@ def _get_social_fields(username: str) -> Dict[str, Any]:
     from app.storage.db import PH, close_db, open_db
 
     conn = open_db(DB_FILE)
+    row = None
+    followers_count = 0
+    following_count = 0
     try:
         cur = conn.cursor()
         cur.execute(
@@ -371,6 +374,17 @@ def _get_social_fields(username: str) -> Dict[str, Any]:
             (username,),
         )
         row = cur.fetchone()
+        if row:
+            cur.execute(
+                f"SELECT COUNT(*) FROM user_follows WHERE following = {PH}",
+                (username,),
+            )
+            followers_count = cur.fetchone()[0]
+            cur.execute(
+                f"SELECT COUNT(*) FROM user_follows WHERE follower = {PH}",
+                (username,),
+            )
+            following_count = cur.fetchone()[0]
     finally:
         close_db(conn)
     if not row:
@@ -387,6 +401,8 @@ def _get_social_fields(username: str) -> Dict[str, Any]:
         "github": row[4],
         "cv": row[5],
         "joined_at": row[6],
+        "followers_count": followers_count,
+        "following_count": following_count,
     }
 
 
