@@ -436,6 +436,141 @@ async def star_resource(
         close_db(conn)
 
 
+@router.post("/api/agents/{scope}/{source_id}/fork")
+async def fork_agent(
+    scope: str,
+    source_id: str,
+    username: str = Depends(require_auth),
+) -> Dict[str, Any]:
+    agents = AgentStorage(_cfg.AGENTS_DIR)
+    source = agents.get(source_id, scope)
+    if not source:
+        raise HTTPException(status_code=404, detail="Agente no encontrado")
+
+    if scope != "public":
+        conn = open_db(_cfg.DB_FILE)
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                f"SELECT 1 FROM resource_social "
+                f"WHERE resource_type={PH} AND resource_id={PH} AND is_public={PH}",
+                ("agent", source_id, _PUBLIC_VAL),
+            )
+            if not cur.fetchone():
+                raise HTTPException(status_code=403, detail="El agente no es público")
+        finally:
+            close_db(conn)
+
+    source_owner = source.get("owner_id") or ""
+    fork_payload = {
+        k: v for k, v in source.items()
+        if k not in ("id", "scope", "owner_id", "created_at", "updated_at")
+    }
+    fork_payload["name"] = f"Fork of {source.get('name', source_id)}"
+
+    try:
+        result = agents.save(fork_payload, "private", owner_id=username)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    new_id = result["id"]
+    fork_name = result["name"]
+
+    conn = open_db(_cfg.DB_FILE)
+    try:
+        cur = conn.cursor()
+        if IS_PG:
+            cur.execute(
+                "INSERT INTO resource_social "
+                "(resource_type, resource_id, owner, name, description, is_public, category, "
+                "trial_missing_deps, fork_of_user, fork_of_id) "
+                "VALUES (%s, %s, %s, %s, %s, FALSE, 'Other', 'warn', %s, %s) "
+                "ON CONFLICT DO NOTHING",
+                ("agent", new_id, username, fork_name, source.get("description", ""),
+                 source_owner, source_id),
+            )
+        else:
+            cur.execute(
+                "INSERT OR IGNORE INTO resource_social "
+                "(resource_type, resource_id, owner, name, description, is_public, category, "
+                "trial_missing_deps, fork_of_user, fork_of_id) "
+                "VALUES (?, ?, ?, ?, ?, 0, 'Other', 'warn', ?, ?)",
+                ("agent", new_id, username, fork_name, source.get("description", ""),
+                 source_owner, source_id),
+            )
+        conn.commit()
+    finally:
+        close_db(conn)
+
+    return {"ok": True, "agent_id": new_id, "name": fork_name}
+
+
+@router.post("/api/skills/{scope}/{source_id}/fork")
+async def fork_skill(
+    scope: str,
+    source_id: str,
+    username: str = Depends(require_auth),
+) -> Dict[str, Any]:
+    skills = SkillStorage(_cfg.SKILLS_DIR)
+    source = skills.get(scope, source_id)
+    if not source:
+        raise HTTPException(status_code=404, detail="Skill no encontrada")
+
+    if scope != "public":
+        conn = open_db(_cfg.DB_FILE)
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                f"SELECT 1 FROM resource_social "
+                f"WHERE resource_type={PH} AND resource_id={PH} AND is_public={PH}",
+                ("skill", source_id, _PUBLIC_VAL),
+            )
+            if not cur.fetchone():
+                raise HTTPException(status_code=403, detail="La skill no es pública")
+        finally:
+            close_db(conn)
+
+    source_owner = source.get("owner_id") or ""
+    fork_payload = {k: v for k, v in source.items() if k not in ("id", "scope", "owner_id")}
+    fork_payload["name"] = f"Fork of {source.get('name', source_id)}"
+
+    try:
+        result = skills.save("private", fork_payload, owner_id=username)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    new_id = result["id"]
+    fork_name = result["name"]
+
+    conn = open_db(_cfg.DB_FILE)
+    try:
+        cur = conn.cursor()
+        if IS_PG:
+            cur.execute(
+                "INSERT INTO resource_social "
+                "(resource_type, resource_id, owner, name, description, is_public, category, "
+                "trial_missing_deps, fork_of_user, fork_of_id) "
+                "VALUES (%s, %s, %s, %s, %s, FALSE, 'Other', 'warn', %s, %s) "
+                "ON CONFLICT DO NOTHING",
+                ("skill", new_id, username, fork_name, source.get("description", ""),
+                 source_owner, source_id),
+            )
+        else:
+            cur.execute(
+                "INSERT OR IGNORE INTO resource_social "
+                "(resource_type, resource_id, owner, name, description, is_public, category, "
+                "trial_missing_deps, fork_of_user, fork_of_id) "
+                "VALUES (?, ?, ?, ?, ?, 0, 'Other', 'warn', ?, ?)",
+                ("skill", new_id, username, fork_name, source.get("description", ""),
+                 source_owner, source_id),
+            )
+        conn.commit()
+    finally:
+        close_db(conn)
+
+    return {"ok": True, "skill_id": new_id, "name": fork_name}
+
+
 @router.delete("/api/{resource_type}/{resource_id}/star")
 async def unstar_resource(
     resource_type: str,
