@@ -478,6 +478,57 @@ async def upload_avatar(
 users_router = APIRouter(prefix="/api/users", tags=["users"])
 
 
+@users_router.get("")
+async def search_users(
+    q: Optional[str] = None,
+    limit: int = 20,
+    offset: int = 0,
+    username: str = Depends(require_auth),
+) -> List[Dict[str, Any]]:
+    from app.config.data import DB_FILE
+    from app.storage.db import PH, close_db, open_db
+
+    limit = min(limit, 50)
+
+    conn = open_db(DB_FILE)
+    try:
+        cur = conn.cursor()
+        if q:
+            pattern = f"%{q}%"
+            cur.execute(
+                f"SELECT u.username, u.avatar, "
+                f"(SELECT COUNT(*) FROM user_follows WHERE following = u.username) AS followers_count, "
+                f"(SELECT COUNT(*) FROM resource_social WHERE owner = u.username AND is_public = 1) AS public_resources_count "
+                f"FROM users u "
+                f"WHERE u.username != {PH} AND LOWER(u.username) LIKE LOWER({PH}) "
+                f"ORDER BY u.username LIMIT {PH} OFFSET {PH}",
+                (username, pattern, limit, offset),
+            )
+        else:
+            cur.execute(
+                f"SELECT u.username, u.avatar, "
+                f"(SELECT COUNT(*) FROM user_follows WHERE following = u.username) AS followers_count, "
+                f"(SELECT COUNT(*) FROM resource_social WHERE owner = u.username AND is_public = 1) AS public_resources_count "
+                f"FROM users u "
+                f"WHERE u.username != {PH} "
+                f"ORDER BY u.username LIMIT {PH} OFFSET {PH}",
+                (username, limit, offset),
+            )
+        rows = cur.fetchall()
+    finally:
+        close_db(conn)
+
+    return [
+        {
+            "username": row[0],
+            "avatar_url": f"/api/users/{row[0]}/avatar" if row[1] else None,
+            "followers_count": row[2],
+            "public_resources_count": row[3],
+        }
+        for row in rows
+    ]
+
+
 @users_router.get("/{username}/avatar")
 async def get_avatar(username: str, _: str = Depends(require_auth)):
     import base64
