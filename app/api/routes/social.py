@@ -1,6 +1,7 @@
 """Rutas del catálogo social: visibilidad pública, exploración y stars."""
 from __future__ import annotations
 
+import json
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -38,27 +39,31 @@ def _upsert_social(
     description: str,
     category: str,
     trial_missing_deps: str,
+    tags: str = "[]",
+    is_public: int = 0,
+    labels: str = '["private"]',
 ) -> None:
     if IS_PG:
         cur.execute(
             "INSERT INTO resource_social "
-            "(resource_type, resource_id, owner, name, description, is_public, category, trial_missing_deps, updated_at) "
-            "VALUES (%s, %s, %s, %s, %s, TRUE, %s, %s, now()) "
+            "(resource_type, resource_id, owner, name, description, is_public, category, trial_missing_deps, tags, labels, updated_at) "
+            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, now()) "
             "ON CONFLICT (resource_type, resource_id, owner) DO UPDATE SET "
-            "name=EXCLUDED.name, description=EXCLUDED.description, is_public=TRUE, "
-            "category=EXCLUDED.category, trial_missing_deps=EXCLUDED.trial_missing_deps, updated_at=now()",
-            (resource_type, resource_id, owner, name, description, category, trial_missing_deps),
+            "name=EXCLUDED.name, description=EXCLUDED.description, is_public=EXCLUDED.is_public, "
+            "category=EXCLUDED.category, trial_missing_deps=EXCLUDED.trial_missing_deps, "
+            "tags=EXCLUDED.tags, labels=EXCLUDED.labels, updated_at=now()",
+            (resource_type, resource_id, owner, name, description, bool(is_public), category, trial_missing_deps, tags, labels),
         )
     else:
         cur.execute(
             "INSERT INTO resource_social "
-            "(resource_type, resource_id, owner, name, description, is_public, category, trial_missing_deps, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, 1, ?, ?, datetime('now')) "
+            "(resource_type, resource_id, owner, name, description, is_public, category, trial_missing_deps, tags, labels, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now')) "
             "ON CONFLICT(resource_type, resource_id, owner) DO UPDATE SET "
-            "name=excluded.name, description=excluded.description, is_public=1, "
+            "name=excluded.name, description=excluded.description, is_public=excluded.is_public, "
             "category=excluded.category, trial_missing_deps=excluded.trial_missing_deps, "
-            "updated_at=excluded.updated_at",
-            (resource_type, resource_id, owner, name, description, category, trial_missing_deps),
+            "tags=excluded.tags, labels=excluded.labels, updated_at=excluded.updated_at",
+            (resource_type, resource_id, owner, name, description, is_public, category, trial_missing_deps, tags, labels),
         )
 
 
@@ -92,6 +97,8 @@ async def set_agent_visibility(
     agent = agents.get(agent_id, scope)
     if not agent:
         raise HTTPException(status_code=404, detail="Agente no encontrado")
+    resource_labels = agent.get("labels") or ["private"]
+    is_public_val = 1 if "public" in resource_labels else 0
     conn = open_db(_cfg.DB_FILE)
     try:
         cur = conn.cursor()
@@ -102,6 +109,9 @@ async def set_agent_visibility(
                 agent.get("description", ""),
                 body.category,
                 body.trial_missing_deps,
+                json.dumps(agent.get("tags") or []),
+                is_public_val,
+                json.dumps(resource_labels),
             )
         else:
             cur.execute(
@@ -127,6 +137,8 @@ async def set_skill_visibility(
     skill = skills.get(scope, skill_id)
     if not skill:
         raise HTTPException(status_code=404, detail="Skill no encontrada")
+    resource_labels = skill.get("labels") or ["private"]
+    is_public_val = 1 if "public" in resource_labels else 0
     conn = open_db(_cfg.DB_FILE)
     try:
         cur = conn.cursor()
@@ -137,6 +149,9 @@ async def set_skill_visibility(
                 skill.get("description", ""),
                 body.category,
                 "warn",
+                json.dumps(skill.get("tags") or []),
+                is_public_val,
+                json.dumps(resource_labels),
             )
         else:
             cur.execute(
@@ -175,6 +190,9 @@ async def set_knowledge_visibility(
                 "",
                 body.category,
                 "warn",
+                "[]",
+                1,
+                '["private"]',
             )
         else:
             cur.execute(
@@ -193,6 +211,8 @@ async def explore(
     type: Optional[str] = None,
     category: Optional[str] = None,
     q: Optional[str] = None,
+    tag: Optional[str] = None,
+    label: Optional[str] = None,
     limit: int = 40,
     offset: int = 0,
     username: str = Depends(require_auth),
@@ -212,17 +232,35 @@ async def explore(
         if q:
             conditions.append(f"(name LIKE {PH} OR description LIKE {PH})")
             params.extend([f"%{q}%", f"%{q}%"])
+        if tag:
+            conditions.append(f"tags LIKE {PH}")
+            params.append(f'%"{tag}"%')
+        if label:
+            conditions.append(f"labels LIKE {PH}")
+            params.append(f'%"{label}"%')
         where = " AND ".join(conditions)
         params.extend([limit, offset])
         cur.execute(
             f"SELECT resource_type, resource_id, owner, name, description, category, "
-            f"stars_count, fork_of_user, fork_of_id, linked_to_user, linked_to_id, trial_missing_deps "
+            f"stars_count, fork_of_user, fork_of_id, linked_to_user, linked_to_id, trial_missing_deps, tags, labels "
             f"FROM resource_social WHERE {where} "
             f"ORDER BY stars_count DESC, updated_at DESC "
             f"LIMIT {PH} OFFSET {PH}",
             params,
         )
-        return [dict(r) for r in cur.fetchall()]
+        rows = []
+        for r in cur.fetchall():
+            row = dict(r)
+            try:
+                row["tags"] = json.loads(row.get("tags") or "[]")
+            except (ValueError, TypeError):
+                row["tags"] = []
+            try:
+                row["labels"] = json.loads(row.get("labels") or '["private"]')
+            except (ValueError, TypeError):
+                row["labels"] = ["private"]
+            rows.append(row)
+        return rows
     finally:
         close_db(conn)
 
@@ -244,12 +282,24 @@ async def my_resources(
         where = " AND ".join(conditions)
         cur.execute(
             f"SELECT resource_type, resource_id, owner, name, description, is_public, category, "
-            f"stars_count, fork_of_user, fork_of_id, linked_to_user, linked_to_id, trial_missing_deps "
+            f"stars_count, fork_of_user, fork_of_id, linked_to_user, linked_to_id, trial_missing_deps, tags, labels "
             f"FROM resource_social WHERE {where} "
             f"ORDER BY updated_at DESC",
             params,
         )
-        return {"resources": [dict(r) for r in cur.fetchall()]}
+        rows = []
+        for r in cur.fetchall():
+            row = dict(r)
+            try:
+                row["tags"] = json.loads(row.get("tags") or "[]")
+            except (ValueError, TypeError):
+                row["tags"] = []
+            try:
+                row["labels"] = json.loads(row.get("labels") or '["private"]')
+            except (ValueError, TypeError):
+                row["labels"] = ["private"]
+            rows.append(row)
+        return {"resources": rows}
     finally:
         close_db(conn)
 
@@ -271,12 +321,24 @@ async def user_resources(
         where = " AND ".join(conditions)
         cur.execute(
             f"SELECT resource_type, resource_id, owner, name, description, category, "
-            f"stars_count, fork_of_user, fork_of_id, linked_to_user, linked_to_id, trial_missing_deps "
+            f"stars_count, fork_of_user, fork_of_id, linked_to_user, linked_to_id, trial_missing_deps, tags, labels "
             f"FROM resource_social WHERE {where} "
             f"ORDER BY stars_count DESC, updated_at DESC",
             params,
         )
-        return [dict(r) for r in cur.fetchall()]
+        rows = []
+        for r in cur.fetchall():
+            row = dict(r)
+            try:
+                row["tags"] = json.loads(row.get("tags") or "[]")
+            except (ValueError, TypeError):
+                row["tags"] = []
+            try:
+                row["labels"] = json.loads(row.get("labels") or '["private"]')
+            except (ValueError, TypeError):
+                row["labels"] = ["private"]
+            rows.append(row)
+        return rows
     finally:
         close_db(conn)
 
@@ -384,14 +446,26 @@ async def get_feed(
         params.extend([limit, offset])
         cur.execute(
             f"SELECT resource_type, resource_id, owner, name, description, category, "
-            f"stars_count, updated_at "
+            f"stars_count, tags, labels, updated_at "
             f"FROM resource_social "
             f"WHERE {where} "
             f"ORDER BY updated_at DESC "
             f"LIMIT {PH} OFFSET {PH}",
             params,
         )
-        return [dict(r) for r in cur.fetchall()]
+        rows = []
+        for r in cur.fetchall():
+            row = dict(r)
+            try:
+                row["tags"] = json.loads(row.get("tags") or "[]")
+            except (ValueError, TypeError):
+                row["tags"] = []
+            try:
+                row["labels"] = json.loads(row.get("labels") or '["private"]')
+            except (ValueError, TypeError):
+                row["labels"] = ["private"]
+            rows.append(row)
+        return rows
     finally:
         close_db(conn)
 
@@ -479,24 +553,25 @@ async def fork_agent(
     conn = open_db(_cfg.DB_FILE)
     try:
         cur = conn.cursor()
+        fork_tags = json.dumps(source.get("tags") or [])
         if IS_PG:
             cur.execute(
                 "INSERT INTO resource_social "
                 "(resource_type, resource_id, owner, name, description, is_public, category, "
-                "trial_missing_deps, fork_of_user, fork_of_id) "
-                "VALUES (%s, %s, %s, %s, %s, FALSE, 'Other', 'warn', %s, %s) "
+                "trial_missing_deps, fork_of_user, fork_of_id, tags) "
+                "VALUES (%s, %s, %s, %s, %s, FALSE, 'Other', 'warn', %s, %s, %s) "
                 "ON CONFLICT DO NOTHING",
                 ("agent", new_id, username, fork_name, source.get("description", ""),
-                 source_owner, source_id),
+                 source_owner, source_id, fork_tags),
             )
         else:
             cur.execute(
                 "INSERT OR IGNORE INTO resource_social "
                 "(resource_type, resource_id, owner, name, description, is_public, category, "
-                "trial_missing_deps, fork_of_user, fork_of_id) "
-                "VALUES (?, ?, ?, ?, ?, 0, 'Other', 'warn', ?, ?)",
+                "trial_missing_deps, fork_of_user, fork_of_id, tags) "
+                "VALUES (?, ?, ?, ?, ?, 0, 'Other', 'warn', ?, ?, ?)",
                 ("agent", new_id, username, fork_name, source.get("description", ""),
-                 source_owner, source_id),
+                 source_owner, source_id, fork_tags),
             )
         conn.commit()
     finally:
@@ -545,24 +620,25 @@ async def fork_skill(
     conn = open_db(_cfg.DB_FILE)
     try:
         cur = conn.cursor()
+        fork_tags = json.dumps(source.get("tags") or [])
         if IS_PG:
             cur.execute(
                 "INSERT INTO resource_social "
                 "(resource_type, resource_id, owner, name, description, is_public, category, "
-                "trial_missing_deps, fork_of_user, fork_of_id) "
-                "VALUES (%s, %s, %s, %s, %s, FALSE, 'Other', 'warn', %s, %s) "
+                "trial_missing_deps, fork_of_user, fork_of_id, tags) "
+                "VALUES (%s, %s, %s, %s, %s, FALSE, 'Other', 'warn', %s, %s, %s) "
                 "ON CONFLICT DO NOTHING",
                 ("skill", new_id, username, fork_name, source.get("description", ""),
-                 source_owner, source_id),
+                 source_owner, source_id, fork_tags),
             )
         else:
             cur.execute(
                 "INSERT OR IGNORE INTO resource_social "
                 "(resource_type, resource_id, owner, name, description, is_public, category, "
-                "trial_missing_deps, fork_of_user, fork_of_id) "
-                "VALUES (?, ?, ?, ?, ?, 0, 'Other', 'warn', ?, ?)",
+                "trial_missing_deps, fork_of_user, fork_of_id, tags) "
+                "VALUES (?, ?, ?, ?, ?, 0, 'Other', 'warn', ?, ?, ?)",
                 ("skill", new_id, username, fork_name, source.get("description", ""),
-                 source_owner, source_id),
+                 source_owner, source_id, fork_tags),
             )
         conn.commit()
     finally:

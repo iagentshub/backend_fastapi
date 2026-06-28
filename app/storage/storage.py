@@ -388,6 +388,7 @@ class AgentStorage:
         return False
 
     def _summary(self, a: Dict[str, Any]) -> Dict[str, Any]:
+        scope = a.get("scope", "private")
         return {
             "id": a["id"],
             "name": a.get("name", a["id"]),
@@ -395,6 +396,7 @@ class AgentStorage:
             "description": a.get("description", ""),
             "icon": a.get("icon", ""),
             "tags": a.get("tags", []),
+            "labels": a.get("labels") or (["public"] if scope == "public" else ["private"]),
             "language": a.get("language", ""),
             "connection_id": a.get("connection_id"),
             "model": a.get("model", ""),
@@ -408,7 +410,7 @@ class AgentStorage:
             "tokens_in": int(a.get("tokens_in") or 0),
             "tokens_out": int(a.get("tokens_out") or 0),
             "folder_id": a.get("folder_id"),
-            "scope": a.get("scope", "private"),
+            "scope": scope,
             "created_at": a.get("created_at"),
             "updated_at": a.get("updated_at"),
             "owner_id": a.get("owner_id"),
@@ -458,6 +460,7 @@ class SkillStorage:
                     skill = self._read(p)
                     skill["scope"] = s
                     skill.setdefault("folder_id", None)
+                    skill.setdefault("labels", ["public"] if s == "public" else ["private"])
                     items.append({k: v for k, v in skill.items() if k != "content"})
                 except Exception:
                     continue
@@ -517,6 +520,8 @@ class SkillStorage:
             "icon": str(payload.get("icon") or "🔧").strip(),
             "category": str(payload.get("category") or "").strip() or None,
             "content": str(payload.get("content") or "").strip(),
+            "tags": [str(t).strip().lower() for t in (payload.get("tags") or []) if str(t).strip()],
+            "labels": [str(lbl) for lbl in (payload.get("labels") or ["private"]) if lbl],
         }
         if folder_id:
             data["folder_id"] = folder_id

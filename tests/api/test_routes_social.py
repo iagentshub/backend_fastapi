@@ -10,7 +10,11 @@ def _login(client, username="socialtest", password="pass1234"):
 
 
 def _create_agent(client, name="Social Agent"):
-    r = client.post("/api/agents", json={"name": name, "description": "agente de prueba social"})
+    r = client.post("/api/agents", json={
+        "name": name,
+        "description": "agente de prueba social",
+        "labels": ["public"],
+    })
     assert r.status_code == 200
     return r.json()
 
@@ -20,6 +24,7 @@ def _create_skill(client, name="Social Skill"):
         "name": name,
         "description": "skill de prueba social",
         "content": "# instrucciones",
+        "labels": ["public"],
     })
     assert r.status_code == 200
     return r.json()

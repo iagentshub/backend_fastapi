@@ -106,6 +106,9 @@ class Agent:
     memory_file: Optional[str] = None
     routines: List[dict] = field(default_factory=list)
 
+    # ── Semantic labels ───────────────────────────────────────────────────────
+    labels: List[str] = field(default_factory=lambda: ["private"])
+
     # ── Organisation ──────────────────────────────────────────────────────────
     folder_id: Optional[str] = None
 
@@ -155,6 +158,7 @@ class Agent:
             use_memory=bool(data.get("use_memory", False)),
             memory_file=str(data.get("memory_file") or "").strip() or None,
             routines=[r for r in (data.get("routines") or []) if isinstance(r, dict)],
+            labels=[str(lbl) for lbl in (data.get("labels") or ["private"]) if lbl],
             folder_id=str(data.get("folder_id") or "").strip() or None,
             created_at=str(data.get("created_at") or ""),
             updated_at=str(data.get("updated_at") or ""),
@@ -174,6 +178,7 @@ class Agent:
             "description": self.description,
             "icon": self.icon,
             "tags": self.tags,
+            "labels": self.labels,
             "language": self.language,
             "connection_id": self.connection_id,
             "model": self.model,

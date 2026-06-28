@@ -79,7 +79,11 @@ def _apply_locale(agent: Dict[str, Any], locale: str) -> Dict[str, Any]:
 
 
 @router.get("")
-async def list_agents(scope: str = "all", ctx: WorkspaceContext = Depends(require_workspace)) -> List[Dict[str, Any]]:
+async def list_agents(
+    scope: str = "all",
+    label: Optional[str] = None,
+    ctx: WorkspaceContext = Depends(require_workspace),
+) -> List[Dict[str, Any]]:
     _check_scope(scope)
     locale = get_locale()
     user, workspace_id = ctx.user, ctx.workspace_id
@@ -87,7 +91,10 @@ async def list_agents(scope: str = "all", ctx: WorkspaceContext = Depends(requir
         s = get_session(user)
         public = _agents.list("public") if scope in ("public", "all") else []
         private = s.agents if scope in ("private", "all") else []
-        return [_apply_locale(a, locale) for a in public + private]
+        items = public + private
+        if label:
+            items = [a for a in items if label in (a.get("labels") or [])]
+        return [_apply_locale(a, locale) for a in items]
     agents = _agents.list(scope)
     role = get_user_role(user)
     if role not in ("admin", "guest"):
@@ -100,6 +107,8 @@ async def list_agents(scope: str = "all", ctx: WorkspaceContext = Depends(requir
         for a in extra:
             a["_shared"] = True
         agents = own + extra
+    if label:
+        agents = [a for a in agents if label in (a.get("labels") or [])]
     return [_apply_locale(a, locale) for a in agents]
 
 

@@ -578,6 +578,8 @@ def _migrate_sqlite(conn: sqlite3.Connection) -> None:
                 linked_to_user     TEXT,
                 linked_to_id       TEXT,
                 stars_count        INTEGER NOT NULL DEFAULT 0,
+                tags               TEXT NOT NULL DEFAULT '[]',
+                labels             TEXT NOT NULL DEFAULT '["private"]',
                 updated_at         TEXT NOT NULL DEFAULT (datetime('now')),
                 PRIMARY KEY (resource_type, resource_id, owner)
             );
@@ -585,6 +587,18 @@ def _migrate_sqlite(conn: sqlite3.Connection) -> None:
             CREATE INDEX IF NOT EXISTS idx_rsoc_owner  ON resource_social(owner, resource_type);
         """)
         conn.commit()
+    # Migrate existing table: add tags column if missing
+    try:
+        conn.execute("ALTER TABLE resource_social ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'")
+        conn.commit()
+    except Exception:
+        pass  # column already exists
+    # Migrate existing table: add labels column if missing
+    try:
+        conn.execute("ALTER TABLE resource_social ADD COLUMN labels TEXT NOT NULL DEFAULT '[\"private\"]'")
+        conn.commit()
+    except Exception:
+        pass  # column already exists
 
 
 def _migrate_users_json_sqlite(conn: sqlite3.Connection) -> None:
@@ -891,12 +905,16 @@ def _migrate_pg(conn: Any) -> None:
                 linked_to_user     TEXT,
                 linked_to_id       TEXT,
                 stars_count        INTEGER NOT NULL DEFAULT 0,
+                tags               TEXT NOT NULL DEFAULT '[]',
+                labels             TEXT NOT NULL DEFAULT '["private"]',
                 updated_at         TIMESTAMP WITH TIME ZONE DEFAULT now(),
                 PRIMARY KEY (resource_type, resource_id, owner)
             )
         """)
         cur.execute("CREATE INDEX IF NOT EXISTS idx_rsoc_public ON resource_social(is_public, resource_type, category)")
         cur.execute("CREATE INDEX IF NOT EXISTS idx_rsoc_owner ON resource_social(owner, resource_type)")
+        cur.execute("ALTER TABLE resource_social ADD COLUMN IF NOT EXISTS tags TEXT NOT NULL DEFAULT '[]'")
+        cur.execute("ALTER TABLE resource_social ADD COLUMN IF NOT EXISTS labels TEXT NOT NULL DEFAULT '[\"private\"]'")
     conn.commit()
 
 
