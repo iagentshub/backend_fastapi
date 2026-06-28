@@ -1,6 +1,7 @@
 """GAIA Backend — Punto de entrada."""
 from __future__ import annotations
 
+import os
 import uvicorn
 
 from app.config.server import HOST, PORT, RELOAD
@@ -13,6 +14,7 @@ def main() -> None:
         host=HOST,
         port=PORT,
         reload=RELOAD,
+        workers=1 if RELOAD else int(os.getenv("GAIA_WORKERS", "4")),
         log_level="info",
     )
 

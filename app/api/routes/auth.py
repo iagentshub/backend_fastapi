@@ -33,6 +33,7 @@ from app.auth.auth import (
     verify_password,
 )
 from app.config.data import DB_FILE as _DB_FILE
+from app.storage.db import run_db
 from app.config.session import (
     EMAIL_VERIFY_ENABLED,
     REGISTER_MAX,
@@ -207,12 +208,26 @@ async def me(ctx: WorkspaceContext = Depends(require_workspace)) -> Dict[str, An
     from app.config.session import WEBMAIL_URL
     username = ctx.user
     workspace_id = ctx.workspace_id
-    role = get_user_role(username)
-    if is_guest(username):
-        auth_method = "guest"
-    else:
-        user = get_user_by_username(username) or {}
-        auth_method = user.get("provider") or "internal"
+
+    def _fetch():
+        role = get_user_role(username)
+        if is_guest(username):
+            auth_method = "guest"
+            user_row: Dict[str, Any] = {}
+        else:
+            user_row = get_user_by_username(username) or {}
+            auth_method = user_row.get("provider") or "internal"
+        ws_name: Optional[str] = None
+        if not is_guest(username):
+            if workspace_id != username:
+                ws = _workspaces.get(workspace_id)
+                ws_name = ws["name"] if ws else workspace_id
+            else:
+                ws_name = user_row.get("display_name") or username
+        return role, auth_method, ws_name
+
+    role, auth_method, ws_name = await run_db(_fetch)
+
     payload: Dict[str, Any] = {
         "username": username,
         "role": role,
@@ -222,13 +237,8 @@ async def me(ctx: WorkspaceContext = Depends(require_workspace)) -> Dict[str, An
     }
     if role == "admin" and WEBMAIL_URL:
         payload["webmail_url"] = WEBMAIL_URL
-    if not is_guest(username):
-        if workspace_id != username:
-            ws = _workspaces.get(workspace_id)
-            payload["workspace_name"] = ws["name"] if ws else workspace_id
-        else:
-            user = get_user_by_username(username) or {}
-            payload["workspace_name"] = user.get("display_name") or username
+    if ws_name is not None:
+        payload["workspace_name"] = ws_name
     return payload
 
 

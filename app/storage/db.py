@@ -1001,3 +1001,34 @@ def close_db(conn: Any) -> None:
         except Exception as exc:
             flog.debug(f"[db] Error al liberar conexión PG al pool: {exc}")
     # SQLite: singleton is kept alive — nothing to do
+
+
+import asyncio
+from typing import Callable, TypeVar
+
+_T = TypeVar("_T")
+
+
+async def run_db(func: Callable[[], _T]) -> _T:
+    """Run a synchronous DB block without blocking the asyncio event loop.
+
+    - PostgreSQL: runs in the thread-pool executor. The psycopg2 pool gives
+      each thread its own connection, so concurrent callers are safe.
+    - SQLite (dev): runs synchronously in the event loop. The SQLite singleton
+      is a single connection object — pushing it into multiple threads causes
+      crashes. SQLite is only used by a single developer, so blocking is fine.
+
+    Usage:
+        def _query():
+            conn = open_db(DB_FILE)
+            try:
+                return conn.execute("SELECT ...").fetchall()
+            finally:
+                close_db(conn)
+
+        rows = await run_db(_query)
+    """
+    if IS_PG:
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, func)
+    return func()
