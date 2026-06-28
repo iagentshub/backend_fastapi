@@ -282,25 +282,26 @@ async def change_password(
     if len(new_pw) < 4:
         raise HTTPException(status_code=400, detail="La nueva contraseña es muy corta")
 
-    user = get_user_by_username(username)
-    if not user:
-        raise HTTPException(status_code=404, detail="Usuario no encontrado")
-    if not verify_password(current, user.get("password_hash", "")):
-        raise HTTPException(status_code=401, detail="Contraseña actual incorrecta")
+    def _sync() -> Dict[str, Any]:
+        from app.config.data import DB_FILE
+        from app.storage.db import PH, close_db, open_db
+        user = get_user_by_username(username)
+        if not user:
+            raise HTTPException(status_code=404, detail="Usuario no encontrado")
+        if not verify_password(current, user.get("password_hash", "")):
+            raise HTTPException(status_code=401, detail="Contraseña actual incorrecta")
+        conn = open_db(DB_FILE)
+        try:
+            conn.cursor().execute(
+                f"UPDATE users SET password_hash = {PH} WHERE username = {PH}",
+                (hash_password(new_pw), username),
+            )
+            conn.commit()
+        finally:
+            close_db(conn)
+        return {"ok": True}
 
-    from app.storage.db import PH, close_db, open_db
-    from app.config.data import DB_FILE
-
-    conn = open_db(DB_FILE)
-    try:
-        conn.cursor().execute(
-            f"UPDATE users SET password_hash = {PH} WHERE username = {PH}",
-            (hash_password(new_pw), username),
-        )
-        conn.commit()
-    finally:
-        close_db(conn)
-    return {"ok": True}
+    return await run_db(_sync)
 
 
 # ── GDPR ──────────────────────────────────────────────────────────────────────
@@ -345,11 +346,14 @@ async def cancel_account_deletion(request: Request) -> Dict[str, Any]:
 
 @router.get("/me/export")
 async def export_my_data(username: str = Depends(require_auth)):
-    from fastapi.responses import StreamingResponse
-    from app.services.gdpr import export_user_data
     from datetime import datetime, timezone
+    from fastapi.responses import StreamingResponse
 
-    buf = export_user_data(username)
+    def _sync():
+        from app.services.gdpr import export_user_data
+        return export_user_data(username)
+
+    buf = await run_db(_sync)
     date_str = datetime.now(timezone.utc).strftime("%Y%m%d")
     safe_name = username.split("@")[0].replace(" ", "_")
     filename = f"export_{safe_name}_{date_str}.zip"
@@ -422,8 +426,6 @@ async def update_profile(
     username: str = Depends(require_auth),
 ) -> Dict[str, Any]:
     import json
-    from app.storage.db import PH, close_db, open_db
-    from app.config.data import DB_FILE
 
     body = await request.json()
     bio = str(body.get("bio") or "").strip()[:500] or None
@@ -433,17 +435,22 @@ async def update_profile(
     github = str(body.get("github") or "").strip()[:100] or None
     cv = str(body.get("cv") or "").strip()[:20000] or None
 
-    conn = open_db(DB_FILE)
-    try:
-        conn.execute(
-            f"UPDATE users SET bio={PH}, languages={PH}, email_public={PH}, github={PH}, cv={PH} "
-            f"WHERE username={PH}",
-            (bio, languages, email_public, github, cv, username),
-        )
-        conn.commit()
-    finally:
-        close_db(conn)
-    return {"ok": True}
+    def _sync() -> Dict[str, Any]:
+        from app.config.data import DB_FILE
+        from app.storage.db import PH, close_db, open_db
+        conn = open_db(DB_FILE)
+        try:
+            conn.execute(
+                f"UPDATE users SET bio={PH}, languages={PH}, email_public={PH}, github={PH}, cv={PH} "
+                f"WHERE username={PH}",
+                (bio, languages, email_public, github, cv, username),
+            )
+            conn.commit()
+        finally:
+            close_db(conn)
+        return {"ok": True}
+
+    return await run_db(_sync)
 
 
 @router.post("/me/avatar")
@@ -455,8 +462,6 @@ async def upload_avatar(
     from pathlib import Path as _Path
     from fastapi import UploadFile
     from fastapi.datastructures import FormData
-    from app.config.data import DB_FILE
-    from app.storage.db import PH, close_db, open_db
 
     form: FormData = await request.form()
     file: UploadFile = form.get("avatar")  # type: ignore[assignment]
@@ -473,16 +478,21 @@ async def upload_avatar(
 
     encoded = base64.b64encode(data).decode("ascii")
 
-    conn = open_db(DB_FILE)
-    try:
-        conn.execute(
-            f"UPDATE users SET avatar={PH} WHERE username={PH}",
-            (encoded, username),
-        )
-        conn.commit()
-    finally:
-        close_db(conn)
-    return {"ok": True, "avatar_url": f"/api/users/{username}/avatar"}
+    def _sync() -> Dict[str, Any]:
+        from app.config.data import DB_FILE
+        from app.storage.db import PH, close_db, open_db
+        conn = open_db(DB_FILE)
+        try:
+            conn.execute(
+                f"UPDATE users SET avatar={PH} WHERE username={PH}",
+                (encoded, username),
+            )
+            conn.commit()
+        finally:
+            close_db(conn)
+        return {"ok": True, "avatar_url": f"/api/users/{username}/avatar"}
+
+    return await run_db(_sync)
 
 
 users_router = APIRouter(prefix="/api/users", tags=["users"])
@@ -495,39 +505,40 @@ async def search_users(
     offset: int = 0,
     username: str = Depends(require_auth),
 ) -> List[Dict[str, Any]]:
-    from app.config.data import DB_FILE
-    from app.storage.db import PH, close_db, open_db
-
     limit = min(limit, 50)
 
-    conn = open_db(DB_FILE)
-    try:
-        cur = conn.cursor()
-        if q:
-            pattern = f"%{q}%"
-            cur.execute(
-                f"SELECT u.username, u.avatar, "
-                f"(SELECT COUNT(*) FROM user_follows WHERE following = u.username) AS followers_count, "
-                f"(SELECT COUNT(*) FROM resource_social WHERE owner = u.username AND is_public = 1) AS public_resources_count "
-                f"FROM users u "
-                f"WHERE u.username != {PH} AND LOWER(u.username) LIKE LOWER({PH}) "
-                f"ORDER BY u.username LIMIT {PH} OFFSET {PH}",
-                (username, pattern, limit, offset),
-            )
-        else:
-            cur.execute(
-                f"SELECT u.username, u.avatar, "
-                f"(SELECT COUNT(*) FROM user_follows WHERE following = u.username) AS followers_count, "
-                f"(SELECT COUNT(*) FROM resource_social WHERE owner = u.username AND is_public = 1) AS public_resources_count "
-                f"FROM users u "
-                f"WHERE u.username != {PH} "
-                f"ORDER BY u.username LIMIT {PH} OFFSET {PH}",
-                (username, limit, offset),
-            )
-        rows = cur.fetchall()
-    finally:
-        close_db(conn)
+    def _sync():
+        from app.config.data import DB_FILE
+        from app.storage.db import PH, close_db, open_db
+        conn = open_db(DB_FILE)
+        try:
+            cur = conn.cursor()
+            if q:
+                pattern = f"%{q}%"
+                cur.execute(
+                    f"SELECT u.username, u.avatar, "
+                    f"(SELECT COUNT(*) FROM user_follows WHERE following = u.username) AS followers_count, "
+                    f"(SELECT COUNT(*) FROM resource_social WHERE owner = u.username AND is_public = 1) AS public_resources_count "
+                    f"FROM users u "
+                    f"WHERE u.username != {PH} AND LOWER(u.username) LIKE LOWER({PH}) "
+                    f"ORDER BY u.username LIMIT {PH} OFFSET {PH}",
+                    (username, pattern, limit, offset),
+                )
+            else:
+                cur.execute(
+                    f"SELECT u.username, u.avatar, "
+                    f"(SELECT COUNT(*) FROM user_follows WHERE following = u.username) AS followers_count, "
+                    f"(SELECT COUNT(*) FROM resource_social WHERE owner = u.username AND is_public = 1) AS public_resources_count "
+                    f"FROM users u "
+                    f"WHERE u.username != {PH} "
+                    f"ORDER BY u.username LIMIT {PH} OFFSET {PH}",
+                    (username, limit, offset),
+                )
+            return cur.fetchall()
+        finally:
+            close_db(conn)
 
+    rows = await run_db(_sync)
     return [
         {
             "username": row[0],
@@ -543,16 +554,19 @@ async def search_users(
 async def get_avatar(username: str, _: str = Depends(require_auth)):
     import base64
     from fastapi.responses import Response
-    from app.config.data import DB_FILE
-    from app.storage.db import PH, close_db, open_db
 
-    conn = open_db(DB_FILE)
-    try:
-        cur = conn.cursor()
-        cur.execute(f"SELECT avatar FROM users WHERE username={PH}", (username,))
-        row = cur.fetchone()
-    finally:
-        close_db(conn)
+    def _sync():
+        from app.config.data import DB_FILE
+        from app.storage.db import PH, close_db, open_db
+        conn = open_db(DB_FILE)
+        try:
+            cur = conn.cursor()
+            cur.execute(f"SELECT avatar FROM users WHERE username={PH}", (username,))
+            return cur.fetchone()
+        finally:
+            close_db(conn)
+
+    row = await run_db(_sync)
 
     if not row or not row[0]:
         return Response(status_code=204)
@@ -572,14 +586,14 @@ async def get_public_profile(
     username: str,
     _: str = Depends(require_auth),
 ) -> Dict[str, Any]:
-    user = get_user_by_username(username)
-    if not user:
-        raise HTTPException(status_code=404, detail="Usuario no encontrado")
-    fields = _get_social_fields(username)
-    return {
-        "username": username,
-        **fields,
-    }
+    def _sync() -> Dict[str, Any]:
+        user = get_user_by_username(username)
+        if not user:
+            raise HTTPException(status_code=404, detail="Usuario no encontrado")
+        fields = _get_social_fields(username)
+        return {"username": username, **fields}
+
+    return await run_db(_sync)
 
 
 # ── Admin ─────────────────────────────────────────────────────────────────────
@@ -590,63 +604,75 @@ admin_router = APIRouter(prefix="/api/admin", tags=["admin"])
 @admin_router.get("/stats")
 async def admin_stats(_: str = Depends(require_admin)) -> Dict[str, Any]:
     import datetime as _dt
-    from app.config.data import AGENTS_DIR, DB_FILE
-    from app.storage.db import close_db, open_db
+    from app.config.data import AGENTS_DIR
 
-    conn = open_db(DB_FILE)
-    try:
-        cur = conn.cursor()
-
-        cur.execute("SELECT COUNT(*), SUM(CASE WHEN is_active=1 THEN 1 ELSE 0 END), SUM(CASE WHEN is_verified=1 THEN 1 ELSE 0 END) FROM users")
-        u = cur.fetchone()
-        users_total, users_active, users_verified = (u[0] or 0, u[1] or 0, u[2] or 0)
-
-        cur.execute("SELECT COUNT(*), COALESCE(SUM(tokens_in),0), COALESCE(SUM(tokens_out),0) FROM connections")
-        c = cur.fetchone()
-        conns_total, tokens_in, tokens_out = (c[0] or 0, c[1] or 0, c[2] or 0)
-
-        cur.execute("SELECT COUNT(*) FROM knowledge_items")
-        knowledge_total = (cur.fetchone()[0] or 0)
-
-        cur.execute("SELECT COUNT(*) FROM conversations")
-        conversations_total = (cur.fetchone()[0] or 0)
-
-        from app.storage.db import IS_PG
-        _PH = "%s" if IS_PG else "?"
-        cutoff = (_dt.date.today() - _dt.timedelta(days=13)).isoformat()
-        today = _dt.date.today().isoformat()
+    def _sync():
+        from app.config.data import DB_FILE
+        from app.storage.db import IS_PG, close_db, open_db
+        conn = open_db(DB_FILE)
         try:
-            cur.execute(
-                f"SELECT day, SUM(tokens) FROM token_daily WHERE day >= {_PH} GROUP BY day ORDER BY day ASC",
-                (cutoff,),
-            )
-            tokens_daily = [{"day": r[0], "tokens": r[1]} for r in cur.fetchall()]
-            # First-run backfill: seed today from cumulative connection totals
-            if not tokens_daily and (tokens_in + tokens_out) > 0:
-                if IS_PG:
-                    cur.execute(
-                        "INSERT INTO token_daily (day, owner_id, tokens) "
-                        "SELECT %s, owner_id, tokens_in + tokens_out FROM connections "
-                        "WHERE tokens_in + tokens_out > 0 ON CONFLICT (day, owner_id) DO NOTHING",
-                        (today,),
-                    )
-                else:
-                    cur.execute(
-                        "INSERT OR IGNORE INTO token_daily (day, owner_id, tokens) "
-                        "SELECT ?, owner_id, tokens_in + tokens_out FROM connections "
-                        "WHERE tokens_in + tokens_out > 0",
-                        (today,),
-                    )
-                conn.commit()
+            cur = conn.cursor()
+
+            cur.execute("SELECT COUNT(*), SUM(CASE WHEN is_active=1 THEN 1 ELSE 0 END), SUM(CASE WHEN is_verified=1 THEN 1 ELSE 0 END) FROM users")
+            u = cur.fetchone()
+            users_total, users_active, users_verified = (u[0] or 0, u[1] or 0, u[2] or 0)
+
+            cur.execute("SELECT COUNT(*), COALESCE(SUM(tokens_in),0), COALESCE(SUM(tokens_out),0) FROM connections")
+            c = cur.fetchone()
+            conns_total, tokens_in, tokens_out = (c[0] or 0, c[1] or 0, c[2] or 0)
+
+            cur.execute("SELECT COUNT(*) FROM knowledge_items")
+            knowledge_total = (cur.fetchone()[0] or 0)
+
+            cur.execute("SELECT COUNT(*) FROM conversations")
+            conversations_total = (cur.fetchone()[0] or 0)
+
+            _PH = "%s" if IS_PG else "?"
+            cutoff = (_dt.date.today() - _dt.timedelta(days=13)).isoformat()
+            today = _dt.date.today().isoformat()
+            try:
                 cur.execute(
                     f"SELECT day, SUM(tokens) FROM token_daily WHERE day >= {_PH} GROUP BY day ORDER BY day ASC",
                     (cutoff,),
                 )
                 tokens_daily = [{"day": r[0], "tokens": r[1]} for r in cur.fetchall()]
-        except Exception:
-            tokens_daily = []
-    finally:
-        close_db(conn)
+                # First-run backfill: seed today from cumulative connection totals
+                if not tokens_daily and (tokens_in + tokens_out) > 0:
+                    if IS_PG:
+                        cur.execute(
+                            "INSERT INTO token_daily (day, owner_id, tokens) "
+                            "SELECT %s, owner_id, tokens_in + tokens_out FROM connections "
+                            "WHERE tokens_in + tokens_out > 0 ON CONFLICT (day, owner_id) DO NOTHING",
+                            (today,),
+                        )
+                    else:
+                        cur.execute(
+                            "INSERT OR IGNORE INTO token_daily (day, owner_id, tokens) "
+                            "SELECT ?, owner_id, tokens_in + tokens_out FROM connections "
+                            "WHERE tokens_in + tokens_out > 0",
+                            (today,),
+                        )
+                    conn.commit()
+                    cur.execute(
+                        f"SELECT day, SUM(tokens) FROM token_daily WHERE day >= {_PH} GROUP BY day ORDER BY day ASC",
+                        (cutoff,),
+                    )
+                    tokens_daily = [{"day": r[0], "tokens": r[1]} for r in cur.fetchall()]
+            except Exception:
+                tokens_daily = []
+        finally:
+            close_db(conn)
+        return (
+            users_total, users_active, users_verified,
+            conns_total, tokens_in, tokens_out,
+            knowledge_total, conversations_total, tokens_daily,
+        )
+
+    (
+        users_total, users_active, users_verified,
+        conns_total, tokens_in, tokens_out,
+        knowledge_total, conversations_total, tokens_daily,
+    ) = await run_db(_sync)
 
     agents_public = len(list(AGENTS_DIR.glob("public/*/config.json"))) if AGENTS_DIR.exists() else 0
     agents_private = len(list(AGENTS_DIR.glob("private/*/config.json"))) if AGENTS_DIR.exists() else 0
@@ -677,25 +703,29 @@ async def admin_list_users(
     verified: Optional[str] = None,
     _: str = Depends(require_admin),
 ) -> List[Dict[str, Any]]:
-    from app.config.data import DB_FILE
-    from app.storage.db import close_db, open_db
-    users = list_users()
-    # Agregar tokens consumidos por usuario
-    conn = open_db(DB_FILE)
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT owner_id, COALESCE(SUM(tokens_in), 0), COALESCE(SUM(tokens_out), 0) "
-            "FROM connections GROUP BY owner_id"
-        )
-        token_map = {r[0]: {"tokens_in": r[1], "tokens_out": r[2]} for r in cur.fetchall()}
-    finally:
-        close_db(conn)
-    for u in users:
-        username = u.get("username")
-        tokens = token_map.get(username, {"tokens_in": 0, "tokens_out": 0})
-        u["tokens_in"] = tokens["tokens_in"]
-        u["tokens_out"] = tokens["tokens_out"]
+    def _sync():
+        from app.config.data import DB_FILE
+        from app.storage.db import close_db, open_db
+        users = list_users()
+        # Agregar tokens consumidos por usuario
+        conn = open_db(DB_FILE)
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT owner_id, COALESCE(SUM(tokens_in), 0), COALESCE(SUM(tokens_out), 0) "
+                "FROM connections GROUP BY owner_id"
+            )
+            token_map = {r[0]: {"tokens_in": r[1], "tokens_out": r[2]} for r in cur.fetchall()}
+        finally:
+            close_db(conn)
+        for u in users:
+            uname = u.get("username")
+            tokens = token_map.get(uname, {"tokens_in": 0, "tokens_out": 0})
+            u["tokens_in"] = tokens["tokens_in"]
+            u["tokens_out"] = tokens["tokens_out"]
+        return users
+
+    users = await run_db(_sync)
     if q:
         q_low = q.lower()
         users = [u for u in users if q_low in (u.get("username") or "").lower() or q_low in (u.get("email") or "").lower()]
@@ -757,20 +787,23 @@ async def admin_delete_user(
 
 @admin_router.get("/connections")
 async def admin_list_connections(_: str = Depends(require_admin)) -> List[Dict[str, Any]]:
-    from app.config.data import DB_FILE
-    from app.storage.db import close_db, open_db
     import json as _json
 
-    conn = open_db(DB_FILE)
-    try:
-        cur = conn.cursor()
-        cur.execute("SELECT id, owner_id, data, tokens_in, tokens_out, created_at FROM connections ORDER BY created_at DESC")
-        rows = cur.fetchall()
-        cur.execute("SELECT username, email FROM users")
-        email_map = {r[0]: r[1] for r in cur.fetchall()}
-    finally:
-        close_db(conn)
+    def _sync():
+        from app.config.data import DB_FILE
+        from app.storage.db import close_db, open_db
+        conn = open_db(DB_FILE)
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT id, owner_id, data, tokens_in, tokens_out, created_at FROM connections ORDER BY created_at DESC")
+            rows = cur.fetchall()
+            cur.execute("SELECT username, email FROM users")
+            email_map = {r[0]: r[1] for r in cur.fetchall()}
+        finally:
+            close_db(conn)
+        return rows, email_map
 
+    rows, email_map = await run_db(_sync)
     result = []
     for row in rows:
         d = dict(row) if isinstance(row, dict) else {
@@ -807,33 +840,36 @@ async def admin_delete_connection(
 
 @admin_router.get("/agents")
 async def admin_list_agents(_: str = Depends(require_admin)) -> List[Dict[str, Any]]:
-    from app.config.data import AGENTS_DIR, DB_FILE
-    from app.storage.storage import AgentStorage
-    from app.storage.db import close_db, open_db
-    agents = AgentStorage(AGENTS_DIR).list(scope="all")
-    conn = open_db(DB_FILE)
-    try:
-        cur = conn.cursor()
-        cur.execute("SELECT username, email FROM users")
-        email_map = {r[0]: r[1] for r in cur.fetchall()}
-        cur.execute("SELECT id, owner_id, tokens_in, tokens_out FROM connections")
-        conn_data = {r[0]: {"owner_id": r[1], "tokens_in": r[2], "tokens_out": r[3]} for r in cur.fetchall()}
-    finally:
-        close_db(conn)
-    for a in agents:
-        conn_id = a.get("connection_id")
-        owner = a.get("owner_id")
-        if not owner and conn_id and conn_id in conn_data:
-            owner = conn_data[conn_id]["owner_id"]
-        a["owner_email"] = email_map.get(owner, owner) if owner else None
-        # Agregar tokens de la conexión asociada
-        if conn_id and conn_id in conn_data:
-            a["tokens_in"] = conn_data[conn_id]["tokens_in"]
-            a["tokens_out"] = conn_data[conn_id]["tokens_out"]
-        else:
-            a["tokens_in"] = 0
-            a["tokens_out"] = 0
-    return agents
+    def _sync():
+        from app.config.data import AGENTS_DIR, DB_FILE
+        from app.storage.db import close_db, open_db
+        from app.storage.storage import AgentStorage
+        agents = AgentStorage(AGENTS_DIR).list(scope="all")
+        conn = open_db(DB_FILE)
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT username, email FROM users")
+            email_map = {r[0]: r[1] for r in cur.fetchall()}
+            cur.execute("SELECT id, owner_id, tokens_in, tokens_out FROM connections")
+            conn_data = {r[0]: {"owner_id": r[1], "tokens_in": r[2], "tokens_out": r[3]} for r in cur.fetchall()}
+        finally:
+            close_db(conn)
+        for a in agents:
+            conn_id = a.get("connection_id")
+            owner = a.get("owner_id")
+            if not owner and conn_id and conn_id in conn_data:
+                owner = conn_data[conn_id]["owner_id"]
+            a["owner_email"] = email_map.get(owner, owner) if owner else None
+            # Agregar tokens de la conexión asociada
+            if conn_id and conn_id in conn_data:
+                a["tokens_in"] = conn_data[conn_id]["tokens_in"]
+                a["tokens_out"] = conn_data[conn_id]["tokens_out"]
+            else:
+                a["tokens_in"] = 0
+                a["tokens_out"] = 0
+        return agents
+
+    return await run_db(_sync)
 
 
 @admin_router.put("/agents/{agent_id}")
@@ -885,23 +921,24 @@ async def admin_delete_agent(
 
 @admin_router.get("/knowledge")
 async def admin_list_knowledge(_: str = Depends(require_admin)) -> List[Dict[str, Any]]:
-    from app.config.data import DB_FILE
-    from app.storage.db import close_db, open_db
-    from app.storage.knowledge import KnowledgeStorage
+    def _sync():
+        from app.config.data import DB_FILE
+        from app.storage.db import close_db, open_db
+        from app.storage.knowledge import KnowledgeStorage
+        conn = open_db(DB_FILE)
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT username, email FROM users")
+            email_map = {r[0]: r[1] for r in cur.fetchall()}
+        finally:
+            close_db(conn)
+        items = KnowledgeStorage(DB_FILE).list(owner_id=None)
+        for item in items:
+            item["owner_email"] = email_map.get(item.get("owner_id", ""), item.get("owner_id", ""))
+            item.pop("content", None)
+        return items
 
-    conn = open_db(DB_FILE)
-    try:
-        cur = conn.cursor()
-        cur.execute("SELECT username, email FROM users")
-        email_map = {r[0]: r[1] for r in cur.fetchall()}
-    finally:
-        close_db(conn)
-
-    items = KnowledgeStorage(DB_FILE).list(owner_id=None)
-    for item in items:
-        item["owner_email"] = email_map.get(item.get("owner_id", ""), item.get("owner_id", ""))
-        item.pop("content", None)
-    return items
+    return await run_db(_sync)
 
 
 @admin_router.delete("/knowledge/{item_id}")
@@ -917,23 +954,26 @@ async def admin_delete_knowledge(
 
 @admin_router.get("/groups")
 async def admin_list_groups(_: str = Depends(require_admin)) -> List[Dict[str, Any]]:
-    from app.config.data import DB_FILE
-    from app.storage.db import close_db, open_db
-    conn = open_db(DB_FILE)
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT wg.id, wg.workspace_id, wg.name, wg.created_by, wg.created_at, "
-            "COUNT(DISTINCT wgm.username) AS member_count, "
-            "COUNT(DISTINCT rg.resource_id || '|' || rg.resource_type) AS resource_count "
-            "FROM workspace_groups wg "
-            "LEFT JOIN workspace_group_members wgm ON wg.id = wgm.group_id "
-            "LEFT JOIN resource_groups rg ON wg.id = rg.group_id "
-            "GROUP BY wg.id ORDER BY wg.created_at DESC"
-        )
-        rows = cur.fetchall()
-    finally:
-        close_db(conn)
+    def _sync():
+        from app.config.data import DB_FILE
+        from app.storage.db import close_db, open_db
+        conn = open_db(DB_FILE)
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT wg.id, wg.workspace_id, wg.name, wg.created_by, wg.created_at, "
+                "COUNT(DISTINCT wgm.username) AS member_count, "
+                "COUNT(DISTINCT rg.resource_id || '|' || rg.resource_type) AS resource_count "
+                "FROM workspace_groups wg "
+                "LEFT JOIN workspace_group_members wgm ON wg.id = wgm.group_id "
+                "LEFT JOIN resource_groups rg ON wg.id = rg.group_id "
+                "GROUP BY wg.id ORDER BY wg.created_at DESC"
+            )
+            return cur.fetchall()
+        finally:
+            close_db(conn)
+
+    rows = await run_db(_sync)
     return [
         {
             "id": r[0], "workspace_id": r[1], "name": r[2],
@@ -957,28 +997,33 @@ async def admin_delete_group(
 @admin_router.get("/workspaces")
 async def admin_list_workspaces(_: str = Depends(require_admin)) -> List[Dict[str, Any]]:
     import json as _json
-    from app.config.data import AGENTS_DIR, DB_FILE
-    from app.storage.db import close_db, open_db
+    from app.config.data import AGENTS_DIR
 
-    conn = open_db(DB_FILE)
-    try:
-        cur = conn.cursor()
-        cur.execute("SELECT id, name, created_by, created_at FROM workspaces ORDER BY created_at DESC")
-        workspaces = [
-            {"id": r[0], "name": r[1], "created_by": r[2], "created_at": r[3]}
-            for r in cur.fetchall()
-        ]
-        cur.execute("SELECT workspace_id, COUNT(*) FROM workspace_members GROUP BY workspace_id")
-        member_counts = {r[0]: r[1] for r in cur.fetchall()}
-        cur.execute(
-            "SELECT owner_id, COUNT(*), COALESCE(SUM(tokens_in), 0), COALESCE(SUM(tokens_out), 0) "
-            "FROM connections GROUP BY owner_id"
-        )
-        conn_stats = {r[0]: {"count": r[1], "tokens_in": r[2], "tokens_out": r[3]} for r in cur.fetchall()}
-        cur.execute("SELECT owner_id, COUNT(*) FROM knowledge_items GROUP BY owner_id")
-        know_counts = {r[0]: r[1] for r in cur.fetchall()}
-    finally:
-        close_db(conn)
+    def _sync():
+        from app.config.data import DB_FILE
+        from app.storage.db import close_db, open_db
+        conn = open_db(DB_FILE)
+        try:
+            cur = conn.cursor()
+            cur.execute("SELECT id, name, created_by, created_at FROM workspaces ORDER BY created_at DESC")
+            workspaces = [
+                {"id": r[0], "name": r[1], "created_by": r[2], "created_at": r[3]}
+                for r in cur.fetchall()
+            ]
+            cur.execute("SELECT workspace_id, COUNT(*) FROM workspace_members GROUP BY workspace_id")
+            member_counts = {r[0]: r[1] for r in cur.fetchall()}
+            cur.execute(
+                "SELECT owner_id, COUNT(*), COALESCE(SUM(tokens_in), 0), COALESCE(SUM(tokens_out), 0) "
+                "FROM connections GROUP BY owner_id"
+            )
+            conn_stats = {r[0]: {"count": r[1], "tokens_in": r[2], "tokens_out": r[3]} for r in cur.fetchall()}
+            cur.execute("SELECT owner_id, COUNT(*) FROM knowledge_items GROUP BY owner_id")
+            know_counts = {r[0]: r[1] for r in cur.fetchall()}
+        finally:
+            close_db(conn)
+        return workspaces, member_counts, conn_stats, know_counts
+
+    workspaces, member_counts, conn_stats, know_counts = await run_db(_sync)
 
     agent_counts: Dict[str, int] = {}
     if AGENTS_DIR.exists():

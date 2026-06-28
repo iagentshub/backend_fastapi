@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from app.api.routes.auth import WorkspaceContext, require_workspace
 from app.auth.auth import get_user_role
 from app.config.data import DB_FILE
+from app.storage.db import run_db
 from app.storage.groups import GroupStorage
 from app.storage.workspaces import WorkspaceStorage
 
@@ -38,9 +39,11 @@ async def list_groups(
     workspace_id: str,
     ctx: WorkspaceContext = Depends(require_workspace),
 ) -> List[Dict[str, Any]]:
-    if not _ws.can_access(workspace_id, ctx.user) and get_user_role(ctx.user) != "admin":
-        raise HTTPException(status_code=403, detail="Sin acceso a este workspace")
-    return _gs.list_for_workspace(workspace_id)
+    def _sync():
+        if not _ws.can_access(workspace_id, ctx.user) and get_user_role(ctx.user) != "admin":
+            raise HTTPException(status_code=403, detail="Sin acceso a este workspace")
+        return _gs.list_for_workspace(workspace_id)
+    return await run_db(_sync)
 
 
 @router.post("/{workspace_id}/groups")
@@ -49,16 +52,18 @@ async def create_group(
     body: Dict[str, Any],
     ctx: WorkspaceContext = Depends(require_workspace),
 ) -> Dict[str, Any]:
-    _assert_can_manage(workspace_id, ctx.user)
     name = str(body.get("name") or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="El nombre es obligatorio")
     if len(name) > 80:
         raise HTTPException(status_code=400, detail="El nombre no puede superar 80 caracteres")
-    try:
-        return _gs.create(workspace_id, name, ctx.user)
-    except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
+    def _sync():
+        _assert_can_manage(workspace_id, ctx.user)
+        try:
+            return _gs.create(workspace_id, name, ctx.user)
+        except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc))
+    return await run_db(_sync)
 
 
 @router.patch("/{workspace_id}/groups/{group_id}")
@@ -68,12 +73,14 @@ async def rename_group(
     body: Dict[str, Any],
     ctx: WorkspaceContext = Depends(require_workspace),
 ) -> Dict[str, Any]:
-    _assert_can_manage(workspace_id, ctx.user)
-    _assert_group_belongs(group_id, workspace_id)
     name = str(body.get("name") or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="El nombre es obligatorio")
-    _gs.rename(group_id, name)
+    def _sync():
+        _assert_can_manage(workspace_id, ctx.user)
+        _assert_group_belongs(group_id, workspace_id)
+        _gs.rename(group_id, name)
+    await run_db(_sync)
     return {"ok": True, "id": group_id, "name": name}
 
 
@@ -83,9 +90,11 @@ async def delete_group(
     group_id: str,
     ctx: WorkspaceContext = Depends(require_workspace),
 ) -> Dict[str, Any]:
-    _assert_can_manage(workspace_id, ctx.user)
-    _assert_group_belongs(group_id, workspace_id)
-    _gs.delete(group_id)
+    def _sync():
+        _assert_can_manage(workspace_id, ctx.user)
+        _assert_group_belongs(group_id, workspace_id)
+        _gs.delete(group_id)
+    await run_db(_sync)
     return {"ok": True}
 
 
@@ -97,10 +106,12 @@ async def list_group_members(
     group_id: str,
     ctx: WorkspaceContext = Depends(require_workspace),
 ) -> List[Dict[str, Any]]:
-    if not _ws.can_access(workspace_id, ctx.user) and get_user_role(ctx.user) != "admin":
-        raise HTTPException(status_code=403, detail="Sin acceso")
-    _assert_group_belongs(group_id, workspace_id)
-    return _gs.list_members(group_id)
+    def _sync():
+        if not _ws.can_access(workspace_id, ctx.user) and get_user_role(ctx.user) != "admin":
+            raise HTTPException(status_code=403, detail="Sin acceso")
+        _assert_group_belongs(group_id, workspace_id)
+        return _gs.list_members(group_id)
+    return await run_db(_sync)
 
 
 @router.post("/{workspace_id}/groups/{group_id}/members")
@@ -110,14 +121,16 @@ async def add_group_member(
     body: Dict[str, Any],
     ctx: WorkspaceContext = Depends(require_workspace),
 ) -> Dict[str, Any]:
-    _assert_can_manage(workspace_id, ctx.user)
-    _assert_group_belongs(group_id, workspace_id)
     username = str(body.get("username") or "").strip()
     if not username:
         raise HTTPException(status_code=400, detail="username es obligatorio")
-    if not _ws.is_member(workspace_id, username):
-        raise HTTPException(status_code=400, detail="El usuario no es miembro del workspace")
-    _gs.add_member(group_id, workspace_id, username)
+    def _sync():
+        _assert_can_manage(workspace_id, ctx.user)
+        _assert_group_belongs(group_id, workspace_id)
+        if not _ws.is_member(workspace_id, username):
+            raise HTTPException(status_code=400, detail="El usuario no es miembro del workspace")
+        _gs.add_member(group_id, workspace_id, username)
+    await run_db(_sync)
     return {"ok": True, "group_id": group_id, "username": username}
 
 
@@ -128,8 +141,10 @@ async def remove_group_member(
     username: str,
     ctx: WorkspaceContext = Depends(require_workspace),
 ) -> Dict[str, Any]:
-    _assert_can_manage(workspace_id, ctx.user)
-    _assert_group_belongs(group_id, workspace_id)
-    if not _gs.remove_member(group_id, username):
-        raise HTTPException(status_code=404, detail="Miembro no encontrado en el grupo")
+    def _sync():
+        _assert_can_manage(workspace_id, ctx.user)
+        _assert_group_belongs(group_id, workspace_id)
+        if not _gs.remove_member(group_id, username):
+            raise HTTPException(status_code=404, detail="Miembro no encontrado en el grupo")
+    await run_db(_sync)
     return {"ok": True}

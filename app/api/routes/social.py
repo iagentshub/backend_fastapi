@@ -9,7 +9,7 @@ from pydantic import BaseModel
 
 import app.config.data as _cfg
 from app.api.routes.auth import require_auth
-from app.storage.db import IS_PG, PH, close_db, open_db
+from app.storage.db import IS_PG, PH, close_db, open_db, run_db
 from app.storage.knowledge import KnowledgeStorage
 from app.storage.storage import AgentStorage, SkillStorage
 
@@ -100,29 +100,33 @@ async def set_agent_visibility(
         raise HTTPException(status_code=404, detail="Agente no encontrado")
     resource_labels = agent.get("labels") or ["private"]
     is_public_val = 1 if "public" in resource_labels else 0
-    conn = open_db(_cfg.DB_FILE)
-    try:
-        cur = conn.cursor()
-        if body.is_public:
-            _upsert_social(
-                cur, "agent", agent_id, username,
-                agent.get("name", agent_id),
-                agent.get("description", ""),
-                body.category,
-                body.trial_missing_deps,
-                json.dumps(agent.get("tags") or []),
-                is_public_val,
-                json.dumps(resource_labels),
-            )
-        else:
-            cur.execute(
-                f"DELETE FROM resource_social "
-                f"WHERE resource_type={PH} AND resource_id={PH} AND owner={PH}",
-                ("agent", agent_id, username),
-            )
-        conn.commit()
-    finally:
-        close_db(conn)
+
+    def _sync() -> None:
+        conn = open_db(_cfg.DB_FILE)
+        try:
+            cur = conn.cursor()
+            if body.is_public:
+                _upsert_social(
+                    cur, "agent", agent_id, username,
+                    agent.get("name", agent_id),
+                    agent.get("description", ""),
+                    body.category,
+                    body.trial_missing_deps,
+                    json.dumps(agent.get("tags") or []),
+                    is_public_val,
+                    json.dumps(resource_labels),
+                )
+            else:
+                cur.execute(
+                    f"DELETE FROM resource_social "
+                    f"WHERE resource_type={PH} AND resource_id={PH} AND owner={PH}",
+                    ("agent", agent_id, username),
+                )
+            conn.commit()
+        finally:
+            close_db(conn)
+
+    await run_db(_sync)
     return {"ok": True}
 
 
@@ -140,29 +144,33 @@ async def set_skill_visibility(
         raise HTTPException(status_code=404, detail="Skill no encontrada")
     resource_labels = skill.get("labels") or ["private"]
     is_public_val = 1 if "public" in resource_labels else 0
-    conn = open_db(_cfg.DB_FILE)
-    try:
-        cur = conn.cursor()
-        if body.is_public:
-            _upsert_social(
-                cur, "skill", skill_id, username,
-                skill.get("name", skill_id),
-                skill.get("description", ""),
-                body.category,
-                "warn",
-                json.dumps(skill.get("tags") or []),
-                is_public_val,
-                json.dumps(resource_labels),
-            )
-        else:
-            cur.execute(
-                f"DELETE FROM resource_social "
-                f"WHERE resource_type={PH} AND resource_id={PH} AND owner={PH}",
-                ("skill", skill_id, username),
-            )
-        conn.commit()
-    finally:
-        close_db(conn)
+
+    def _sync() -> None:
+        conn = open_db(_cfg.DB_FILE)
+        try:
+            cur = conn.cursor()
+            if body.is_public:
+                _upsert_social(
+                    cur, "skill", skill_id, username,
+                    skill.get("name", skill_id),
+                    skill.get("description", ""),
+                    body.category,
+                    "warn",
+                    json.dumps(skill.get("tags") or []),
+                    is_public_val,
+                    json.dumps(resource_labels),
+                )
+            else:
+                cur.execute(
+                    f"DELETE FROM resource_social "
+                    f"WHERE resource_type={PH} AND resource_id={PH} AND owner={PH}",
+                    ("skill", skill_id, username),
+                )
+            conn.commit()
+        finally:
+            close_db(conn)
+
+    await run_db(_sync)
     return {"ok": True}
 
 
@@ -173,37 +181,41 @@ async def set_knowledge_visibility(
     username: str = Depends(require_auth),
 ) -> Dict[str, Any]:
     _check_category(body.category)
-    conn = open_db(_cfg.DB_FILE)
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            f"SELECT name FROM knowledge_folders WHERE id={PH} AND owner_id={PH}",
-            (folder_id, username),
-        )
-        row = cur.fetchone()
-        if not row:
-            raise HTTPException(status_code=404, detail="Carpeta no encontrada")
-        folder_name = row["name"]
-        if body.is_public:
-            _upsert_social(
-                cur, "knowledge", folder_id, username,
-                folder_name,
-                "",
-                body.category,
-                "warn",
-                "[]",
-                1,
-                '["private"]',
-            )
-        else:
+
+    def _sync() -> None:
+        conn = open_db(_cfg.DB_FILE)
+        try:
+            cur = conn.cursor()
             cur.execute(
-                f"DELETE FROM resource_social "
-                f"WHERE resource_type={PH} AND resource_id={PH} AND owner={PH}",
-                ("knowledge", folder_id, username),
+                f"SELECT name FROM knowledge_folders WHERE id={PH} AND owner_id={PH}",
+                (folder_id, username),
             )
-        conn.commit()
-    finally:
-        close_db(conn)
+            row = cur.fetchone()
+            if not row:
+                raise HTTPException(status_code=404, detail="Carpeta no encontrada")
+            folder_name = row["name"]
+            if body.is_public:
+                _upsert_social(
+                    cur, "knowledge", folder_id, username,
+                    folder_name,
+                    "",
+                    body.category,
+                    "warn",
+                    "[]",
+                    1,
+                    '["private"]',
+                )
+            else:
+                cur.execute(
+                    f"DELETE FROM resource_social "
+                    f"WHERE resource_type={PH} AND resource_id={PH} AND owner={PH}",
+                    ("knowledge", folder_id, username),
+                )
+            conn.commit()
+        finally:
+            close_db(conn)
+
+    await run_db(_sync)
     return {"ok": True}
 
 
@@ -219,51 +231,55 @@ async def explore(
     username: str = Depends(require_auth),
 ) -> List[Dict[str, Any]]:
     limit = min(limit, 100)
-    conn = open_db(_cfg.DB_FILE)
-    try:
-        cur = conn.cursor()
-        conditions: List[str] = [f"is_public = {PH}"]
-        params: List[Any] = [_PUBLIC_VAL]
-        if type and type != "all":
-            conditions.append(f"resource_type = {PH}")
-            params.append(type)
-        if category:
-            conditions.append(f"category = {PH}")
-            params.append(category)
-        if q:
-            conditions.append(f"(name LIKE {PH} OR description LIKE {PH})")
-            params.extend([f"%{q}%", f"%{q}%"])
-        if tag:
-            conditions.append(f"tags LIKE {PH}")
-            params.append(f'%"{tag}"%')
-        if label:
-            conditions.append(f"labels LIKE {PH}")
-            params.append(f'%"{label}"%')
-        where = " AND ".join(conditions)
-        params.extend([limit, offset])
-        cur.execute(
-            f"SELECT resource_type, resource_id, owner, name, description, category, "
-            f"stars_count, fork_of_user, fork_of_id, linked_to_user, linked_to_id, trial_missing_deps, tags, labels "
-            f"FROM resource_social WHERE {where} "
-            f"ORDER BY stars_count DESC, updated_at DESC "
-            f"LIMIT {PH} OFFSET {PH}",
-            params,
-        )
-        rows = []
-        for r in cur.fetchall():
-            row = dict(r)
-            try:
-                row["tags"] = json.loads(row.get("tags") or "[]")
-            except (ValueError, TypeError):
-                row["tags"] = []
-            try:
-                row["labels"] = json.loads(row.get("labels") or '["private"]')
-            except (ValueError, TypeError):
-                row["labels"] = ["private"]
-            rows.append(row)
-        return rows
-    finally:
-        close_db(conn)
+
+    def _sync() -> List[Dict[str, Any]]:
+        conn = open_db(_cfg.DB_FILE)
+        try:
+            cur = conn.cursor()
+            conditions: List[str] = [f"is_public = {PH}"]
+            params: List[Any] = [_PUBLIC_VAL]
+            if type and type != "all":
+                conditions.append(f"resource_type = {PH}")
+                params.append(type)
+            if category:
+                conditions.append(f"category = {PH}")
+                params.append(category)
+            if q:
+                conditions.append(f"(name LIKE {PH} OR description LIKE {PH})")
+                params.extend([f"%{q}%", f"%{q}%"])
+            if tag:
+                conditions.append(f"tags LIKE {PH}")
+                params.append(f'%"{tag}"%')
+            if label:
+                conditions.append(f"labels LIKE {PH}")
+                params.append(f'%"{label}"%')
+            where = " AND ".join(conditions)
+            params.extend([limit, offset])
+            cur.execute(
+                f"SELECT resource_type, resource_id, owner, name, description, category, "
+                f"stars_count, fork_of_user, fork_of_id, linked_to_user, linked_to_id, trial_missing_deps, tags, labels "
+                f"FROM resource_social WHERE {where} "
+                f"ORDER BY stars_count DESC, updated_at DESC "
+                f"LIMIT {PH} OFFSET {PH}",
+                params,
+            )
+            rows = []
+            for r in cur.fetchall():
+                row = dict(r)
+                try:
+                    row["tags"] = json.loads(row.get("tags") or "[]")
+                except (ValueError, TypeError):
+                    row["tags"] = []
+                try:
+                    row["labels"] = json.loads(row.get("labels") or '["private"]')
+                except (ValueError, TypeError):
+                    row["labels"] = ["private"]
+                rows.append(row)
+            return rows
+        finally:
+            close_db(conn)
+
+    return await run_db(_sync)
 
 
 @router.get("/api/explore/{resource_type}/{resource_id}/preview")
@@ -273,17 +289,21 @@ async def explore_preview(
     username: str = Depends(require_auth),
 ) -> Dict[str, Any]:
     """Rich preview data for a single public resource."""
-    conn = open_db(_cfg.DB_FILE)
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            f"SELECT name, description, owner, category, labels "
-            f"FROM resource_social WHERE resource_type={PH} AND resource_id={PH} AND is_public={PH}",
-            (resource_type, resource_id, _PUBLIC_VAL),
-        )
-        row = cur.fetchone()
-    finally:
-        close_db(conn)
+
+    def _sync() -> Any:
+        conn = open_db(_cfg.DB_FILE)
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                f"SELECT name, description, owner, category, labels "
+                f"FROM resource_social WHERE resource_type={PH} AND resource_id={PH} AND is_public={PH}",
+                (resource_type, resource_id, _PUBLIC_VAL),
+            )
+            return cur.fetchone()
+        finally:
+            close_db(conn)
+
+    row = await run_db(_sync)
 
     if not row:
         raise HTTPException(status_code=404, detail="Resource not found or not public")
@@ -345,37 +365,42 @@ async def my_resources(
     username: str = Depends(require_auth),
 ) -> Dict[str, Any]:
     """All resource_social rows owned by the current user (public + private)."""
-    conn = open_db(_cfg.DB_FILE)
-    try:
-        cur = conn.cursor()
-        conditions: List[str] = [f"owner = {PH}"]
-        params: List[Any] = [username]
-        if type and type != "all":
-            conditions.append(f"resource_type = {PH}")
-            params.append(type)
-        where = " AND ".join(conditions)
-        cur.execute(
-            f"SELECT resource_type, resource_id, owner, name, description, is_public, category, "
-            f"stars_count, fork_of_user, fork_of_id, linked_to_user, linked_to_id, trial_missing_deps, tags, labels "
-            f"FROM resource_social WHERE {where} "
-            f"ORDER BY updated_at DESC",
-            params,
-        )
-        rows = []
-        for r in cur.fetchall():
-            row = dict(r)
-            try:
-                row["tags"] = json.loads(row.get("tags") or "[]")
-            except (ValueError, TypeError):
-                row["tags"] = []
-            try:
-                row["labels"] = json.loads(row.get("labels") or '["private"]')
-            except (ValueError, TypeError):
-                row["labels"] = ["private"]
-            rows.append(row)
-        return {"resources": rows}
-    finally:
-        close_db(conn)
+
+    def _sync() -> List[Dict[str, Any]]:
+        conn = open_db(_cfg.DB_FILE)
+        try:
+            cur = conn.cursor()
+            conditions: List[str] = [f"owner = {PH}"]
+            params: List[Any] = [username]
+            if type and type != "all":
+                conditions.append(f"resource_type = {PH}")
+                params.append(type)
+            where = " AND ".join(conditions)
+            cur.execute(
+                f"SELECT resource_type, resource_id, owner, name, description, is_public, category, "
+                f"stars_count, fork_of_user, fork_of_id, linked_to_user, linked_to_id, trial_missing_deps, tags, labels "
+                f"FROM resource_social WHERE {where} "
+                f"ORDER BY updated_at DESC",
+                params,
+            )
+            rows = []
+            for r in cur.fetchall():
+                row = dict(r)
+                try:
+                    row["tags"] = json.loads(row.get("tags") or "[]")
+                except (ValueError, TypeError):
+                    row["tags"] = []
+                try:
+                    row["labels"] = json.loads(row.get("labels") or '["private"]')
+                except (ValueError, TypeError):
+                    row["labels"] = ["private"]
+                rows.append(row)
+            return rows
+        finally:
+            close_db(conn)
+
+    rows = await run_db(_sync)
+    return {"resources": rows}
 
 
 @router.get("/api/users/{target_username}/resources")
@@ -384,37 +409,41 @@ async def user_resources(
     type: Optional[str] = None,
     username: str = Depends(require_auth),
 ) -> List[Dict[str, Any]]:
-    conn = open_db(_cfg.DB_FILE)
-    try:
-        cur = conn.cursor()
-        conditions: List[str] = [f"is_public = {PH}", f"owner = {PH}"]
-        params: List[Any] = [_PUBLIC_VAL, target_username]
-        if type and type != "all":
-            conditions.append(f"resource_type = {PH}")
-            params.append(type)
-        where = " AND ".join(conditions)
-        cur.execute(
-            f"SELECT resource_type, resource_id, owner, name, description, category, "
-            f"stars_count, fork_of_user, fork_of_id, linked_to_user, linked_to_id, trial_missing_deps, tags, labels "
-            f"FROM resource_social WHERE {where} "
-            f"ORDER BY stars_count DESC, updated_at DESC",
-            params,
-        )
-        rows = []
-        for r in cur.fetchall():
-            row = dict(r)
-            try:
-                row["tags"] = json.loads(row.get("tags") or "[]")
-            except (ValueError, TypeError):
-                row["tags"] = []
-            try:
-                row["labels"] = json.loads(row.get("labels") or '["private"]')
-            except (ValueError, TypeError):
-                row["labels"] = ["private"]
-            rows.append(row)
-        return rows
-    finally:
-        close_db(conn)
+
+    def _sync() -> List[Dict[str, Any]]:
+        conn = open_db(_cfg.DB_FILE)
+        try:
+            cur = conn.cursor()
+            conditions: List[str] = [f"is_public = {PH}", f"owner = {PH}"]
+            params: List[Any] = [_PUBLIC_VAL, target_username]
+            if type and type != "all":
+                conditions.append(f"resource_type = {PH}")
+                params.append(type)
+            where = " AND ".join(conditions)
+            cur.execute(
+                f"SELECT resource_type, resource_id, owner, name, description, category, "
+                f"stars_count, fork_of_user, fork_of_id, linked_to_user, linked_to_id, trial_missing_deps, tags, labels "
+                f"FROM resource_social WHERE {where} "
+                f"ORDER BY stars_count DESC, updated_at DESC",
+                params,
+            )
+            rows = []
+            for r in cur.fetchall():
+                row = dict(r)
+                try:
+                    row["tags"] = json.loads(row.get("tags") or "[]")
+                except (ValueError, TypeError):
+                    row["tags"] = []
+                try:
+                    row["labels"] = json.loads(row.get("labels") or '["private"]')
+                except (ValueError, TypeError):
+                    row["labels"] = ["private"]
+                rows.append(row)
+            return rows
+        finally:
+            close_db(conn)
+
+    return await run_db(_sync)
 
 
 @router.post("/api/users/{target}/follow")
@@ -424,26 +453,30 @@ async def follow_user(
 ) -> Dict[str, Any]:
     if target == username:
         raise HTTPException(status_code=400, detail="No puedes seguirte a ti mismo")
-    conn = open_db(_cfg.DB_FILE)
-    try:
-        cur = conn.cursor()
-        cur.execute(f"SELECT 1 FROM users WHERE username = {PH}", (target,))
-        if not cur.fetchone():
-            raise HTTPException(status_code=404, detail="Usuario no encontrado")
-        if IS_PG:
-            cur.execute(
-                "INSERT INTO user_follows (follower, following) VALUES (%s, %s) "
-                "ON CONFLICT DO NOTHING",
-                (username, target),
-            )
-        else:
-            cur.execute(
-                "INSERT OR IGNORE INTO user_follows (follower, following) VALUES (?, ?)",
-                (username, target),
-            )
-        conn.commit()
-    finally:
-        close_db(conn)
+
+    def _sync() -> None:
+        conn = open_db(_cfg.DB_FILE)
+        try:
+            cur = conn.cursor()
+            cur.execute(f"SELECT 1 FROM users WHERE username = {PH}", (target,))
+            if not cur.fetchone():
+                raise HTTPException(status_code=404, detail="Usuario no encontrado")
+            if IS_PG:
+                cur.execute(
+                    "INSERT INTO user_follows (follower, following) VALUES (%s, %s) "
+                    "ON CONFLICT DO NOTHING",
+                    (username, target),
+                )
+            else:
+                cur.execute(
+                    "INSERT OR IGNORE INTO user_follows (follower, following) VALUES (?, ?)",
+                    (username, target),
+                )
+            conn.commit()
+        finally:
+            close_db(conn)
+
+    await run_db(_sync)
     return {"ok": True}
 
 
@@ -452,16 +485,20 @@ async def unfollow_user(
     target: str,
     username: str = Depends(require_auth),
 ) -> Dict[str, Any]:
-    conn = open_db(_cfg.DB_FILE)
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            f"DELETE FROM user_follows WHERE follower = {PH} AND following = {PH}",
-            (username, target),
-        )
-        conn.commit()
-    finally:
-        close_db(conn)
+
+    def _sync() -> None:
+        conn = open_db(_cfg.DB_FILE)
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                f"DELETE FROM user_follows WHERE follower = {PH} AND following = {PH}",
+                (username, target),
+            )
+            conn.commit()
+        finally:
+            close_db(conn)
+
+    await run_db(_sync)
     return {"ok": True}
 
 
@@ -470,26 +507,31 @@ async def follow_status(
     target: str,
     username: str = Depends(require_auth),
 ) -> Dict[str, Any]:
-    conn = open_db(_cfg.DB_FILE)
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            f"SELECT 1 FROM user_follows WHERE follower = {PH} AND following = {PH}",
-            (username, target),
-        )
-        is_following = cur.fetchone() is not None
-        cur.execute(
-            f"SELECT COUNT(*) FROM user_follows WHERE following = {PH}",
-            (target,),
-        )
-        followers_count = cur.fetchone()[0]
-        cur.execute(
-            f"SELECT COUNT(*) FROM user_follows WHERE follower = {PH}",
-            (target,),
-        )
-        following_count = cur.fetchone()[0]
-    finally:
-        close_db(conn)
+
+    def _sync() -> tuple:
+        conn = open_db(_cfg.DB_FILE)
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                f"SELECT 1 FROM user_follows WHERE follower = {PH} AND following = {PH}",
+                (username, target),
+            )
+            is_following = cur.fetchone() is not None
+            cur.execute(
+                f"SELECT COUNT(*) FROM user_follows WHERE following = {PH}",
+                (target,),
+            )
+            followers_count = cur.fetchone()[0]
+            cur.execute(
+                f"SELECT COUNT(*) FROM user_follows WHERE follower = {PH}",
+                (target,),
+            )
+            following_count = cur.fetchone()[0]
+            return is_following, followers_count, following_count
+        finally:
+            close_db(conn)
+
+    is_following, followers_count, following_count = await run_db(_sync)
     return {
         "following": is_following,
         "followers_count": followers_count,
@@ -505,43 +547,47 @@ async def get_feed(
     username: str = Depends(require_auth),
 ) -> List[Dict[str, Any]]:
     limit = min(limit, 100)
-    conn = open_db(_cfg.DB_FILE)
-    try:
-        cur = conn.cursor()
-        conditions: List[str] = [
-            f"owner IN (SELECT following FROM user_follows WHERE follower = {PH})",
-            f"is_public = {PH}",
-        ]
-        params: List[Any] = [username, _PUBLIC_VAL]
-        if type and type != "all":
-            conditions.append(f"resource_type = {PH}")
-            params.append(type)
-        where = " AND ".join(conditions)
-        params.extend([limit, offset])
-        cur.execute(
-            f"SELECT resource_type, resource_id, owner, name, description, category, "
-            f"stars_count, tags, labels, updated_at "
-            f"FROM resource_social "
-            f"WHERE {where} "
-            f"ORDER BY updated_at DESC "
-            f"LIMIT {PH} OFFSET {PH}",
-            params,
-        )
-        rows = []
-        for r in cur.fetchall():
-            row = dict(r)
-            try:
-                row["tags"] = json.loads(row.get("tags") or "[]")
-            except (ValueError, TypeError):
-                row["tags"] = []
-            try:
-                row["labels"] = json.loads(row.get("labels") or '["private"]')
-            except (ValueError, TypeError):
-                row["labels"] = ["private"]
-            rows.append(row)
-        return rows
-    finally:
-        close_db(conn)
+
+    def _sync() -> List[Dict[str, Any]]:
+        conn = open_db(_cfg.DB_FILE)
+        try:
+            cur = conn.cursor()
+            conditions: List[str] = [
+                f"owner IN (SELECT following FROM user_follows WHERE follower = {PH})",
+                f"is_public = {PH}",
+            ]
+            params: List[Any] = [username, _PUBLIC_VAL]
+            if type and type != "all":
+                conditions.append(f"resource_type = {PH}")
+                params.append(type)
+            where = " AND ".join(conditions)
+            params.extend([limit, offset])
+            cur.execute(
+                f"SELECT resource_type, resource_id, owner, name, description, category, "
+                f"stars_count, tags, labels, updated_at "
+                f"FROM resource_social "
+                f"WHERE {where} "
+                f"ORDER BY updated_at DESC "
+                f"LIMIT {PH} OFFSET {PH}",
+                params,
+            )
+            rows = []
+            for r in cur.fetchall():
+                row = dict(r)
+                try:
+                    row["tags"] = json.loads(row.get("tags") or "[]")
+                except (ValueError, TypeError):
+                    row["tags"] = []
+                try:
+                    row["labels"] = json.loads(row.get("labels") or '["private"]')
+                except (ValueError, TypeError):
+                    row["labels"] = ["private"]
+                rows.append(row)
+            return rows
+        finally:
+            close_db(conn)
+
+    return await run_db(_sync)
 
 
 @router.post("/api/{resource_type}/{resource_id}/star")
@@ -550,38 +596,42 @@ async def star_resource(
     resource_id: str,
     username: str = Depends(require_auth),
 ) -> Dict[str, Any]:
-    conn = open_db(_cfg.DB_FILE)
-    try:
-        cur = conn.cursor()
-        if IS_PG:
+
+    def _sync() -> int:
+        conn = open_db(_cfg.DB_FILE)
+        try:
+            cur = conn.cursor()
+            if IS_PG:
+                cur.execute(
+                    "INSERT INTO resource_stars (username, resource_type, resource_id) "
+                    "VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
+                    (username, resource_type, resource_id),
+                )
+            else:
+                cur.execute(
+                    "INSERT OR IGNORE INTO resource_stars (username, resource_type, resource_id) "
+                    "VALUES (?, ?, ?)",
+                    (username, resource_type, resource_id),
+                )
             cur.execute(
-                "INSERT INTO resource_stars (username, resource_type, resource_id) "
-                "VALUES (%s, %s, %s) ON CONFLICT DO NOTHING",
-                (username, resource_type, resource_id),
+                f"UPDATE resource_social SET stars_count = ("
+                f"SELECT COUNT(*) FROM resource_stars "
+                f"WHERE resource_type={PH} AND resource_id={PH}"
+                f") WHERE resource_type={PH} AND resource_id={PH}",
+                (resource_type, resource_id, resource_type, resource_id),
             )
-        else:
+            conn.commit()
             cur.execute(
-                "INSERT OR IGNORE INTO resource_stars (username, resource_type, resource_id) "
-                "VALUES (?, ?, ?)",
-                (username, resource_type, resource_id),
+                f"SELECT COUNT(*) FROM resource_stars "
+                f"WHERE resource_type={PH} AND resource_id={PH}",
+                (resource_type, resource_id),
             )
-        cur.execute(
-            f"UPDATE resource_social SET stars_count = ("
-            f"SELECT COUNT(*) FROM resource_stars "
-            f"WHERE resource_type={PH} AND resource_id={PH}"
-            f") WHERE resource_type={PH} AND resource_id={PH}",
-            (resource_type, resource_id, resource_type, resource_id),
-        )
-        conn.commit()
-        cur.execute(
-            f"SELECT COUNT(*) FROM resource_stars "
-            f"WHERE resource_type={PH} AND resource_id={PH}",
-            (resource_type, resource_id),
-        )
-        count = cur.fetchone()[0]
-        return {"ok": True, "stars": count}
-    finally:
-        close_db(conn)
+            return cur.fetchone()[0]
+        finally:
+            close_db(conn)
+
+    count = await run_db(_sync)
+    return {"ok": True, "stars": count}
 
 
 @router.post("/api/knowledge/{source_id}/fork")
@@ -594,18 +644,21 @@ async def fork_knowledge(
     if not source:
         raise HTTPException(status_code=404, detail="Knowledge no encontrado")
 
-    conn = open_db(_cfg.DB_FILE)
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            f"SELECT 1 FROM resource_social "
-            f"WHERE resource_type={PH} AND resource_id={PH} AND is_public={PH}",
-            ("knowledge", source_id, _PUBLIC_VAL),
-        )
-        if not cur.fetchone():
-            raise HTTPException(status_code=403, detail="El knowledge no es público")
-    finally:
-        close_db(conn)
+    def _sync_check() -> None:
+        conn = open_db(_cfg.DB_FILE)
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                f"SELECT 1 FROM resource_social "
+                f"WHERE resource_type={PH} AND resource_id={PH} AND is_public={PH}",
+                ("knowledge", source_id, _PUBLIC_VAL),
+            )
+            if not cur.fetchone():
+                raise HTTPException(status_code=403, detail="El knowledge no es público")
+        finally:
+            close_db(conn)
+
+    await run_db(_sync_check)
 
     source_owner = source.get("owner_id") or ""
     new_title = f"Fork of {source.get('title', source_id)}"
@@ -618,32 +671,34 @@ async def fork_knowledge(
     )
     new_id = result["id"]
 
-    conn = open_db(_cfg.DB_FILE)
-    try:
-        cur = conn.cursor()
-        if IS_PG:
-            cur.execute(
-                "INSERT INTO resource_social "
-                "(resource_type, resource_id, owner, name, description, is_public, category, "
-                "trial_missing_deps, fork_of_user, fork_of_id) "
-                "VALUES (%s, %s, %s, %s, %s, FALSE, 'Other', 'warn', %s, %s) "
-                "ON CONFLICT DO NOTHING",
-                ("knowledge", new_id, username, new_title, source.get("source", ""),
-                 source_owner, source_id),
-            )
-        else:
-            cur.execute(
-                "INSERT OR IGNORE INTO resource_social "
-                "(resource_type, resource_id, owner, name, description, is_public, category, "
-                "trial_missing_deps, fork_of_user, fork_of_id) "
-                "VALUES (?, ?, ?, ?, ?, 0, 'Other', 'warn', ?, ?)",
-                ("knowledge", new_id, username, new_title, source.get("source", ""),
-                 source_owner, source_id),
-            )
-        conn.commit()
-    finally:
-        close_db(conn)
+    def _sync_insert() -> None:
+        conn = open_db(_cfg.DB_FILE)
+        try:
+            cur = conn.cursor()
+            if IS_PG:
+                cur.execute(
+                    "INSERT INTO resource_social "
+                    "(resource_type, resource_id, owner, name, description, is_public, category, "
+                    "trial_missing_deps, fork_of_user, fork_of_id) "
+                    "VALUES (%s, %s, %s, %s, %s, FALSE, 'Other', 'warn', %s, %s) "
+                    "ON CONFLICT DO NOTHING",
+                    ("knowledge", new_id, username, new_title, source.get("source", ""),
+                     source_owner, source_id),
+                )
+            else:
+                cur.execute(
+                    "INSERT OR IGNORE INTO resource_social "
+                    "(resource_type, resource_id, owner, name, description, is_public, category, "
+                    "trial_missing_deps, fork_of_user, fork_of_id) "
+                    "VALUES (?, ?, ?, ?, ?, 0, 'Other', 'warn', ?, ?)",
+                    ("knowledge", new_id, username, new_title, source.get("source", ""),
+                     source_owner, source_id),
+                )
+            conn.commit()
+        finally:
+            close_db(conn)
 
+    await run_db(_sync_insert)
     return {"ok": True, "knowledge_id": new_id, "name": new_title}
 
 
@@ -657,18 +712,21 @@ async def link_knowledge(
     if not source:
         raise HTTPException(status_code=404, detail="Knowledge no encontrado")
 
-    conn = open_db(_cfg.DB_FILE)
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            f"SELECT 1 FROM resource_social "
-            f"WHERE resource_type={PH} AND resource_id={PH} AND is_public={PH}",
-            ("knowledge", source_id, _PUBLIC_VAL),
-        )
-        if not cur.fetchone():
-            raise HTTPException(status_code=403, detail="El knowledge no es público")
-    finally:
-        close_db(conn)
+    def _sync_check() -> None:
+        conn = open_db(_cfg.DB_FILE)
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                f"SELECT 1 FROM resource_social "
+                f"WHERE resource_type={PH} AND resource_id={PH} AND is_public={PH}",
+                ("knowledge", source_id, _PUBLIC_VAL),
+            )
+            if not cur.fetchone():
+                raise HTTPException(status_code=403, detail="El knowledge no es público")
+        finally:
+            close_db(conn)
+
+    await run_db(_sync_check)
 
     source_owner = source.get("owner_id") or ""
     link_title = f"Linked: {source.get('title', source_id)}"
@@ -681,32 +739,34 @@ async def link_knowledge(
     )
     new_id = result["id"]
 
-    conn = open_db(_cfg.DB_FILE)
-    try:
-        cur = conn.cursor()
-        if IS_PG:
-            cur.execute(
-                "INSERT INTO resource_social "
-                "(resource_type, resource_id, owner, name, description, is_public, category, "
-                "trial_missing_deps, linked_to_user, linked_to_id) "
-                "VALUES (%s, %s, %s, %s, %s, FALSE, 'Other', 'warn', %s, %s) "
-                "ON CONFLICT DO NOTHING",
-                ("knowledge", new_id, username, link_title, source.get("source", ""),
-                 source_owner, source_id),
-            )
-        else:
-            cur.execute(
-                "INSERT OR IGNORE INTO resource_social "
-                "(resource_type, resource_id, owner, name, description, is_public, category, "
-                "trial_missing_deps, linked_to_user, linked_to_id) "
-                "VALUES (?, ?, ?, ?, ?, 0, 'Other', 'warn', ?, ?)",
-                ("knowledge", new_id, username, link_title, source.get("source", ""),
-                 source_owner, source_id),
-            )
-        conn.commit()
-    finally:
-        close_db(conn)
+    def _sync_insert() -> None:
+        conn = open_db(_cfg.DB_FILE)
+        try:
+            cur = conn.cursor()
+            if IS_PG:
+                cur.execute(
+                    "INSERT INTO resource_social "
+                    "(resource_type, resource_id, owner, name, description, is_public, category, "
+                    "trial_missing_deps, linked_to_user, linked_to_id) "
+                    "VALUES (%s, %s, %s, %s, %s, FALSE, 'Other', 'warn', %s, %s) "
+                    "ON CONFLICT DO NOTHING",
+                    ("knowledge", new_id, username, link_title, source.get("source", ""),
+                     source_owner, source_id),
+                )
+            else:
+                cur.execute(
+                    "INSERT OR IGNORE INTO resource_social "
+                    "(resource_type, resource_id, owner, name, description, is_public, category, "
+                    "trial_missing_deps, linked_to_user, linked_to_id) "
+                    "VALUES (?, ?, ?, ?, ?, 0, 'Other', 'warn', ?, ?)",
+                    ("knowledge", new_id, username, link_title, source.get("source", ""),
+                     source_owner, source_id),
+                )
+            conn.commit()
+        finally:
+            close_db(conn)
 
+    await run_db(_sync_insert)
     return {"ok": True, "knowledge_id": new_id, "name": link_title}
 
 
@@ -721,7 +781,7 @@ async def fork_agent(
     if not source:
         raise HTTPException(status_code=404, detail="Agente no encontrado")
 
-    if scope != "public":
+    def _sync_check() -> None:
         conn = open_db(_cfg.DB_FILE)
         try:
             cur = conn.cursor()
@@ -734,6 +794,9 @@ async def fork_agent(
                 raise HTTPException(status_code=403, detail="El agente no es público")
         finally:
             close_db(conn)
+
+    if scope != "public":
+        await run_db(_sync_check)
 
     source_owner = source.get("owner_id") or ""
     fork_payload = {
@@ -758,33 +821,35 @@ async def fork_agent(
     new_id = result["id"]
     fork_name = result["name"]
 
-    conn = open_db(_cfg.DB_FILE)
-    try:
-        cur = conn.cursor()
-        fork_tags = json.dumps(source.get("tags") or [])
-        if IS_PG:
-            cur.execute(
-                "INSERT INTO resource_social "
-                "(resource_type, resource_id, owner, name, description, is_public, category, "
-                "trial_missing_deps, fork_of_user, fork_of_id, tags) "
-                "VALUES (%s, %s, %s, %s, %s, FALSE, 'Other', 'warn', %s, %s, %s) "
-                "ON CONFLICT DO NOTHING",
-                ("agent", new_id, username, fork_name, source.get("description", ""),
-                 source_owner, source_id, fork_tags),
-            )
-        else:
-            cur.execute(
-                "INSERT OR IGNORE INTO resource_social "
-                "(resource_type, resource_id, owner, name, description, is_public, category, "
-                "trial_missing_deps, fork_of_user, fork_of_id, tags) "
-                "VALUES (?, ?, ?, ?, ?, 0, 'Other', 'warn', ?, ?, ?)",
-                ("agent", new_id, username, fork_name, source.get("description", ""),
-                 source_owner, source_id, fork_tags),
-            )
-        conn.commit()
-    finally:
-        close_db(conn)
+    def _sync_insert() -> None:
+        conn = open_db(_cfg.DB_FILE)
+        try:
+            cur = conn.cursor()
+            fork_tags = json.dumps(source.get("tags") or [])
+            if IS_PG:
+                cur.execute(
+                    "INSERT INTO resource_social "
+                    "(resource_type, resource_id, owner, name, description, is_public, category, "
+                    "trial_missing_deps, fork_of_user, fork_of_id, tags) "
+                    "VALUES (%s, %s, %s, %s, %s, FALSE, 'Other', 'warn', %s, %s, %s) "
+                    "ON CONFLICT DO NOTHING",
+                    ("agent", new_id, username, fork_name, source.get("description", ""),
+                     source_owner, source_id, fork_tags),
+                )
+            else:
+                cur.execute(
+                    "INSERT OR IGNORE INTO resource_social "
+                    "(resource_type, resource_id, owner, name, description, is_public, category, "
+                    "trial_missing_deps, fork_of_user, fork_of_id, tags) "
+                    "VALUES (?, ?, ?, ?, ?, 0, 'Other', 'warn', ?, ?, ?)",
+                    ("agent", new_id, username, fork_name, source.get("description", ""),
+                     source_owner, source_id, fork_tags),
+                )
+            conn.commit()
+        finally:
+            close_db(conn)
 
+    await run_db(_sync_insert)
     return {"ok": True, "agent_id": new_id, "name": fork_name}
 
 
@@ -799,7 +864,7 @@ async def fork_skill(
     if not source:
         raise HTTPException(status_code=404, detail="Skill no encontrada")
 
-    if scope != "public":
+    def _sync_check() -> None:
         conn = open_db(_cfg.DB_FILE)
         try:
             cur = conn.cursor()
@@ -812,6 +877,9 @@ async def fork_skill(
                 raise HTTPException(status_code=403, detail="La skill no es pública")
         finally:
             close_db(conn)
+
+    if scope != "public":
+        await run_db(_sync_check)
 
     source_owner = source.get("owner_id") or ""
     fork_payload = {k: v for k, v in source.items() if k not in ("id", "scope", "owner_id")}
@@ -833,33 +901,35 @@ async def fork_skill(
     new_id = result["id"]
     fork_name = result["name"]
 
-    conn = open_db(_cfg.DB_FILE)
-    try:
-        cur = conn.cursor()
-        fork_tags = json.dumps(source.get("tags") or [])
-        if IS_PG:
-            cur.execute(
-                "INSERT INTO resource_social "
-                "(resource_type, resource_id, owner, name, description, is_public, category, "
-                "trial_missing_deps, fork_of_user, fork_of_id, tags) "
-                "VALUES (%s, %s, %s, %s, %s, FALSE, 'Other', 'warn', %s, %s, %s) "
-                "ON CONFLICT DO NOTHING",
-                ("skill", new_id, username, fork_name, source.get("description", ""),
-                 source_owner, source_id, fork_tags),
-            )
-        else:
-            cur.execute(
-                "INSERT OR IGNORE INTO resource_social "
-                "(resource_type, resource_id, owner, name, description, is_public, category, "
-                "trial_missing_deps, fork_of_user, fork_of_id, tags) "
-                "VALUES (?, ?, ?, ?, ?, 0, 'Other', 'warn', ?, ?, ?)",
-                ("skill", new_id, username, fork_name, source.get("description", ""),
-                 source_owner, source_id, fork_tags),
-            )
-        conn.commit()
-    finally:
-        close_db(conn)
+    def _sync_insert() -> None:
+        conn = open_db(_cfg.DB_FILE)
+        try:
+            cur = conn.cursor()
+            fork_tags = json.dumps(source.get("tags") or [])
+            if IS_PG:
+                cur.execute(
+                    "INSERT INTO resource_social "
+                    "(resource_type, resource_id, owner, name, description, is_public, category, "
+                    "trial_missing_deps, fork_of_user, fork_of_id, tags) "
+                    "VALUES (%s, %s, %s, %s, %s, FALSE, 'Other', 'warn', %s, %s, %s) "
+                    "ON CONFLICT DO NOTHING",
+                    ("skill", new_id, username, fork_name, source.get("description", ""),
+                     source_owner, source_id, fork_tags),
+                )
+            else:
+                cur.execute(
+                    "INSERT OR IGNORE INTO resource_social "
+                    "(resource_type, resource_id, owner, name, description, is_public, category, "
+                    "trial_missing_deps, fork_of_user, fork_of_id, tags) "
+                    "VALUES (?, ?, ?, ?, ?, 0, 'Other', 'warn', ?, ?, ?)",
+                    ("skill", new_id, username, fork_name, source.get("description", ""),
+                     source_owner, source_id, fork_tags),
+                )
+            conn.commit()
+        finally:
+            close_db(conn)
 
+    await run_db(_sync_insert)
     return {"ok": True, "skill_id": new_id, "name": fork_name}
 
 
@@ -874,7 +944,7 @@ async def link_agent(
     if not source:
         raise HTTPException(status_code=404, detail="Agente no encontrado")
 
-    if scope != "public":
+    def _sync_check() -> None:
         conn = open_db(_cfg.DB_FILE)
         try:
             cur = conn.cursor()
@@ -887,6 +957,9 @@ async def link_agent(
                 raise HTTPException(status_code=403, detail="El agente no es público")
         finally:
             close_db(conn)
+
+    if scope != "public":
+        await run_db(_sync_check)
 
     source_owner = source.get("owner_id") or ""
     link_payload = {
@@ -909,33 +982,35 @@ async def link_agent(
     new_id = result["id"]
     link_name = result["name"]
 
-    conn = open_db(_cfg.DB_FILE)
-    try:
-        cur = conn.cursor()
-        link_tags = json.dumps(source.get("tags") or [])
-        if IS_PG:
-            cur.execute(
-                "INSERT INTO resource_social "
-                "(resource_type, resource_id, owner, name, description, is_public, category, "
-                "trial_missing_deps, linked_to_user, linked_to_id, tags) "
-                "VALUES (%s, %s, %s, %s, %s, FALSE, 'Other', 'warn', %s, %s, %s) "
-                "ON CONFLICT DO NOTHING",
-                ("agent", new_id, username, link_name, source.get("description", ""),
-                 source_owner, source_id, link_tags),
-            )
-        else:
-            cur.execute(
-                "INSERT OR IGNORE INTO resource_social "
-                "(resource_type, resource_id, owner, name, description, is_public, category, "
-                "trial_missing_deps, linked_to_user, linked_to_id, tags) "
-                "VALUES (?, ?, ?, ?, ?, 0, 'Other', 'warn', ?, ?, ?)",
-                ("agent", new_id, username, link_name, source.get("description", ""),
-                 source_owner, source_id, link_tags),
-            )
-        conn.commit()
-    finally:
-        close_db(conn)
+    def _sync_insert() -> None:
+        conn = open_db(_cfg.DB_FILE)
+        try:
+            cur = conn.cursor()
+            link_tags = json.dumps(source.get("tags") or [])
+            if IS_PG:
+                cur.execute(
+                    "INSERT INTO resource_social "
+                    "(resource_type, resource_id, owner, name, description, is_public, category, "
+                    "trial_missing_deps, linked_to_user, linked_to_id, tags) "
+                    "VALUES (%s, %s, %s, %s, %s, FALSE, 'Other', 'warn', %s, %s, %s) "
+                    "ON CONFLICT DO NOTHING",
+                    ("agent", new_id, username, link_name, source.get("description", ""),
+                     source_owner, source_id, link_tags),
+                )
+            else:
+                cur.execute(
+                    "INSERT OR IGNORE INTO resource_social "
+                    "(resource_type, resource_id, owner, name, description, is_public, category, "
+                    "trial_missing_deps, linked_to_user, linked_to_id, tags) "
+                    "VALUES (?, ?, ?, ?, ?, 0, 'Other', 'warn', ?, ?, ?)",
+                    ("agent", new_id, username, link_name, source.get("description", ""),
+                     source_owner, source_id, link_tags),
+                )
+            conn.commit()
+        finally:
+            close_db(conn)
 
+    await run_db(_sync_insert)
     return {"ok": True, "agent_id": new_id, "name": link_name}
 
 
@@ -950,7 +1025,7 @@ async def link_skill(
     if not source:
         raise HTTPException(status_code=404, detail="Skill no encontrada")
 
-    if scope != "public":
+    def _sync_check() -> None:
         conn = open_db(_cfg.DB_FILE)
         try:
             cur = conn.cursor()
@@ -963,6 +1038,9 @@ async def link_skill(
                 raise HTTPException(status_code=403, detail="La skill no es pública")
         finally:
             close_db(conn)
+
+    if scope != "public":
+        await run_db(_sync_check)
 
     source_owner = source.get("owner_id") or ""
     link_payload = {k: v for k, v in source.items() if k not in ("id", "scope", "owner_id")}
@@ -982,33 +1060,35 @@ async def link_skill(
     new_id = result["id"]
     link_name = result["name"]
 
-    conn = open_db(_cfg.DB_FILE)
-    try:
-        cur = conn.cursor()
-        link_tags = json.dumps(source.get("tags") or [])
-        if IS_PG:
-            cur.execute(
-                "INSERT INTO resource_social "
-                "(resource_type, resource_id, owner, name, description, is_public, category, "
-                "trial_missing_deps, linked_to_user, linked_to_id, tags) "
-                "VALUES (%s, %s, %s, %s, %s, FALSE, 'Other', 'warn', %s, %s, %s) "
-                "ON CONFLICT DO NOTHING",
-                ("skill", new_id, username, link_name, source.get("description", ""),
-                 source_owner, source_id, link_tags),
-            )
-        else:
-            cur.execute(
-                "INSERT OR IGNORE INTO resource_social "
-                "(resource_type, resource_id, owner, name, description, is_public, category, "
-                "trial_missing_deps, linked_to_user, linked_to_id, tags) "
-                "VALUES (?, ?, ?, ?, ?, 0, 'Other', 'warn', ?, ?, ?)",
-                ("skill", new_id, username, link_name, source.get("description", ""),
-                 source_owner, source_id, link_tags),
-            )
-        conn.commit()
-    finally:
-        close_db(conn)
+    def _sync_insert() -> None:
+        conn = open_db(_cfg.DB_FILE)
+        try:
+            cur = conn.cursor()
+            link_tags = json.dumps(source.get("tags") or [])
+            if IS_PG:
+                cur.execute(
+                    "INSERT INTO resource_social "
+                    "(resource_type, resource_id, owner, name, description, is_public, category, "
+                    "trial_missing_deps, linked_to_user, linked_to_id, tags) "
+                    "VALUES (%s, %s, %s, %s, %s, FALSE, 'Other', 'warn', %s, %s, %s) "
+                    "ON CONFLICT DO NOTHING",
+                    ("skill", new_id, username, link_name, source.get("description", ""),
+                     source_owner, source_id, link_tags),
+                )
+            else:
+                cur.execute(
+                    "INSERT OR IGNORE INTO resource_social "
+                    "(resource_type, resource_id, owner, name, description, is_public, category, "
+                    "trial_missing_deps, linked_to_user, linked_to_id, tags) "
+                    "VALUES (?, ?, ?, ?, ?, 0, 'Other', 'warn', ?, ?, ?)",
+                    ("skill", new_id, username, link_name, source.get("description", ""),
+                     source_owner, source_id, link_tags),
+                )
+            conn.commit()
+        finally:
+            close_db(conn)
 
+    await run_db(_sync_insert)
     return {"ok": True, "skill_id": new_id, "name": link_name}
 
 
@@ -1022,17 +1102,20 @@ async def sync_linked_agent(
     if not local or local.get("owner_id") != username:
         raise HTTPException(status_code=404, detail="Agente no encontrado")
 
-    conn = open_db(_cfg.DB_FILE)
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            f"SELECT linked_to_id, linked_to_user FROM resource_social "
-            f"WHERE resource_type={PH} AND resource_id={PH}",
-            ("agent", agent_id),
-        )
-        row = cur.fetchone()
-    finally:
-        close_db(conn)
+    def _sync() -> Any:
+        conn = open_db(_cfg.DB_FILE)
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                f"SELECT linked_to_id, linked_to_user FROM resource_social "
+                f"WHERE resource_type={PH} AND resource_id={PH}",
+                ("agent", agent_id),
+            )
+            return cur.fetchone()
+        finally:
+            close_db(conn)
+
+    row = await run_db(_sync)
 
     if not row or not row[0]:
         raise HTTPException(status_code=400, detail="El agente no tiene enlace a un original")
@@ -1059,17 +1142,20 @@ async def sync_linked_skill(
     if not local or local.get("owner_id") != username:
         raise HTTPException(status_code=404, detail="Skill no encontrada")
 
-    conn = open_db(_cfg.DB_FILE)
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            f"SELECT linked_to_id, linked_to_user FROM resource_social "
-            f"WHERE resource_type={PH} AND resource_id={PH}",
-            ("skill", skill_id),
-        )
-        row = cur.fetchone()
-    finally:
-        close_db(conn)
+    def _sync() -> Any:
+        conn = open_db(_cfg.DB_FILE)
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                f"SELECT linked_to_id, linked_to_user FROM resource_social "
+                f"WHERE resource_type={PH} AND resource_id={PH}",
+                ("skill", skill_id),
+            )
+            return cur.fetchone()
+        finally:
+            close_db(conn)
+
+    row = await run_db(_sync)
 
     if not row or not row[0]:
         raise HTTPException(status_code=400, detail="La skill no tiene enlace a un original")
@@ -1092,28 +1178,32 @@ async def unstar_resource(
     resource_id: str,
     username: str = Depends(require_auth),
 ) -> Dict[str, Any]:
-    conn = open_db(_cfg.DB_FILE)
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            f"DELETE FROM resource_stars "
-            f"WHERE username={PH} AND resource_type={PH} AND resource_id={PH}",
-            (username, resource_type, resource_id),
-        )
-        cur.execute(
-            f"UPDATE resource_social SET stars_count = ("
-            f"SELECT COUNT(*) FROM resource_stars "
-            f"WHERE resource_type={PH} AND resource_id={PH}"
-            f") WHERE resource_type={PH} AND resource_id={PH}",
-            (resource_type, resource_id, resource_type, resource_id),
-        )
-        conn.commit()
-        cur.execute(
-            f"SELECT COUNT(*) FROM resource_stars "
-            f"WHERE resource_type={PH} AND resource_id={PH}",
-            (resource_type, resource_id),
-        )
-        count = cur.fetchone()[0]
-        return {"ok": True, "stars": count}
-    finally:
-        close_db(conn)
+
+    def _sync() -> int:
+        conn = open_db(_cfg.DB_FILE)
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                f"DELETE FROM resource_stars "
+                f"WHERE username={PH} AND resource_type={PH} AND resource_id={PH}",
+                (username, resource_type, resource_id),
+            )
+            cur.execute(
+                f"UPDATE resource_social SET stars_count = ("
+                f"SELECT COUNT(*) FROM resource_stars "
+                f"WHERE resource_type={PH} AND resource_id={PH}"
+                f") WHERE resource_type={PH} AND resource_id={PH}",
+                (resource_type, resource_id, resource_type, resource_id),
+            )
+            conn.commit()
+            cur.execute(
+                f"SELECT COUNT(*) FROM resource_stars "
+                f"WHERE resource_type={PH} AND resource_id={PH}",
+                (resource_type, resource_id),
+            )
+            return cur.fetchone()[0]
+        finally:
+            close_db(conn)
+
+    count = await run_db(_sync)
+    return {"ok": True, "stars": count}

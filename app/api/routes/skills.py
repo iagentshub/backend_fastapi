@@ -10,6 +10,7 @@ from pydantic import BaseModel
 from app.api.routes.auth import WorkspaceContext, require_workspace
 from app.auth.auth import get_user_role
 from app.config.data import DB_FILE, SKILLS_DIR
+from app.storage.db import run_db
 from app.storage.guest import get_session, is_guest
 from app.storage.knowledge import FolderStorage
 from app.storage.storage import SkillStorage
@@ -53,7 +54,7 @@ async def list_skills(
         ]
         # Inject group-shared skills not already visible
         from app.storage.groups import GroupStorage as _GS
-        shared_ids = set(_GS(DB_FILE).get_user_shared_resource_ids(user, "skill", workspace_id))
+        shared_ids = set(await run_db(lambda: _GS(DB_FILE).get_user_shared_resource_ids(user, "skill", workspace_id)))
         own_ids = {s["id"] for s in items}
         for sid in shared_ids - own_ids:
             sk = _storage.get_any(sid)

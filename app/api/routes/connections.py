@@ -17,6 +17,7 @@ from app.config.data import AGENTS_DIR, DB_FILE, SKILLS_DIR
 from app.storage.knowledge import KnowledgeStorage
 from app.config.session import RATE_TEST_CALLS, RATE_TEST_WINDOW, RATE_TESTALL_CALLS, RATE_TESTALL_WINDOW
 from app.middleware.ratelimit import RateLimiter
+from app.storage.db import run_db
 from app.storage.guest import get_session, is_guest
 from app.storage.storage import AgentStorage, ConnectionStorage, SkillStorage
 
@@ -151,19 +152,21 @@ async def list_connections_raw(ctx: WorkspaceContext = Depends(require_workspace
     if is_guest(user):
         raw = get_session(user).connections
     else:
-        role = get_user_role(user)
-        if role == "admin":
-            raw = _storage.list(None)
-        else:
-            raw = _list_accessible(user, workspace_id)
+        def _sync():
+            role = get_user_role(user)
+            if role == "admin":
+                return _storage.list(None)
+            result = _list_accessible(user, workspace_id)
             from app.storage.groups import GroupStorage as _GS
             shared_ids = set(_GS(DB_FILE).get_user_shared_resource_ids(user, "connection", workspace_id))
-            own_ids = {i["id"] for i in raw}
+            own_ids = {i["id"] for i in result}
             for rid in (shared_ids - own_ids):
                 c = _storage.get(rid)
                 if c:
                     c["_shared"] = True
-                    raw.append(c)
+                    result.append(c)
+            return result
+        raw = await run_db(_sync)
     return [{k: v for k, v in c.items() if k != "api_key"} for c in raw]
 
 
@@ -207,10 +210,12 @@ async def test_all_connections(
     ids = body.get("ids") or None
     if is_guest(user):
         conns = get_session(user).connections
-    elif get_user_role(user) == "admin":
-        conns = _storage.list(None)
     else:
-        conns = _list_accessible(user, workspace_id)
+        def _sync_conns():
+            if get_user_role(user) == "admin":
+                return _storage.list(None)
+            return _list_accessible(user, workspace_id)
+        conns = await run_db(_sync_conns)
     if ids:
         conns = [c for c in conns if c.get("id") in ids]
 
@@ -233,19 +238,21 @@ async def list_connections(ctx: WorkspaceContext = Depends(require_workspace)) -
     if is_guest(user):
         raw = get_session(user).connections
     else:
-        role = get_user_role(user)
-        if role == "admin":
-            raw = _storage.list(None)
-        else:
-            raw = _list_accessible(user, workspace_id)
+        def _sync():
+            role = get_user_role(user)
+            if role == "admin":
+                return _storage.list(None)
+            result = _list_accessible(user, workspace_id)
             from app.storage.groups import GroupStorage as _GS
             shared_ids = set(_GS(DB_FILE).get_user_shared_resource_ids(user, "connection", workspace_id))
-            own_ids = {i["id"] for i in raw}
+            own_ids = {i["id"] for i in result}
             for rid in (shared_ids - own_ids):
                 c = _storage.get(rid)
                 if c:
                     c["_shared"] = True
-                    raw.append(c)
+                    result.append(c)
+            return result
+        raw = await run_db(_sync)
 
     non_ollama = [c for c in raw if c.get("type") != "ollama"]
     ollama_raw = [c for c in raw if c.get("type") == "ollama"]
@@ -274,7 +281,7 @@ async def save_connection(
         s.connections.append(conn)
         return {k: v for k, v in conn.items() if k != "api_key"}
     owner = user if scope == "personal" else workspace_id
-    conn = _storage.save(payload, owner_id=owner)
+    conn = await run_db(lambda: _storage.save(payload, owner_id=owner))
     return {k: v for k, v in conn.items() if k != "api_key"}
 
 
@@ -285,10 +292,12 @@ async def get_connection(
     user, workspace_id = ctx.user, ctx.workspace_id
     if is_guest(user):
         conn = next((c for c in get_session(user).connections if c.get("id") == conn_id), None)
-    elif get_user_role(user) == "admin":
-        conn = _storage.get(conn_id, None)
     else:
-        conn = _get_conn_any(conn_id, user, workspace_id)
+        def _sync():
+            if get_user_role(user) == "admin":
+                return _storage.get(conn_id, None)
+            return _get_conn_any(conn_id, user, workspace_id)
+        conn = await run_db(_sync)
     if not conn:
         raise HTTPException(status_code=404, detail="Conexión no encontrada")
     return conn
@@ -306,11 +315,12 @@ async def delete_connection(
         if len(s.connections) == before:
             raise HTTPException(status_code=404, detail="Conexión no encontrada")
         return {"ok": True}
-    # Try workspace connection first, then personal fallback
-    deleted = _storage.delete(conn_id, _owner(user, workspace_id))
-    if not deleted and workspace_id != user:
-        deleted = _storage.delete(conn_id, user)
-    if not deleted:
+    def _sync_del():
+        deleted = _storage.delete(conn_id, _owner(user, workspace_id))
+        if not deleted and workspace_id != user:
+            deleted = _storage.delete(conn_id, user)
+        return deleted
+    if not await run_db(_sync_del):
         raise HTTPException(status_code=404, detail="Conexión no encontrada")
     return {"ok": True}
 
@@ -322,7 +332,9 @@ async def hub_sync(
 ) -> Dict[str, Any]:
     """Sincroniza agentes, skills, conocimiento y conexiones desde un hub remoto."""
     user, workspace_id = ctx.user, ctx.workspace_id
-    conn = _get_conn_any(conn_id, user, workspace_id) if get_user_role(user) != "admin" else _storage.get(conn_id, None)
+    conn = await run_db(
+        lambda: _get_conn_any(conn_id, user, workspace_id) if get_user_role(user) != "admin" else _storage.get(conn_id, None)
+    )
     if not conn:
         raise HTTPException(status_code=404, detail="Conexión no encontrada")
     if conn.get("type") != "iagentshub":
@@ -353,31 +365,39 @@ async def hub_sync(
         # ── 1. Conexiones (solo estructura, sin credenciales) ──────────────
         try:
             remote_conns = await _get("/api/connections")
-            local_conns  = _storage.list(owner)
-            local_conn_names: Set[str] = {c["name"] for c in local_conns}
-            by_src = {c.get("_hub_source"): c for c in local_conns if c.get("_hub_source")}
 
-            for rc in remote_conns:
-                src_key = f"{conn_id}:{rc.get('id', '')}"
-                data: Dict[str, Any] = {
-                    "type": rc.get("type", ""),
-                    "model": rc.get("model") or "",
-                    "url": rc.get("url") or "",
-                    "host": rc.get("host") or "",
-                    "_imported": True,
-                    "_hub_source": src_key,
-                }
-                if src_key in by_src:
-                    data["id"]   = by_src[src_key]["id"]
-                    data["name"] = by_src[src_key]["name"]
-                    _storage.save(data, owner_id=owner)
-                    result["updated"] += 1
-                else:
-                    name = _safe_name(rc.get("name", "Conexión"), local_conn_names, hub_label)
-                    data["name"] = name
-                    local_conn_names.add(name)
-                    _storage.save(data, owner_id=owner)
-                    result["connections"] += 1
+            def _sync_conns_save():
+                local_conns  = _storage.list(owner)
+                local_conn_names: Set[str] = {c["name"] for c in local_conns}
+                by_src = {c.get("_hub_source"): c for c in local_conns if c.get("_hub_source")}
+                created = 0
+                updated = 0
+                for rc in remote_conns:
+                    src_key = f"{conn_id}:{rc.get('id', '')}"
+                    data: Dict[str, Any] = {
+                        "type": rc.get("type", ""),
+                        "model": rc.get("model") or "",
+                        "url": rc.get("url") or "",
+                        "host": rc.get("host") or "",
+                        "_imported": True,
+                        "_hub_source": src_key,
+                    }
+                    if src_key in by_src:
+                        data["id"]   = by_src[src_key]["id"]
+                        data["name"] = by_src[src_key]["name"]
+                        _storage.save(data, owner_id=owner)
+                        updated += 1
+                    else:
+                        name = _safe_name(rc.get("name", "Conexión"), local_conn_names, hub_label)
+                        data["name"] = name
+                        local_conn_names.add(name)
+                        _storage.save(data, owner_id=owner)
+                        created += 1
+                return created, updated
+
+            _c, _u = await run_db(_sync_conns_save)
+            result["connections"] += _c
+            result["updated"] += _u
         except Exception as e:
             result["errors"].append(f"conexiones: {e}")
 
@@ -444,30 +464,38 @@ async def hub_sync(
 
         # ── 4. Conocimiento ───────────────────────────────────────────────
         try:
-            remote_know   = await _get("/api/knowledge")
-            local_know    = _know_storage.list(owner)
-            local_k_titles: Set[str] = {k["title"] for k in local_know}
-            synced_srcs   = {k.get("source", "") for k in local_know if k.get("source", "").startswith(f"hub:{conn_id}:")}
+            remote_know = await _get("/api/knowledge")
 
-            for rk in remote_know:
-                rk_id   = rk.get("id", "")
-                src_tag = f"hub:{conn_id}:{rk_id}"
-                if src_tag in synced_srcs:
-                    result["updated"] += 1
-                    continue
-                title = _safe_name(rk.get("title", ""), local_k_titles, hub_label)
-                local_k_titles.add(title)
-                try:
-                    _know_storage.save(
-                        type=rk.get("type", "url"),
-                        title=title,
-                        source=src_tag,
-                        content=rk.get("content", ""),
-                        owner_id=owner,
-                    )
-                    result["knowledge"] += 1
-                except Exception:
-                    pass
+            def _sync_know_save():
+                local_know = _know_storage.list(owner)
+                local_k_titles: Set[str] = {k["title"] for k in local_know}
+                synced_srcs = {k.get("source", "") for k in local_know if k.get("source", "").startswith(f"hub:{conn_id}:")}
+                created = 0
+                updated = 0
+                for rk in remote_know:
+                    rk_id   = rk.get("id", "")
+                    src_tag = f"hub:{conn_id}:{rk_id}"
+                    if src_tag in synced_srcs:
+                        updated += 1
+                        continue
+                    title = _safe_name(rk.get("title", ""), local_k_titles, hub_label)
+                    local_k_titles.add(title)
+                    try:
+                        _know_storage.save(
+                            type=rk.get("type", "url"),
+                            title=title,
+                            source=src_tag,
+                            content=rk.get("content", ""),
+                            owner_id=owner,
+                        )
+                        created += 1
+                    except Exception:
+                        pass
+                return created, updated
+
+            _c, _u = await run_db(_sync_know_save)
+            result["knowledge"] += _c
+            result["updated"] += _u
         except Exception as e:
             result["errors"].append(f"conocimiento: {e}")
 
@@ -482,7 +510,9 @@ async def import_models(
 ) -> Dict[str, Any]:
     """Descubre modelos de la conexión-credencial y crea una conexión por modelo."""
     user, workspace_id = ctx.user, ctx.workspace_id
-    conn = _get_conn_any(conn_id, user, workspace_id) if get_user_role(user) != "admin" else _storage.get(conn_id, None)
+    conn = await run_db(
+        lambda: _get_conn_any(conn_id, user, workspace_id) if get_user_role(user) != "admin" else _storage.get(conn_id, None)
+    )
     if not conn:
         raise HTTPException(status_code=404, detail="Conexión no encontrada")
 
@@ -505,35 +535,37 @@ async def import_models(
         raise HTTPException(status_code=502, detail="No se encontraron modelos en este proveedor")
 
     owner = conn.get("owner_id") or (_owner(user, workspace_id) or workspace_id)
-    existing = _storage.list(owner)
-    # Existing imported connections for this credential
-    existing_by_model = {
-        c["model"]: c for c in existing
-        if c.get("type") == conn_type and c.get("_source_conn") == conn_id
-    }
 
-    created = 0
-    updated = 0
-    for model_id in models:
-        data: Dict[str, Any] = {
-            "name": f"{conn.get('name', conn_type)} / {model_id}",
-            "type": conn_type,
-            "api_key": api_key,
-            "model": model_id,
-            "_imported": True,
-            "_source_conn": conn_id,
+    def _sync_save_models():
+        existing = _storage.list(owner)
+        existing_by_model = {
+            c["model"]: c for c in existing
+            if c.get("type") == conn_type and c.get("_source_conn") == conn_id
         }
-        if conn.get("host"):
-            data["host"] = conn["host"]
-        if conn.get("url"):
-            data["url"] = conn["url"]
-        if model_id in existing_by_model:
-            data["id"] = existing_by_model[model_id]["id"]
-            updated += 1
-        else:
-            created += 1
-        _storage.save(data, owner_id=owner)
+        created = 0
+        updated = 0
+        for model_id in models:
+            data: Dict[str, Any] = {
+                "name": f"{conn.get('name', conn_type)} / {model_id}",
+                "type": conn_type,
+                "api_key": api_key,
+                "model": model_id,
+                "_imported": True,
+                "_source_conn": conn_id,
+            }
+            if conn.get("host"):
+                data["host"] = conn["host"]
+            if conn.get("url"):
+                data["url"] = conn["url"]
+            if model_id in existing_by_model:
+                data["id"] = existing_by_model[model_id]["id"]
+                updated += 1
+            else:
+                created += 1
+            _storage.save(data, owner_id=owner)
+        return created, updated
 
+    created, updated = await run_db(_sync_save_models)
     return {"ok": True, "created": created, "updated": updated, "models": models}
 
 
@@ -546,10 +578,12 @@ async def test_connection(
     user, workspace_id = ctx.user, ctx.workspace_id
     if is_guest(user):
         conn = next((c for c in get_session(user).connections if c.get("id") == conn_id), None)
-    elif get_user_role(user) == "admin":
-        conn = _storage.get(conn_id, None)
     else:
-        conn = _get_conn_any(conn_id, user, workspace_id)
+        def _sync_tc():
+            if get_user_role(user) == "admin":
+                return _storage.get(conn_id, None)
+            return _get_conn_any(conn_id, user, workspace_id)
+        conn = await run_db(_sync_tc)
     if not conn:
         raise HTTPException(status_code=404, detail="Conexión no encontrada")
     provider = get_provider(conn.get("type") or "")
@@ -572,41 +606,12 @@ async def get_tokens_daily(
     cutoff = (_dt.date.today() - _dt.timedelta(days=days - 1)).isoformat()
     today = _dt.date.today().isoformat()
     workspace_id = ctx.workspace_id
-    db = open_db(DB_FILE)
-    try:
-        cur = db.cursor()
+
+    def _sync_tokens():
+        db = open_db(DB_FILE)
         try:
-            if IS_PG:
-                cur.execute(
-                    "SELECT day, SUM(tokens) FROM token_daily "
-                    "WHERE owner_id = %s AND day >= %s GROUP BY day ORDER BY day ASC",
-                    (workspace_id, cutoff),
-                )
-            else:
-                cur.execute(
-                    "SELECT day, SUM(tokens) FROM token_daily "
-                    "WHERE owner_id = ? AND day >= ? GROUP BY day ORDER BY day ASC",
-                    (workspace_id, cutoff),
-                )
-            rows = cur.fetchall()
-            # First-run backfill: seed today from cumulative totals if empty
-            if not rows:
-                if IS_PG:
-                    cur.execute(
-                        "INSERT INTO token_daily (day, owner_id, tokens) "
-                        "SELECT %s, owner_id, tokens_in + tokens_out FROM connections "
-                        "WHERE owner_id = %s AND tokens_in + tokens_out > 0 "
-                        "ON CONFLICT (day, owner_id) DO NOTHING",
-                        (today, workspace_id),
-                    )
-                else:
-                    cur.execute(
-                        "INSERT OR IGNORE INTO token_daily (day, owner_id, tokens) "
-                        "SELECT ?, owner_id, tokens_in + tokens_out FROM connections "
-                        "WHERE owner_id = ? AND tokens_in + tokens_out > 0",
-                        (today, workspace_id),
-                    )
-                db.commit()
+            cur = db.cursor()
+            try:
                 if IS_PG:
                     cur.execute(
                         "SELECT day, SUM(tokens) FROM token_daily "
@@ -620,9 +625,42 @@ async def get_tokens_daily(
                         (workspace_id, cutoff),
                     )
                 rows = cur.fetchall()
-        except Exception:
-            rows = []
-    finally:
-        close_db(db)
+                if not rows:
+                    if IS_PG:
+                        cur.execute(
+                            "INSERT INTO token_daily (day, owner_id, tokens) "
+                            "SELECT %s, owner_id, tokens_in + tokens_out FROM connections "
+                            "WHERE owner_id = %s AND tokens_in + tokens_out > 0 "
+                            "ON CONFLICT (day, owner_id) DO NOTHING",
+                            (today, workspace_id),
+                        )
+                    else:
+                        cur.execute(
+                            "INSERT OR IGNORE INTO token_daily (day, owner_id, tokens) "
+                            "SELECT ?, owner_id, tokens_in + tokens_out FROM connections "
+                            "WHERE owner_id = ? AND tokens_in + tokens_out > 0",
+                            (today, workspace_id),
+                        )
+                    db.commit()
+                    if IS_PG:
+                        cur.execute(
+                            "SELECT day, SUM(tokens) FROM token_daily "
+                            "WHERE owner_id = %s AND day >= %s GROUP BY day ORDER BY day ASC",
+                            (workspace_id, cutoff),
+                        )
+                    else:
+                        cur.execute(
+                            "SELECT day, SUM(tokens) FROM token_daily "
+                            "WHERE owner_id = ? AND day >= ? GROUP BY day ORDER BY day ASC",
+                            (workspace_id, cutoff),
+                        )
+                    rows = cur.fetchall()
+            except Exception:
+                rows = []
+        finally:
+            close_db(db)
+        return rows
+
+    rows = await run_db(_sync_tokens)
     return [{"day": r[0], "tokens": r[1]} for r in rows]
 

@@ -21,6 +21,7 @@ from app.middleware.ratelimit import RateLimiter
 from app.models.agent import Agent
 from app.services.chat import auto_update_memory, stream_chat
 from app.storage.chat import ChatStorage
+from app.storage.db import run_db
 from app.storage.guest import GuestKnowledgeAdapter, GuestMemoryAdapter, get_session, is_guest
 from app.storage.knowledge import FolderStorage, KnowledgeStorage
 from app.storage.storage import AgentStorage, ConnectionStorage, MemoryStorage, SkillStorage
@@ -101,7 +102,7 @@ async def list_agents(
         from app.storage.groups import GroupStorage
         gs = GroupStorage(DB_FILE)
         own = [a for a in agents if a.get("owner_id") == workspace_id]
-        shared_ids = set(gs.get_user_shared_resource_ids(user, "agent", workspace_id))
+        shared_ids = set(await run_db(lambda: gs.get_user_shared_resource_ids(user, "agent", workspace_id)))
         own_ids = {a["id"] for a in own}
         extra = [a for a in agents if a["id"] in (shared_ids - own_ids)]
         for a in extra:
@@ -215,14 +216,17 @@ async def export_agent(
                 break
 
     # Resolve knowledge items
-    resolved_knowledge: List[Dict[str, Any]] = []
-    for kid in (a.get("knowledge") or []):
-        try:
-            item = knowledge_store.get(kid)
-            if item:
-                resolved_knowledge.append(item)
-        except Exception:
-            pass
+    def _sync_knowledge():
+        result: List[Dict[str, Any]] = []
+        for kid in (a.get("knowledge") or []):
+            try:
+                item = knowledge_store.get(kid)
+                if item:
+                    result.append(item)
+            except Exception:
+                pass
+        return result
+    resolved_knowledge = await run_db(_sync_knowledge)
 
     # Resolve memory
     mem_file = a.get("memory_file") or f"{agent_id}.md"
@@ -375,9 +379,12 @@ async def chat(
         knowledge_store = GuestKnowledgeAdapter(s)
     else:
         conn_id = base_conn_id
-        conn = _conns.get(conn_id, None if role == "admin" else workspace_id)
-        if not conn:
-            conn = _conns.get(conn_id, user)
+        def _sync_conn():
+            c = _conns.get(conn_id, None if role == "admin" else workspace_id)
+            if not c:
+                c = _conns.get(conn_id, user)
+            return c
+        conn = await run_db(_sync_conn)
         memory_store = _memory
         knowledge_store = _knowledge
 
@@ -410,21 +417,25 @@ async def chat(
         tok_in = int(tokens.get("in") or 0)
         tok_out = int(tokens.get("out") or 0)
         if not is_guest(user):
-            if base_conn_id and (tok_in or tok_out):
-                _conns.add_tokens(base_conn_id, tok_in, tok_out)
-            if (tok_in or tok_out) and a.get("scope", "private") == "private":
-                _agents.add_tokens(agent_id, tok_in, tok_out)
+            def _sync_tokens():
+                if base_conn_id and (tok_in or tok_out):
+                    _conns.add_tokens(base_conn_id, tok_in, tok_out)
+                if (tok_in or tok_out) and a.get("scope", "private") == "private":
+                    _agents.add_tokens(agent_id, tok_in, tok_out)
+            await run_db(_sync_tokens)
             if conversation_id:
                 reply = ev.get("reply", "")
                 user_msg = next(
                     (m for m in reversed(history) if m.get("role") == "user"), None
                 )
-                if user_msg:
-                    _chat.add_message(conversation_id, "user", str(user_msg.get("content") or ""))
-                if reply:
-                    _chat.add_message(conversation_id, "assistant", reply)
-                    title = str(user_msg.get("content") or "")[:80] if user_msg else ""
-                    _chat.touch_conversation(conversation_id, title)
+                def _sync_chat():
+                    if user_msg:
+                        _chat.add_message(conversation_id, "user", str(user_msg.get("content") or ""))
+                    if reply:
+                        _chat.add_message(conversation_id, "assistant", reply)
+                        title = str(user_msg.get("content") or "")[:80] if user_msg else ""
+                        _chat.touch_conversation(conversation_id, title)
+                await run_db(_sync_chat)
         if a.get("use_memory"):
             await auto_update_memory(a, conn, history, ev.get("reply", ""), memory_store)
 
