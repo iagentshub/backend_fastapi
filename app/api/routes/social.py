@@ -10,6 +10,7 @@ from pydantic import BaseModel
 import app.config.data as _cfg
 from app.api.routes.auth import require_auth
 from app.storage.db import IS_PG, PH, close_db, open_db
+from app.storage.knowledge import KnowledgeStorage
 from app.storage.storage import AgentStorage, SkillStorage
 
 router = APIRouter(tags=["social"])
@@ -265,6 +266,79 @@ async def explore(
         close_db(conn)
 
 
+@router.get("/api/explore/{resource_type}/{resource_id}/preview")
+async def explore_preview(
+    resource_type: str,
+    resource_id: str,
+    username: str = Depends(require_auth),
+) -> Dict[str, Any]:
+    """Rich preview data for a single public resource."""
+    conn = open_db(_cfg.DB_FILE)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            f"SELECT name, description, owner, category, labels "
+            f"FROM resource_social WHERE resource_type={PH} AND resource_id={PH} AND is_public={PH}",
+            (resource_type, resource_id, _PUBLIC_VAL),
+        )
+        row = cur.fetchone()
+    finally:
+        close_db(conn)
+
+    if not row:
+        raise HTTPException(status_code=404, detail="Resource not found or not public")
+
+    base: Dict[str, Any] = dict(row)
+    try:
+        base["labels"] = json.loads(base.get("labels") or '["private"]')
+    except (ValueError, TypeError):
+        base["labels"] = ["private"]
+    base["resource_type"] = resource_type
+    base["resource_id"] = resource_id
+
+    if resource_type == "agent":
+        agents = AgentStorage(_cfg.AGENTS_DIR)
+        agent = agents.get(resource_id)
+        if agent:
+            skills_storage = SkillStorage(_cfg.SKILLS_DIR)
+            skill_names = []
+            for sid in agent.get("skills", []):
+                sk = skills_storage.get_any(sid)
+                if sk:
+                    skill_names.append(sk.get("name", sid))
+            knowledge_storage = KnowledgeStorage(_cfg.DB_FILE)
+            knowledge_titles = []
+            for kid in agent.get("knowledge", []):
+                item = knowledge_storage.get(kid)
+                if item:
+                    knowledge_titles.append(item.get("title", kid))
+            base["system_prompt"] = (agent.get("system_prompt") or "")[:600]
+            base["skills"] = skill_names
+            base["knowledge"] = knowledge_titles
+            base["use_memory"] = agent.get("use_memory", False)
+            base["temperature"] = agent.get("temperature", 0.7)
+            base["agent_type"] = agent.get("agent_type", "")
+
+    elif resource_type == "skill":
+        skills_storage = SkillStorage(_cfg.SKILLS_DIR)
+        sk = skills_storage.get_any(resource_id)
+        if sk:
+            base["body"] = (sk.get("body") or "")[:3000]
+            base["parameters"] = sk.get("parameters", [])
+            base["icon"] = sk.get("icon", "")
+
+    elif resource_type == "knowledge":
+        knowledge_storage = KnowledgeStorage(_cfg.DB_FILE)
+        item = knowledge_storage.get(resource_id)
+        if item:
+            base["content"] = (item.get("content") or "")[:2000]
+            base["type"] = item.get("type", "")
+            base["source"] = item.get("source", "")
+            base["char_count"] = item.get("char_count", 0)
+
+    return base
+
+
 @router.get("/api/social/me/resources")
 async def my_resources(
     type: Optional[str] = None,
@@ -510,6 +584,132 @@ async def star_resource(
         close_db(conn)
 
 
+@router.post("/api/knowledge/{source_id}/fork")
+async def fork_knowledge(
+    source_id: str,
+    username: str = Depends(require_auth),
+) -> Dict[str, Any]:
+    knowledge = KnowledgeStorage(_cfg.DB_FILE)
+    source = knowledge.get(source_id)
+    if not source:
+        raise HTTPException(status_code=404, detail="Knowledge no encontrado")
+
+    conn = open_db(_cfg.DB_FILE)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            f"SELECT 1 FROM resource_social "
+            f"WHERE resource_type={PH} AND resource_id={PH} AND is_public={PH}",
+            ("knowledge", source_id, _PUBLIC_VAL),
+        )
+        if not cur.fetchone():
+            raise HTTPException(status_code=403, detail="El knowledge no es público")
+    finally:
+        close_db(conn)
+
+    source_owner = source.get("owner_id") or ""
+    new_title = f"Fork of {source.get('title', source_id)}"
+    result = knowledge.save(
+        type=source.get("type", "url"),
+        title=new_title,
+        source=source.get("source", ""),
+        content=source.get("content", ""),
+        owner_id=username,
+    )
+    new_id = result["id"]
+
+    conn = open_db(_cfg.DB_FILE)
+    try:
+        cur = conn.cursor()
+        if IS_PG:
+            cur.execute(
+                "INSERT INTO resource_social "
+                "(resource_type, resource_id, owner, name, description, is_public, category, "
+                "trial_missing_deps, fork_of_user, fork_of_id) "
+                "VALUES (%s, %s, %s, %s, %s, FALSE, 'Other', 'warn', %s, %s) "
+                "ON CONFLICT DO NOTHING",
+                ("knowledge", new_id, username, new_title, source.get("source", ""),
+                 source_owner, source_id),
+            )
+        else:
+            cur.execute(
+                "INSERT OR IGNORE INTO resource_social "
+                "(resource_type, resource_id, owner, name, description, is_public, category, "
+                "trial_missing_deps, fork_of_user, fork_of_id) "
+                "VALUES (?, ?, ?, ?, ?, 0, 'Other', 'warn', ?, ?)",
+                ("knowledge", new_id, username, new_title, source.get("source", ""),
+                 source_owner, source_id),
+            )
+        conn.commit()
+    finally:
+        close_db(conn)
+
+    return {"ok": True, "knowledge_id": new_id, "name": new_title}
+
+
+@router.post("/api/knowledge/{source_id}/link")
+async def link_knowledge(
+    source_id: str,
+    username: str = Depends(require_auth),
+) -> Dict[str, Any]:
+    knowledge = KnowledgeStorage(_cfg.DB_FILE)
+    source = knowledge.get(source_id)
+    if not source:
+        raise HTTPException(status_code=404, detail="Knowledge no encontrado")
+
+    conn = open_db(_cfg.DB_FILE)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            f"SELECT 1 FROM resource_social "
+            f"WHERE resource_type={PH} AND resource_id={PH} AND is_public={PH}",
+            ("knowledge", source_id, _PUBLIC_VAL),
+        )
+        if not cur.fetchone():
+            raise HTTPException(status_code=403, detail="El knowledge no es público")
+    finally:
+        close_db(conn)
+
+    source_owner = source.get("owner_id") or ""
+    link_title = f"Linked: {source.get('title', source_id)}"
+    result = knowledge.save(
+        type=source.get("type", "url"),
+        title=link_title,
+        source=source.get("source", ""),
+        content=source.get("content", ""),
+        owner_id=username,
+    )
+    new_id = result["id"]
+
+    conn = open_db(_cfg.DB_FILE)
+    try:
+        cur = conn.cursor()
+        if IS_PG:
+            cur.execute(
+                "INSERT INTO resource_social "
+                "(resource_type, resource_id, owner, name, description, is_public, category, "
+                "trial_missing_deps, linked_to_user, linked_to_id) "
+                "VALUES (%s, %s, %s, %s, %s, FALSE, 'Other', 'warn', %s, %s) "
+                "ON CONFLICT DO NOTHING",
+                ("knowledge", new_id, username, link_title, source.get("source", ""),
+                 source_owner, source_id),
+            )
+        else:
+            cur.execute(
+                "INSERT OR IGNORE INTO resource_social "
+                "(resource_type, resource_id, owner, name, description, is_public, category, "
+                "trial_missing_deps, linked_to_user, linked_to_id) "
+                "VALUES (?, ?, ?, ?, ?, 0, 'Other', 'warn', ?, ?)",
+                ("knowledge", new_id, username, link_title, source.get("source", ""),
+                 source_owner, source_id),
+            )
+        conn.commit()
+    finally:
+        close_db(conn)
+
+    return {"ok": True, "knowledge_id": new_id, "name": link_title}
+
+
 @router.post("/api/agents/{scope}/{source_id}/fork")
 async def fork_agent(
     scope: str,
@@ -546,6 +746,14 @@ async def fork_agent(
         result = agents.save(fork_payload, "private", owner_id=username)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+
+    # Auto-apply 'fork' label
+    fork_labels = list(result.get("labels") or ["private"])
+    for ol in ("fork", "linked"):
+        if ol in fork_labels:
+            fork_labels.remove(ol)
+    fork_labels.append("fork")
+    result = agents.save({**result, "labels": fork_labels}, "private", owner_id=username)
 
     new_id = result["id"]
     fork_name = result["name"]
@@ -614,6 +822,14 @@ async def fork_skill(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
+    # Auto-apply 'fork' label
+    fork_labels = list(result.get("labels") or ["private"])
+    for ol in ("fork", "linked"):
+        if ol in fork_labels:
+            fork_labels.remove(ol)
+    fork_labels.append("fork")
+    result = skills.save("private", {**result, "labels": fork_labels}, owner_id=username)
+
     new_id = result["id"]
     fork_name = result["name"]
 
@@ -645,6 +861,229 @@ async def fork_skill(
         close_db(conn)
 
     return {"ok": True, "skill_id": new_id, "name": fork_name}
+
+
+@router.post("/api/agents/{scope}/{source_id}/link")
+async def link_agent(
+    scope: str,
+    source_id: str,
+    username: str = Depends(require_auth),
+) -> Dict[str, Any]:
+    agents = AgentStorage(_cfg.AGENTS_DIR)
+    source = agents.get(source_id, scope)
+    if not source:
+        raise HTTPException(status_code=404, detail="Agente no encontrado")
+
+    if scope != "public":
+        conn = open_db(_cfg.DB_FILE)
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                f"SELECT 1 FROM resource_social "
+                f"WHERE resource_type={PH} AND resource_id={PH} AND is_public={PH}",
+                ("agent", source_id, _PUBLIC_VAL),
+            )
+            if not cur.fetchone():
+                raise HTTPException(status_code=403, detail="El agente no es público")
+        finally:
+            close_db(conn)
+
+    source_owner = source.get("owner_id") or ""
+    link_payload = {
+        k: v for k, v in source.items()
+        if k not in ("id", "scope", "owner_id", "created_at", "updated_at")
+    }
+    link_payload["name"] = f"Linked: {source.get('name', source_id)}"
+    link_labels = list(link_payload.get("labels") or ["private"])
+    for ol in ("fork", "linked"):
+        if ol in link_labels:
+            link_labels.remove(ol)
+    link_labels.append("linked")
+    link_payload["labels"] = link_labels
+
+    try:
+        result = agents.save(link_payload, "private", owner_id=username)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    new_id = result["id"]
+    link_name = result["name"]
+
+    conn = open_db(_cfg.DB_FILE)
+    try:
+        cur = conn.cursor()
+        link_tags = json.dumps(source.get("tags") or [])
+        if IS_PG:
+            cur.execute(
+                "INSERT INTO resource_social "
+                "(resource_type, resource_id, owner, name, description, is_public, category, "
+                "trial_missing_deps, linked_to_user, linked_to_id, tags) "
+                "VALUES (%s, %s, %s, %s, %s, FALSE, 'Other', 'warn', %s, %s, %s) "
+                "ON CONFLICT DO NOTHING",
+                ("agent", new_id, username, link_name, source.get("description", ""),
+                 source_owner, source_id, link_tags),
+            )
+        else:
+            cur.execute(
+                "INSERT OR IGNORE INTO resource_social "
+                "(resource_type, resource_id, owner, name, description, is_public, category, "
+                "trial_missing_deps, linked_to_user, linked_to_id, tags) "
+                "VALUES (?, ?, ?, ?, ?, 0, 'Other', 'warn', ?, ?, ?)",
+                ("agent", new_id, username, link_name, source.get("description", ""),
+                 source_owner, source_id, link_tags),
+            )
+        conn.commit()
+    finally:
+        close_db(conn)
+
+    return {"ok": True, "agent_id": new_id, "name": link_name}
+
+
+@router.post("/api/skills/{scope}/{source_id}/link")
+async def link_skill(
+    scope: str,
+    source_id: str,
+    username: str = Depends(require_auth),
+) -> Dict[str, Any]:
+    skills = SkillStorage(_cfg.SKILLS_DIR)
+    source = skills.get(scope, source_id)
+    if not source:
+        raise HTTPException(status_code=404, detail="Skill no encontrada")
+
+    if scope != "public":
+        conn = open_db(_cfg.DB_FILE)
+        try:
+            cur = conn.cursor()
+            cur.execute(
+                f"SELECT 1 FROM resource_social "
+                f"WHERE resource_type={PH} AND resource_id={PH} AND is_public={PH}",
+                ("skill", source_id, _PUBLIC_VAL),
+            )
+            if not cur.fetchone():
+                raise HTTPException(status_code=403, detail="La skill no es pública")
+        finally:
+            close_db(conn)
+
+    source_owner = source.get("owner_id") or ""
+    link_payload = {k: v for k, v in source.items() if k not in ("id", "scope", "owner_id")}
+    link_payload["name"] = f"Linked: {source.get('name', source_id)}"
+    link_labels = list(link_payload.get("labels") or ["private"])
+    for ol in ("fork", "linked"):
+        if ol in link_labels:
+            link_labels.remove(ol)
+    link_labels.append("linked")
+    link_payload["labels"] = link_labels
+
+    try:
+        result = skills.save("private", link_payload, owner_id=username)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc))
+
+    new_id = result["id"]
+    link_name = result["name"]
+
+    conn = open_db(_cfg.DB_FILE)
+    try:
+        cur = conn.cursor()
+        link_tags = json.dumps(source.get("tags") or [])
+        if IS_PG:
+            cur.execute(
+                "INSERT INTO resource_social "
+                "(resource_type, resource_id, owner, name, description, is_public, category, "
+                "trial_missing_deps, linked_to_user, linked_to_id, tags) "
+                "VALUES (%s, %s, %s, %s, %s, FALSE, 'Other', 'warn', %s, %s, %s) "
+                "ON CONFLICT DO NOTHING",
+                ("skill", new_id, username, link_name, source.get("description", ""),
+                 source_owner, source_id, link_tags),
+            )
+        else:
+            cur.execute(
+                "INSERT OR IGNORE INTO resource_social "
+                "(resource_type, resource_id, owner, name, description, is_public, category, "
+                "trial_missing_deps, linked_to_user, linked_to_id, tags) "
+                "VALUES (?, ?, ?, ?, ?, 0, 'Other', 'warn', ?, ?, ?)",
+                ("skill", new_id, username, link_name, source.get("description", ""),
+                 source_owner, source_id, link_tags),
+            )
+        conn.commit()
+    finally:
+        close_db(conn)
+
+    return {"ok": True, "skill_id": new_id, "name": link_name}
+
+
+@router.post("/api/agents/private/{agent_id}/sync")
+async def sync_linked_agent(
+    agent_id: str,
+    username: str = Depends(require_auth),
+) -> Dict[str, Any]:
+    agents = AgentStorage(_cfg.AGENTS_DIR)
+    local = agents.get(agent_id, "private")
+    if not local or local.get("owner_id") != username:
+        raise HTTPException(status_code=404, detail="Agente no encontrado")
+
+    conn = open_db(_cfg.DB_FILE)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            f"SELECT linked_to_id, linked_to_user FROM resource_social "
+            f"WHERE resource_type={PH} AND resource_id={PH}",
+            ("agent", agent_id),
+        )
+        row = cur.fetchone()
+    finally:
+        close_db(conn)
+
+    if not row or not row[0]:
+        raise HTTPException(status_code=400, detail="El agente no tiene enlace a un original")
+
+    original_id = row[0]
+    original = agents.get(original_id, "public")
+    if not original:
+        raise HTTPException(status_code=404, detail="El agente original no encontrado o ya no es público")
+
+    sync_fields = {k: v for k, v in original.items() if k not in ("id", "scope", "owner_id", "created_at", "name")}
+    updated = {**local, **sync_fields}
+    agents.save(updated, "private", owner_id=username)
+
+    return {"ok": True, "synced_from": original_id}
+
+
+@router.post("/api/skills/private/{skill_id}/sync")
+async def sync_linked_skill(
+    skill_id: str,
+    username: str = Depends(require_auth),
+) -> Dict[str, Any]:
+    skills = SkillStorage(_cfg.SKILLS_DIR)
+    local = skills.get("private", skill_id)
+    if not local or local.get("owner_id") != username:
+        raise HTTPException(status_code=404, detail="Skill no encontrada")
+
+    conn = open_db(_cfg.DB_FILE)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            f"SELECT linked_to_id, linked_to_user FROM resource_social "
+            f"WHERE resource_type={PH} AND resource_id={PH}",
+            ("skill", skill_id),
+        )
+        row = cur.fetchone()
+    finally:
+        close_db(conn)
+
+    if not row or not row[0]:
+        raise HTTPException(status_code=400, detail="La skill no tiene enlace a un original")
+
+    original_id = row[0]
+    original = skills.get("public", original_id)
+    if not original:
+        raise HTTPException(status_code=404, detail="La skill original no encontrada o ya no es pública")
+
+    sync_fields = {k: v for k, v in original.items() if k not in ("id", "scope", "owner_id", "name")}
+    updated = {**local, **sync_fields}
+    skills.save("private", updated, owner_id=username)
+
+    return {"ok": True, "synced_from": original_id}
 
 
 @router.delete("/api/{resource_type}/{resource_id}/star")
