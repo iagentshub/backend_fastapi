@@ -8,10 +8,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 import app.config.data as _cfg
-from app.api.routes.auth import require_auth
+from app.api.routes.auth import WorkspaceContext, require_auth, require_workspace
+from app.services.chat import stream_chat
 from app.storage.db import IS_PG, open_db
 from app.storage.knowledge import KnowledgeStorage
-from app.storage.storage import AgentStorage, SkillStorage
+from app.storage.storage import AgentStorage, ConnectionStorage, SkillStorage
 
 router = APIRouter(tags=["social"])
 
@@ -66,6 +67,11 @@ async def _upsert_social(
             "tags=excluded.tags, labels=excluded.labels, updated_at=excluded.updated_at",
             (resource_type, resource_id, owner, name, description, is_public, category, trial_missing_deps, tags, labels),
         )
+
+
+class _AgentTryBody(BaseModel):
+    connection_id: str
+    message: str
 
 
 class _AgentVisibilityBody(BaseModel):
@@ -227,7 +233,7 @@ async def explore(
         params.extend([limit, offset])
         raw = await conn.fetchall(
             f"SELECT resource_type, resource_id, owner, name, description, category, "
-            f"stars_count, fork_of_user, fork_of_id, linked_to_user, linked_to_id, trial_missing_deps, tags, labels "
+            f"stars_count, fork_of_user, fork_of_id, linked_to_user, linked_to_id, trial_missing_deps, tags, labels, verified "
             f"FROM resource_social WHERE {where} "
             f"ORDER BY stars_count DESC, updated_at DESC "
             f"LIMIT ? OFFSET ?",
@@ -334,7 +340,7 @@ async def my_resources(
         where = " AND ".join(conditions)
         raw = await conn.fetchall(
             f"SELECT resource_type, resource_id, owner, name, description, is_public, category, "
-            f"stars_count, fork_of_user, fork_of_id, linked_to_user, linked_to_id, trial_missing_deps, tags, labels "
+            f"stars_count, fork_of_user, fork_of_id, linked_to_user, linked_to_id, trial_missing_deps, tags, labels, verified "
             f"FROM resource_social WHERE {where} "
             f"ORDER BY updated_at DESC",
             tuple(params),
@@ -352,6 +358,21 @@ async def my_resources(
         except (ValueError, TypeError):
             row["labels"] = ["private"]
         rows.append(row)
+
+    # Annotate linked rows with linked_broken flag
+    linked_ids = [r["linked_to_id"] for r in rows if r.get("linked_to_id")]
+    if linked_ids:
+        placeholders = ",".join("?" * len(linked_ids))
+        async with open_db() as conn2:
+            pub_rows = await conn2.fetchall(
+                f"SELECT resource_id FROM resource_social WHERE resource_id IN ({placeholders}) AND is_public = ?",
+                tuple(linked_ids) + (_PUBLIC_VAL,),
+            )
+        still_public = {r["resource_id"] for r in pub_rows}
+        for row in rows:
+            if row.get("linked_to_id"):
+                row["linked_broken"] = row["linked_to_id"] not in still_public
+
     return {"resources": rows}
 
 
@@ -978,6 +999,80 @@ async def sync_linked_skill(
     return {"ok": True, "synced_from": original_id}
 
 
+@router.post("/api/agents/{scope}/{agent_id}/try")
+async def try_agent(
+    scope: str,
+    agent_id: str,
+    body: _AgentTryBody,
+    ctx: WorkspaceContext = Depends(require_workspace),
+) -> Dict[str, Any]:
+    """Prueba un agente público usando la connection propia del caller, sin guardar historial."""
+
+    # Step 1: Validate the agent is public in resource_social
+    async with open_db() as db:
+        row = await db.fetchone(
+            "SELECT trial_missing_deps FROM resource_social "
+            "WHERE resource_type=? AND resource_id=? AND is_public=?",
+            ("agent", agent_id, _PUBLIC_VAL),
+        )
+    if not row:
+        raise HTTPException(status_code=404, detail="Agente no encontrado o no es público")
+
+    trial_missing_deps: str = row["trial_missing_deps"] or "warn"
+
+    # Step 2: Get agent config from file storage
+    agents = AgentStorage(_cfg.AGENTS_DIR)
+    agent_data = agents.get(agent_id, scope)
+    if not agent_data:
+        raise HTTPException(status_code=404, detail="Agente no encontrado")
+
+    # Step 3: Resolve caller's connection (workspace first, then personal fallback)
+    conn_storage = ConnectionStorage(_cfg.DB_FILE)
+    conn_data = await conn_storage.get(body.connection_id, ctx.workspace_id)
+    if conn_data is None and ctx.workspace_id != ctx.user:
+        conn_data = await conn_storage.get(body.connection_id, ctx.user)
+    if conn_data is None:
+        raise HTTPException(status_code=400, detail="Connection no encontrada")
+
+    # Step 4: Filter skills based on trial_missing_deps policy
+    skills_storage = SkillStorage(_cfg.SKILLS_DIR)
+    warnings: List[str] = []
+    agent_skills: List[str] = list(agent_data.get("skills") or [])
+
+    accessible: List[str] = []
+    for skill_id in agent_skills:
+        if skills_storage.get("public", skill_id):
+            accessible.append(skill_id)
+            continue
+        priv = skills_storage.get("private", skill_id)
+        if priv and priv.get("owner_id") == ctx.workspace_id:
+            accessible.append(skill_id)
+            continue
+        if trial_missing_deps == "warn":
+            warnings.append(skill_id)
+    agent_data = {**agent_data, "skills": accessible}
+
+    # Step 5: Stream chat and collect reply (no history saved)
+    reply_parts: List[str] = []
+    async for chunk in stream_chat(
+        agent_data,
+        conn_data,
+        [{"role": "user", "content": body.message}],
+        skills_storage,
+        None,
+        None,
+    ):
+        if chunk.startswith("data:"):
+            try:
+                ev = json.loads(chunk[5:].strip())
+                if ev.get("type") == "chunk":
+                    reply_parts.append(ev.get("content", ""))
+            except Exception:
+                pass
+
+    return {"reply": "".join(reply_parts), "warnings": warnings}
+
+
 @router.delete("/api/{resource_type}/{resource_id}/star")
 async def unstar_resource(
     resource_type: str,
@@ -1005,3 +1100,97 @@ async def unstar_resource(
             (resource_type, resource_id),
         )
     return {"ok": True, "stars": count or 0}
+
+
+@router.post("/api/agents/private/{agent_id}/link/convert-to-fork")
+async def convert_agent_link_to_fork(
+    agent_id: str,
+    username: str = Depends(require_auth),
+) -> Dict[str, Any]:
+    async with open_db() as conn:
+        row = await conn.fetchone(
+            "SELECT linked_to_user, linked_to_id FROM resource_social "
+            "WHERE resource_type=? AND resource_id=? AND owner=? AND linked_to_id IS NOT NULL",
+            ("agent", agent_id, username),
+        )
+    if not row:
+        raise HTTPException(
+            status_code=404,
+            detail="Agente no encontrado o no tiene enlace activo",
+        )
+
+    prev_linked_to_user = row[0]
+    prev_linked_to_id = row[1]
+
+    async with open_db() as conn:
+        await conn.execute(
+            "UPDATE resource_social SET "
+            "linked_to_user=NULL, linked_to_id=NULL, "
+            "fork_of_user=?, fork_of_id=? "
+            "WHERE resource_type=? AND resource_id=? AND owner=?",
+            (prev_linked_to_user, prev_linked_to_id, "agent", agent_id, username),
+        )
+        await conn.commit()
+
+    agents = AgentStorage(_cfg.AGENTS_DIR)
+    agent_data = agents.get(agent_id, "private")
+    if agent_data:
+        updated = dict(agent_data)
+        updated.pop("linked_to_user", None)
+        updated.pop("linked_to_id", None)
+        labels: List[str] = list(updated.get("labels") or ["private"])
+        if "linked" in labels:
+            labels.remove("linked")
+        if "fork" not in labels:
+            labels.append("fork")
+        updated["labels"] = labels
+        agents.save(updated, "private", owner_id=username)
+
+    return {"ok": True, "agent_id": agent_id}
+
+
+@router.post("/api/skills/private/{skill_id}/link/convert-to-fork")
+async def convert_skill_link_to_fork(
+    skill_id: str,
+    username: str = Depends(require_auth),
+) -> Dict[str, Any]:
+    async with open_db() as conn:
+        row = await conn.fetchone(
+            "SELECT linked_to_user, linked_to_id FROM resource_social "
+            "WHERE resource_type=? AND resource_id=? AND owner=? AND linked_to_id IS NOT NULL",
+            ("skill", skill_id, username),
+        )
+    if not row:
+        raise HTTPException(
+            status_code=404,
+            detail="Skill no encontrada o no tiene enlace activo",
+        )
+
+    prev_linked_to_user = row[0]
+    prev_linked_to_id = row[1]
+
+    async with open_db() as conn:
+        await conn.execute(
+            "UPDATE resource_social SET "
+            "linked_to_user=NULL, linked_to_id=NULL, "
+            "fork_of_user=?, fork_of_id=? "
+            "WHERE resource_type=? AND resource_id=? AND owner=?",
+            (prev_linked_to_user, prev_linked_to_id, "skill", skill_id, username),
+        )
+        await conn.commit()
+
+    skills = SkillStorage(_cfg.SKILLS_DIR)
+    skill_data = skills.get("private", skill_id)
+    if skill_data:
+        updated = dict(skill_data)
+        updated.pop("linked_to_user", None)
+        updated.pop("linked_to_id", None)
+        labels_s: List[str] = list(updated.get("labels") or ["private"])
+        if "linked" in labels_s:
+            labels_s.remove("linked")
+        if "fork" not in labels_s:
+            labels_s.append("fork")
+        updated["labels"] = labels_s
+        skills.save("private", updated, owner_id=username)
+
+    return {"ok": True, "skill_id": skill_id}

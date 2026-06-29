@@ -151,19 +151,15 @@ def test_summary_forbidden(client, reset_rate_limiter):
 # ── client log ───────────────────────────────────────────────────────────────
 
 
-def test_client_log_authenticated(client, reset_rate_limiter):
-    client.post("/api/auth/register", json={"email": "loguser@example.com", "password": "pass1234"})
-    client.post("/api/auth/login", json={"email": "loguser@example.com", "password": "pass1234"})
-    r = client.post("/api/admin/logs/client", json={"level": "INFO", "message": "frontend test"})
+def test_client_log_authenticated(admin_client, reset_rate_limiter):
+    r = admin_client.post("/api/admin/logs/client", json={"level": "INFO", "message": "frontend test"})
     assert r.status_code == 200
     assert r.json() == {"ok": True}
 
 
-def test_client_log_all_levels(client, reset_rate_limiter):
-    client.post("/api/auth/register", json={"email": "loglvl@example.com", "password": "pass1234"})
-    client.post("/api/auth/login", json={"email": "loglvl@example.com", "password": "pass1234"})
+def test_client_log_all_levels(admin_client, reset_rate_limiter):
     for level in ("DEBUG", "INFO", "OK", "WARNING", "ERROR"):
-        r = client.post("/api/admin/logs/client", json={"level": level, "message": f"test {level}"})
+        r = admin_client.post("/api/admin/logs/client", json={"level": level, "message": f"test {level}"})
         assert r.status_code == 200
 
 

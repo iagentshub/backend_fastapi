@@ -86,7 +86,7 @@ async def logs_summary(_: str = Depends(require_admin)) -> List[Dict]:
 
 
 @router.post("/client")
-async def client_log(entry: _ClientLog, _: str = Depends(require_auth)) -> dict:
+async def client_log(entry: _ClientLog, _: str = Depends(require_admin)) -> dict:
     """Recibe una entrada de log desde el frontend y la escribe en el fichero del día."""
     msg = f"[frontend] {entry.message}"
     lvl = entry.level.upper()

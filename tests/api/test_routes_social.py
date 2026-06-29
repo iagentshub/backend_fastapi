@@ -219,3 +219,116 @@ def test_knowledge_folder_visibilidad(client):
 def test_explore_requiere_auth(client):
     r = client.get("/api/explore")
     assert r.status_code == 401
+
+
+# ─── /try endpoint ────────────────────────────────────────────────────────────
+
+def _create_connection_raw(username: str, conn_id: str = "test-conn-try-001") -> str:
+    """Inserta una connection directamente en la BD para pruebas."""
+    import asyncio
+    import json
+    from app.storage.db import open_db
+
+    async def _do() -> None:
+        data = json.dumps({
+            "id": conn_id,
+            "name": "Test Try Connection",
+            "provider": "openai",
+            "model": "gpt-4o",
+        })
+        async with open_db() as conn:
+            await conn.execute(
+                "INSERT OR REPLACE INTO connections "
+                "(id, owner_id, data, tokens_in, tokens_out, created_at, updated_at) "
+                "VALUES (?, ?, ?, 0, 0, datetime('now'), datetime('now'))",
+                (conn_id, username, data),
+            )
+            await conn.commit()
+
+    asyncio.run(_do())
+    return conn_id
+
+
+def _make_agent_public(client, agent_id: str) -> None:
+    r = client.put(f"/api/agents/private/{agent_id}/visibility", json={
+        "is_public": True,
+        "category": "Coding",
+        "trial_missing_deps": "warn",
+    })
+    assert r.status_code == 200
+
+
+def test_try_agente_publico_ok(client, monkeypatch):
+    user = _login(client, "trytest_ok")
+    agent = _create_agent(client, "Try Agent OK")
+    agent_id = agent["id"]
+    _make_agent_public(client, agent_id)
+    conn_id = _create_connection_raw(user, f"conn-try-ok-{agent_id[:8]}")
+
+    async def _fake_stream(*args, **kwargs):
+        yield 'data: {"type":"chunk","content":"hola"}\n\n'
+        yield 'data: {"type":"done"}\n\n'
+
+    monkeypatch.setattr("app.api.routes.social.stream_chat", _fake_stream)
+
+    r = client.post(f"/api/agents/private/{agent_id}/try", json={
+        "connection_id": conn_id,
+        "message": "Hola agente",
+    })
+    assert r.status_code == 200
+    body = r.json()
+    assert "reply" in body
+    assert body["reply"] == "hola"
+    assert "warnings" in body
+    assert isinstance(body["warnings"], list)
+
+
+def test_try_agente_privado_devuelve_404(client):
+    user = _login(client, "trytest_priv")
+    agent = _create_agent(client, "Private Try Agent")
+    agent_id = agent["id"]
+    conn_id = _create_connection_raw(user, f"conn-try-priv-{agent_id[:8]}")
+
+    # No se hace público — no existe en resource_social como público
+    r = client.post(f"/api/agents/private/{agent_id}/try", json={
+        "connection_id": conn_id,
+        "message": "Hola",
+    })
+    assert r.status_code == 404
+
+
+def test_try_connection_invalida_devuelve_400(client):
+    user = _login(client, "trytest_conn")
+    agent = _create_agent(client, "Try Agent Conn")
+    agent_id = agent["id"]
+    _make_agent_public(client, agent_id)
+
+    r = client.post(f"/api/agents/private/{agent_id}/try", json={
+        "connection_id": "conn-inexistente-xyz",
+        "message": "Hola",
+    })
+    assert r.status_code == 400
+
+
+def test_try_sin_message_devuelve_422(client):
+    user = _login(client, "trytest_422")
+    agent = _create_agent(client, "Try Agent 422")
+    agent_id = agent["id"]
+    _make_agent_public(client, agent_id)
+    conn_id = _create_connection_raw(user, f"conn-try-422-{agent_id[:8]}")
+
+    r = client.post(f"/api/agents/private/{agent_id}/try", json={
+        "connection_id": conn_id,
+        # "message" ausente → 422
+    })
+    assert r.status_code == 422
+
+
+def test_try_requiere_auth(client):
+    # Sin cookie de sesión → 401
+    client.cookies.clear()
+    r = client.post("/api/agents/private/nonexistent-agent/try", json={
+        "connection_id": "any",
+        "message": "Hola",
+    })
+    assert r.status_code == 401

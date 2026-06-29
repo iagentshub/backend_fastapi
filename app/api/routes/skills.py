@@ -4,7 +4,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel
 
 from app.api.routes.auth import WorkspaceContext, require_workspace
@@ -34,7 +34,10 @@ def _check_scope(scope: str) -> None:
 
 @router.get("")
 async def list_skills(
-    scope: str = "all", ctx: WorkspaceContext = Depends(require_workspace)
+    scope: str = "all",
+    limit: int = Query(0, ge=0, description="Máx. items. 0 = sin límite"),
+    offset: int = Query(0, ge=0),
+    ctx: WorkspaceContext = Depends(require_workspace),
 ) -> List[Dict[str, Any]]:
     user, workspace_id = ctx.user, ctx.workspace_id
     _check_scope(scope)
@@ -42,7 +45,12 @@ async def list_skills(
         s = get_session(user)
         public = _storage.list("public") if scope in ("public", "all") else []
         private = s.skills if scope in ("private", "all") else []
-        return public + private
+        items = public + private
+        if offset:
+            items = items[offset:]
+        if limit:
+            items = items[:limit]
+        return items
     items = _storage.list(scope)
     if await get_user_role(user) != "admin":
         # Filter: public skills + own workspace skills + legacy private (no owner_id)
@@ -61,6 +69,10 @@ async def list_skills(
             if sk:
                 sk["_shared"] = True
                 items.append(sk)
+    if offset:
+        items = items[offset:]
+    if limit:
+        items = items[:limit]
     return items
 
 

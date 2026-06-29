@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Set
 from uuid import uuid4
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from app.api.routes.auth import WorkspaceContext, require_auth, require_workspace
 from app.auth.auth import get_user_role
@@ -228,7 +228,11 @@ async def test_all_connections(
 
 
 @router.get("")
-async def list_connections(ctx: WorkspaceContext = Depends(require_workspace)) -> List[Dict[str, Any]]:
+async def list_connections(
+    limit: int = Query(0, ge=0, description="Máx. items. 0 = sin límite"),
+    offset: int = Query(0, ge=0),
+    ctx: WorkspaceContext = Depends(require_workspace),
+) -> List[Dict[str, Any]]:
     user, workspace_id = ctx.user, ctx.workspace_id
     if is_guest(user):
         raw = get_session(user).connections
@@ -255,6 +259,10 @@ async def list_connections(ctx: WorkspaceContext = Depends(require_workspace)) -
     if ollama_raw:
         result.extend(await _ollama_conns_to_models(ollama_raw))
 
+    if offset:
+        result = result[offset:]
+    if limit:
+        result = result[:limit]
     return result
 
 

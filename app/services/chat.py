@@ -25,6 +25,37 @@ def _sse(data: Dict[str, Any]) -> str:
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
+def _estimate_tokens(text: str) -> int:
+    """Estimación rápida: ~4 chars por token (conservador)."""
+    return max(1, len(text) // 4)
+
+
+def _truncate_history(
+    history: list,
+    system_tokens: int,
+    max_context: int = 60_000,
+) -> list:
+    """
+    Descarta los mensajes más antiguos hasta que el total estimado de tokens
+    (system + history) quepa en max_context. Siempre conserva al menos
+    los 2 últimos mensajes para no romper el turno actual.
+    """
+    budget = max_context - system_tokens
+    if budget <= 0:
+        return history[-2:]  # extremo: solo el último turno
+
+    total = sum(_estimate_tokens(str(m.get("content", ""))) for m in history)
+    if total <= budget:
+        return history  # ya cabe, nada que hacer
+
+    # Eliminar desde el principio hasta que quepa
+    trimmed = list(history)
+    while len(trimmed) > 2 and total > budget:
+        removed = trimmed.pop(0)
+        total -= _estimate_tokens(str(removed.get("content", "")))
+    return trimmed
+
+
 def _validate_ollama_host(host: str) -> None:
     """Rechaza hosts que apunten a rangos privados o de metadata de cloud (SSRF)."""
     parsed = urlparse(host)
@@ -97,6 +128,10 @@ async def stream_chat(
         mem_content = memory_storage.get(mem_file)
         if mem_content and mem_content.strip():
             system += f"\n\n## Memoria del agente\n{mem_content}"
+
+    # Truncar history si el contexto es demasiado largo
+    _sys_tokens = _estimate_tokens(system)
+    history = _truncate_history(list(history), _sys_tokens)
 
     try:
         if conn_type in OPENAI_COMPAT_URLS:

@@ -5,7 +5,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, Request, UploadFile
 from pydantic import BaseModel
 
 from app.api.routes.auth import WorkspaceContext, require_workspace
@@ -137,12 +137,19 @@ async def delete_folder(
 @router.get("", response_model=List[Dict[str, Any]])
 async def list_items(
     type: Optional[str] = None,
+    limit: int = Query(0, ge=0, description="Máx. items. 0 = sin límite"),
+    offset: int = Query(0, ge=0),
     ctx: WorkspaceContext = Depends(require_workspace),
 ) -> List[Dict[str, Any]]:
     user, workspace_id = ctx.user, ctx.workspace_id
     if is_guest(user):
         items = get_session(user).knowledge
-        return [i for i in items if not type or i["type"] == type]
+        filtered = [i for i in items if not type or i["type"] == type]
+        if offset:
+            filtered = filtered[offset:]
+        if limit:
+            filtered = filtered[:limit]
+        return filtered
     items = await _storage.list(await _owner(user, workspace_id), type)
     role = await get_user_role(user)
     if role not in ("admin",):
@@ -157,6 +164,10 @@ async def list_items(
                 k["_shared"] = True
                 extra.append(k)
         items = items + extra
+    if offset:
+        items = items[offset:]
+    if limit:
+        items = items[:limit]
     return items
 
 

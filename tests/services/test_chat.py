@@ -315,3 +315,25 @@ async def test_openai_usage_chunk_with_empty_choices():
     data = json.loads(done_event.removeprefix("data: ").strip())
     assert data["tokens"]["in"] == 30
     assert data["tokens"]["out"] == 12
+
+
+# ─── Tests de truncado de contexto ────────────────────────────────────────────
+
+async def test_truncate_history_no_op():
+    from app.services.chat import _truncate_history
+    h = [{"role": "user", "content": "hola"}]
+    assert _truncate_history(h, system_tokens=100) == h
+
+
+async def test_truncate_history_descarta_antiguos():
+    from app.services.chat import _truncate_history
+    msgs = [{"role": "user", "content": "x" * 1000}] * 20  # ~5000 tokens
+    result = _truncate_history(msgs, system_tokens=0, max_context=2000)
+    assert len(result) < 20
+    assert len(result) >= 2
+
+
+async def test_estimate_tokens():
+    from app.services.chat import _estimate_tokens
+    assert _estimate_tokens("hola") == 1
+    assert _estimate_tokens("a" * 400) == 100

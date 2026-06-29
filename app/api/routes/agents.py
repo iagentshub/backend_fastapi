@@ -8,7 +8,7 @@ import zipfile
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -83,6 +83,8 @@ def _apply_locale(agent: Dict[str, Any], locale: str) -> Dict[str, Any]:
 async def list_agents(
     scope: str = "all",
     label: Optional[str] = None,
+    limit: int = Query(0, ge=0, description="Máx. items. 0 = sin límite"),
+    offset: int = Query(0, ge=0),
     ctx: WorkspaceContext = Depends(require_workspace),
 ) -> List[Dict[str, Any]]:
     _check_scope(scope)
@@ -95,6 +97,10 @@ async def list_agents(
         items = public + private
         if label:
             items = [a for a in items if label in (a.get("labels") or [])]
+        if offset:
+            items = items[offset:]
+        if limit:
+            items = items[:limit]
         return [_apply_locale(a, locale) for a in items]
     agents = _agents.list(scope)
     role = await get_user_role(user)
@@ -110,6 +116,10 @@ async def list_agents(
         agents = own + extra
     if label:
         agents = [a for a in agents if label in (a.get("labels") or [])]
+    if offset:
+        agents = agents[offset:]
+    if limit:
+        agents = agents[:limit]
     return [_apply_locale(a, locale) for a in agents]
 
 

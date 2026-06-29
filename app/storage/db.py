@@ -588,6 +588,7 @@ async def _migrate_sqlite(conn: Any) -> None:
                 stars_count        INTEGER NOT NULL DEFAULT 0,
                 tags               TEXT NOT NULL DEFAULT '[]',
                 labels             TEXT NOT NULL DEFAULT '["private"]',
+                verified           INTEGER NOT NULL DEFAULT 0,
                 updated_at         TEXT NOT NULL DEFAULT (datetime('now')),
                 PRIMARY KEY (resource_type, resource_id, owner)
             );
@@ -604,6 +605,13 @@ async def _migrate_sqlite(conn: Any) -> None:
     try:
         await conn.execute(
             "ALTER TABLE resource_social ADD COLUMN labels TEXT NOT NULL DEFAULT '[\"private\"]'"
+        )
+        await conn.commit()
+    except Exception:
+        pass
+    try:
+        await conn.execute(
+            "ALTER TABLE resource_social ADD COLUMN verified INTEGER NOT NULL DEFAULT 0"
         )
         await conn.commit()
     except Exception:
@@ -868,6 +876,7 @@ async def _migrate_pg(conn: Any) -> None:
             stars_count        INTEGER NOT NULL DEFAULT 0,
             tags               TEXT NOT NULL DEFAULT '[]',
             labels             TEXT NOT NULL DEFAULT '["private"]',
+            verified           BOOLEAN NOT NULL DEFAULT FALSE,
             updated_at         TIMESTAMP WITH TIME ZONE DEFAULT now(),
             PRIMARY KEY (resource_type, resource_id, owner)
         )
@@ -883,6 +892,9 @@ async def _migrate_pg(conn: Any) -> None:
     )
     await conn.execute(
         "ALTER TABLE resource_social ADD COLUMN IF NOT EXISTS labels TEXT NOT NULL DEFAULT '[\"private\"]'"
+    )
+    await conn.execute(
+        "ALTER TABLE resource_social ADD COLUMN IF NOT EXISTS verified BOOLEAN NOT NULL DEFAULT FALSE"
     )
 
 

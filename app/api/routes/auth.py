@@ -923,6 +923,38 @@ async def admin_delete_workspace(
     return {"ok": True}
 
 
+@admin_router.put("/resources/{resource_type}/{resource_id}/verify")
+async def admin_verify_resource(
+    resource_type: str,
+    resource_id: str,
+    request: Request,
+    _: str = Depends(require_admin),
+) -> Dict[str, Any]:
+    _valid_types = ("agent", "skill", "knowledge")
+    if resource_type not in _valid_types:
+        raise HTTPException(
+            status_code=422,
+            detail=f"resource_type debe ser uno de {_valid_types}",
+        )
+    body = await request.json()
+    verified_val = bool(body.get("verified", False))
+    db_val = verified_val if IS_PG else (1 if verified_val else 0)
+
+    async with open_db() as conn:
+        row = await conn.fetchone(
+            "SELECT 1 FROM resource_social WHERE resource_type=? AND resource_id=?",
+            (resource_type, resource_id),
+        )
+        if not row:
+            raise HTTPException(status_code=404, detail="Recurso no encontrado en el catálogo social")
+        await conn.execute(
+            "UPDATE resource_social SET verified=? WHERE resource_type=? AND resource_id=?",
+            (db_val, resource_type, resource_id),
+        )
+        await conn.commit()
+    return {"ok": True}
+
+
 @admin_router.post("/impersonate/{username}")
 async def admin_impersonate(
     username: str,

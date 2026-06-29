@@ -2,22 +2,27 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
+from jose import jwt as _jwt
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.utils import flog
 from app.auth.auth import ensure_admin_user, purge_expired_deletions
 from app.config.cors import CORS_ORIGINS
 from app.config import data as _cfg
-from app.storage.db import init_db, close_db_pool
+from app.storage.db import init_db, close_db_pool, open_db
 from app.api.routes import auth, connections, agents, skills, memory, settings, accounts, chats, knowledge, logs, sharing, workspaces, groups
 from app.api.routes.auth import admin_router, users_router
 from app.api.routes.social import router as social_router
 from app.middleware.locale import LocaleMiddleware
+from app.middleware.security import SecurityHeadersMiddleware
+
+_docs_url = "/docs" if os.getenv("GAIA_DEV_MODE", "").lower() in ("1", "true", "yes") else None
 
 
 class _RequestLogger(BaseHTTPMiddleware):
@@ -25,7 +30,17 @@ class _RequestLogger(BaseHTTPMiddleware):
         t0 = time.perf_counter()
         response = await call_next(request)
         ms = (time.perf_counter() - t0) * 1000
-        msg = f"{request.method} {request.url.path} → {response.status_code} ({ms:.0f}ms)"
+
+        user = "-"
+        try:
+            token = request.cookies.get("ga_token", "")
+            if token:
+                payload = _jwt.get_unverified_claims(token)
+                user = payload.get("sub") or payload.get("username") or "-"
+        except Exception:
+            pass
+
+        msg = f"{request.method} {request.url.path} → {response.status_code} ({ms:.0f}ms) user={user}"
         if response.status_code >= 500:
             flog.error(msg)
         elif response.status_code >= 400:
@@ -60,9 +75,10 @@ async def _lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="GAIA Backend", version="1.0.0", docs_url="/docs", redoc_url=None, lifespan=_lifespan)
+    app = FastAPI(title="GAIA Backend", version="1.0.0", docs_url=_docs_url, redoc_url=None, lifespan=_lifespan)
 
     app.add_middleware(_RequestLogger)
+    app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(LocaleMiddleware)
     app.add_middleware(
         CORSMiddleware,
@@ -88,5 +104,16 @@ def create_app() -> FastAPI:
     app.include_router(workspaces.router)
     app.include_router(groups.router)
     app.include_router(social_router)
+
+    @app.get("/api/health", tags=["health"])
+    async def _health():
+        try:
+            async with open_db() as conn:
+                await conn.fetchval("SELECT 1")
+            db_ok = True
+        except Exception:
+            db_ok = False
+        status = "ok" if db_ok else "degraded"
+        return {"status": status, "db": db_ok}
 
     return app
