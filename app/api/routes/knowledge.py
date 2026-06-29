@@ -11,7 +11,7 @@ from pydantic import BaseModel
 from app.api.routes.auth import WorkspaceContext, require_workspace
 from app.auth.auth import get_user_role
 from app.config.data import AGENTS_DIR, DB_FILE, SKILLS_DIR
-from app.storage.db import run_db
+
 from app.storage.guest import get_session, is_guest
 from app.storage.knowledge import FolderStorage, KnowledgeStorage, extract_document_text, fetch_url_text
 from app.storage.storage import AgentStorage, SkillStorage
@@ -26,8 +26,8 @@ _ALLOWED_EXTS = {".txt", ".md", ".pdf"}
 _VALID_SECTIONS = {"document", "url", "skill", "agents", "memory"}
 
 
-def _owner(user: str, workspace_id: str) -> Optional[str]:
-    return None if get_user_role(user) == "admin" else workspace_id
+async def _owner(user: str, workspace_id: str) -> Optional[str]:
+    return None if await get_user_role(user) == "admin" else workspace_id
 
 
 def _guest_item(*, type: str, title: str, source: str, content: str, folder_id: Optional[str] = None) -> Dict[str, Any]:
@@ -64,7 +64,7 @@ async def list_folders(
     user, workspace_id = ctx.user, ctx.workspace_id
     if is_guest(user):
         return []
-    return await run_db(lambda: _folders.list(_owner(user, workspace_id) or workspace_id, section))
+    return await _folders.list((await _owner(user, workspace_id)) or workspace_id, section)
 
 
 @router.post("/folders", response_model=Dict[str, Any])
@@ -80,7 +80,7 @@ async def create_folder(
     name = body.name.strip()
     if not name:
         raise HTTPException(status_code=422, detail="El nombre no puede estar vacío")
-    return await run_db(lambda: _folders.create(_owner(user, workspace_id) or workspace_id, body.section, name))
+    return await _folders.create((await _owner(user, workspace_id)) or workspace_id, body.section, name)
 
 
 @router.patch("/folders/{folder_id}", response_model=Dict[str, Any])
@@ -95,7 +95,7 @@ async def rename_folder(
     name = body.name.strip()
     if not name:
         raise HTTPException(status_code=422, detail="El nombre no puede estar vacío")
-    result = await run_db(lambda: _folders.rename(folder_id, _owner(user, workspace_id) or workspace_id, name))
+    result = await _folders.rename(folder_id, (await _owner(user, workspace_id)) or workspace_id, name)
     if result is None:
         raise HTTPException(status_code=404, detail="Carpeta no encontrada")
     return result
@@ -111,7 +111,7 @@ async def delete_folder(
     if is_guest(user):
         raise HTTPException(status_code=403, detail="Los invitados no pueden eliminar carpetas")
     if cascade:
-        folder = await run_db(lambda: _folders.get(folder_id))
+        folder = await _folders.get(folder_id)
         section = (folder or {}).get("section", "")
         if section == "agents":
             for agent in _agents.list(scope="private"):
@@ -127,7 +127,7 @@ async def delete_folder(
                         _skills.delete("private", skill["id"])
                     except Exception:
                         pass
-    if not await run_db(lambda: _folders.delete(folder_id, _owner(user, workspace_id) or workspace_id, cascade=cascade)):
+    if not await _folders.delete(folder_id, (await _owner(user, workspace_id)) or workspace_id, cascade=cascade):
         raise HTTPException(status_code=404, detail="Carpeta no encontrada")
     return {"ok": True}
 
@@ -143,23 +143,20 @@ async def list_items(
     if is_guest(user):
         items = get_session(user).knowledge
         return [i for i in items if not type or i["type"] == type]
-    items = await run_db(lambda: _storage.list(_owner(user, workspace_id), type))
-    role = get_user_role(user)
+    items = await _storage.list(await _owner(user, workspace_id), type)
+    role = await get_user_role(user)
     if role not in ("admin",):
         from app.storage.groups import GroupStorage as _GS
 
-        def _sync_shared():
-            shared_ids = set(_GS(DB_FILE).get_user_shared_resource_ids(user, "knowledge", workspace_id))
-            own_ids = {i["id"] for i in items}
-            extra = []
-            for kid in (shared_ids - own_ids):
-                k = _storage.get(kid)
-                if k and (not type or k.get("type") == type):
-                    k["_shared"] = True
-                    extra.append(k)
-            return extra
-
-        items = items + await run_db(_sync_shared)
+        shared_ids = set(await _GS(DB_FILE).get_user_shared_resource_ids(user, "knowledge", workspace_id))
+        own_ids = {i["id"] for i in items}
+        extra = []
+        for kid in (shared_ids - own_ids):
+            k = await _storage.get(kid)
+            if k and (not type or k.get("type") == type):
+                k["_shared"] = True
+                extra.append(k)
+        items = items + extra
     return items
 
 
@@ -176,7 +173,7 @@ async def move_item(
     user, workspace_id = ctx.user, ctx.workspace_id
     if is_guest(user):
         raise HTTPException(status_code=403, detail="Los invitados no pueden mover items")
-    if not await run_db(lambda: _storage.move(item_id, body.folder_id, _owner(user, workspace_id))):
+    if not await _storage.move(item_id, body.folder_id, await _owner(user, workspace_id)):
         raise HTTPException(status_code=404, detail="Item no encontrado")
     return {"ok": True}
 
@@ -200,8 +197,8 @@ async def add_text(
         item = _guest_item(type="text", title=title, source=source, content=content)
         get_session(user).knowledge.append(item)
         return item
-    owner = _owner(user, workspace_id) or workspace_id
-    return await run_db(lambda: _storage.save(type="text", title=title, source=source, content=content, owner_id=owner, folder_id=folder_id))
+    owner = await _owner(user, workspace_id) or workspace_id
+    return await _storage.save(type="text", title=title, source=source, content=content, owner_id=owner, folder_id=folder_id)
 
 
 @router.post("/url")
@@ -226,8 +223,8 @@ async def add_url(
         item = _guest_item(type="url", title=title, source=url, content=content)
         get_session(user).knowledge.append(item)
         return item
-    owner = _owner(user, workspace_id) or workspace_id
-    return await run_db(lambda: _storage.save(type="url", title=title, source=url, content=content, owner_id=owner, folder_id=folder_id))
+    owner = await _owner(user, workspace_id) or workspace_id
+    return await _storage.save(type="url", title=title, source=url, content=content, owner_id=owner, folder_id=folder_id)
 
 
 @router.post("/document")
@@ -257,15 +254,15 @@ async def upload_document(
         item = _guest_item(type="document", title=filename, source=filename, content=content)
         get_session(user).knowledge.append(item)
         return item
-    owner = _owner(user, workspace_id) or workspace_id
-    return await run_db(lambda: _storage.save(
+    owner = await _owner(user, workspace_id) or workspace_id
+    return await _storage.save(
         type="document",
         title=filename,
         source=filename,
         content=content,
         owner_id=owner,
         folder_id=folder_id or None,
-    ))
+    )
 
 
 @router.delete("/{item_id}")
@@ -281,6 +278,6 @@ async def delete_item(
         if len(s.knowledge) == before:
             raise HTTPException(status_code=404, detail="Item no encontrado")
         return {"ok": True}
-    if not await run_db(lambda: _storage.delete(item_id, _owner(user, workspace_id))):
+    if not await _storage.delete(item_id, await _owner(user, workspace_id)):
         raise HTTPException(status_code=404, detail="Item no encontrado")
     return {"ok": True}

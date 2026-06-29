@@ -5,27 +5,24 @@ import io
 import json
 import zipfile
 
-from app.config.data import AGENTS_DIR, DB_FILE, SKILLS_DIR
-from app.storage.db import PH, close_db, open_db
+from app.config.data import AGENTS_DIR, SKILLS_DIR
+from app.storage.db import open_db
 from app.utils import flog
 
 
-def export_user_data(username: str) -> io.BytesIO:
+async def export_user_data(username: str) -> io.BytesIO:
     """Recopila todos los datos del usuario y devuelve un ZIP en un BytesIO."""
     buf = io.BytesIO()
 
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-        conn = open_db(DB_FILE)
-        try:
-            cur = conn.cursor()
+        async with open_db() as conn:
 
             # 1. Perfil (sin password_hash)
-            cur.execute(
+            row = await conn.fetchone(
                 "SELECT username, email, display_name, birth_date, gender, country, "
-                f"phone, role, created_at, preferences FROM users WHERE username = {PH}",
+                "phone, role, created_at, preferences FROM users WHERE username = ?",
                 (username,),
             )
-            row = cur.fetchone()
             if row:
                 profile = dict(row)
                 if profile.get("preferences"):
@@ -36,9 +33,9 @@ def export_user_data(username: str) -> io.BytesIO:
                 zf.writestr("profile.json", json.dumps(profile, ensure_ascii=False, indent=2))
 
             # 2. Conexiones (con API keys cifradas — son datos del usuario)
-            cur.execute(f"SELECT * FROM connections WHERE owner_id = {PH}", (username,))
+            rows = await conn.fetchall("SELECT * FROM connections WHERE owner_id = ?", (username,))
             connections = []
-            for r in cur.fetchall():
+            for r in rows:
                 c = dict(r)
                 if isinstance(c.get("data"), str):
                     try:
@@ -49,58 +46,54 @@ def export_user_data(username: str) -> io.BytesIO:
             zf.writestr("connections.json", json.dumps(connections, ensure_ascii=False, indent=2))
 
             # 3. Knowledge (documentos y URLs)
-            cur.execute(f"SELECT * FROM knowledge_items WHERE owner_id = {PH}", (username,))
-            knowledge = [dict(r) for r in cur.fetchall()]
-            zf.writestr("knowledge.json", json.dumps(knowledge, ensure_ascii=False, indent=2))
+            rows = await conn.fetchall("SELECT * FROM knowledge_items WHERE owner_id = ?", (username,))
+            zf.writestr("knowledge.json", json.dumps([dict(r) for r in rows], ensure_ascii=False, indent=2))
 
             # 4. Conversaciones + mensajes (un fichero por conversación)
-            cur.execute(
-                f"SELECT * FROM conversations WHERE user_id = {PH} ORDER BY updated_at DESC",
+            convs = await conn.fetchall(
+                "SELECT * FROM conversations WHERE user_id = ? ORDER BY updated_at DESC",
                 (username,),
             )
-            conversations = [dict(r) for r in cur.fetchall()]
-            for conv in conversations:
-                cur.execute(
-                    f"SELECT * FROM messages WHERE conversation_id = {PH} ORDER BY created_at ASC",
-                    (conv["id"],),
+            for conv in convs:
+                conv_dict = dict(conv)
+                msgs = await conn.fetchall(
+                    "SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC",
+                    (conv_dict["id"],),
                 )
-                conv["messages"] = [dict(m) for m in cur.fetchall()]
-                safe_title = (conv.get("title") or conv["id"])[:40].replace("/", "_").replace("\\", "_")
+                conv_dict["messages"] = [dict(m) for m in msgs]
+                safe_title = (conv_dict.get("title") or conv_dict["id"])[:40].replace("/", "_").replace("\\", "_")
                 zf.writestr(
-                    f"conversations/{conv['id']}_{safe_title}.json",
-                    json.dumps(conv, ensure_ascii=False, indent=2),
+                    f"conversations/{conv_dict['id']}_{safe_title}.json",
+                    json.dumps(conv_dict, ensure_ascii=False, indent=2),
                 )
 
             # 5. Uso de tokens por día
-            cur.execute(
-                f"SELECT day, tokens FROM token_daily WHERE owner_id = {PH} ORDER BY day DESC",
+            rows = await conn.fetchall(
+                "SELECT day, tokens FROM token_daily WHERE owner_id = ? ORDER BY day DESC",
                 (username,),
             )
             zf.writestr(
                 "token_usage.json",
-                json.dumps([dict(r) for r in cur.fetchall()], ensure_ascii=False, indent=2),
+                json.dumps([dict(r) for r in rows], ensure_ascii=False, indent=2),
             )
 
             # 6. Workspaces donde es miembro
-            cur.execute(
+            rows = await conn.fetchall(
                 "SELECT w.id, w.name, w.created_at, wm.role, wm.joined_at "
-                f"FROM workspaces w JOIN workspace_members wm ON w.id = wm.workspace_id WHERE wm.username = {PH}",
+                "FROM workspaces w JOIN workspace_members wm ON w.id = wm.workspace_id WHERE wm.username = ?",
                 (username,),
             )
             zf.writestr(
                 "workspaces.json",
-                json.dumps([dict(r) for r in cur.fetchall()], ensure_ascii=False, indent=2),
+                json.dumps([dict(r) for r in rows], ensure_ascii=False, indent=2),
             )
 
             # 7. Cuentas externas (solo metadatos, sin claves)
-            cur.execute(f"SELECT provider, linked_at FROM accounts WHERE owner_id = {PH}", (username,))
+            rows = await conn.fetchall("SELECT provider, linked_at FROM accounts WHERE owner_id = ?", (username,))
             zf.writestr(
                 "accounts.json",
-                json.dumps([dict(r) for r in cur.fetchall()], ensure_ascii=False, indent=2),
+                json.dumps([dict(r) for r in rows], ensure_ascii=False, indent=2),
             )
-
-        finally:
-            close_db(conn)
 
         # 8. Agentes (ficheros)
         agents = _collect_file_owned(AGENTS_DIR, username)

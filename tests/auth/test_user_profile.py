@@ -11,11 +11,11 @@ from app.auth.auth import (
 )
 
 
-def test_register_user_email_basic(patch_data_dir):
-    username, token = register_user_email("hello@example.com", "pass1234")
+async def test_register_user_email_basic(patch_data_dir):
+    username, token = await register_user_email("hello@example.com", "pass1234")
     assert username == "hello@example.com"
     assert token is None  # EMAIL_VERIFY_ENABLED is False in tests
-    user = get_user_by_email("hello@example.com")
+    user = await get_user_by_email("hello@example.com")
     assert user is not None
     assert user["username"] == "hello@example.com"
     assert user["email"] == "hello@example.com"
@@ -24,8 +24,8 @@ def test_register_user_email_basic(patch_data_dir):
     assert user["is_verified"] in (1, True)
 
 
-def test_register_user_email_with_profile(patch_data_dir):
-    username, _ = register_user_email(
+async def test_register_user_email_with_profile(patch_data_dir):
+    username, _ = await register_user_email(
         "profile@example.com",
         "pass1234",
         birth_date="1990-06-15",
@@ -34,7 +34,7 @@ def test_register_user_email_with_profile(patch_data_dir):
         phone="+34 600 000 000",
         display_name="John Doe",
     )
-    user = get_user_by_username(username)
+    user = await get_user_by_username(username)
     assert user is not None
     assert user["birth_date"] == "1990-06-15"
     assert user["gender"] == "male"
@@ -43,36 +43,36 @@ def test_register_user_email_with_profile(patch_data_dir):
     assert user["display_name"] == "John Doe"
 
 
-def test_register_user_email_duplicate(patch_data_dir):
-    register_user_email("dup@example.com", "pass1234")
+async def test_register_user_email_duplicate(patch_data_dir):
+    await register_user_email("dup@example.com", "pass1234")
     with pytest.raises(ValueError, match="correo"):
-        register_user_email("dup@example.com", "pass5678")
+        await register_user_email("dup@example.com", "pass5678")
 
 
-def test_register_username_is_full_email(patch_data_dir):
-    u1, _ = register_user_email("alice@foo.com", "pass1234")
-    u2, _ = register_user_email("alice@bar.com", "pass1234")
+async def test_register_username_is_full_email(patch_data_dir):
+    u1, _ = await register_user_email("alice@foo.com", "pass1234")
+    u2, _ = await register_user_email("alice@bar.com", "pass1234")
     assert u1 == "alice@foo.com"
     assert u2 == "alice@bar.com"
 
 
-def test_update_user_profile(patch_data_dir):
-    username, _ = register_user_email("update@example.com", "pass1234")
-    update_user_profile(username, country="MX", phone="+52 55 1234 5678")
-    user = get_user_by_username(username)
+async def test_update_user_profile(patch_data_dir):
+    username, _ = await register_user_email("update@example.com", "pass1234")
+    await update_user_profile(username, country="MX", phone="+52 55 1234 5678")
+    user = await get_user_by_username(username)
     assert user["country"] == "MX"
     assert user["phone"] == "+52 55 1234 5678"
 
 
-def test_update_user_profile_ignores_unknown_fields(patch_data_dir):
-    username, _ = register_user_email("ignore@example.com", "pass1234")
-    update_user_profile(username, country="FR", unknown_field="value")
-    user = get_user_by_username(username)
+async def test_update_user_profile_ignores_unknown_fields(patch_data_dir):
+    username, _ = await register_user_email("ignore@example.com", "pass1234")
+    await update_user_profile(username, country="FR", unknown_field="value")
+    user = await get_user_by_username(username)
     assert user["country"] == "FR"
 
 
-def test_update_user_profile_empty_update(patch_data_dir):
-    username, _ = register_user_email("empty@example.com", "pass1234")
-    update_user_profile(username)
-    user = get_user_by_username(username)
+async def test_update_user_profile_empty_update(patch_data_dir):
+    username, _ = await register_user_email("empty@example.com", "pass1234")
+    await update_user_profile(username)
+    user = await get_user_by_username(username)
     assert user is not None

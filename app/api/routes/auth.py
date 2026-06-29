@@ -33,7 +33,7 @@ from app.auth.auth import (
     verify_password,
 )
 from app.config.data import DB_FILE as _DB_FILE
-from app.storage.db import run_db
+from app.storage.db import IS_PG, open_db
 from app.config.session import (
     EMAIL_VERIFY_ENABLED,
     REGISTER_MAX,
@@ -88,7 +88,7 @@ def require_auth(ga_token: Optional[str] = Cookie(default=None)) -> str:
     return username
 
 
-def require_workspace(ga_token: Optional[str] = Cookie(default=None)) -> WorkspaceContext:
+async def require_workspace(ga_token: Optional[str] = Cookie(default=None)) -> WorkspaceContext:
     """Dependency: validates session token and returns WorkspaceContext(user, workspace_id).
 
     Defense-in-depth: even with a valid JWT, verify that the user still belongs to the
@@ -100,14 +100,14 @@ def require_workspace(ga_token: Optional[str] = Cookie(default=None)) -> Workspa
     if not username:
         raise HTTPException(status_code=401, detail="Token inválido o expirado")
     # Personal workspace: id == username, always accessible
-    if workspace_id != username and not _workspaces.can_access(workspace_id, username):
+    if workspace_id != username and not await _workspaces.can_access(workspace_id, username):
         # Membership revoked or token tampered — fall back to personal workspace
         workspace_id = username
     return WorkspaceContext(user=username, workspace_id=workspace_id)
 
 
-def require_admin(username: str = Depends(require_auth)) -> str:
-    if get_user_role(username) != "admin":
+async def require_admin(username: str = Depends(require_auth)) -> str:
+    if await get_user_role(username) != "admin":
         raise HTTPException(status_code=403, detail="Acceso restringido")
     return username
 
@@ -133,7 +133,7 @@ async def register(request: Request, response: Response) -> Dict[str, Any]:
         raise HTTPException(status_code=400, detail="La contraseña debe tener al menos 8 caracteres")
 
     try:
-        username, verify_token = register_user_email(
+        username, verify_token = await register_user_email(
             email,
             password,
             birth_date=birth_date,
@@ -163,7 +163,7 @@ async def login(request: Request, response: Response) -> Dict[str, Any]:
     password = str(body.get("password") or "")
     if not email or not password:
         raise HTTPException(status_code=400, detail="Email y contraseña requeridos")
-    user = get_user_by_email(email)
+    user = await get_user_by_email(email)
     if not user or not user.get("password_hash"):
         raise HTTPException(status_code=401, detail="Credenciales incorrectas")
     if not verify_password(password, user["password_hash"]):
@@ -179,7 +179,7 @@ async def login(request: Request, response: Response) -> Dict[str, Any]:
 
 @router.get("/verify")
 async def verify_email(token: str, response: Response) -> Dict[str, Any]:
-    username = verify_email_token(token)
+    username = await verify_email_token(token)
     if not username:
         raise HTTPException(status_code=400, detail="Enlace de verificación inválido o expirado")
     auth_token = create_token(username)
@@ -209,24 +209,19 @@ async def me(ctx: WorkspaceContext = Depends(require_workspace)) -> Dict[str, An
     username = ctx.user
     workspace_id = ctx.workspace_id
 
-    def _fetch():
-        role = get_user_role(username)
-        if is_guest(username):
-            auth_method = "guest"
-            user_row: Dict[str, Any] = {}
+    role = await get_user_role(username)
+    ws_name: Optional[str] = None
+    if is_guest(username):
+        auth_method = "guest"
+        user_row: Dict[str, Any] = {}
+    else:
+        user_row = await get_user_by_username(username) or {}
+        auth_method = user_row.get("provider") or "internal"
+        if workspace_id != username:
+            ws = await _workspaces.get(workspace_id)
+            ws_name = ws["name"] if ws else workspace_id
         else:
-            user_row = get_user_by_username(username) or {}
-            auth_method = user_row.get("provider") or "internal"
-        ws_name: Optional[str] = None
-        if not is_guest(username):
-            if workspace_id != username:
-                ws = _workspaces.get(workspace_id)
-                ws_name = ws["name"] if ws else workspace_id
-            else:
-                ws_name = user_row.get("display_name") or username
-        return role, auth_method, ws_name
-
-    role, auth_method, ws_name = await run_db(_fetch)
+            ws_name = user_row.get("display_name") or username
 
     payload: Dict[str, Any] = {
         "username": username,
@@ -248,7 +243,7 @@ async def forgot_password(request: Request) -> Dict[str, Any]:
     email = str(body.get("email") or "").strip().lower()
     if not email or not re.match(r"^[^\s@]+@[^\s@]+\.[^\s@]+$", email):
         raise HTTPException(status_code=400, detail="Email inválido")
-    token = create_password_reset_token(email)
+    token = await create_password_reset_token(email)
     if token:
         base_url = str(request.base_url).rstrip("/")
         send_reset_email(email, token, base_url)
@@ -265,7 +260,7 @@ async def reset_password(request: Request) -> Dict[str, Any]:
         raise HTTPException(status_code=400, detail="Token y contraseña requeridos")
     if len(new_password) < 8:
         raise HTTPException(status_code=400, detail="La contraseña debe tener al menos 8 caracteres")
-    if not consume_reset_token(token, new_password):
+    if not await consume_reset_token(token, new_password):
         raise HTTPException(status_code=400, detail="Enlace inválido o expirado")
     return {"ok": True}
 
@@ -282,26 +277,18 @@ async def change_password(
     if len(new_pw) < 4:
         raise HTTPException(status_code=400, detail="La nueva contraseña es muy corta")
 
-    def _sync() -> Dict[str, Any]:
-        from app.config.data import DB_FILE
-        from app.storage.db import PH, close_db, open_db
-        user = get_user_by_username(username)
-        if not user:
-            raise HTTPException(status_code=404, detail="Usuario no encontrado")
-        if not verify_password(current, user.get("password_hash", "")):
-            raise HTTPException(status_code=401, detail="Contraseña actual incorrecta")
-        conn = open_db(DB_FILE)
-        try:
-            conn.cursor().execute(
-                f"UPDATE users SET password_hash = {PH} WHERE username = {PH}",
-                (hash_password(new_pw), username),
-            )
-            conn.commit()
-        finally:
-            close_db(conn)
-        return {"ok": True}
-
-    return await run_db(_sync)
+    user = await get_user_by_username(username)
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    if not verify_password(current, user.get("password_hash", "")):
+        raise HTTPException(status_code=401, detail="Contraseña actual incorrecta")
+    async with open_db() as conn:
+        await conn.execute(
+            "UPDATE users SET password_hash = ? WHERE username = ?",
+            (hash_password(new_pw), username),
+        )
+        await conn.commit()
+    return {"ok": True}
 
 
 # ── GDPR ──────────────────────────────────────────────────────────────────────
@@ -309,7 +296,7 @@ async def change_password(
 
 @router.get("/me/deletion-status")
 async def get_deletion_status(username: str = Depends(require_auth)) -> Dict[str, Any]:
-    user = get_user_by_username(username)
+    user = await get_user_by_username(username)
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
     return {
@@ -322,7 +309,7 @@ async def get_deletion_status(username: str = Depends(require_auth)) -> Dict[str
 async def request_account_deletion(
     username: str = Depends(require_auth),
 ) -> Dict[str, Any]:
-    owned = get_owned_workspaces(username)
+    owned = await get_owned_workspaces(username)
     if owned:
         raise HTTPException(
             status_code=409,
@@ -331,7 +318,7 @@ async def request_account_deletion(
                 "workspaces": owned,
             },
         )
-    schedule_user_deletion(username)
+    await schedule_user_deletion(username)
     return {"ok": True, "message": "Cuenta programada para eliminación en 30 días"}
 
 
@@ -339,7 +326,7 @@ async def request_account_deletion(
 async def cancel_account_deletion(request: Request) -> Dict[str, Any]:
     body = await request.json()
     token = str(body.get("token", "")).strip()
-    if not token or not cancel_user_deletion(token):
+    if not token or not await cancel_user_deletion(token):
         raise HTTPException(status_code=400, detail="Token inválido o expirado")
     return {"ok": True}
 
@@ -348,12 +335,9 @@ async def cancel_account_deletion(request: Request) -> Dict[str, Any]:
 async def export_my_data(username: str = Depends(require_auth)):
     from datetime import datetime, timezone
     from fastapi.responses import StreamingResponse
+    from app.services.gdpr import export_user_data
 
-    def _sync():
-        from app.services.gdpr import export_user_data
-        return export_user_data(username)
-
-    buf = await run_db(_sync)
+    buf = await export_user_data(username)
     date_str = datetime.now(timezone.utc).strftime("%Y%m%d")
     safe_name = username.split("@")[0].replace(" ", "_")
     filename = f"export_{safe_name}_{date_str}.zip"
@@ -371,38 +355,24 @@ _MAX_AVATAR_BYTES = 2 * 1024 * 1024  # 2 MB
 _ALLOWED_AVATAR_EXT = {".jpg", ".jpeg", ".png", ".webp"}
 
 
-def _get_social_fields(username: str) -> Dict[str, Any]:
+async def _get_social_fields(username: str) -> Dict[str, Any]:
     import json
-    from app.config.data import DB_FILE
-    from app.storage.db import PH, close_db, open_db
-
-    conn = open_db(DB_FILE)
-    row = None
-    followers_count = 0
-    following_count = 0
-    try:
-        cur = conn.cursor()
-        cur.execute(
+    async with open_db() as conn:
+        row = await conn.fetchone(
             "SELECT avatar, bio, languages, email_public, github, cv, created_at "
-            f"FROM users WHERE username = {PH}",
+            "FROM users WHERE username = ?",
             (username,),
         )
-        row = cur.fetchone()
-        if row:
-            cur.execute(
-                f"SELECT COUNT(*) FROM user_follows WHERE following = {PH}",
-                (username,),
-            )
-            followers_count = cur.fetchone()[0]
-            cur.execute(
-                f"SELECT COUNT(*) FROM user_follows WHERE follower = {PH}",
-                (username,),
-            )
-            following_count = cur.fetchone()[0]
-    finally:
-        close_db(conn)
-    if not row:
-        return {}
+        if not row:
+            return {}
+        followers_count = await conn.fetchval(
+            "SELECT COUNT(*) FROM user_follows WHERE following = ?",
+            (username,),
+        ) or 0
+        following_count = await conn.fetchval(
+            "SELECT COUNT(*) FROM user_follows WHERE follower = ?",
+            (username,),
+        ) or 0
     try:
         langs = json.loads(row[2] or "[]")
     except Exception:
@@ -435,22 +405,13 @@ async def update_profile(
     github = str(body.get("github") or "").strip()[:100] or None
     cv = str(body.get("cv") or "").strip()[:20000] or None
 
-    def _sync() -> Dict[str, Any]:
-        from app.config.data import DB_FILE
-        from app.storage.db import PH, close_db, open_db
-        conn = open_db(DB_FILE)
-        try:
-            conn.execute(
-                f"UPDATE users SET bio={PH}, languages={PH}, email_public={PH}, github={PH}, cv={PH} "
-                f"WHERE username={PH}",
-                (bio, languages, email_public, github, cv, username),
-            )
-            conn.commit()
-        finally:
-            close_db(conn)
-        return {"ok": True}
-
-    return await run_db(_sync)
+    async with open_db() as conn:
+        await conn.execute(
+            "UPDATE users SET bio=?, languages=?, email_public=?, github=?, cv=? WHERE username=?",
+            (bio, languages, email_public, github, cv, username),
+        )
+        await conn.commit()
+    return {"ok": True}
 
 
 @router.post("/me/avatar")
@@ -477,22 +438,13 @@ async def upload_avatar(
         raise HTTPException(status_code=400, detail="El avatar no puede superar 2 MB.")
 
     encoded = base64.b64encode(data).decode("ascii")
-
-    def _sync() -> Dict[str, Any]:
-        from app.config.data import DB_FILE
-        from app.storage.db import PH, close_db, open_db
-        conn = open_db(DB_FILE)
-        try:
-            conn.execute(
-                f"UPDATE users SET avatar={PH} WHERE username={PH}",
-                (encoded, username),
-            )
-            conn.commit()
-        finally:
-            close_db(conn)
-        return {"ok": True, "avatar_url": f"/api/users/{username}/avatar"}
-
-    return await run_db(_sync)
+    async with open_db() as conn:
+        await conn.execute(
+            "UPDATE users SET avatar=? WHERE username=?",
+            (encoded, username),
+        )
+        await conn.commit()
+    return {"ok": True, "avatar_url": f"/api/users/{username}/avatar"}
 
 
 users_router = APIRouter(prefix="/api/users", tags=["users"])
@@ -506,39 +458,28 @@ async def search_users(
     username: str = Depends(require_auth),
 ) -> List[Dict[str, Any]]:
     limit = min(limit, 50)
-
-    def _sync():
-        from app.config.data import DB_FILE
-        from app.storage.db import PH, close_db, open_db
-        conn = open_db(DB_FILE)
-        try:
-            cur = conn.cursor()
-            if q:
-                pattern = f"%{q}%"
-                cur.execute(
-                    f"SELECT u.username, u.avatar, "
-                    f"(SELECT COUNT(*) FROM user_follows WHERE following = u.username) AS followers_count, "
-                    f"(SELECT COUNT(*) FROM resource_social WHERE owner = u.username AND is_public = 1) AS public_resources_count "
-                    f"FROM users u "
-                    f"WHERE u.username != {PH} AND LOWER(u.username) LIKE LOWER({PH}) "
-                    f"ORDER BY u.username LIMIT {PH} OFFSET {PH}",
-                    (username, pattern, limit, offset),
-                )
-            else:
-                cur.execute(
-                    f"SELECT u.username, u.avatar, "
-                    f"(SELECT COUNT(*) FROM user_follows WHERE following = u.username) AS followers_count, "
-                    f"(SELECT COUNT(*) FROM resource_social WHERE owner = u.username AND is_public = 1) AS public_resources_count "
-                    f"FROM users u "
-                    f"WHERE u.username != {PH} "
-                    f"ORDER BY u.username LIMIT {PH} OFFSET {PH}",
-                    (username, limit, offset),
-                )
-            return cur.fetchall()
-        finally:
-            close_db(conn)
-
-    rows = await run_db(_sync)
+    async with open_db() as conn:
+        if q:
+            pattern = f"%{q}%"
+            rows = await conn.fetchall(
+                "SELECT u.username, u.avatar, "
+                "(SELECT COUNT(*) FROM user_follows WHERE following = u.username) AS followers_count, "
+                "(SELECT COUNT(*) FROM resource_social WHERE owner = u.username AND is_public = 1) AS public_resources_count "
+                "FROM users u "
+                "WHERE u.username != ? AND LOWER(u.username) LIKE LOWER(?) "
+                "ORDER BY u.username LIMIT ? OFFSET ?",
+                (username, pattern, limit, offset),
+            )
+        else:
+            rows = await conn.fetchall(
+                "SELECT u.username, u.avatar, "
+                "(SELECT COUNT(*) FROM user_follows WHERE following = u.username) AS followers_count, "
+                "(SELECT COUNT(*) FROM resource_social WHERE owner = u.username AND is_public = 1) AS public_resources_count "
+                "FROM users u "
+                "WHERE u.username != ? "
+                "ORDER BY u.username LIMIT ? OFFSET ?",
+                (username, limit, offset),
+            )
     return [
         {
             "username": row[0],
@@ -555,18 +496,8 @@ async def get_avatar(username: str, _: str = Depends(require_auth)):
     import base64
     from fastapi.responses import Response
 
-    def _sync():
-        from app.config.data import DB_FILE
-        from app.storage.db import PH, close_db, open_db
-        conn = open_db(DB_FILE)
-        try:
-            cur = conn.cursor()
-            cur.execute(f"SELECT avatar FROM users WHERE username={PH}", (username,))
-            return cur.fetchone()
-        finally:
-            close_db(conn)
-
-    row = await run_db(_sync)
+    async with open_db() as conn:
+        row = await conn.fetchone("SELECT avatar FROM users WHERE username=?", (username,))
 
     if not row or not row[0]:
         return Response(status_code=204)
@@ -586,14 +517,11 @@ async def get_public_profile(
     username: str,
     _: str = Depends(require_auth),
 ) -> Dict[str, Any]:
-    def _sync() -> Dict[str, Any]:
-        user = get_user_by_username(username)
-        if not user:
-            raise HTTPException(status_code=404, detail="Usuario no encontrado")
-        fields = _get_social_fields(username)
-        return {"username": username, **fields}
-
-    return await run_db(_sync)
+    user = await get_user_by_username(username)
+    if not user:
+        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    fields = await _get_social_fields(username)
+    return {"username": username, **fields}
 
 
 # ── Admin ─────────────────────────────────────────────────────────────────────
@@ -606,73 +534,53 @@ async def admin_stats(_: str = Depends(require_admin)) -> Dict[str, Any]:
     import datetime as _dt
     from app.config.data import AGENTS_DIR
 
-    def _sync():
-        from app.config.data import DB_FILE
-        from app.storage.db import IS_PG, close_db, open_db
-        conn = open_db(DB_FILE)
+    async with open_db() as conn:
+        u = await conn.fetchone(
+            "SELECT COUNT(*), SUM(CASE WHEN is_active=1 THEN 1 ELSE 0 END), "
+            "SUM(CASE WHEN is_verified=1 THEN 1 ELSE 0 END) FROM users"
+        )
+        users_total, users_active, users_verified = (u[0] or 0, u[1] or 0, u[2] or 0)
+
+        c = await conn.fetchone(
+            "SELECT COUNT(*), COALESCE(SUM(tokens_in),0), COALESCE(SUM(tokens_out),0) FROM connections"
+        )
+        conns_total, tokens_in, tokens_out = (c[0] or 0, c[1] or 0, c[2] or 0)
+
+        knowledge_total = (await conn.fetchval("SELECT COUNT(*) FROM knowledge_items")) or 0
+        conversations_total = (await conn.fetchval("SELECT COUNT(*) FROM conversations")) or 0
+
+        cutoff = (_dt.date.today() - _dt.timedelta(days=13)).isoformat()
+        today = _dt.date.today().isoformat()
         try:
-            cur = conn.cursor()
-
-            cur.execute("SELECT COUNT(*), SUM(CASE WHEN is_active=1 THEN 1 ELSE 0 END), SUM(CASE WHEN is_verified=1 THEN 1 ELSE 0 END) FROM users")
-            u = cur.fetchone()
-            users_total, users_active, users_verified = (u[0] or 0, u[1] or 0, u[2] or 0)
-
-            cur.execute("SELECT COUNT(*), COALESCE(SUM(tokens_in),0), COALESCE(SUM(tokens_out),0) FROM connections")
-            c = cur.fetchone()
-            conns_total, tokens_in, tokens_out = (c[0] or 0, c[1] or 0, c[2] or 0)
-
-            cur.execute("SELECT COUNT(*) FROM knowledge_items")
-            knowledge_total = (cur.fetchone()[0] or 0)
-
-            cur.execute("SELECT COUNT(*) FROM conversations")
-            conversations_total = (cur.fetchone()[0] or 0)
-
-            _PH = "%s" if IS_PG else "?"
-            cutoff = (_dt.date.today() - _dt.timedelta(days=13)).isoformat()
-            today = _dt.date.today().isoformat()
-            try:
-                cur.execute(
-                    f"SELECT day, SUM(tokens) FROM token_daily WHERE day >= {_PH} GROUP BY day ORDER BY day ASC",
+            daily_rows = await conn.fetchall(
+                "SELECT day, SUM(tokens) FROM token_daily WHERE day >= ? GROUP BY day ORDER BY day ASC",
+                (cutoff,),
+            )
+            tokens_daily = [{"day": r[0], "tokens": r[1]} for r in daily_rows]
+            # First-run backfill: seed today from cumulative connection totals
+            if not tokens_daily and (tokens_in + tokens_out) > 0:
+                if IS_PG:
+                    await conn.execute(
+                        "INSERT INTO token_daily (day, owner_id, tokens) "
+                        "SELECT ?, owner_id, tokens_in + tokens_out FROM connections "
+                        "WHERE tokens_in + tokens_out > 0 ON CONFLICT (day, owner_id) DO NOTHING",
+                        (today,),
+                    )
+                else:
+                    await conn.execute(
+                        "INSERT OR IGNORE INTO token_daily (day, owner_id, tokens) "
+                        "SELECT ?, owner_id, tokens_in + tokens_out FROM connections "
+                        "WHERE tokens_in + tokens_out > 0",
+                        (today,),
+                    )
+                await conn.commit()
+                daily_rows = await conn.fetchall(
+                    "SELECT day, SUM(tokens) FROM token_daily WHERE day >= ? GROUP BY day ORDER BY day ASC",
                     (cutoff,),
                 )
-                tokens_daily = [{"day": r[0], "tokens": r[1]} for r in cur.fetchall()]
-                # First-run backfill: seed today from cumulative connection totals
-                if not tokens_daily and (tokens_in + tokens_out) > 0:
-                    if IS_PG:
-                        cur.execute(
-                            "INSERT INTO token_daily (day, owner_id, tokens) "
-                            "SELECT %s, owner_id, tokens_in + tokens_out FROM connections "
-                            "WHERE tokens_in + tokens_out > 0 ON CONFLICT (day, owner_id) DO NOTHING",
-                            (today,),
-                        )
-                    else:
-                        cur.execute(
-                            "INSERT OR IGNORE INTO token_daily (day, owner_id, tokens) "
-                            "SELECT ?, owner_id, tokens_in + tokens_out FROM connections "
-                            "WHERE tokens_in + tokens_out > 0",
-                            (today,),
-                        )
-                    conn.commit()
-                    cur.execute(
-                        f"SELECT day, SUM(tokens) FROM token_daily WHERE day >= {_PH} GROUP BY day ORDER BY day ASC",
-                        (cutoff,),
-                    )
-                    tokens_daily = [{"day": r[0], "tokens": r[1]} for r in cur.fetchall()]
-            except Exception:
-                tokens_daily = []
-        finally:
-            close_db(conn)
-        return (
-            users_total, users_active, users_verified,
-            conns_total, tokens_in, tokens_out,
-            knowledge_total, conversations_total, tokens_daily,
-        )
-
-    (
-        users_total, users_active, users_verified,
-        conns_total, tokens_in, tokens_out,
-        knowledge_total, conversations_total, tokens_daily,
-    ) = await run_db(_sync)
+                tokens_daily = [{"day": r[0], "tokens": r[1]} for r in daily_rows]
+        except Exception:
+            tokens_daily = []
 
     agents_public = len(list(AGENTS_DIR.glob("public/*/config.json"))) if AGENTS_DIR.exists() else 0
     agents_private = len(list(AGENTS_DIR.glob("private/*/config.json"))) if AGENTS_DIR.exists() else 0
@@ -703,29 +611,18 @@ async def admin_list_users(
     verified: Optional[str] = None,
     _: str = Depends(require_admin),
 ) -> List[Dict[str, Any]]:
-    def _sync():
-        from app.config.data import DB_FILE
-        from app.storage.db import close_db, open_db
-        users = list_users()
-        # Agregar tokens consumidos por usuario
-        conn = open_db(DB_FILE)
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                "SELECT owner_id, COALESCE(SUM(tokens_in), 0), COALESCE(SUM(tokens_out), 0) "
-                "FROM connections GROUP BY owner_id"
-            )
-            token_map = {r[0]: {"tokens_in": r[1], "tokens_out": r[2]} for r in cur.fetchall()}
-        finally:
-            close_db(conn)
-        for u in users:
-            uname = u.get("username")
-            tokens = token_map.get(uname, {"tokens_in": 0, "tokens_out": 0})
-            u["tokens_in"] = tokens["tokens_in"]
-            u["tokens_out"] = tokens["tokens_out"]
-        return users
-
-    users = await run_db(_sync)
+    users = await list_users()
+    async with open_db() as conn:
+        token_rows = await conn.fetchall(
+            "SELECT owner_id, COALESCE(SUM(tokens_in), 0), COALESCE(SUM(tokens_out), 0) "
+            "FROM connections GROUP BY owner_id"
+        )
+    token_map = {r[0]: {"tokens_in": r[1], "tokens_out": r[2]} for r in token_rows}
+    for u in users:
+        uname = u.get("username")
+        tokens = token_map.get(uname, {"tokens_in": 0, "tokens_out": 0})
+        u["tokens_in"] = tokens["tokens_in"]
+        u["tokens_out"] = tokens["tokens_out"]
     if q:
         q_low = q.lower()
         users = [u for u in users if q_low in (u.get("username") or "").lower() or q_low in (u.get("email") or "").lower()]
@@ -761,12 +658,12 @@ async def admin_patch_user(
         raise HTTPException(status_code=400, detail="La contraseña debe tener al menos 4 caracteres")
     if not updates and not new_pw:
         raise HTTPException(status_code=400, detail="Sin cambios")
-    if updates and not admin_update_user(username, **updates):
+    if updates and not await admin_update_user(username, **updates):
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
-    if new_pw and not admin_set_password(username, new_pw):
+    if new_pw and not await admin_set_password(username, new_pw):
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
     if "is_active" in updates:
-        user = get_user_by_username(username)
+        user = await get_user_by_username(username)
         email = user.get("email") if user else None
         if email:
             base_url = str(request.base_url).rstrip("/")
@@ -780,7 +677,7 @@ async def admin_delete_user(
 ) -> Dict[str, Any]:
     if username == admin:
         raise HTTPException(status_code=400, detail="No puedes eliminar tu propia cuenta")
-    if not delete_user(username):
+    if not await delete_user(username):
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
     return {"ok": True}
 
@@ -789,21 +686,13 @@ async def admin_delete_user(
 async def admin_list_connections(_: str = Depends(require_admin)) -> List[Dict[str, Any]]:
     import json as _json
 
-    def _sync():
-        from app.config.data import DB_FILE
-        from app.storage.db import close_db, open_db
-        conn = open_db(DB_FILE)
-        try:
-            cur = conn.cursor()
-            cur.execute("SELECT id, owner_id, data, tokens_in, tokens_out, created_at FROM connections ORDER BY created_at DESC")
-            rows = cur.fetchall()
-            cur.execute("SELECT username, email FROM users")
-            email_map = {r[0]: r[1] for r in cur.fetchall()}
-        finally:
-            close_db(conn)
-        return rows, email_map
-
-    rows, email_map = await run_db(_sync)
+    async with open_db() as conn:
+        rows = await conn.fetchall(
+            "SELECT id, owner_id, data, tokens_in, tokens_out, created_at "
+            "FROM connections ORDER BY created_at DESC"
+        )
+        email_rows = await conn.fetchall("SELECT username, email FROM users")
+    email_map = {r[0]: r[1] for r in email_rows}
     result = []
     for row in rows:
         d = dict(row) if isinstance(row, dict) else {
@@ -833,43 +722,37 @@ async def admin_delete_connection(
 ) -> Dict[str, Any]:
     from app.config.data import DB_FILE
     from app.storage.storage import ConnectionStorage
-    if not ConnectionStorage(DB_FILE).delete(conn_id, owner_id=None):
+    if not await ConnectionStorage(DB_FILE).delete(conn_id, owner_id=None):
         raise HTTPException(status_code=404, detail="Conexión no encontrada")
     return {"ok": True}
 
 
 @admin_router.get("/agents")
 async def admin_list_agents(_: str = Depends(require_admin)) -> List[Dict[str, Any]]:
-    def _sync():
-        from app.config.data import AGENTS_DIR, DB_FILE
-        from app.storage.db import close_db, open_db
-        from app.storage.storage import AgentStorage
-        agents = AgentStorage(AGENTS_DIR).list(scope="all")
-        conn = open_db(DB_FILE)
-        try:
-            cur = conn.cursor()
-            cur.execute("SELECT username, email FROM users")
-            email_map = {r[0]: r[1] for r in cur.fetchall()}
-            cur.execute("SELECT id, owner_id, tokens_in, tokens_out FROM connections")
-            conn_data = {r[0]: {"owner_id": r[1], "tokens_in": r[2], "tokens_out": r[3]} for r in cur.fetchall()}
-        finally:
-            close_db(conn)
-        for a in agents:
-            conn_id = a.get("connection_id")
-            owner = a.get("owner_id")
-            if not owner and conn_id and conn_id in conn_data:
-                owner = conn_data[conn_id]["owner_id"]
-            a["owner_email"] = email_map.get(owner, owner) if owner else None
-            # Agregar tokens de la conexión asociada
-            if conn_id and conn_id in conn_data:
-                a["tokens_in"] = conn_data[conn_id]["tokens_in"]
-                a["tokens_out"] = conn_data[conn_id]["tokens_out"]
-            else:
-                a["tokens_in"] = 0
-                a["tokens_out"] = 0
-        return agents
-
-    return await run_db(_sync)
+    from app.config.data import AGENTS_DIR
+    from app.storage.storage import AgentStorage
+    agents = AgentStorage(AGENTS_DIR).list(scope="all")
+    async with open_db() as conn:
+        user_rows = await conn.fetchall("SELECT username, email FROM users")
+        conn_rows = await conn.fetchall(
+            "SELECT id, owner_id, tokens_in, tokens_out FROM connections"
+        )
+    email_map = {r[0]: r[1] for r in user_rows}
+    conn_data = {r[0]: {"owner_id": r[1], "tokens_in": r[2], "tokens_out": r[3]} for r in conn_rows}
+    for a in agents:
+        conn_id = a.get("connection_id")
+        owner = a.get("owner_id")
+        if not owner and conn_id and conn_id in conn_data:
+            owner = conn_data[conn_id]["owner_id"]
+        a["owner_email"] = email_map.get(owner, owner) if owner else None
+        # Agregar tokens de la conexión asociada
+        if conn_id and conn_id in conn_data:
+            a["tokens_in"] = conn_data[conn_id]["tokens_in"]
+            a["tokens_out"] = conn_data[conn_id]["tokens_out"]
+        else:
+            a["tokens_in"] = 0
+            a["tokens_out"] = 0
+    return agents
 
 
 @admin_router.put("/agents/{agent_id}")
@@ -921,24 +804,16 @@ async def admin_delete_agent(
 
 @admin_router.get("/knowledge")
 async def admin_list_knowledge(_: str = Depends(require_admin)) -> List[Dict[str, Any]]:
-    def _sync():
-        from app.config.data import DB_FILE
-        from app.storage.db import close_db, open_db
-        from app.storage.knowledge import KnowledgeStorage
-        conn = open_db(DB_FILE)
-        try:
-            cur = conn.cursor()
-            cur.execute("SELECT username, email FROM users")
-            email_map = {r[0]: r[1] for r in cur.fetchall()}
-        finally:
-            close_db(conn)
-        items = KnowledgeStorage(DB_FILE).list(owner_id=None)
-        for item in items:
-            item["owner_email"] = email_map.get(item.get("owner_id", ""), item.get("owner_id", ""))
-            item.pop("content", None)
-        return items
-
-    return await run_db(_sync)
+    from app.config.data import DB_FILE
+    from app.storage.knowledge import KnowledgeStorage
+    async with open_db() as conn:
+        user_rows = await conn.fetchall("SELECT username, email FROM users")
+    email_map = {r[0]: r[1] for r in user_rows}
+    items = await KnowledgeStorage(DB_FILE).list(owner_id=None)
+    for item in items:
+        item["owner_email"] = email_map.get(item.get("owner_id", ""), item.get("owner_id", ""))
+        item.pop("content", None)
+    return items
 
 
 @admin_router.delete("/knowledge/{item_id}")
@@ -947,33 +822,23 @@ async def admin_delete_knowledge(
 ) -> Dict[str, Any]:
     from app.config.data import DB_FILE
     from app.storage.knowledge import KnowledgeStorage
-    if not KnowledgeStorage(DB_FILE).delete(item_id, owner_id=None):
+    if not await KnowledgeStorage(DB_FILE).delete(item_id, owner_id=None):
         raise HTTPException(status_code=404, detail="Elemento no encontrado")
     return {"ok": True}
 
 
 @admin_router.get("/groups")
 async def admin_list_groups(_: str = Depends(require_admin)) -> List[Dict[str, Any]]:
-    def _sync():
-        from app.config.data import DB_FILE
-        from app.storage.db import close_db, open_db
-        conn = open_db(DB_FILE)
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                "SELECT wg.id, wg.workspace_id, wg.name, wg.created_by, wg.created_at, "
-                "COUNT(DISTINCT wgm.username) AS member_count, "
-                "COUNT(DISTINCT rg.resource_id || '|' || rg.resource_type) AS resource_count "
-                "FROM workspace_groups wg "
-                "LEFT JOIN workspace_group_members wgm ON wg.id = wgm.group_id "
-                "LEFT JOIN resource_groups rg ON wg.id = rg.group_id "
-                "GROUP BY wg.id ORDER BY wg.created_at DESC"
-            )
-            return cur.fetchall()
-        finally:
-            close_db(conn)
-
-    rows = await run_db(_sync)
+    async with open_db() as conn:
+        rows = await conn.fetchall(
+            "SELECT wg.id, wg.workspace_id, wg.name, wg.created_by, wg.created_at, "
+            "COUNT(DISTINCT wgm.username) AS member_count, "
+            "COUNT(DISTINCT rg.resource_id || '|' || rg.resource_type) AS resource_count "
+            "FROM workspace_groups wg "
+            "LEFT JOIN workspace_group_members wgm ON wg.id = wgm.group_id "
+            "LEFT JOIN resource_groups rg ON wg.id = rg.group_id "
+            "GROUP BY wg.id ORDER BY wg.created_at DESC"
+        )
     return [
         {
             "id": r[0], "workspace_id": r[1], "name": r[2],
@@ -988,9 +853,9 @@ async def admin_list_groups(_: str = Depends(require_admin)) -> List[Dict[str, A
 async def admin_delete_group(
     group_id: str, _: str = Depends(require_admin)
 ) -> Dict[str, Any]:
-    if not _groups.get(group_id):
+    if not await _groups.get(group_id):
         raise HTTPException(status_code=404, detail="Grupo no encontrado")
-    _groups.delete(group_id)
+    await _groups.delete(group_id)
     return {"ok": True}
 
 
@@ -999,31 +864,27 @@ async def admin_list_workspaces(_: str = Depends(require_admin)) -> List[Dict[st
     import json as _json
     from app.config.data import AGENTS_DIR
 
-    def _sync():
-        from app.config.data import DB_FILE
-        from app.storage.db import close_db, open_db
-        conn = open_db(DB_FILE)
-        try:
-            cur = conn.cursor()
-            cur.execute("SELECT id, name, created_by, created_at FROM workspaces ORDER BY created_at DESC")
-            workspaces = [
-                {"id": r[0], "name": r[1], "created_by": r[2], "created_at": r[3]}
-                for r in cur.fetchall()
-            ]
-            cur.execute("SELECT workspace_id, COUNT(*) FROM workspace_members GROUP BY workspace_id")
-            member_counts = {r[0]: r[1] for r in cur.fetchall()}
-            cur.execute(
-                "SELECT owner_id, COUNT(*), COALESCE(SUM(tokens_in), 0), COALESCE(SUM(tokens_out), 0) "
-                "FROM connections GROUP BY owner_id"
-            )
-            conn_stats = {r[0]: {"count": r[1], "tokens_in": r[2], "tokens_out": r[3]} for r in cur.fetchall()}
-            cur.execute("SELECT owner_id, COUNT(*) FROM knowledge_items GROUP BY owner_id")
-            know_counts = {r[0]: r[1] for r in cur.fetchall()}
-        finally:
-            close_db(conn)
-        return workspaces, member_counts, conn_stats, know_counts
-
-    workspaces, member_counts, conn_stats, know_counts = await run_db(_sync)
+    async with open_db() as conn:
+        ws_rows = await conn.fetchall(
+            "SELECT id, name, created_by, created_at FROM workspaces ORDER BY created_at DESC"
+        )
+        workspaces = [
+            {"id": r[0], "name": r[1], "created_by": r[2], "created_at": r[3]}
+            for r in ws_rows
+        ]
+        mc_rows = await conn.fetchall(
+            "SELECT workspace_id, COUNT(*) FROM workspace_members GROUP BY workspace_id"
+        )
+        member_counts = {r[0]: r[1] for r in mc_rows}
+        cs_rows = await conn.fetchall(
+            "SELECT owner_id, COUNT(*), COALESCE(SUM(tokens_in), 0), COALESCE(SUM(tokens_out), 0) "
+            "FROM connections GROUP BY owner_id"
+        )
+        conn_stats = {r[0]: {"count": r[1], "tokens_in": r[2], "tokens_out": r[3]} for r in cs_rows}
+        kc_rows = await conn.fetchall(
+            "SELECT owner_id, COUNT(*) FROM knowledge_items GROUP BY owner_id"
+        )
+        know_counts = {r[0]: r[1] for r in kc_rows}
 
     agent_counts: Dict[str, int] = {}
     if AGENTS_DIR.exists():
@@ -1056,9 +917,9 @@ async def admin_list_workspaces(_: str = Depends(require_admin)) -> List[Dict[st
 async def admin_delete_workspace(
     workspace_id: str, _: str = Depends(require_admin)
 ) -> Dict[str, Any]:
-    if not _workspaces.get(workspace_id):
+    if not await _workspaces.get(workspace_id):
         raise HTTPException(status_code=404, detail="Workspace no encontrado")
-    _workspaces.delete(workspace_id)
+    await _workspaces.delete(workspace_id)
     return {"ok": True}
 
 
@@ -1070,7 +931,7 @@ async def admin_impersonate(
 ) -> Dict[str, Any]:
     if username == admin:
         raise HTTPException(status_code=400, detail="Ya eres este usuario")
-    if not get_user_by_username(username):
+    if not await get_user_by_username(username):
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
     token = create_token(username)
     response.set_cookie("ga_token", token, httponly=True, samesite="lax", secure=SECURE_COOKIES, max_age=43200)

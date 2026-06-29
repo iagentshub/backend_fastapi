@@ -10,7 +10,7 @@ from pydantic import BaseModel
 from app.api.routes.auth import WorkspaceContext, require_workspace
 from app.auth.auth import get_user_role
 from app.config.data import DB_FILE, SKILLS_DIR
-from app.storage.db import run_db
+
 from app.storage.guest import get_session, is_guest
 from app.storage.knowledge import FolderStorage
 from app.storage.storage import SkillStorage
@@ -44,7 +44,7 @@ async def list_skills(
         private = s.skills if scope in ("private", "all") else []
         return public + private
     items = _storage.list(scope)
-    if get_user_role(user) != "admin":
+    if await get_user_role(user) != "admin":
         # Filter: public skills + own workspace skills + legacy private (no owner_id)
         items = [
             s for s in items
@@ -54,7 +54,7 @@ async def list_skills(
         ]
         # Inject group-shared skills not already visible
         from app.storage.groups import GroupStorage as _GS
-        shared_ids = set(await run_db(lambda: _GS(DB_FILE).get_user_shared_resource_ids(user, "skill", workspace_id)))
+        shared_ids = set(await _GS(DB_FILE).get_user_shared_resource_ids(user, "skill", workspace_id))
         own_ids = {s["id"] for s in items}
         for sid in shared_ids - own_ids:
             sk = _storage.get_any(sid)
@@ -132,7 +132,7 @@ async def delete_skill(
         return {"ok": True}
     # Ownership check before delete
     sk = _storage.get_any(skill_id)
-    if sk and get_user_role(user) != "admin" and sk.get("owner_id") not in (workspace_id, None):
+    if sk and await get_user_role(user) != "admin" and sk.get("owner_id") not in (workspace_id, None):
         raise HTTPException(status_code=403, detail="No tienes permiso para eliminar esta skill")
     try:
         if not _storage.delete(scope, skill_id):

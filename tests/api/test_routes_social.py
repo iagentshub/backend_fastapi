@@ -4,7 +4,8 @@ from __future__ import annotations
 
 def _login(client, username="socialtest", password="pass1234"):
     from app.auth.auth import create_token, register_user
-    register_user(username, password, email=f"{username}@example.com")
+    import asyncio
+    asyncio.run(register_user(username, password, email=f"{username}@example.com"))
     client.cookies.set("ga_token", create_token(username))
     return username
 
@@ -31,18 +32,19 @@ def _create_skill(client, name="Social Skill"):
 
 
 def _insert_folder(username, folder_id, folder_name="Carpeta Social"):
-    from app.config.data import DB_FILE
-    from app.storage.db import PH, close_db, open_db
-    conn = open_db(DB_FILE)
-    try:
-        conn.execute(
-            f"INSERT OR IGNORE INTO knowledge_folders (id, owner_id, section, name, created_at) "
-            f"VALUES ({PH}, {PH}, {PH}, {PH}, datetime('now'))",
-            (folder_id, username, "document", folder_name),
-        )
-        conn.commit()
-    finally:
-        close_db(conn)
+    import asyncio
+    from app.storage.db import open_db
+
+    async def _do() -> None:
+        async with open_db() as conn:
+            await conn.execute(
+                "INSERT OR IGNORE INTO knowledge_folders (id, owner_id, section, name, created_at) "
+                "VALUES (?, ?, ?, ?, datetime('now'))",
+                (folder_id, username, "document", folder_name),
+            )
+            await conn.commit()
+
+    asyncio.run(_do())
 
 
 def test_agente_publico_aparece_en_explore(client):

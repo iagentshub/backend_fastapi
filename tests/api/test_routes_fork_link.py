@@ -6,57 +6,59 @@ import json
 
 def _login(client, username: str) -> str:
     from app.auth.auth import create_token, register_user
-    register_user(username, "pass1234", email=f"{username}@link.test")
+    import asyncio
+    asyncio.run(register_user(username, "pass1234", email=f"{username}@link.test"))
     client.cookies.set("ga_token", create_token(username))
     return username
 
 
 def _make_agent_public(agent_id: str, owner: str) -> None:
-    from app.config.data import DB_FILE
-    from app.storage.db import PH, close_db, open_db
-    conn = open_db(DB_FILE)
-    try:
-        conn.execute(
-            f"INSERT OR IGNORE INTO resource_social "
-            f"(resource_type, resource_id, owner, name, is_public, category, trial_missing_deps) "
-            f"VALUES ({PH}, {PH}, {PH}, {PH}, 1, 'Coding', 'warn')",
-            ("agent", agent_id, owner, agent_id),
-        )
-        conn.commit()
-    finally:
-        close_db(conn)
+    import asyncio
+    from app.storage.db import open_db
+
+    async def _do() -> None:
+        async with open_db() as conn:
+            await conn.execute(
+                "INSERT OR IGNORE INTO resource_social "
+                "(resource_type, resource_id, owner, name, is_public, category, trial_missing_deps) "
+                "VALUES (?, ?, ?, ?, 1, 'Coding', 'warn')",
+                ("agent", agent_id, owner, agent_id),
+            )
+            await conn.commit()
+
+    asyncio.run(_do())
 
 
 def _make_skill_public(skill_id: str, owner: str) -> None:
-    from app.config.data import DB_FILE
-    from app.storage.db import PH, close_db, open_db
-    conn = open_db(DB_FILE)
-    try:
-        conn.execute(
-            f"INSERT OR IGNORE INTO resource_social "
-            f"(resource_type, resource_id, owner, name, is_public, category, trial_missing_deps) "
-            f"VALUES ({PH}, {PH}, {PH}, {PH}, 1, 'Coding', 'warn')",
-            ("skill", skill_id, owner, skill_id),
-        )
-        conn.commit()
-    finally:
-        close_db(conn)
+    import asyncio
+    from app.storage.db import open_db
+
+    async def _do() -> None:
+        async with open_db() as conn:
+            await conn.execute(
+                "INSERT OR IGNORE INTO resource_social "
+                "(resource_type, resource_id, owner, name, is_public, category, trial_missing_deps) "
+                "VALUES (?, ?, ?, ?, 1, 'Coding', 'warn')",
+                ("skill", skill_id, owner, skill_id),
+            )
+            await conn.commit()
+
+    asyncio.run(_do())
 
 
 def _get_social_row(resource_type: str, resource_id: str) -> dict:
-    from app.config.data import DB_FILE
-    from app.storage.db import PH, close_db, open_db
-    conn = open_db(DB_FILE)
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            f"SELECT * FROM resource_social WHERE resource_type={PH} AND resource_id={PH}",
-            (resource_type, resource_id),
-        )
-        row = cur.fetchone()
-        return dict(row) if row else {}
-    finally:
-        close_db(conn)
+    import asyncio
+    from app.storage.db import open_db
+
+    async def _do() -> dict:
+        async with open_db() as conn:
+            row = await conn.fetchone(
+                "SELECT * FROM resource_social WHERE resource_type = ? AND resource_id = ?",
+                (resource_type, resource_id),
+            )
+            return dict(row) if row else {}
+
+    return asyncio.run(_do())
 
 
 # ---------------------------------------------------------------------------

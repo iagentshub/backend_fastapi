@@ -1,6 +1,7 @@
 """Shared test fixtures."""
 from __future__ import annotations
 
+import asyncio
 import json
 import shutil
 import tempfile
@@ -35,7 +36,6 @@ def patch_data_dir(tmp_data_dir, tmp_path, monkeypatch):
     while keeping shared fixtures (settings.json, etc.) from tmp_data_dir.
     Forces SQLite mode (DATABASE_URL='').
     """
-    # Per-test isolated DB and memory dir — avoids cross-test data collisions
     db_file = tmp_path / "hub.db"
     memory_dir = tmp_path / "memory"
     memory_dir.mkdir()
@@ -43,7 +43,7 @@ def patch_data_dir(tmp_data_dir, tmp_path, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "")
     monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_data_dir))
 
-    # Patch config
+    # Patch config module attrs — _cfg.DB_FILE is read dynamically by app lifespan
     import app.config.data as cfg
     monkeypatch.setattr(cfg, "DATA_DIR", tmp_data_dir)
     monkeypatch.setattr(cfg, "DB_FILE", db_file)
@@ -53,8 +53,21 @@ def patch_data_dir(tmp_data_dir, tmp_path, monkeypatch):
     monkeypatch.setattr(cfg, "MEMORY_DIR", memory_dir)
     monkeypatch.setattr(cfg, "SETTINGS_FILE", tmp_data_dir / "settings.json")
 
-    # MemoryStorage is instantiated at module import time with the original MEMORY_DIR.
-    # Patch the live instances so each test gets an isolated memory directory.
+    # Force SQLite mode and initialize the per-test DB BEFORE importing routes
+    import app.storage.db as db_mod
+    monkeypatch.setattr(db_mod, "IS_PG", False)
+    monkeypatch.setattr(db_mod, "PH", "?")
+
+    old_sqlite_path = db_mod._sqlite_path
+    old_pg_pool = db_mod._pg_pool
+
+    asyncio.run(db_mod.init_db(db_file))
+
+    # Patch auth module paths
+    import app.auth.auth as auth_mod
+    monkeypatch.setattr(auth_mod, "SETTINGS_FILE", tmp_data_dir / "settings.json")
+
+    # Patch MemoryStorage live instances
     from app.storage.storage import MemoryStorage
     isolated_memory = MemoryStorage(memory_dir)
     import app.api.routes.memory as memory_routes
@@ -62,26 +75,12 @@ def patch_data_dir(tmp_data_dir, tmp_path, monkeypatch):
     monkeypatch.setattr(memory_routes, "_storage", isolated_memory)
     monkeypatch.setattr(agents_routes, "_memory", isolated_memory)
 
-    # Patch auth module paths
-    import app.auth.auth as auth_mod
-    monkeypatch.setattr(auth_mod, "SETTINGS_FILE", tmp_data_dir / "settings.json")
-    monkeypatch.setattr(auth_mod, "DB_FILE", db_file)
-
-    # Reset the SQLite connection pool so each test gets a fresh DB file
-    import app.storage.db as db_mod
-    monkeypatch.setattr(db_mod, "IS_PG", False)
-    monkeypatch.setattr(db_mod, "PH", "?")
-    old_pool = db_mod._sqlite_pool.copy()
-    db_mod._sqlite_pool.clear()
     yield
-    # Close and remove connections opened during this test
-    for conn in list(db_mod._sqlite_pool.values()):
-        try:
-            conn.close()
-        except Exception:
-            pass
-    db_mod._sqlite_pool.clear()
-    db_mod._sqlite_pool.update(old_pool)
+
+    # Reset DB state after test
+    asyncio.run(db_mod.close_db_pool())
+    db_mod._sqlite_path = old_sqlite_path
+    db_mod._pg_pool = old_pg_pool
 
 
 @pytest.fixture()
@@ -97,23 +96,19 @@ def client(patch_data_dir):
 def admin_client(client, patch_data_dir):
     """Client authenticated as admin user."""
     from app.auth.auth import create_token, get_user_by_username, register_user
-    from app.config.data import DB_FILE
-    from app.storage.db import PH, close_db, open_db
+    from app.storage.db import open_db
 
-    if not get_user_by_username("testadmin"):
-        register_user("testadmin", "pass1234", email="testadmin@example.com")
+    async def _setup():
+        if not await get_user_by_username("testadmin"):
+            await register_user("testadmin", "pass1234", email="testadmin@example.com")
+        async with open_db() as conn:
+            await conn.execute(
+                "UPDATE users SET role = ? WHERE username = ?",
+                ("admin", "testadmin"),
+            )
+            await conn.commit()
 
-    # Promote to admin via DB
-    conn = open_db(DB_FILE)
-    try:
-        conn.cursor().execute(
-            f"UPDATE users SET role = {PH} WHERE username = {PH}",
-            ("admin", "testadmin"),
-        )
-        conn.commit()
-    finally:
-        close_db(conn)
-
+    asyncio.run(_setup())
     token = create_token("testadmin")
     client.cookies.set("ga_token", token)
     return client

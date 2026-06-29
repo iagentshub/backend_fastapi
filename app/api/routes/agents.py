@@ -21,7 +21,7 @@ from app.middleware.ratelimit import RateLimiter
 from app.models.agent import Agent
 from app.services.chat import auto_update_memory, stream_chat
 from app.storage.chat import ChatStorage
-from app.storage.db import run_db
+
 from app.storage.guest import GuestKnowledgeAdapter, GuestMemoryAdapter, get_session, is_guest
 from app.storage.knowledge import FolderStorage, KnowledgeStorage
 from app.storage.storage import AgentStorage, ConnectionStorage, MemoryStorage, SkillStorage
@@ -42,8 +42,8 @@ class _AgentFolderMove(BaseModel):
     folder_id: Optional[str] = None
 
 
-def _conn_owner(user: str) -> str | None:
-    return None if get_user_role(user) == "admin" else user
+async def _conn_owner(user: str) -> str | None:
+    return None if await get_user_role(user) == "admin" else user
 
 _VALID_SCOPES = {"public", "private", "all"}
 _LOCALE_FIELDS = ("name", "description", "system_prompt")
@@ -97,12 +97,12 @@ async def list_agents(
             items = [a for a in items if label in (a.get("labels") or [])]
         return [_apply_locale(a, locale) for a in items]
     agents = _agents.list(scope)
-    role = get_user_role(user)
+    role = await get_user_role(user)
     if role not in ("admin", "guest"):
         from app.storage.groups import GroupStorage
         gs = GroupStorage(DB_FILE)
         own = [a for a in agents if a.get("owner_id") == workspace_id]
-        shared_ids = set(await run_db(lambda: gs.get_user_shared_resource_ids(user, "agent", workspace_id)))
+        shared_ids = set(await gs.get_user_shared_resource_ids(user, "agent", workspace_id))
         own_ids = {a["id"] for a in own}
         extra = [a for a in agents if a["id"] in (shared_ids - own_ids)]
         for a in extra:
@@ -164,7 +164,7 @@ async def delete_agent(
             raise HTTPException(status_code=404, detail="Agente no encontrado")
         return {"ok": True}
     a = _agents.get(agent_id)
-    if a and get_user_role(user) != "admin" and a.get("owner_id") != workspace_id:
+    if a and await get_user_role(user) != "admin" and a.get("owner_id") != workspace_id:
         raise HTTPException(status_code=403, detail="No tienes permiso para eliminar este agente")
     try:
         if not _agents.delete(agent_id):
@@ -216,17 +216,14 @@ async def export_agent(
                 break
 
     # Resolve knowledge items
-    def _sync_knowledge():
-        result: List[Dict[str, Any]] = []
-        for kid in (a.get("knowledge") or []):
-            try:
-                item = knowledge_store.get(kid)
-                if item:
-                    result.append(item)
-            except Exception:
-                pass
-        return result
-    resolved_knowledge = await run_db(_sync_knowledge)
+    resolved_knowledge: List[Dict[str, Any]] = []
+    for kid in (a.get("knowledge") or []):
+        try:
+            item = await knowledge_store.get(kid)
+            if item:
+                resolved_knowledge.append(item)
+        except Exception:
+            pass
 
     # Resolve memory
     mem_file = a.get("memory_file") or f"{agent_id}.md"
@@ -358,7 +355,7 @@ async def chat(
         a = _agents.get(agent_id)
     if not a:
         raise HTTPException(status_code=404, detail="Agente no encontrado")
-    role = get_user_role(user)
+    role = await get_user_role(user)
     a = _apply_locale(a, get_locale())
 
     body = await request.json()
@@ -379,12 +376,9 @@ async def chat(
         knowledge_store = GuestKnowledgeAdapter(s)
     else:
         conn_id = base_conn_id
-        def _sync_conn():
-            c = _conns.get(conn_id, None if role == "admin" else workspace_id)
-            if not c:
-                c = _conns.get(conn_id, user)
-            return c
-        conn = await run_db(_sync_conn)
+        conn = await _conns.get(conn_id, None if role == "admin" else workspace_id)
+        if not conn:
+            conn = await _conns.get(conn_id, user)
         memory_store = _memory
         knowledge_store = _knowledge
 
@@ -417,25 +411,21 @@ async def chat(
         tok_in = int(tokens.get("in") or 0)
         tok_out = int(tokens.get("out") or 0)
         if not is_guest(user):
-            def _sync_tokens():
-                if base_conn_id and (tok_in or tok_out):
-                    _conns.add_tokens(base_conn_id, tok_in, tok_out)
-                if (tok_in or tok_out) and a.get("scope", "private") == "private":
-                    _agents.add_tokens(agent_id, tok_in, tok_out)
-            await run_db(_sync_tokens)
+            if base_conn_id and (tok_in or tok_out):
+                await _conns.add_tokens(base_conn_id, tok_in, tok_out)
+            if (tok_in or tok_out) and a.get("scope", "private") == "private":
+                await _agents.add_tokens(agent_id, tok_in, tok_out)
             if conversation_id:
                 reply = ev.get("reply", "")
                 user_msg = next(
                     (m for m in reversed(history) if m.get("role") == "user"), None
                 )
-                def _sync_chat():
-                    if user_msg:
-                        _chat.add_message(conversation_id, "user", str(user_msg.get("content") or ""))
-                    if reply:
-                        _chat.add_message(conversation_id, "assistant", reply)
-                        title = str(user_msg.get("content") or "")[:80] if user_msg else ""
-                        _chat.touch_conversation(conversation_id, title)
-                await run_db(_sync_chat)
+                if user_msg:
+                    await _chat.add_message(conversation_id, "user", str(user_msg.get("content") or ""))
+                if reply:
+                    await _chat.add_message(conversation_id, "assistant", reply)
+                    title = str(user_msg.get("content") or "")[:80] if user_msg else ""
+                    await _chat.touch_conversation(conversation_id, title)
         if a.get("use_memory"):
             await auto_update_memory(a, conn, history, ev.get("reply", ""), memory_store)
 

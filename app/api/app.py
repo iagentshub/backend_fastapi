@@ -12,6 +12,8 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from app.utils import flog
 from app.auth.auth import ensure_admin_user, purge_expired_deletions
 from app.config.cors import CORS_ORIGINS
+from app.config import data as _cfg
+from app.storage.db import init_db, close_db_pool
 from app.api.routes import auth, connections, agents, skills, memory, settings, accounts, chats, knowledge, logs, sharing, workspaces, groups
 from app.api.routes.auth import admin_router, users_router
 from app.api.routes.social import router as social_router
@@ -38,7 +40,7 @@ async def _gdpr_purge_loop() -> None:
     while True:
         await asyncio.sleep(6 * 3600)
         try:
-            n = purge_expired_deletions()
+            n = await purge_expired_deletions()
             if n:
                 flog.ok(f"[gdpr] {n} cuenta(s) eliminadas definitivamente")
         except Exception as exc:
@@ -47,11 +49,13 @@ async def _gdpr_purge_loop() -> None:
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
-    ensure_admin_user()
+    await init_db(_cfg.DB_FILE)
+    await ensure_admin_user()
     purge_task = asyncio.create_task(_gdpr_purge_loop())
     flog.ok("iAgents Hub arrancado")
     yield
     purge_task.cancel()
+    await close_db_pool()
     flog.info("iAgents Hub detenido")
 
 

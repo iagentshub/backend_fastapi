@@ -8,7 +8,8 @@ import json
 
 def _login(client, username="labelsuser", password="pass1234"):
     from app.auth.auth import create_token, register_user
-    register_user(username, password, email=f"{username}@example.com")
+    import asyncio
+    asyncio.run(register_user(username, password, email=f"{username}@example.com"))
     client.cookies.set("ga_token", create_token(username))
     return username
 
@@ -36,22 +37,21 @@ def _create_skill(client, name="Label Skill", labels=None):
 
 
 def _get_social_row(agent_id, owner):
-    from app.config.data import DB_FILE
-    from app.storage.db import PH, close_db, open_db
-    conn = open_db(DB_FILE)
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            f"SELECT is_public, labels FROM resource_social "
-            f"WHERE resource_type={PH} AND resource_id={PH} AND owner={PH}",
-            ("agent", agent_id, owner),
-        )
-        row = cur.fetchone()
-        if row is None:
-            return None
-        return {"is_public": row["is_public"], "labels": json.loads(row["labels"] or '["private"]')}
-    finally:
-        close_db(conn)
+    import asyncio
+    from app.storage.db import open_db
+
+    async def _do():
+        async with open_db() as conn:
+            row = await conn.fetchone(
+                "SELECT is_public, labels FROM resource_social "
+                "WHERE resource_type = ? AND resource_id = ? AND owner = ?",
+                ("agent", agent_id, owner),
+            )
+            if row is None:
+                return None
+            return {"is_public": row["is_public"], "labels": json.loads(row["labels"] or '["private"]')}
+
+    return asyncio.run(_do())
 
 
 # ── tests ─────────────────────────────────────────────────────────────────────

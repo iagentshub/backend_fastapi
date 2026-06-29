@@ -6,7 +6,8 @@ import io
 
 def _register_and_login(client, username="socialuser", password="pass1234"):
     from app.auth.auth import create_token, register_user
-    register_user(username, password, email=f"{username}@example.com")
+    import asyncio
+    asyncio.run(register_user(username, password, email=f"{username}@example.com"))
     client.cookies.set("ga_token", create_token(username))
     return username
 
@@ -42,8 +43,9 @@ def test_perfil_publico_devuelve_campos(client):
 
 
 def test_perfil_publico_requiere_auth(client):
+    import asyncio
     from app.auth.auth import register_user
-    register_user("targetuser", "pass1234", email="target@example.com")
+    asyncio.run(register_user("targetuser", "pass1234", email="target@example.com"))
     r = client.get("/api/users/targetuser")
     assert r.status_code == 401
 
@@ -108,8 +110,9 @@ def test_avatar_formato_no_permitido(client):
 
 
 def test_avatar_sin_fichero_devuelve_204(client):
+    import asyncio
     from app.auth.auth import register_user
-    register_user("noavataruser", "pass1234", email="noavatar@example.com")
+    asyncio.run(register_user("noavataruser", "pass1234", email="noavatar@example.com"))
     _register_and_login(client, "viewer2")
     r = client.get("/api/users/noavataruser/avatar")
     assert r.status_code == 204

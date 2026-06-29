@@ -22,16 +22,16 @@ from app.auth.auth import create_token, register_user, schedule_user_deletion
 # ── Fixture: parcha gdpr.DB_FILE con la BD de test ───────────────────────────
 
 @pytest.fixture(autouse=True)
-def patch_gdpr_db(patch_data_dir, monkeypatch):
-    import app.services.gdpr as gdpr_mod
-    monkeypatch.setattr(gdpr_mod, "DB_FILE", _cfg.DB_FILE)
+def patch_gdpr_db(patch_data_dir):
+    pass  # gdpr.py uses open_db() — no per-module DB_FILE to patch
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _auth(client: TestClient, username: str, password: str = "pass1234") -> TestClient:
+    import asyncio
     try:
-        register_user(username, password, email=f"{username}@test.com")
+        asyncio.run(register_user(username, password, email=f"{username}@test.com"))
     except ValueError:
         pass
     client.cookies.set("ga_token", create_token(username))
@@ -100,8 +100,9 @@ def test_request_deletion_ok(client):
 def test_request_deletion_409_si_es_owner_de_workspace(client):
     _auth(client, "rd_ws_owner")
     # Crear workspace directamente en la misma BD que usa get_owned_workspaces
+    import asyncio
     from app.storage.workspaces import WorkspaceStorage
-    WorkspaceStorage(auth_mod.DB_FILE).create("Workspace Bloqueante", created_by="rd_ws_owner")
+    asyncio.run(WorkspaceStorage(_cfg.DB_FILE).create("Workspace Bloqueante", created_by="rd_ws_owner"))
     r = client.post("/api/auth/me/request-deletion")
     assert r.status_code == 409
     data = r.json()
@@ -110,12 +111,13 @@ def test_request_deletion_409_si_es_owner_de_workspace(client):
 
 
 def test_request_deletion_ok_si_workspaces_son_solo_miembro(client):
-    register_user("rd_other_owner", "pass1234", email="rd_other@test.com")
+    import asyncio
+    asyncio.run(register_user("rd_other_owner", "pass1234", email="rd_other@test.com"))
     other = TestClient(client.app, raise_server_exceptions=True)
     _auth(other, "rd_other_owner")
     ws = _create_workspace_api(other, "Workspace Ajeno")
 
-    register_user("rd_member_only", "pass1234", email="rd_member@test.com")
+    asyncio.run(register_user("rd_member_only", "pass1234", email="rd_member@test.com"))
     other.post(f"/api/workspaces/{ws['id']}/invitations", json={"username": "rd_member_only"})
     inv_id = other.get(f"/api/workspaces/{ws['id']}/invitations").json()[0]["id"]
 
@@ -142,7 +144,8 @@ def test_cancel_deletion_token_invalido_sin_auth(client):
 
 def test_cancel_deletion_ok(client):
     _auth(client, "cd_ok")
-    token = schedule_user_deletion("cd_ok")
+    import asyncio
+    token = asyncio.run(schedule_user_deletion("cd_ok"))
     r = client.post("/api/auth/me/cancel-deletion", json={"token": token})
     assert r.status_code == 200
     assert r.json()["ok"] is True
@@ -150,7 +153,8 @@ def test_cancel_deletion_ok(client):
 
 def test_cancel_deletion_estado_limpiado(client):
     _auth(client, "cd_clean")
-    token = schedule_user_deletion("cd_clean")
+    import asyncio
+    token = asyncio.run(schedule_user_deletion("cd_clean"))
     client.post("/api/auth/me/cancel-deletion", json={"token": token})
     r = client.get("/api/auth/me/deletion-status")
     assert r.json()["scheduled"] is False
@@ -205,15 +209,17 @@ def test_export_zip_contiene_profile(client):
 
 def _setup_transfer(client: TestClient, owner: str, member: str) -> str:
     """Crea workspace y añade member vía API. Devuelve ws_id con cliente autenticado como owner."""
+    import asyncio
     _auth(client, owner)
     ws = _create_workspace_api(client, "WS Transferible")
-    register_user(member, "pass1234", email=f"{member}@test.com")
+    asyncio.run(register_user(member, "pass1234", email=f"{member}@test.com"))
     _add_member_api(client, ws["id"], member)
     return ws["id"]
 
 
 def test_transfer_ownership_require_auth(client):
-    register_user("transfer_anon_owner", "pass1234", email="tanon@test.com")
+    import asyncio
+    asyncio.run(register_user("transfer_anon_owner", "pass1234", email="tanon@test.com"))
     other = TestClient(client.app, raise_server_exceptions=True)
     _auth(other, "transfer_anon_owner")
     ws = _create_workspace_api(other, "WS Anon")

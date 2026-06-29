@@ -1,6 +1,7 @@
 """Storage: Agentes, Conexiones, Skills y Memoria."""
 from __future__ import annotations
 
+import asyncio
 import json
 
 from app.utils import flog
@@ -31,76 +32,70 @@ def _now() -> str:
 # ─── ConnectionStorage ────────────────────────────────────────────────────────
 
 class ConnectionStorage:
-    """DB-backed connection storage. Accepts the DB file path."""
+    """DB-backed async connection storage."""
 
     def __init__(self, db_path: Path) -> None:
-        from app.storage.db import IS_PG, PH, close_db, open_db
-        self._db_path = Path(db_path)
-        self._IS_PG = IS_PG
-        self._PH = PH
-        self._open_db = open_db
-        self._close_db = close_db
-        self._migrate_json()
+        self._db_path = Path(db_path)  # informational only
+        self._migrated = False
+        self._migrate_lock: "asyncio.Lock | None" = None  # created lazily (needs running loop)
 
-    def _conn(self):
-        return self._open_db(self._db_path)
-
-    def _migrate_json(self) -> None:
-        """One-time import from connections.json if the table is empty."""
-        conn = self._conn()
-        try:
-            cur = conn.cursor()
-            cur.execute("SELECT COUNT(*) FROM connections")
-            if cur.fetchone()[0]:
+    async def _migrate_json(self) -> None:
+        """One-time import from connections.json if table is empty."""
+        from app.storage.db import open_db
+        from app.config.data import DATA_DIR
+        async with open_db() as conn:
+            try:
+                count = await conn.fetchval("SELECT COUNT(*) FROM connections")
+                if count:
+                    return
+            except Exception:
                 return
-            from app.config.data import DATA_DIR
             old = DATA_DIR / "connections" / "connections.json"
             if not old.exists():
                 return
             try:
                 items = json.loads(old.read_text(encoding="utf-8"))
                 for item in items:
-                    self._upsert_with_conn(conn, item)
+                    await self._upsert(conn, item)
+                await conn.commit()
                 old.rename(old.with_suffix(".migrated"))
             except Exception as exc:
                 flog.warning(f"[storage] Migración de connections.json fallida: {exc}")
-        finally:
-            self._close_db(conn)
 
-    def _upsert_with_conn(self, conn, payload: Dict[str, Any], owner_id: str = "admin") -> None:
-        PH = self._PH
+    async def _ensure_migrated(self) -> None:
+        if self._migrated:
+            return
+        if self._migrate_lock is None:
+            self._migrate_lock = asyncio.Lock()
+        async with self._migrate_lock:
+            if not self._migrated:
+                self._migrated = True
+                await self._migrate_json()
+
+    async def _upsert(self, conn: Any, payload: Dict[str, Any], owner_id: str = "admin") -> None:
+        """Insert or replace a connection row (uses AsyncConn, ? placeholders)."""
+        from app.storage.db import IS_PG
         conn_id = str(payload.get("id") or "").strip() or uuid4().hex[:12]
         payload["id"] = conn_id
-        if self._IS_PG:
-            conn.cursor().execute(
-                f"INSERT INTO connections (id, owner_id, data, tokens_in, tokens_out, created_at, updated_at) "
-                f"VALUES ({PH}, {PH}, {PH}, {PH}, {PH}, {PH}, {PH}) "
-                f"ON CONFLICT (id) DO UPDATE SET owner_id=EXCLUDED.owner_id, data=EXCLUDED.data, "
-                f"tokens_in=EXCLUDED.tokens_in, tokens_out=EXCLUDED.tokens_out, updated_at=EXCLUDED.updated_at",
-                (
-                    conn_id, owner_id,
-                    json.dumps(payload, ensure_ascii=False),
-                    int(payload.get("tokens_in") or 0),
-                    int(payload.get("tokens_out") or 0),
-                    str(payload.get("created_at") or _now()),
-                    str(payload.get("updated_at") or _now()),
-                ),
+        if IS_PG:
+            await conn.execute(
+                "INSERT INTO connections (id, owner_id, data, tokens_in, tokens_out, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT (id) DO UPDATE SET owner_id=EXCLUDED.owner_id, data=EXCLUDED.data, "
+                "tokens_in=EXCLUDED.tokens_in, tokens_out=EXCLUDED.tokens_out, updated_at=EXCLUDED.updated_at",
+                (conn_id, owner_id, json.dumps(payload, ensure_ascii=False),
+                 int(payload.get("tokens_in") or 0), int(payload.get("tokens_out") or 0),
+                 str(payload.get("created_at") or _now()), str(payload.get("updated_at") or _now())),
             )
         else:
-            conn.execute(
-                f"INSERT OR REPLACE INTO connections "
-                f"(id, owner_id, data, tokens_in, tokens_out, created_at, updated_at) "
-                f"VALUES ({PH}, {PH}, {PH}, {PH}, {PH}, {PH}, {PH})",
-                (
-                    conn_id, owner_id,
-                    json.dumps(payload, ensure_ascii=False),
-                    int(payload.get("tokens_in") or 0),
-                    int(payload.get("tokens_out") or 0),
-                    str(payload.get("created_at") or _now()),
-                    str(payload.get("updated_at") or _now()),
-                ),
+            await conn.execute(
+                "INSERT OR REPLACE INTO connections "
+                "(id, owner_id, data, tokens_in, tokens_out, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (conn_id, owner_id, json.dumps(payload, ensure_ascii=False),
+                 int(payload.get("tokens_in") or 0), int(payload.get("tokens_out") or 0),
+                 str(payload.get("created_at") or _now()), str(payload.get("updated_at") or _now())),
             )
-        conn.commit()
 
     def _row_to_dict(self, row: Any) -> Dict[str, Any]:
         d: Dict[str, Any] = json.loads(row["data"])
@@ -110,46 +105,44 @@ class ConnectionStorage:
         d["tokens_out"] = row["tokens_out"]
         return d
 
-    def list(self, owner_id: Optional[str] = None) -> List[Dict[str, Any]]:
+    async def list(self, owner_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """owner_id=None → admin sees all. owner_id=str → own connections only."""
-        PH = self._PH
-        conn = self._conn()
-        try:
-            cur = conn.cursor()
+        await self._ensure_migrated()
+        from app.storage.db import open_db
+        async with open_db() as conn:
             if owner_id is None:
-                cur.execute("SELECT * FROM connections ORDER BY created_at ASC")
+                rows = await conn.fetchall(
+                    "SELECT id, owner_id, data, tokens_in, tokens_out FROM connections ORDER BY created_at ASC"
+                )
             else:
-                cur.execute(
-                    f"SELECT * FROM connections WHERE owner_id = {PH} ORDER BY created_at ASC",
+                rows = await conn.fetchall(
+                    "SELECT id, owner_id, data, tokens_in, tokens_out FROM connections "
+                    "WHERE owner_id = ? ORDER BY created_at ASC",
                     (owner_id,),
                 )
-            rows = cur.fetchall()
-            return [self._row_to_dict(r) for r in rows]
-        finally:
-            self._close_db(conn)
+        return [self._row_to_dict(r) for r in rows]
 
-    def get(self, conn_id: str, owner_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        PH = self._PH
-        conn = self._conn()
-        try:
-            cur = conn.cursor()
+    async def get(self, conn_id: str, owner_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        from app.storage.db import open_db
+        async with open_db() as conn:
             if owner_id is None:
-                cur.execute(f"SELECT * FROM connections WHERE id = {PH}", (conn_id,))
+                row = await conn.fetchone(
+                    "SELECT id, owner_id, data, tokens_in, tokens_out FROM connections WHERE id = ?",
+                    (conn_id,),
+                )
             else:
-                cur.execute(
-                    f"SELECT * FROM connections WHERE id = {PH} AND owner_id = {PH}",
+                row = await conn.fetchone(
+                    "SELECT id, owner_id, data, tokens_in, tokens_out FROM connections "
+                    "WHERE id = ? AND owner_id = ?",
                     (conn_id, owner_id),
                 )
-            row = cur.fetchone()
-            return self._row_to_dict(row) if row else None
-        finally:
-            self._close_db(conn)
+        return self._row_to_dict(row) if row else None
 
-    def save(self, payload: Dict[str, Any], owner_id: str = "admin") -> Dict[str, Any]:
-        PH = self._PH
+    async def save(self, payload: Dict[str, Any], owner_id: str = "admin") -> Dict[str, Any]:
+        from app.storage.db import IS_PG, open_db
         conn_id = str(payload.get("id") or "").strip() or uuid4().hex[:12]
         payload["id"] = conn_id
-        existing = self.get(conn_id, owner_id)
+        existing = await self.get(conn_id, owner_id)
         if existing:
             payload["created_at"] = existing.get("created_at", _now())
             if not payload.get("api_key") and existing.get("api_key"):
@@ -160,104 +153,90 @@ class ConnectionStorage:
         stored = dict(payload)
         if stored.get("api_key"):
             stored["api_key"] = encrypt(stored["api_key"])
-        conn = self._conn()
-        try:
-            if self._IS_PG:
-                conn.cursor().execute(
-                    f"INSERT INTO connections (id, owner_id, data, tokens_in, tokens_out, created_at, updated_at) "
-                    f"VALUES ({PH}, {PH}, {PH}, {PH}, {PH}, {PH}, {PH}) "
-                    f"ON CONFLICT (id) DO UPDATE SET owner_id=EXCLUDED.owner_id, data=EXCLUDED.data, "
-                    f"tokens_in=EXCLUDED.tokens_in, tokens_out=EXCLUDED.tokens_out, updated_at=EXCLUDED.updated_at",
-                    (
-                        conn_id, owner_id,
-                        json.dumps(stored, ensure_ascii=False),
-                        int(stored.get("tokens_in") or 0),
-                        int(stored.get("tokens_out") or 0),
-                        stored["created_at"],
-                        stored["updated_at"],
-                    ),
+        async with open_db() as conn:
+            if IS_PG:
+                await conn.execute(
+                    "INSERT INTO connections (id, owner_id, data, tokens_in, tokens_out, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?) "
+                    "ON CONFLICT (id) DO UPDATE SET owner_id=EXCLUDED.owner_id, data=EXCLUDED.data, "
+                    "tokens_in=EXCLUDED.tokens_in, tokens_out=EXCLUDED.tokens_out, updated_at=EXCLUDED.updated_at",
+                    (conn_id, owner_id, json.dumps(stored, ensure_ascii=False),
+                     int(stored.get("tokens_in") or 0), int(stored.get("tokens_out") or 0),
+                     stored["created_at"], stored["updated_at"]),
                 )
             else:
-                conn.execute(
-                    f"INSERT OR REPLACE INTO connections "
-                    f"(id, owner_id, data, tokens_in, tokens_out, created_at, updated_at) "
-                    f"VALUES ({PH}, {PH}, {PH}, {PH}, {PH}, {PH}, {PH})",
-                    (
-                        conn_id, owner_id,
-                        json.dumps(stored, ensure_ascii=False),
-                        int(stored.get("tokens_in") or 0),
-                        int(stored.get("tokens_out") or 0),
-                        stored["created_at"],
-                        stored["updated_at"],
-                    ),
+                await conn.execute(
+                    "INSERT OR REPLACE INTO connections "
+                    "(id, owner_id, data, tokens_in, tokens_out, created_at, updated_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    (conn_id, owner_id, json.dumps(stored, ensure_ascii=False),
+                     int(stored.get("tokens_in") or 0), int(stored.get("tokens_out") or 0),
+                     stored["created_at"], stored["updated_at"]),
                 )
-            conn.commit()
-        finally:
-            self._close_db(conn)
+            await conn.commit()
         return payload
 
-    def add_tokens(self, conn_id: str, input_tokens: int, output_tokens: int) -> None:
-        from datetime import date
-        PH = self._PH
-        conn = self._conn()
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                f"UPDATE connections "
-                f"SET tokens_in = tokens_in + {PH}, tokens_out = tokens_out + {PH} "
-                f"WHERE id = {PH}",
-                (input_tokens, output_tokens, conn_id),
-            )
-            conn.commit()
-            cur.execute(
-                f"SELECT data, tokens_in, tokens_out, owner_id FROM connections WHERE id = {PH}",
-                (conn_id,),
-            )
-            row = cur.fetchone()
-            if row:
-                d: Dict[str, Any] = json.loads(row["data"])
-                d["tokens_in"] = row["tokens_in"]
-                d["tokens_out"] = row["tokens_out"]
-                cur.execute(
-                    f"UPDATE connections SET data = {PH} WHERE id = {PH}",
-                    (json.dumps(d, ensure_ascii=False), conn_id),
-                )
-                total = input_tokens + output_tokens
-                if total > 0:
-                    today = date.today().isoformat()
-                    owner = row["owner_id"]
-                    if self._IS_PG:
-                        cur.execute(
-                            "INSERT INTO token_daily (day, owner_id, tokens) VALUES (%s, %s, %s) "
-                            "ON CONFLICT (day, owner_id) DO UPDATE SET tokens = token_daily.tokens + EXCLUDED.tokens",
-                            (today, owner, total),
-                        )
-                    else:
-                        cur.execute(
-                            "INSERT INTO token_daily (day, owner_id, tokens) VALUES (?, ?, ?) "
-                            "ON CONFLICT(day, owner_id) DO UPDATE SET tokens = token_daily.tokens + excluded.tokens",
-                            (today, owner, total),
-                        )
-                conn.commit()
-        finally:
-            self._close_db(conn)
-
-    def delete(self, conn_id: str, owner_id: Optional[str] = None) -> bool:
-        PH = self._PH
-        conn = self._conn()
-        try:
-            cur = conn.cursor()
+    async def delete(self, conn_id: str, owner_id: Optional[str] = None) -> bool:
+        from app.storage.db import open_db
+        async with open_db() as conn:
             if owner_id is None:
-                cur.execute(f"DELETE FROM connections WHERE id = {PH}", (conn_id,))
+                existing = await conn.fetchone(
+                    "SELECT id FROM connections WHERE id = ?", (conn_id,)
+                )
             else:
-                cur.execute(
-                    f"DELETE FROM connections WHERE id = {PH} AND owner_id = {PH}",
+                existing = await conn.fetchone(
+                    "SELECT id FROM connections WHERE id = ? AND owner_id = ?",
                     (conn_id, owner_id),
                 )
-            conn.commit()
-            return cur.rowcount > 0
-        finally:
-            self._close_db(conn)
+            if not existing:
+                return False
+            if owner_id is None:
+                await conn.execute("DELETE FROM connections WHERE id = ?", (conn_id,))
+            else:
+                await conn.execute(
+                    "DELETE FROM connections WHERE id = ? AND owner_id = ?",
+                    (conn_id, owner_id),
+                )
+            await conn.commit()
+        return True
+
+    async def add_tokens(self, conn_id: str, input_tokens: int, output_tokens: int) -> None:
+        from datetime import date
+        from app.storage.db import IS_PG, open_db
+        async with open_db() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    "UPDATE connections SET tokens_in = tokens_in + ?, tokens_out = tokens_out + ? WHERE id = ?",
+                    (input_tokens, output_tokens, conn_id),
+                )
+                row = await conn.fetchone(
+                    "SELECT data, tokens_in, tokens_out, owner_id FROM connections WHERE id = ?",
+                    (conn_id,),
+                )
+                if row:
+                    d: Dict[str, Any] = json.loads(row["data"])
+                    d["tokens_in"] = row["tokens_in"]
+                    d["tokens_out"] = row["tokens_out"]
+                    await conn.execute(
+                        "UPDATE connections SET data = ? WHERE id = ?",
+                        (json.dumps(d, ensure_ascii=False), conn_id),
+                    )
+                    total = input_tokens + output_tokens
+                    if total > 0:
+                        today = date.today().isoformat()
+                        owner = row["owner_id"]
+                        if IS_PG:
+                            await conn.execute(
+                                "INSERT INTO token_daily (day, owner_id, tokens) VALUES (?, ?, ?) "
+                                "ON CONFLICT (day, owner_id) DO UPDATE SET tokens = token_daily.tokens + EXCLUDED.tokens",
+                                (today, owner, total),
+                            )
+                        else:
+                            await conn.execute(
+                                "INSERT INTO token_daily (day, owner_id, tokens) VALUES (?, ?, ?) "
+                                "ON CONFLICT(day, owner_id) DO UPDATE SET tokens = token_daily.tokens + excluded.tokens",
+                                (today, owner, total),
+                            )
 
 
 # ─── AgentStorage ─────────────────────────────────────────────────────────────

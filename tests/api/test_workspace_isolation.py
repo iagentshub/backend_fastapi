@@ -17,9 +17,10 @@ _AGENT = {
 
 
 def _register(username: str) -> None:
+    import asyncio
     from app.auth.auth import register_user
     try:
-        register_user(username, "pass1234", email=f"{username}@test.com")
+        asyncio.run(register_user(username, "pass1234", email=f"{username}@test.com"))
     except ValueError:
         pass
 

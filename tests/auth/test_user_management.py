@@ -6,40 +6,40 @@ import pytest
 from app.auth.auth import delete_user, list_users, register_user
 
 
-def test_registro_ok(patch_data_dir):
-    register_user("newuser", "pass1234", email="newuser@example.com")
-    users = list_users()
+async def test_registro_ok(patch_data_dir):
+    await register_user("newuser", "pass1234", email="newuser@example.com")
+    users = await list_users()
     assert any(u["username"] == "newuser" for u in users)
 
 
-def test_registro_nombre_duplicado(patch_data_dir):
-    register_user("dup_user", "pass1", email="dup_user@example.com")
+async def test_registro_nombre_duplicado(patch_data_dir):
+    await register_user("dup_user", "pass1", email="dup_user@example.com")
     with pytest.raises(ValueError, match="ya está en uso"):
-        register_user("dup_user", "pass2", email="dup_user2@example.com")
+        await register_user("dup_user", "pass2", email="dup_user2@example.com")
 
 
-def test_registro_email_duplicado(patch_data_dir):
-    register_user("user_a", "pass1", email="same@example.com")
+async def test_registro_email_duplicado(patch_data_dir):
+    await register_user("user_a", "pass1", email="same@example.com")
     with pytest.raises(ValueError, match="correo"):
-        register_user("user_b", "pass2", email="same@example.com")
+        await register_user("user_b", "pass2", email="same@example.com")
 
 
-def test_registro_nombre_admin_permitido(patch_data_dir):
-    register_user("admin", "somepass", email="admin@example.com")
-    assert any(u["username"] == "admin" for u in list_users())
+async def test_registro_nombre_admin_permitido(patch_data_dir):
+    await register_user("admin", "somepass", email="admin@example.com")
+    assert any(u["username"] == "admin" for u in await list_users())
 
 
-def test_listado_sin_password_hash(patch_data_dir):
-    register_user("listed", "pass1234", email="listed@example.com")
-    for u in list_users():
+async def test_listado_sin_password_hash(patch_data_dir):
+    await register_user("listed", "pass1234", email="listed@example.com")
+    for u in await list_users():
         assert "password_hash" not in u
 
 
-def test_borrado_ok(patch_data_dir):
-    register_user("to_delete", "pass1234", email="to_delete@example.com")
-    assert delete_user("to_delete") is True
-    assert not any(u["username"] == "to_delete" for u in list_users())
+async def test_borrado_ok(patch_data_dir):
+    await register_user("to_delete", "pass1234", email="to_delete@example.com")
+    assert await delete_user("to_delete") is True
+    assert not any(u["username"] == "to_delete" for u in await list_users())
 
 
-def test_borrado_usuario_inexistente(patch_data_dir):
-    assert delete_user("ghost_user") is False
+async def test_borrado_usuario_inexistente(patch_data_dir):
+    assert await delete_user("ghost_user") is False

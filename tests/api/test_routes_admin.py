@@ -4,8 +4,9 @@ from __future__ import annotations
 
 def _register(username, password="pass1234"):
     """Registra un usuario directamente, sin pasar por HTTP, para no contaminar cookies."""
+    import asyncio
     from app.auth.auth import register_user
-    register_user(username, password, email=f"{username}@example.com")
+    asyncio.run(register_user(username, password, email=f"{username}@example.com"))
 
 
 def test_list_users_as_admin(admin_client, reset_rate_limiter):
@@ -113,12 +114,13 @@ def test_admin_agents_forbidden_for_standard(client, reset_rate_limiter):
 # evitar la divergencia con el _storage de module-level de connections.py.
 
 def _insert_connection(owner_id: str = "testadmin") -> str:
+    import asyncio
     from app.config.data import DB_FILE
     from app.storage.storage import ConnectionStorage
-    c = ConnectionStorage(DB_FILE).save(
+    c = asyncio.run(ConnectionStorage(DB_FILE).save(
         {"type": "openai", "label": "test-conn", "api_key": "sk-test", "model": "gpt-4o"},
         owner_id=owner_id,
-    )
+    ))
     return c["id"]
 
 

@@ -17,35 +17,32 @@ import app.config.data as _cfg
 @pytest.fixture(autouse=True)
 def patch_gdpr_db(patch_data_dir, monkeypatch):
     import app.services.gdpr as gdpr_mod
-    monkeypatch.setattr(gdpr_mod, "DB_FILE", _cfg.DB_FILE)
+    # gdpr.py uses open_db() — no DB_FILE to patch; just patch dir paths
     monkeypatch.setattr(gdpr_mod, "AGENTS_DIR", _cfg.AGENTS_DIR)
     monkeypatch.setattr(gdpr_mod, "SKILLS_DIR", _cfg.SKILLS_DIR)
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
-def _make_user(username: str, email: str | None = None) -> None:
-    register_user(username, "pass1234", email=email or f"{username}@test.com")
+async def _make_user(username: str, email: str | None = None) -> None:
+    await register_user(username, "pass1234", email=email or f"{username}@test.com")
 
 
-def _insert_conversation(username: str, title: str = "Test conv") -> str:
+async def _insert_conversation(username: str, title: str = "Test conv") -> str:
     from uuid import uuid4
-    from app.storage.db import PH, close_db, open_db
+    from app.storage.db import open_db
     conv_id = uuid4().hex[:12]
-    conn = open_db(_cfg.DB_FILE)
-    try:
-        conn.cursor().execute(
-            f"INSERT INTO conversations (id, user_id, title, agent_id, created_at, updated_at) "
-            f"VALUES ({PH},{PH},{PH},'agent',datetime('now'),datetime('now'))",
+    async with open_db() as conn:
+        await conn.execute(
+            "INSERT INTO conversations (id, user_id, title, agent_id, created_at, updated_at) "
+            "VALUES (?, ?, ?, 'agent', datetime('now'), datetime('now'))",
             (conv_id, username, title),
         )
-        conn.commit()
-    finally:
-        close_db(conn)
+        await conn.commit()
     return conv_id
 
 
-def _workspace_storage():
+async def _workspace_storage():
     from app.storage.workspaces import WorkspaceStorage
     return WorkspaceStorage(_cfg.DB_FILE)
 
@@ -64,21 +61,21 @@ def _zip_read(buf: io.BytesIO, name: str) -> str:
 
 # ── export_user_data: estructura básica ───────────────────────────────────────
 
-def test_export_devuelve_bytesio(patch_gdpr_db):
-    _make_user("exp_basic")
-    result = export_user_data("exp_basic")
+async def test_export_devuelve_bytesio(patch_gdpr_db):
+    await _make_user("exp_basic")
+    result = await export_user_data("exp_basic")
     assert isinstance(result, io.BytesIO)
 
 
-def test_export_es_zip_valido(patch_gdpr_db):
-    _make_user("exp_zip")
-    buf = export_user_data("exp_zip")
+async def test_export_es_zip_valido(patch_gdpr_db):
+    await _make_user("exp_zip")
+    buf = await export_user_data("exp_zip")
     assert zipfile.is_zipfile(buf)
 
 
-def test_export_contiene_ficheros_requeridos(patch_gdpr_db):
-    _make_user("exp_files")
-    buf = export_user_data("exp_files")
+async def test_export_contiene_ficheros_requeridos(patch_gdpr_db):
+    await _make_user("exp_files")
+    buf = await export_user_data("exp_files")
     names = _zip_names(buf)
     for expected in ("profile.json", "connections.json", "knowledge.json",
                      "token_usage.json", "workspaces.json", "accounts.json",
@@ -88,66 +85,67 @@ def test_export_contiene_ficheros_requeridos(patch_gdpr_db):
 
 # ── profile.json ─────────────────────────────────────────────────────────────
 
-def test_export_profile_contiene_username(patch_gdpr_db):
-    _make_user("exp_profile")
-    buf = export_user_data("exp_profile")
+async def test_export_profile_contiene_username(patch_gdpr_db):
+    await _make_user("exp_profile")
+    buf = await export_user_data("exp_profile")
     profile = json.loads(_zip_read(buf, "profile.json"))
     assert profile["username"] == "exp_profile"
 
 
-def test_export_profile_no_contiene_password_hash(patch_gdpr_db):
-    _make_user("exp_nopwd")
-    buf = export_user_data("exp_nopwd")
+async def test_export_profile_no_contiene_password_hash(patch_gdpr_db):
+    await _make_user("exp_nopwd")
+    buf = await export_user_data("exp_nopwd")
     profile = json.loads(_zip_read(buf, "profile.json"))
     assert "password_hash" not in profile
 
 
 # ── conversations ─────────────────────────────────────────────────────────────
 
-def test_export_conversaciones_incluidas(patch_gdpr_db):
-    _make_user("exp_conv")
-    _insert_conversation("exp_conv", "Mi conversación")
-    buf = export_user_data("exp_conv")
+async def test_export_conversaciones_incluidas(patch_gdpr_db):
+    await _make_user("exp_conv")
+    await _insert_conversation("exp_conv", "Mi conversación")
+    buf = await export_user_data("exp_conv")
     conv_files = [n for n in _zip_names(buf) if n.startswith("conversations/")]
     assert len(conv_files) == 1
 
 
-def test_export_conversaciones_sin_datos_de_otros(patch_gdpr_db):
-    _make_user("exp_conv_owner")
-    _make_user("exp_conv_other")
-    _insert_conversation("exp_conv_other", "Ajena")
-    buf = export_user_data("exp_conv_owner")
+async def test_export_conversaciones_sin_datos_de_otros(patch_gdpr_db):
+    await _make_user("exp_conv_owner")
+    await _make_user("exp_conv_other")
+    await _insert_conversation("exp_conv_other", "Ajena")
+    buf = await export_user_data("exp_conv_owner")
     conv_files = [n for n in _zip_names(buf) if n.startswith("conversations/")]
     assert len(conv_files) == 0
 
 
-def test_export_sin_conversaciones(patch_gdpr_db):
-    _make_user("exp_noconv")
-    buf = export_user_data("exp_noconv")
+async def test_export_sin_conversaciones(patch_gdpr_db):
+    await _make_user("exp_noconv")
+    buf = await export_user_data("exp_noconv")
     conv_files = [n for n in _zip_names(buf) if n.startswith("conversations/")]
     assert len(conv_files) == 0
 
 
 # ── workspaces.json ───────────────────────────────────────────────────────────
 
-def test_export_workspaces_incluye_membresías(patch_gdpr_db):
-    _make_user("exp_ws_owner")
-    _make_user("exp_ws_member")
-    ws = _workspace_storage()
-    created = ws.create("Equipo Export", created_by="exp_ws_owner")
-    ws.add_member(created["id"], "exp_ws_member")
+async def test_export_workspaces_incluye_membresías(patch_gdpr_db):
+    await _make_user("exp_ws_owner")
+    await _make_user("exp_ws_member")
+    ws = await _workspace_storage()
+    created = await ws.create("Equipo Export", created_by="exp_ws_owner")
+    await ws.add_member(created["id"], "exp_ws_member")
 
-    buf = export_user_data("exp_ws_member")
+    buf = await export_user_data("exp_ws_member")
     workspaces = json.loads(_zip_read(buf, "workspaces.json"))
     assert any(w["id"] == created["id"] for w in workspaces)
 
 
-def test_export_workspaces_no_incluye_los_ajenos(patch_gdpr_db):
-    _make_user("exp_ws_noaccess")
-    _make_user("exp_ws_other_owner")
-    _workspace_storage().create("Equipo Ajeno", created_by="exp_ws_other_owner")
+async def test_export_workspaces_no_incluye_los_ajenos(patch_gdpr_db):
+    await _make_user("exp_ws_noaccess")
+    await _make_user("exp_ws_other_owner")
+    ws = await _workspace_storage()
+    await ws.create("Equipo Ajeno", created_by="exp_ws_other_owner")
 
-    buf = export_user_data("exp_ws_noaccess")
+    buf = await export_user_data("exp_ws_noaccess")
     workspaces = json.loads(_zip_read(buf, "workspaces.json"))
     assert workspaces == []
 

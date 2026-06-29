@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
-from app.storage.db import PH, close_db, open_db
+from app.storage.db import IS_PG, open_db
 
 
 def _now() -> str:
@@ -29,187 +29,163 @@ class WorkspaceStorage:
 
     # ── Workspaces ─────────────────────────────────────────────────────────────
 
-    def get(self, workspace_id: str) -> Optional[Dict[str, Any]]:
-        conn = open_db(self._path)
-        try:
-            cur = conn.cursor()
-            cur.execute(f"SELECT * FROM workspaces WHERE id = {PH}", (workspace_id,))
-            return _row(cur.fetchone())
-        finally:
-            close_db(conn)
+    async def get(self, workspace_id: str) -> Optional[Dict[str, Any]]:
+        async with open_db() as conn:
+            row = await conn.fetchone(
+                "SELECT * FROM workspaces WHERE id = ?", (workspace_id,)
+            )
+            return _row(row)
 
-    def list_for_user(self, username: str) -> List[Dict[str, Any]]:
+    async def list_for_user(self, username: str) -> List[Dict[str, Any]]:
         """Devuelve todos los workspaces de equipo donde el usuario es miembro."""
-        conn = open_db(self._path)
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                f"SELECT w.*, wm.role FROM workspaces w "
-                f"JOIN workspace_members wm ON w.id = wm.workspace_id "
-                f"WHERE wm.username = {PH} ORDER BY w.created_at ASC",
+        async with open_db() as conn:
+            rows = await conn.fetchall(
+                "SELECT w.*, wm.role FROM workspaces w "
+                "JOIN workspace_members wm ON w.id = wm.workspace_id "
+                "WHERE wm.username = ? ORDER BY w.created_at ASC",
                 (username,),
             )
-            return [dict(r) for r in cur.fetchall()]
-        finally:
-            close_db(conn)
+            return [dict(r) for r in rows]
 
-    def create(self, name: str, created_by: str) -> Dict[str, Any]:
+    async def create(self, name: str, created_by: str) -> Dict[str, Any]:
         ws_id = uuid4().hex[:16]
         now = _now()
-        conn = open_db(self._path)
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                f"INSERT INTO workspaces (id, name, created_by, created_at) "
-                f"VALUES ({PH}, {PH}, {PH}, {PH})",
-                (ws_id, name.strip(), created_by, now),
-            )
-            cur.execute(
-                f"INSERT INTO workspace_members (workspace_id, username, role, joined_at) "
-                f"VALUES ({PH}, {PH}, {PH}, {PH})",
-                (ws_id, created_by, "owner", now),
-            )
-            conn.commit()
-        finally:
-            close_db(conn)
-        return {"id": ws_id, "name": name.strip(), "created_by": created_by, "created_at": now, "role": "owner"}
+        async with open_db() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    "INSERT INTO workspaces (id, name, created_by, created_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    (ws_id, name.strip(), created_by, now),
+                )
+                await conn.execute(
+                    "INSERT INTO workspace_members (workspace_id, username, role, joined_at) "
+                    "VALUES (?, ?, ?, ?)",
+                    (ws_id, created_by, "owner", now),
+                )
+        return {
+            "id": ws_id,
+            "name": name.strip(),
+            "created_by": created_by,
+            "created_at": now,
+            "role": "owner",
+        }
 
-    def update(self, workspace_id: str, name: str) -> bool:
-        conn = open_db(self._path)
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                f"UPDATE workspaces SET name = {PH} WHERE id = {PH}",
+    async def update(self, workspace_id: str, name: str) -> bool:
+        async with open_db() as conn:
+            row = await conn.fetchone(
+                "UPDATE workspaces SET name = ? WHERE id = ? RETURNING id",
                 (name.strip(), workspace_id),
             )
-            conn.commit()
-            return cur.rowcount > 0
-        finally:
-            close_db(conn)
+            await conn.commit()
+            return row is not None
 
-    def delete(self, workspace_id: str) -> bool:
-        conn = open_db(self._path)
-        try:
-            cur = conn.cursor()
-            cur.execute(f"DELETE FROM workspace_members WHERE workspace_id = {PH}", (workspace_id,))
-            cur.execute(f"DELETE FROM workspaces WHERE id = {PH}", (workspace_id,))
-            conn.commit()
-            return cur.rowcount > 0
-        finally:
-            close_db(conn)
+    async def delete(self, workspace_id: str) -> bool:
+        async with open_db() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    "DELETE FROM workspace_members WHERE workspace_id = ?",
+                    (workspace_id,),
+                )
+                row = await conn.fetchone(
+                    "DELETE FROM workspaces WHERE id = ? RETURNING id",
+                    (workspace_id,),
+                )
+            return row is not None
 
-    def transfer_ownership(self, workspace_id: str, new_owner: str) -> bool:
+    async def transfer_ownership(self, workspace_id: str, new_owner: str) -> bool:
         """Transfer ownership to an existing member. Returns False if not a member."""
-        conn = open_db(self._path)
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                f"SELECT 1 FROM workspace_members WHERE workspace_id = {PH} AND username = {PH}",
+        async with open_db() as conn:
+            member = await conn.fetchone(
+                "SELECT 1 FROM workspace_members WHERE workspace_id = ? AND username = ?",
                 (workspace_id, new_owner),
             )
-            if not cur.fetchone():
+            if not member:
                 return False
-            cur.execute(
-                f"UPDATE workspaces SET created_by = {PH} WHERE id = {PH}",
-                (new_owner, workspace_id),
-            )
-            cur.execute(
-                f"UPDATE workspace_members SET role = {PH} WHERE workspace_id = {PH} AND username = {PH}",
-                ("owner", workspace_id, new_owner),
-            )
-            conn.commit()
+            async with conn.transaction():
+                await conn.execute(
+                    "UPDATE workspaces SET created_by = ? WHERE id = ?",
+                    (new_owner, workspace_id),
+                )
+                await conn.execute(
+                    "UPDATE workspace_members SET role = ? WHERE workspace_id = ? AND username = ?",
+                    ("owner", workspace_id, new_owner),
+                )
             return True
-        finally:
-            close_db(conn)
 
     # ── Members ────────────────────────────────────────────────────────────────
 
-    def list_members(self, workspace_id: str) -> List[Dict[str, Any]]:
-        conn = open_db(self._path)
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                f"SELECT wm.username, wm.role, wm.joined_at, u.display_name, u.email "
-                f"FROM workspace_members wm "
-                f"LEFT JOIN users u ON u.username = wm.username "
-                f"WHERE wm.workspace_id = {PH} ORDER BY wm.joined_at ASC",
+    async def list_members(self, workspace_id: str) -> List[Dict[str, Any]]:
+        async with open_db() as conn:
+            rows = await conn.fetchall(
+                "SELECT wm.username, wm.role, wm.joined_at, u.display_name, u.email "
+                "FROM workspace_members wm "
+                "LEFT JOIN users u ON u.username = wm.username "
+                "WHERE wm.workspace_id = ? ORDER BY wm.joined_at ASC",
                 (workspace_id,),
             )
-            return [dict(r) for r in cur.fetchall()]
-        finally:
-            close_db(conn)
+            return [dict(r) for r in rows]
 
-    def get_member(self, workspace_id: str, username: str) -> Optional[Dict[str, Any]]:
-        conn = open_db(self._path)
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                f"SELECT * FROM workspace_members WHERE workspace_id = {PH} AND username = {PH}",
+    async def get_member(self, workspace_id: str, username: str) -> Optional[Dict[str, Any]]:
+        async with open_db() as conn:
+            row = await conn.fetchone(
+                "SELECT * FROM workspace_members WHERE workspace_id = ? AND username = ?",
                 (workspace_id, username),
             )
-            return _row(cur.fetchone())
-        finally:
-            close_db(conn)
+            return _row(row)
 
-    def is_member(self, workspace_id: str, username: str) -> bool:
+    async def is_member(self, workspace_id: str, username: str) -> bool:
         """True si el usuario pertenece a este workspace de equipo."""
-        return self.get_member(workspace_id, username) is not None
+        return await self.get_member(workspace_id, username) is not None
 
-    def add_member(self, workspace_id: str, username: str, role: str = "member") -> bool:
+    async def add_member(
+        self, workspace_id: str, username: str, role: str = "member"
+    ) -> bool:
         if role not in ("owner", "admin", "member"):
             return False
         now = _now()
-        conn = open_db(self._path)
-        try:
-            cur = conn.cursor()
-            if PH == "%s":
-                cur.execute(
+        async with open_db() as conn:
+            if IS_PG:
+                await conn.execute(
                     "INSERT INTO workspace_members (workspace_id, username, role, joined_at) "
-                    "VALUES (%s, %s, %s, %s) ON CONFLICT (workspace_id, username) DO UPDATE SET role = %s",
+                    "VALUES (?, ?, ?, ?) ON CONFLICT (workspace_id, username) DO UPDATE SET role = ?",
                     (workspace_id, username, role, now, role),
                 )
             else:
-                cur.execute(
-                    "INSERT OR REPLACE INTO workspace_members (workspace_id, username, role, joined_at) "
-                    "VALUES (?, ?, ?, ?)",
+                await conn.execute(
+                    "INSERT OR REPLACE INTO workspace_members "
+                    "(workspace_id, username, role, joined_at) VALUES (?, ?, ?, ?)",
                     (workspace_id, username, role, now),
                 )
-            conn.commit()
+            await conn.commit()
             return True
-        finally:
-            close_db(conn)
 
-    def remove_member(self, workspace_id: str, username: str) -> bool:
-        conn = open_db(self._path)
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                f"DELETE FROM workspace_members WHERE workspace_id = {PH} AND username = {PH}",
+    async def remove_member(self, workspace_id: str, username: str) -> bool:
+        async with open_db() as conn:
+            row = await conn.fetchone(
+                "DELETE FROM workspace_members "
+                "WHERE workspace_id = ? AND username = ? RETURNING workspace_id",
                 (workspace_id, username),
             )
-            conn.commit()
-            return cur.rowcount > 0
-        finally:
-            close_db(conn)
+            await conn.commit()
+            return row is not None
 
-    def update_member_role(self, workspace_id: str, username: str, role: str) -> bool:
+    async def update_member_role(
+        self, workspace_id: str, username: str, role: str
+    ) -> bool:
         if role not in ("owner", "admin", "member"):
             return False
-        conn = open_db(self._path)
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                f"UPDATE workspace_members SET role = {PH} WHERE workspace_id = {PH} AND username = {PH}",
+        async with open_db() as conn:
+            row = await conn.fetchone(
+                "UPDATE workspace_members SET role = ? "
+                "WHERE workspace_id = ? AND username = ? RETURNING workspace_id",
                 (role, workspace_id, username),
             )
-            conn.commit()
-            return cur.rowcount > 0
-        finally:
-            close_db(conn)
+            await conn.commit()
+            return row is not None
 
     # ── Authorization helpers ──────────────────────────────────────────────────
 
-    def can_access(self, workspace_id: str, username: str) -> bool:
+    async def can_access(self, workspace_id: str, username: str) -> bool:
         """True si el usuario puede usar este workspace.
 
         Un workspace personal (id == username) siempre es accesible por ese usuario.
@@ -217,125 +193,117 @@ class WorkspaceStorage:
         """
         if workspace_id == username:
             return True
-        return self.is_member(workspace_id, username)
+        return await self.is_member(workspace_id, username)
 
-    def can_manage(self, workspace_id: str, username: str) -> bool:
+    async def can_manage(self, workspace_id: str, username: str) -> bool:
         """True si el usuario puede modificar configuración del workspace (owner o admin)."""
         if workspace_id == username:
             return True
-        member = self.get_member(workspace_id, username)
+        member = await self.get_member(workspace_id, username)
         return member is not None and member.get("role") in ("owner", "admin")
 
     # ── Invitaciones ───────────────────────────────────────────────────────────
 
-    def invite_user(self, workspace_id: str, username: str, invited_by: str) -> Optional[Dict[str, Any]]:
+    async def invite_user(
+        self, workspace_id: str, username: str, invited_by: str
+    ) -> Optional[Dict[str, Any]]:
         inv_id = uuid4().hex[:16]
         now = _now()
-        conn = open_db(self._path)
-        try:
-            cur = conn.cursor()
-            if PH == "%s":
-                cur.execute(
-                    "INSERT INTO workspace_invitations (id, workspace_id, invited_by, username, status, created_at) "
-                    "VALUES (%s, %s, %s, %s, 'pending', %s) "
-                    "ON CONFLICT (workspace_id, username) DO NOTHING",
+        async with open_db() as conn:
+            if IS_PG:
+                row = await conn.fetchone(
+                    "INSERT INTO workspace_invitations "
+                    "(id, workspace_id, invited_by, username, status, created_at) "
+                    "VALUES (?, ?, ?, ?, 'pending', ?) "
+                    "ON CONFLICT (workspace_id, username) DO NOTHING RETURNING id",
                     (inv_id, workspace_id, invited_by, username, now),
                 )
             else:
-                cur.execute(
-                    "INSERT OR IGNORE INTO workspace_invitations (id, workspace_id, invited_by, username, status, created_at) "
-                    "VALUES (?, ?, ?, ?, 'pending', ?)",
+                row = await conn.fetchone(
+                    "INSERT OR IGNORE INTO workspace_invitations "
+                    "(id, workspace_id, invited_by, username, status, created_at) "
+                    "VALUES (?, ?, ?, ?, 'pending', ?) RETURNING id",
                     (inv_id, workspace_id, invited_by, username, now),
                 )
-            conn.commit()
-            if cur.rowcount == 0:
+            await conn.commit()
+            if row is None:
                 return None  # Already invited or already a member
-            return {"id": inv_id, "workspace_id": workspace_id, "invited_by": invited_by,
-                    "username": username, "status": "pending", "created_at": now}
-        finally:
-            close_db(conn)
+            return {
+                "id": inv_id,
+                "workspace_id": workspace_id,
+                "invited_by": invited_by,
+                "username": username,
+                "status": "pending",
+                "created_at": now,
+            }
 
-    def list_invitations(self, workspace_id: str) -> List[Dict[str, Any]]:
-        conn = open_db(self._path)
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                f"SELECT * FROM workspace_invitations WHERE workspace_id = {PH} AND status = 'pending' "
-                f"ORDER BY created_at DESC",
+    async def list_invitations(self, workspace_id: str) -> List[Dict[str, Any]]:
+        async with open_db() as conn:
+            rows = await conn.fetchall(
+                "SELECT * FROM workspace_invitations "
+                "WHERE workspace_id = ? AND status = 'pending' ORDER BY created_at DESC",
                 (workspace_id,),
             )
-            return [dict(r) for r in cur.fetchall()]
-        finally:
-            close_db(conn)
+            return [dict(r) for r in rows]
 
-    def list_my_invitations(self, username: str) -> List[Dict[str, Any]]:
-        conn = open_db(self._path)
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                f"SELECT wi.*, w.name AS workspace_name FROM workspace_invitations wi "
-                f"LEFT JOIN workspaces w ON w.id = wi.workspace_id "
-                f"WHERE wi.username = {PH} AND wi.status = 'pending' ORDER BY wi.created_at DESC",
+    async def list_my_invitations(self, username: str) -> List[Dict[str, Any]]:
+        async with open_db() as conn:
+            rows = await conn.fetchall(
+                "SELECT wi.*, w.name AS workspace_name FROM workspace_invitations wi "
+                "LEFT JOIN workspaces w ON w.id = wi.workspace_id "
+                "WHERE wi.username = ? AND wi.status = 'pending' ORDER BY wi.created_at DESC",
                 (username,),
             )
-            return [dict(r) for r in cur.fetchall()]
-        finally:
-            close_db(conn)
+            return [dict(r) for r in rows]
 
-    def cancel_invitation(self, inv_id: str, workspace_id: str) -> bool:
-        conn = open_db(self._path)
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                f"DELETE FROM workspace_invitations WHERE id = {PH} AND workspace_id = {PH}",
+    async def cancel_invitation(self, inv_id: str, workspace_id: str) -> bool:
+        async with open_db() as conn:
+            row = await conn.fetchone(
+                "DELETE FROM workspace_invitations "
+                "WHERE id = ? AND workspace_id = ? RETURNING id",
                 (inv_id, workspace_id),
             )
-            conn.commit()
-            return cur.rowcount > 0
-        finally:
-            close_db(conn)
+            await conn.commit()
+            return row is not None
 
-    def accept_invitation(self, inv_id: str, username: str) -> Optional[str]:
+    async def accept_invitation(self, inv_id: str, username: str) -> Optional[str]:
         """Acepta la invitación y añade al usuario como miembro. Devuelve workspace_id."""
-        conn = open_db(self._path)
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                f"SELECT * FROM workspace_invitations WHERE id = {PH} AND username = {PH} AND status = 'pending'",
+        async with open_db() as conn:
+            row = await conn.fetchone(
+                "SELECT * FROM workspace_invitations "
+                "WHERE id = ? AND username = ? AND status = 'pending'",
                 (inv_id, username),
             )
-            row = cur.fetchone()
             if not row:
                 return None
             workspace_id = dict(row)["workspace_id"]
             now = _now()
-            if PH == "%s":
-                cur.execute(
-                    "INSERT INTO workspace_members (workspace_id, username, role, joined_at) "
-                    "VALUES (%s, %s, 'member', %s) ON CONFLICT (workspace_id, username) DO NOTHING",
-                    (workspace_id, username, now),
+            async with conn.transaction():
+                if IS_PG:
+                    await conn.execute(
+                        "INSERT INTO workspace_members "
+                        "(workspace_id, username, role, joined_at) "
+                        "VALUES (?, ?, 'member', ?) "
+                        "ON CONFLICT (workspace_id, username) DO NOTHING",
+                        (workspace_id, username, now),
+                    )
+                else:
+                    await conn.execute(
+                        "INSERT OR IGNORE INTO workspace_members "
+                        "(workspace_id, username, role, joined_at) VALUES (?, ?, 'member', ?)",
+                        (workspace_id, username, now),
+                    )
+                await conn.execute(
+                    "DELETE FROM workspace_invitations WHERE id = ?", (inv_id,)
                 )
-            else:
-                cur.execute(
-                    "INSERT OR IGNORE INTO workspace_members (workspace_id, username, role, joined_at) "
-                    "VALUES (?, ?, 'member', ?)",
-                    (workspace_id, username, now),
-                )
-            cur.execute(f"DELETE FROM workspace_invitations WHERE id = {PH}", (inv_id,))
-            conn.commit()
             return workspace_id
-        finally:
-            close_db(conn)
 
-    def reject_invitation(self, inv_id: str, username: str) -> bool:
-        conn = open_db(self._path)
-        try:
-            cur = conn.cursor()
-            cur.execute(
-                f"DELETE FROM workspace_invitations WHERE id = {PH} AND username = {PH}",
+    async def reject_invitation(self, inv_id: str, username: str) -> bool:
+        async with open_db() as conn:
+            row = await conn.fetchone(
+                "DELETE FROM workspace_invitations "
+                "WHERE id = ? AND username = ? RETURNING id",
                 (inv_id, username),
             )
-            conn.commit()
-            return cur.rowcount > 0
-        finally:
-            close_db(conn)
+            await conn.commit()
+            return row is not None

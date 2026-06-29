@@ -4,7 +4,8 @@ from __future__ import annotations
 
 def _login(client, username="tagstest", password="pass1234"):
     from app.auth.auth import create_token, register_user
-    register_user(username, password, email=f"{username}@example.com")
+    import asyncio
+    asyncio.run(register_user(username, password, email=f"{username}@example.com"))
     client.cookies.set("ga_token", create_token(username))
     return username
 
@@ -45,19 +46,18 @@ def test_agent_tags_go_to_resource_social(client):
     })
     assert r2.status_code == 200
 
-    from app.config.data import DB_FILE
-    from app.storage.db import PH, close_db, open_db
+    import asyncio
     import json as _json
-    conn = open_db(DB_FILE)
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            f"SELECT tags FROM resource_social WHERE resource_id = {PH}",
-            (agent_id,),
-        )
-        row = cur.fetchone()
-    finally:
-        close_db(conn)
+    from app.storage.db import open_db
+
+    async def _get_tags():
+        async with open_db() as conn:
+            return await conn.fetchone(
+                "SELECT tags FROM resource_social WHERE resource_id = ?",
+                (agent_id,),
+            )
+
+    row = asyncio.run(_get_tags())
 
     assert row is not None
     stored_tags = _json.loads(row["tags"])

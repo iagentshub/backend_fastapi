@@ -1,27 +1,32 @@
 """Database connection manager — supports SQLite (default) and PostgreSQL (DATABASE_URL).
 
-IS_PG=False  → SQLite WAL, process-scoped singleton per path (original behaviour).
-IS_PG=True   → psycopg2 ThreadedConnectionPool, path argument ignored.
+IS_PG=False → aiosqlite, WAL mode, new connection per open_db() call.
+IS_PG=True  → asyncpg connection pool (min=2, max=20).
+
+Public API:
+    await init_db(sqlite_path)   — call once at app startup
+    await close_db_pool()        — call at app shutdown
+    async with open_db() as conn — get an AsyncConn for queries
 """
 from __future__ import annotations
 
 import os
+import re
+from contextlib import asynccontextmanager
+from pathlib import Path
+from typing import Any, AsyncGenerator, List, Optional, Tuple
 
 from app.utils import flog
-import sqlite3
-import threading
-from pathlib import Path
-from typing import Any, Optional
 
 # ── Backend detection ──────────────────────────────────────────────────────────
 
 DATABASE_URL: Optional[str] = os.environ.get("DATABASE_URL") or ""
 IS_PG: bool = bool(DATABASE_URL)
 
-# Placeholder for parameterised queries
-PH: str = "%s" if IS_PG else "?"
+# Placeholder for parameterised queries — always use ? (AsyncConn translates to $N for PG)
+PH: str = "?"
 
-# ── Schema (shared DDL — uses TEXT placeholders adapted below) ─────────────────
+# ── Schema DDL ─────────────────────────────────────────────────────────────────
 
 _SCHEMA_SQLITE = """
 CREATE TABLE IF NOT EXISTS connections (
@@ -307,26 +312,25 @@ CREATE TABLE IF NOT EXISTS workspace_invitations (
 CREATE INDEX IF NOT EXISTS idx_ws_inv_user ON workspace_invitations(username, status);
 """
 
-# ── SQLite backend ─────────────────────────────────────────────────────────────
-
-_sqlite_lock = threading.Lock()
-_sqlite_pool: dict[str, sqlite3.Connection] = {}
+# ── SQLite migrations (async) ──────────────────────────────────────────────────
 
 
-def _migrate_sqlite(conn: sqlite3.Connection) -> None:
+async def _migrate_sqlite(conn: Any) -> None:
     """Incremental migrations for pre-existing SQLite databases."""
     # 1. Add owner_id to connections if missing
-    existing_cols = {row[1] for row in conn.execute("PRAGMA table_info(connections)")}
+    cur = await conn.execute("PRAGMA table_info(connections)")
+    existing_cols = {row[1] for row in await cur.fetchall()}
     if "owner_id" not in existing_cols:
-        conn.execute(
+        await conn.execute(
             "ALTER TABLE connections ADD COLUMN owner_id TEXT NOT NULL DEFAULT 'admin'"
         )
-        conn.commit()
+        await conn.commit()
 
     # 2. Recreate accounts with composite PK if it still uses a simple PK
-    acct_cols = {row[1] for row in conn.execute("PRAGMA table_info(accounts)")}
+    cur = await conn.execute("PRAGMA table_info(accounts)")
+    acct_cols = {row[1] for row in await cur.fetchall()}
     if "owner_id" not in acct_cols:
-        conn.executescript("""
+        await conn.executescript("""
             ALTER TABLE accounts RENAME TO _accounts_old;
             CREATE TABLE accounts (
                 owner_id    TEXT NOT NULL DEFAULT 'admin',
@@ -339,18 +343,19 @@ def _migrate_sqlite(conn: sqlite3.Connection) -> None:
                 SELECT 'admin', provider, data, linked_at FROM _accounts_old;
             DROP TABLE _accounts_old;
         """)
-        conn.commit()
 
     # 3. Add folder_id to knowledge_items if missing
-    ki_cols = {row[1] for row in conn.execute("PRAGMA table_info(knowledge_items)")}
+    cur = await conn.execute("PRAGMA table_info(knowledge_items)")
+    ki_cols = {row[1] for row in await cur.fetchall()}
     if "folder_id" not in ki_cols:
-        conn.execute("ALTER TABLE knowledge_items ADD COLUMN folder_id TEXT")
-        conn.commit()
+        await conn.execute("ALTER TABLE knowledge_items ADD COLUMN folder_id TEXT")
+        await conn.commit()
 
-    # 4. Create team tables if missing (new feature)
-    existing_tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    # 4. Create team tables if missing
+    cur = await conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    existing_tables = {row[0] for row in await cur.fetchall()}
     if "teams" not in existing_tables:
-        conn.executescript("""
+        await conn.executescript("""
             CREATE TABLE IF NOT EXISTS teams (
                 id          TEXT PRIMARY KEY,
                 name        TEXT NOT NULL,
@@ -377,10 +382,10 @@ def _migrate_sqlite(conn: sqlite3.Connection) -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_team_inv_email ON team_invitations(invited_email, status);
         """)
-        conn.commit()
 
     # 5. Add users table columns that may be missing in older DBs
-    user_cols = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
+    cur = await conn.execute("PRAGMA table_info(users)")
+    user_cols = {row[1] for row in await cur.fetchall()}
     for col, definition in [
         ("birth_date", "TEXT"),
         ("gender", "TEXT"),
@@ -400,14 +405,16 @@ def _migrate_sqlite(conn: sqlite3.Connection) -> None:
     ]:
         if col not in user_cols:
             try:
-                conn.execute(f"ALTER TABLE users ADD COLUMN {col} {definition}")
-                conn.commit()
+                await conn.execute(f"ALTER TABLE users ADD COLUMN {col} {definition}")
+                await conn.commit()
             except Exception as exc:
                 flog.warning(f"[db] No se pudo añadir columna {col}: {exc}")
 
     # 6. Create resource_teams if missing
+    cur = await conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    existing_tables = {row[0] for row in await cur.fetchall()}
     if "resource_teams" not in existing_tables:
-        conn.executescript("""
+        await conn.executescript("""
             CREATE TABLE IF NOT EXISTS resource_teams (
                 resource_type TEXT NOT NULL,
                 resource_id   TEXT NOT NULL,
@@ -419,11 +426,12 @@ def _migrate_sqlite(conn: sqlite3.Connection) -> None:
             CREATE INDEX IF NOT EXISTS idx_rt_team ON resource_teams(team_id, resource_type);
             CREATE INDEX IF NOT EXISTS idx_rt_resource ON resource_teams(resource_type, resource_id);
         """)
-        conn.commit()
 
     # 7. Create workspaces tables if missing
+    cur = await conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    existing_tables = {row[0] for row in await cur.fetchall()}
     if "workspaces" not in existing_tables:
-        conn.executescript("""
+        await conn.executescript("""
             CREATE TABLE IF NOT EXISTS workspaces (
                 id          TEXT PRIMARY KEY,
                 name        TEXT NOT NULL,
@@ -439,19 +447,20 @@ def _migrate_sqlite(conn: sqlite3.Connection) -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_ws_members_user ON workspace_members(username);
         """)
-        conn.commit()
 
-    conn.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_teams_name_creator ON teams(name, created_by)"
-    )
-    conn.commit()
-
-    # Refresh existing_tables after previous migrations
-    existing_tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    try:
+        await conn.execute(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_teams_name_creator ON teams(name, created_by)"
+        )
+        await conn.commit()
+    except Exception:
+        pass
 
     # 8. Create token_daily table if missing
+    cur = await conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    existing_tables = {row[0] for row in await cur.fetchall()}
     if "token_daily" not in existing_tables:
-        conn.executescript("""
+        await conn.executescript("""
             CREATE TABLE IF NOT EXISTS token_daily (
                 day      TEXT NOT NULL,
                 owner_id TEXT NOT NULL,
@@ -460,12 +469,12 @@ def _migrate_sqlite(conn: sqlite3.Connection) -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_token_daily_owner ON token_daily(owner_id, day DESC);
         """)
-        conn.commit()
 
     # 9. Create workspace_invitations table if missing
-    existing_tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    cur = await conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    existing_tables = {row[0] for row in await cur.fetchall()}
     if "workspace_invitations" not in existing_tables:
-        conn.executescript("""
+        await conn.executescript("""
             CREATE TABLE IF NOT EXISTS workspace_invitations (
                 id           TEXT PRIMARY KEY,
                 workspace_id TEXT NOT NULL,
@@ -477,12 +486,12 @@ def _migrate_sqlite(conn: sqlite3.Connection) -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_ws_inv_user ON workspace_invitations(username, status);
         """)
-        conn.commit()
 
-    # 10. Migrate teams → workspace_groups (drop old tables, create new)
-    existing_tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+    # 10. Migrate teams → workspace_groups (drop old, create new)
+    cur = await conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    existing_tables = {row[0] for row in await cur.fetchall()}
     if "workspace_groups" not in existing_tables:
-        conn.executescript("""
+        await conn.executescript("""
             DROP TABLE IF EXISTS resource_teams;
             DROP TABLE IF EXISTS team_invitations;
             DROP TABLE IF EXISTS team_members;
@@ -515,11 +524,12 @@ def _migrate_sqlite(conn: sqlite3.Connection) -> None:
             CREATE INDEX IF NOT EXISTS idx_rg_group    ON resource_groups(group_id, resource_type);
             CREATE INDEX IF NOT EXISTS idx_rg_resource ON resource_groups(resource_type, resource_id);
         """)
-        conn.commit()
 
     # 11. Social profile fields + follow + stars
-    existing_tables = {row[0] for row in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-    user_cols = {row[1] for row in conn.execute("PRAGMA table_info(users)")}
+    cur = await conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    existing_tables = {row[0] for row in await cur.fetchall()}
+    cur = await conn.execute("PRAGMA table_info(users)")
+    user_cols = {row[1] for row in await cur.fetchall()}
     for col, definition in [
         ("avatar", "TEXT"),
         ("bio", "TEXT"),
@@ -530,13 +540,13 @@ def _migrate_sqlite(conn: sqlite3.Connection) -> None:
     ]:
         if col not in user_cols:
             try:
-                conn.execute(f"ALTER TABLE users ADD COLUMN {col} {definition}")
-                conn.commit()
+                await conn.execute(f"ALTER TABLE users ADD COLUMN {col} {definition}")
+                await conn.commit()
             except Exception as exc:
                 flog.warning(f"[db] No se pudo añadir columna {col}: {exc}")
 
     if "user_follows" not in existing_tables:
-        conn.executescript("""
+        await conn.executescript("""
             CREATE TABLE IF NOT EXISTS user_follows (
                 follower    TEXT NOT NULL,
                 following   TEXT NOT NULL,
@@ -546,10 +556,9 @@ def _migrate_sqlite(conn: sqlite3.Connection) -> None:
             CREATE INDEX IF NOT EXISTS idx_uf_follower  ON user_follows(follower);
             CREATE INDEX IF NOT EXISTS idx_uf_following ON user_follows(following);
         """)
-        conn.commit()
 
     if "resource_stars" not in existing_tables:
-        conn.executescript("""
+        await conn.executescript("""
             CREATE TABLE IF NOT EXISTS resource_stars (
                 username      TEXT NOT NULL,
                 resource_type TEXT NOT NULL,
@@ -559,11 +568,10 @@ def _migrate_sqlite(conn: sqlite3.Connection) -> None:
             );
             CREATE INDEX IF NOT EXISTS idx_rs_resource ON resource_stars(resource_type, resource_id);
         """)
-        conn.commit()
 
     # 12. Resource social catalog
     if "resource_social" not in existing_tables:
-        conn.executescript("""
+        await conn.executescript("""
             CREATE TABLE IF NOT EXISTS resource_social (
                 resource_type      TEXT NOT NULL,
                 resource_id        TEXT NOT NULL,
@@ -586,37 +594,36 @@ def _migrate_sqlite(conn: sqlite3.Connection) -> None:
             CREATE INDEX IF NOT EXISTS idx_rsoc_public ON resource_social(is_public, resource_type, category);
             CREATE INDEX IF NOT EXISTS idx_rsoc_owner  ON resource_social(owner, resource_type);
         """)
-        conn.commit()
-    # Migrate existing table: add tags column if missing
     try:
-        conn.execute("ALTER TABLE resource_social ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'")
-        conn.commit()
+        await conn.execute(
+            "ALTER TABLE resource_social ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'"
+        )
+        await conn.commit()
     except Exception:
-        pass  # column already exists
-    # Migrate existing table: add labels column if missing
+        pass
     try:
-        conn.execute("ALTER TABLE resource_social ADD COLUMN labels TEXT NOT NULL DEFAULT '[\"private\"]'")
-        conn.commit()
+        await conn.execute(
+            "ALTER TABLE resource_social ADD COLUMN labels TEXT NOT NULL DEFAULT '[\"private\"]'"
+        )
+        await conn.commit()
     except Exception:
-        pass  # column already exists
+        pass
 
 
-def _migrate_users_json_sqlite(conn: sqlite3.Connection) -> None:
+async def _migrate_users_json_sqlite(conn: Any) -> None:
     """Import users.json into the users table if it exists and the table is empty."""
     import json
     from pathlib import Path as _Path
 
-    count = conn.execute("SELECT COUNT(*) FROM users").fetchone()[0]
-    if count:
+    cur = await conn.execute("SELECT COUNT(*) FROM users")
+    row = await cur.fetchone()
+    if row and row[0]:
         return
-    # Resolve users.json relative to the DB file path
-    # Try environment variable fallback
-    data_dir_env = os.environ.get("GAIA_DATA_DIR", "")
-    if data_dir_env:
-        users_json = _Path(data_dir_env) / "users.json"
-    else:
-        users_json = _Path("data") / "users.json"
 
+    data_dir_env = os.environ.get("GAIA_DATA_DIR", "")
+    users_json = (
+        _Path(data_dir_env) / "users.json" if data_dir_env else _Path("data") / "users.json"
+    )
     if not users_json.exists():
         return
 
@@ -627,7 +634,7 @@ def _migrate_users_json_sqlite(conn: sqlite3.Connection) -> None:
         for u in users:
             username = u.get("username", "")
             email = u.get("email") or f"{username}@migrated.local"
-            conn.execute(
+            await conn.execute(
                 "INSERT OR IGNORE INTO users "
                 "(username, email, password_hash, display_name, birth_date, gender, "
                 "country, phone, role, is_active, created_at) "
@@ -646,292 +653,252 @@ def _migrate_users_json_sqlite(conn: sqlite3.Connection) -> None:
                     u.get("created_at") or datetime.now(timezone.utc).isoformat(),
                 ),
             )
-        conn.commit()
+        await conn.commit()
         users_json.rename(users_json.with_suffix(".migrated"))
     except Exception as exc:
         flog.warning(f"[db] Importación users.json (SQLite) fallida: {exc}")
 
 
-def _open_sqlite(path: Path) -> sqlite3.Connection:
-    key = str(path.resolve())
-    if key not in _sqlite_pool:
-        with _sqlite_lock:
-            if key not in _sqlite_pool:
-                path.parent.mkdir(parents=True, exist_ok=True)
-                conn = sqlite3.connect(key, check_same_thread=False)
-                conn.row_factory = sqlite3.Row
-                conn.execute("PRAGMA journal_mode=WAL")
-                conn.execute("PRAGMA foreign_keys=ON")
-                conn.executescript(_SCHEMA_SQLITE)
-                _migrate_sqlite(conn)
-                _migrate_users_json_sqlite(conn)
-                conn.execute(
-                    "CREATE INDEX IF NOT EXISTS idx_connections_owner "
-                    "ON connections(owner_id)"
-                )
-                conn.commit()
-                _sqlite_pool[key] = conn
-    return _sqlite_pool[key]
+# ── PostgreSQL migrations (async) ──────────────────────────────────────────────
 
 
-# ── PostgreSQL backend ─────────────────────────────────────────────────────────
-
-_pg_pool: Any = None
-_pg_lock = threading.Lock()
-
-
-def _ensure_pg_pool() -> Any:
-    global _pg_pool
-    if _pg_pool is not None:
-        return _pg_pool
-    with _pg_lock:
-        if _pg_pool is not None:
-            return _pg_pool
-        import psycopg2
-        import psycopg2.extras
-        import psycopg2.pool
-
-        pool = psycopg2.pool.ThreadedConnectionPool(
-            minconn=2,
-            maxconn=20,
-            dsn=DATABASE_URL,
-        )
-        # Run schema once
-        conn = pool.getconn()
-        try:
-            with conn.cursor() as cur:
-                for statement in _SCHEMA_PG.split(";"):
-                    stmt = statement.strip()
-                    if stmt:
-                        cur.execute(stmt)
-            _migrate_pg(conn)
-            _migrate_users_json_pg(conn)
-            conn.commit()
-        finally:
-            pool.putconn(conn)
-        _pg_pool = pool
-    return _pg_pool
-
-
-def _migrate_pg(conn: Any) -> None:
+async def _migrate_pg(conn: Any) -> None:
     """Incremental migrations for pre-existing PostgreSQL databases."""
-    with conn.cursor() as cur:
-        cur.execute("ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS folder_id TEXT")
-        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token TEXT")
-        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token_expires TEXT")
-        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS deletion_requested_at TEXT")
-        cur.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS deletion_token TEXT")
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS teams (
-                id          TEXT PRIMARY KEY,
-                name        TEXT NOT NULL,
-                created_by  TEXT NOT NULL,
-                created_at  TEXT NOT NULL
-            )
-        """)
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS team_members (
-                team_id     TEXT NOT NULL,
-                username    TEXT NOT NULL,
-                is_manager  SMALLINT NOT NULL DEFAULT 0,
-                permissions TEXT NOT NULL DEFAULT '{}',
-                joined_at   TEXT NOT NULL,
-                PRIMARY KEY (team_id, username)
-            )
-        """)
-        cur.execute(
-            "CREATE INDEX IF NOT EXISTS idx_team_members_username ON team_members(username)"
+    await conn.execute("ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS folder_id TEXT")
+    await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token TEXT")
+    await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token_expires TEXT")
+    await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS deletion_requested_at TEXT")
+    await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS deletion_token TEXT")
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS teams (
+            id          TEXT PRIMARY KEY,
+            name        TEXT NOT NULL,
+            created_by  TEXT NOT NULL,
+            created_at  TEXT NOT NULL
         )
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS team_invitations (
-                id              TEXT PRIMARY KEY,
-                team_id         TEXT NOT NULL,
-                invited_email   TEXT NOT NULL,
-                invited_by      TEXT NOT NULL,
-                status          TEXT NOT NULL DEFAULT 'pending',
-                expires_at      TEXT NOT NULL,
-                created_at      TEXT NOT NULL
-            )
-        """)
-        cur.execute(
-            "CREATE INDEX IF NOT EXISTS idx_team_inv_email"
-            " ON team_invitations(invited_email, status)"
+    """)
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS team_members (
+            team_id     TEXT NOT NULL,
+            username    TEXT NOT NULL,
+            is_manager  SMALLINT NOT NULL DEFAULT 0,
+            permissions TEXT NOT NULL DEFAULT '{}',
+            joined_at   TEXT NOT NULL,
+            PRIMARY KEY (team_id, username)
         )
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS resource_teams (
-                resource_type TEXT NOT NULL,
-                resource_id   TEXT NOT NULL,
-                team_id       TEXT NOT NULL,
-                shared_by     TEXT NOT NULL,
-                shared_at     TEXT NOT NULL,
-                PRIMARY KEY (resource_type, resource_id, team_id)
-            )
-        """)
-        cur.execute(
-            "CREATE INDEX IF NOT EXISTS idx_rt_team ON resource_teams(team_id, resource_type)"
+    """)
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_team_members_username ON team_members(username)"
+    )
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS team_invitations (
+            id              TEXT PRIMARY KEY,
+            team_id         TEXT NOT NULL,
+            invited_email   TEXT NOT NULL,
+            invited_by      TEXT NOT NULL,
+            status          TEXT NOT NULL DEFAULT 'pending',
+            expires_at      TEXT NOT NULL,
+            created_at      TEXT NOT NULL
         )
-        cur.execute(
-            "CREATE INDEX IF NOT EXISTS idx_rt_resource ON resource_teams(resource_type, resource_id)"
+    """)
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_team_inv_email ON team_invitations(invited_email, status)"
+    )
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS resource_teams (
+            resource_type TEXT NOT NULL,
+            resource_id   TEXT NOT NULL,
+            team_id       TEXT NOT NULL,
+            shared_by     TEXT NOT NULL,
+            shared_at     TEXT NOT NULL,
+            PRIMARY KEY (resource_type, resource_id, team_id)
         )
-        cur.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_teams_name_creator ON teams(name, created_by)"
+    """)
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_rt_team ON resource_teams(team_id, resource_type)"
+    )
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_rt_resource ON resource_teams(resource_type, resource_id)"
+    )
+    await conn.execute(
+        "CREATE UNIQUE INDEX IF NOT EXISTS idx_teams_name_creator ON teams(name, created_by)"
+    )
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS workspaces (
+            id          TEXT PRIMARY KEY,
+            name        TEXT NOT NULL,
+            created_by  TEXT NOT NULL,
+            created_at  TEXT NOT NULL
         )
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS workspaces (
-                id          TEXT PRIMARY KEY,
-                name        TEXT NOT NULL,
-                created_by  TEXT NOT NULL,
-                created_at  TEXT NOT NULL
-            )
-        """)
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS workspace_members (
-                workspace_id TEXT NOT NULL,
-                username     TEXT NOT NULL,
-                role         TEXT NOT NULL DEFAULT 'member',
-                joined_at    TEXT NOT NULL,
-                PRIMARY KEY (workspace_id, username)
-            )
-        """)
-        cur.execute(
-            "CREATE INDEX IF NOT EXISTS idx_ws_members_user ON workspace_members(username)"
+    """)
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS workspace_members (
+            workspace_id TEXT NOT NULL,
+            username     TEXT NOT NULL,
+            role         TEXT NOT NULL DEFAULT 'member',
+            joined_at    TEXT NOT NULL,
+            PRIMARY KEY (workspace_id, username)
         )
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS token_daily (
-                day      TEXT NOT NULL,
-                owner_id TEXT NOT NULL,
-                tokens   INTEGER NOT NULL DEFAULT 0,
-                PRIMARY KEY (day, owner_id)
-            )
-        """)
-        cur.execute(
-            "CREATE INDEX IF NOT EXISTS idx_token_daily_owner ON token_daily(owner_id, day DESC)"
+    """)
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_ws_members_user ON workspace_members(username)"
+    )
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS token_daily (
+            day      TEXT NOT NULL,
+            owner_id TEXT NOT NULL,
+            tokens   INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (day, owner_id)
         )
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS workspace_invitations (
-                id           TEXT PRIMARY KEY,
-                workspace_id TEXT NOT NULL,
-                invited_by   TEXT NOT NULL,
-                username     TEXT NOT NULL,
-                status       TEXT NOT NULL DEFAULT 'pending',
-                created_at   TEXT NOT NULL,
-                UNIQUE(workspace_id, username)
-            )
-        """)
-        cur.execute(
-            "CREATE INDEX IF NOT EXISTS idx_ws_inv_user ON workspace_invitations(username, status)"
+    """)
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_token_daily_owner ON token_daily(owner_id, day DESC)"
+    )
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS workspace_invitations (
+            id           TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL,
+            invited_by   TEXT NOT NULL,
+            username     TEXT NOT NULL,
+            status       TEXT NOT NULL DEFAULT 'pending',
+            created_at   TEXT NOT NULL,
+            UNIQUE(workspace_id, username)
         )
-        # 10. Migrate teams → workspace_groups
-        cur.execute("DROP TABLE IF EXISTS resource_teams CASCADE")
-        cur.execute("DROP TABLE IF EXISTS team_invitations CASCADE")
-        cur.execute("DROP TABLE IF EXISTS team_members CASCADE")
-        cur.execute("DROP TABLE IF EXISTS teams CASCADE")
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS workspace_groups (
-                id           TEXT PRIMARY KEY,
-                workspace_id TEXT NOT NULL,
-                name         TEXT NOT NULL,
-                created_by   TEXT NOT NULL,
-                created_at   TEXT NOT NULL,
-                UNIQUE(workspace_id, name)
-            )
-        """)
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_ws_groups_ws ON workspace_groups(workspace_id)")
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS workspace_group_members (
-                group_id     TEXT NOT NULL,
-                workspace_id TEXT NOT NULL,
-                username     TEXT NOT NULL,
-                joined_at    TEXT NOT NULL,
-                PRIMARY KEY (group_id, username)
-            )
-        """)
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_wsgm_user ON workspace_group_members(username)")
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS resource_groups (
-                resource_type TEXT NOT NULL,
-                resource_id   TEXT NOT NULL,
-                group_id      TEXT NOT NULL,
-                shared_by     TEXT NOT NULL,
-                shared_at     TEXT NOT NULL,
-                PRIMARY KEY (resource_type, resource_id, group_id)
-            )
-        """)
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_rg_group ON resource_groups(group_id, resource_type)")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_rg_resource ON resource_groups(resource_type, resource_id)")
-        # 11. Social profile fields + follow + stars
-        for col, definition in [
-            ("avatar", "TEXT"),
-            ("bio", "TEXT"),
-            ("languages", "TEXT NOT NULL DEFAULT '[]'"),
-            ("email_public", "TEXT"),
-            ("github", "TEXT"),
-            ("cv", "TEXT"),
-        ]:
-            cur.execute(f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {col} {definition}")
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS user_follows (
-                follower    TEXT NOT NULL,
-                following   TEXT NOT NULL,
-                created_at  TEXT NOT NULL DEFAULT NOW(),
-                PRIMARY KEY (follower, following)
-            )
-        """)
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_uf_follower  ON user_follows(follower)")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_uf_following ON user_follows(following)")
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS resource_stars (
-                username      TEXT NOT NULL,
-                resource_type TEXT NOT NULL,
-                resource_id   TEXT NOT NULL,
-                created_at    TEXT NOT NULL DEFAULT NOW(),
-                PRIMARY KEY (username, resource_type, resource_id)
-            )
-        """)
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_rs_resource ON resource_stars(resource_type, resource_id)")
-        # 12. Resource social catalog
-        cur.execute("""
-            CREATE TABLE IF NOT EXISTS resource_social (
-                resource_type      TEXT NOT NULL,
-                resource_id        TEXT NOT NULL,
-                owner              TEXT NOT NULL,
-                name               TEXT NOT NULL DEFAULT '',
-                description        TEXT NOT NULL DEFAULT '',
-                is_public          BOOLEAN NOT NULL DEFAULT FALSE,
-                category           TEXT NOT NULL DEFAULT 'Other',
-                trial_missing_deps TEXT NOT NULL DEFAULT 'warn',
-                fork_of_user       TEXT,
-                fork_of_id         TEXT,
-                linked_to_user     TEXT,
-                linked_to_id       TEXT,
-                stars_count        INTEGER NOT NULL DEFAULT 0,
-                tags               TEXT NOT NULL DEFAULT '[]',
-                labels             TEXT NOT NULL DEFAULT '["private"]',
-                updated_at         TIMESTAMP WITH TIME ZONE DEFAULT now(),
-                PRIMARY KEY (resource_type, resource_id, owner)
-            )
-        """)
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_rsoc_public ON resource_social(is_public, resource_type, category)")
-        cur.execute("CREATE INDEX IF NOT EXISTS idx_rsoc_owner ON resource_social(owner, resource_type)")
-        cur.execute("ALTER TABLE resource_social ADD COLUMN IF NOT EXISTS tags TEXT NOT NULL DEFAULT '[]'")
-        cur.execute("ALTER TABLE resource_social ADD COLUMN IF NOT EXISTS labels TEXT NOT NULL DEFAULT '[\"private\"]'")
-    conn.commit()
+    """)
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_ws_inv_user ON workspace_invitations(username, status)"
+    )
+    # 10. Migrate teams → workspace_groups
+    await conn.execute("DROP TABLE IF EXISTS resource_teams CASCADE")
+    await conn.execute("DROP TABLE IF EXISTS team_invitations CASCADE")
+    await conn.execute("DROP TABLE IF EXISTS team_members CASCADE")
+    await conn.execute("DROP TABLE IF EXISTS teams CASCADE")
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS workspace_groups (
+            id           TEXT PRIMARY KEY,
+            workspace_id TEXT NOT NULL,
+            name         TEXT NOT NULL,
+            created_by   TEXT NOT NULL,
+            created_at   TEXT NOT NULL,
+            UNIQUE(workspace_id, name)
+        )
+    """)
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_ws_groups_ws ON workspace_groups(workspace_id)"
+    )
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS workspace_group_members (
+            group_id     TEXT NOT NULL,
+            workspace_id TEXT NOT NULL,
+            username     TEXT NOT NULL,
+            joined_at    TEXT NOT NULL,
+            PRIMARY KEY (group_id, username)
+        )
+    """)
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_wsgm_user ON workspace_group_members(username)"
+    )
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS resource_groups (
+            resource_type TEXT NOT NULL,
+            resource_id   TEXT NOT NULL,
+            group_id      TEXT NOT NULL,
+            shared_by     TEXT NOT NULL,
+            shared_at     TEXT NOT NULL,
+            PRIMARY KEY (resource_type, resource_id, group_id)
+        )
+    """)
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_rg_group ON resource_groups(group_id, resource_type)"
+    )
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_rg_resource ON resource_groups(resource_type, resource_id)"
+    )
+    # 11. Social profile fields + follow + stars
+    for col, definition in [
+        ("avatar", "TEXT"),
+        ("bio", "TEXT"),
+        ("languages", "TEXT NOT NULL DEFAULT '[]'"),
+        ("email_public", "TEXT"),
+        ("github", "TEXT"),
+        ("cv", "TEXT"),
+    ]:
+        await conn.execute(f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {col} {definition}")
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_follows (
+            follower    TEXT NOT NULL,
+            following   TEXT NOT NULL,
+            created_at  TEXT NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (follower, following)
+        )
+    """)
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_uf_follower ON user_follows(follower)"
+    )
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_uf_following ON user_follows(following)"
+    )
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS resource_stars (
+            username      TEXT NOT NULL,
+            resource_type TEXT NOT NULL,
+            resource_id   TEXT NOT NULL,
+            created_at    TEXT NOT NULL DEFAULT NOW(),
+            PRIMARY KEY (username, resource_type, resource_id)
+        )
+    """)
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_rs_resource ON resource_stars(resource_type, resource_id)"
+    )
+    # 12. Resource social catalog
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS resource_social (
+            resource_type      TEXT NOT NULL,
+            resource_id        TEXT NOT NULL,
+            owner              TEXT NOT NULL,
+            name               TEXT NOT NULL DEFAULT '',
+            description        TEXT NOT NULL DEFAULT '',
+            is_public          BOOLEAN NOT NULL DEFAULT FALSE,
+            category           TEXT NOT NULL DEFAULT 'Other',
+            trial_missing_deps TEXT NOT NULL DEFAULT 'warn',
+            fork_of_user       TEXT,
+            fork_of_id         TEXT,
+            linked_to_user     TEXT,
+            linked_to_id       TEXT,
+            stars_count        INTEGER NOT NULL DEFAULT 0,
+            tags               TEXT NOT NULL DEFAULT '[]',
+            labels             TEXT NOT NULL DEFAULT '["private"]',
+            updated_at         TIMESTAMP WITH TIME ZONE DEFAULT now(),
+            PRIMARY KEY (resource_type, resource_id, owner)
+        )
+    """)
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_rsoc_public ON resource_social(is_public, resource_type, category)"
+    )
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_rsoc_owner ON resource_social(owner, resource_type)"
+    )
+    await conn.execute(
+        "ALTER TABLE resource_social ADD COLUMN IF NOT EXISTS tags TEXT NOT NULL DEFAULT '[]'"
+    )
+    await conn.execute(
+        "ALTER TABLE resource_social ADD COLUMN IF NOT EXISTS labels TEXT NOT NULL DEFAULT '[\"private\"]'"
+    )
 
 
-def _migrate_users_json_pg(conn: Any) -> None:
+async def _migrate_users_json_pg(conn: Any) -> None:
     """Import users.json into the users table if it exists and the table is empty."""
     import json
     from pathlib import Path as _Path
 
-    with conn.cursor() as cur:
-        cur.execute("SELECT COUNT(*) FROM users")
-        count = cur.fetchone()[0]
+    count = await conn.fetchval("SELECT COUNT(*) FROM users")
     if count:
         return
 
     data_dir_env = os.environ.get("GAIA_DATA_DIR", "")
-    users_json = _Path(data_dir_env) / "users.json" if data_dir_env else _Path("data") / "users.json"
-
+    users_json = (
+        _Path(data_dir_env) / "users.json" if data_dir_env else _Path("data") / "users.json"
+    )
     if not users_json.exists():
         return
 
@@ -939,96 +906,203 @@ def _migrate_users_json_pg(conn: Any) -> None:
         users = json.loads(users_json.read_text(encoding="utf-8"))
         from datetime import datetime, timezone
 
-        with conn.cursor() as cur:
-            for u in users:
-                username = u.get("username", "")
-                email = u.get("email") or f"{username}@migrated.local"
-                cur.execute(
-                    "INSERT INTO users "
-                    "(username, email, password_hash, display_name, birth_date, gender, "
-                    "country, phone, role, is_active, created_at) "
-                    "VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s) "
-                    "ON CONFLICT (username) DO NOTHING",
-                    (
-                        username,
-                        email,
-                        u.get("password_hash"),
-                        u.get("display_name"),
-                        u.get("birth_date"),
-                        u.get("gender"),
-                        u.get("country"),
-                        u.get("phone"),
-                        u.get("role", "standard"),
-                        1 if u.get("is_active", True) else 0,
-                        u.get("created_at") or datetime.now(timezone.utc).isoformat(),
-                    ),
-                )
-        conn.commit()
+        for u in users:
+            username = u.get("username", "")
+            email = u.get("email") or f"{username}@migrated.local"
+            await conn.execute(
+                "INSERT INTO users "
+                "(username, email, password_hash, display_name, birth_date, gender, "
+                "country, phone, role, is_active, created_at) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) "
+                "ON CONFLICT (username) DO NOTHING",
+                username,
+                email,
+                u.get("password_hash"),
+                u.get("display_name"),
+                u.get("birth_date"),
+                u.get("gender"),
+                u.get("country"),
+                u.get("phone"),
+                u.get("role", "standard"),
+                1 if u.get("is_active", True) else 0,
+                u.get("created_at") or datetime.now(timezone.utc).isoformat(),
+            )
         users_json.rename(users_json.with_suffix(".migrated"))
     except Exception as exc:
         flog.warning(f"[db] Importación users.json (PG) fallida: {exc}")
 
 
-def _open_pg() -> Any:
-    import psycopg2.extras
+# ── Async connection layer ─────────────────────────────────────────────────────
 
-    pool = _ensure_pg_pool()
-    conn = pool.getconn()
-    # Use RealDictCursor so rows are dict-like (matches sqlite3.Row interface)
-    conn.cursor_factory = psycopg2.extras.RealDictCursor
-    return conn
+_pg_pool: Any = None
+_sqlite_path: Optional[Path] = None
 
 
-# ── Public API ─────────────────────────────────────────────────────────────────
+class AsyncConn:
+    """Unified async DB connection wrapper over asyncpg (PG) and aiosqlite (SQLite).
 
+    Supports:
+        await conn.execute(query, params)       — DML / DDL
+        await conn.fetchone(query, params)      — one row or None
+        await conn.fetchall(query, params)      — all rows
+        await conn.fetchval(query, params)      — first column of first row
+        await conn.executemany(query, list)     — batch insert/update
+        await conn.commit()                     — commit (SQLite; no-op for PG)
+        async with conn.transaction(): ...      — atomic block
 
-def open_db(path: Path) -> Any:
-    """Return a DB connection.
-
-    SQLite: returns (or creates) a process-scoped singleton for *path*.
-    PostgreSQL: returns a connection from the pool; *path* is ignored.
+    Row objects support both dict-style (row["col"]) and integer-index (row[0]) access.
+    Use ? as placeholder in all queries — translated to $N automatically for PG.
     """
+
+    def __init__(self, conn: Any, is_pg: bool) -> None:
+        self._conn = conn
+        self._is_pg = is_pg
+
+    def _pg_sql(self, query: str) -> str:
+        """Translate ? or %s placeholders to $1, $2, ... for asyncpg."""
+        i = 0
+
+        def _repl(m: re.Match) -> str:
+            nonlocal i
+            i += 1
+            return f"${i}"
+
+        return re.sub(r"\?|%s", _repl, query)
+
+    async def execute(self, query: str, params: Tuple = ()) -> None:
+        if self._is_pg:
+            await self._conn.execute(self._pg_sql(query), *params)
+        else:
+            await self._conn.execute(query, params)
+
+    async def fetchone(self, query: str, params: Tuple = ()) -> Optional[Any]:
+        if self._is_pg:
+            return await self._conn.fetchrow(self._pg_sql(query), *params)
+        async with self._conn.execute(query, params) as cur:
+            return await cur.fetchone()
+
+    async def fetchall(self, query: str, params: Tuple = ()) -> List[Any]:
+        if self._is_pg:
+            return await self._conn.fetch(self._pg_sql(query), *params)
+        async with self._conn.execute(query, params) as cur:
+            return await cur.fetchall()
+
+    async def fetchval(self, query: str, params: Tuple = (), column: int = 0) -> Any:
+        if self._is_pg:
+            return await self._conn.fetchval(self._pg_sql(query), *params, column=column)
+        async with self._conn.execute(query, params) as cur:
+            row = await cur.fetchone()
+            return row[column] if row is not None else None
+
+    async def executemany(self, query: str, params_list: list) -> None:
+        if self._is_pg:
+            await self._conn.executemany(self._pg_sql(query), [tuple(p) for p in params_list])
+        else:
+            await self._conn.executemany(query, params_list)
+
+    async def commit(self) -> None:
+        """Commit current transaction. No-op for asyncpg (auto-commits per statement)."""
+        if not self._is_pg:
+            await self._conn.commit()
+
+    @asynccontextmanager
+    async def transaction(self) -> AsyncGenerator[None, None]:
+        """Atomic block. For PG uses asyncpg transaction; for SQLite commits on exit."""
+        if self._is_pg:
+            async with self._conn.transaction():
+                yield
+        else:
+            yield
+            await self._conn.commit()
+
+
+# ── Lifecycle ──────────────────────────────────────────────────────────────────
+
+
+async def init_db(sqlite_path: Optional[Path] = None) -> None:
+    """Initialize DB connections and run schema migrations. Call once at startup."""
+    global _pg_pool, _sqlite_path
+
     if IS_PG:
-        return _open_pg()
-    return _open_sqlite(path)
+        import asyncpg  # type: ignore[import]
+
+        _pg_pool = await asyncpg.create_pool(
+            DATABASE_URL,
+            min_size=2,
+            max_size=20,
+            command_timeout=30,
+        )
+        async with _pg_pool.acquire() as conn:
+            async with conn.transaction():
+                for stmt in _SCHEMA_PG.split(";"):
+                    s = stmt.strip()
+                    if s:
+                        await conn.execute(s)
+                await _migrate_pg(conn)
+                await _migrate_users_json_pg(conn)
+        flog.ok("[db] asyncpg pool iniciado")
+    else:
+        import aiosqlite  # type: ignore[import]
+        import sqlite3
+
+        if sqlite_path:
+            _sqlite_path = sqlite_path
+        if _sqlite_path is None:
+            raise RuntimeError("init_db() requires sqlite_path when not using PostgreSQL")
+        _sqlite_path.parent.mkdir(parents=True, exist_ok=True)
+        async with aiosqlite.connect(str(_sqlite_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            await conn.execute("PRAGMA journal_mode=WAL")
+            await conn.execute("PRAGMA foreign_keys=ON")
+            await conn.executescript(_SCHEMA_SQLITE)
+            await _migrate_sqlite(conn)
+            await _migrate_users_json_sqlite(conn)
+            await conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_connections_owner ON connections(owner_id)"
+            )
+            await conn.commit()
+        flog.ok("[db] aiosqlite inicializado")
 
 
-def close_db(conn: Any) -> None:
-    """Return connection to pool (PG) or close (SQLite — no-op, singleton)."""
-    if IS_PG and _pg_pool is not None:
-        try:
-            _pg_pool.putconn(conn)
-        except Exception as exc:
-            flog.debug(f"[db] Error al liberar conexión PG al pool: {exc}")
-    # SQLite: singleton is kept alive — nothing to do
+async def close_db_pool() -> None:
+    """Close DB connections. Call at app shutdown."""
+    global _pg_pool
+    if _pg_pool is not None:
+        await _pg_pool.close()
+        _pg_pool = None
+        flog.info("[db] asyncpg pool cerrado")
 
 
-import asyncio
-from typing import Callable, TypeVar
-
-_T = TypeVar("_T")
+# ── Public context manager ─────────────────────────────────────────────────────
 
 
-async def run_db(func: Callable[[], _T]) -> _T:
-    """Run a synchronous DB block without blocking the asyncio event loop.
+@asynccontextmanager
+async def _open_db_cm() -> AsyncGenerator[AsyncConn, None]:
+    """Internal async context manager. Use open_db() publicly."""
+    if IS_PG:
+        if _pg_pool is None:
+            raise RuntimeError("DB pool not initialized — call init_db() at startup")
+        async with _pg_pool.acquire() as conn:
+            yield AsyncConn(conn, is_pg=True)
+    else:
+        import aiosqlite  # type: ignore[import]
+        import sqlite3
 
-    - PostgreSQL: runs in the thread-pool executor. The psycopg2 pool gives
-      each thread its own connection, so concurrent callers are safe.
-    - SQLite (dev): runs synchronously in the event loop. The SQLite singleton
-      is a single connection object — pushing it into multiple threads causes
-      crashes. SQLite is only used by a single developer, so blocking is fine.
+        if _sqlite_path is None:
+            raise RuntimeError("SQLite path not set — call init_db(path) at startup")
+        async with aiosqlite.connect(str(_sqlite_path)) as conn:
+            conn.row_factory = sqlite3.Row
+            await conn.execute("PRAGMA journal_mode=WAL")
+            await conn.execute("PRAGMA foreign_keys=ON")
+            await conn.execute("PRAGMA busy_timeout=5000")
+            yield AsyncConn(conn, is_pg=False)
+
+
+def open_db() -> Any:
+    """Async context manager that returns an AsyncConn for queries.
 
     Usage:
-        def _query():
-            conn = open_db(DB_FILE)
-            try:
-                return conn.execute("SELECT ...").fetchall()
-            finally:
-                close_db(conn)
-
-        rows = await run_db(_query)
+        async with open_db() as conn:
+            row = await conn.fetchone("SELECT ...", (val,))
     """
-    if IS_PG:
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, func)
-    return func()
+    return _open_db_cm()

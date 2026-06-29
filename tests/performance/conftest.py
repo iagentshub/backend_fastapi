@@ -6,10 +6,7 @@ así que necesitamos un fixture con el mismo nombre que no resetee entre tests.
 """
 from __future__ import annotations
 
-import json
-import shutil
-import tempfile
-from pathlib import Path
+import asyncio
 
 import pytest
 
@@ -35,9 +32,12 @@ def patch_data_dir(perf_data_dir, monkeypatch):  # type: ignore[override]
 
     import app.auth.auth as auth_mod
     monkeypatch.setattr(auth_mod, "SETTINGS_FILE", perf_data_dir / "settings.json")
-    monkeypatch.setattr(auth_mod, "DB_FILE", db_file)
 
     monkeypatch.setattr(db_mod, "IS_PG", False)
     monkeypatch.setattr(db_mod, "PH", "?")
+
+    # Initialize DB once for the module (path shared across tests in module)
+    if db_mod._sqlite_path != db_file:
+        asyncio.run(db_mod.init_db(db_file))
 
     yield

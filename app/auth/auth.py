@@ -14,7 +14,7 @@ import secrets
 import bcrypt as _bcrypt
 from jose import JWTError, jwt
 
-from app.config.data import AGENTS_DIR, DB_FILE, SETTINGS_FILE, SKILLS_DIR
+from app.config.data import AGENTS_DIR, SETTINGS_FILE, SKILLS_DIR
 from app.config.session import (
     EMAIL_VERIFY_ENABLED,
     JWT_ALGORITHM,
@@ -22,7 +22,7 @@ from app.config.session import (
     JWT_SECRET_ENV,
     JWT_UNSAFE_SECRETS,
 )
-from app.storage.db import IS_PG, PH, close_db, open_db
+from app.storage.db import open_db
 
 # ── Settings ───────────────────────────────────────────────────────────────────
 
@@ -62,75 +62,48 @@ def verify_password(plain: str, hashed: str) -> bool:
 # ── Internal DB helpers ────────────────────────────────────────────────────────
 
 
-def _row_to_dict(row) -> Optional[dict]:
-    if row is None:
-        return None
-    if isinstance(row, dict):
-        return dict(row)
-    # sqlite3.Row
-    return dict(row)
-
-
-def _get_user_by(field: str, value: str) -> Optional[dict]:
-    conn = open_db(DB_FILE)
-    try:
-        cur = conn.cursor()
-        cur.execute(f"SELECT * FROM users WHERE {field} = {PH}", (value,))
-        row = cur.fetchone()
-        return _row_to_dict(row)
-    finally:
-        close_db(conn)
+async def _get_user_by(field: str, value: str) -> Optional[dict]:
+    async with open_db() as conn:
+        row = await conn.fetchone(f"SELECT * FROM users WHERE {field} = ?", (value,))
+        return dict(row) if row else None
 
 
 # ── Public user API ────────────────────────────────────────────────────────────
 
 
-def get_user_by_email(email: str) -> Optional[dict]:
-    return _get_user_by("email", email)
+async def get_user_by_email(email: str) -> Optional[dict]:
+    return await _get_user_by("email", email)
 
 
-def get_user_by_username(username: str) -> Optional[dict]:
-    return _get_user_by("username", username)
+async def get_user_by_username(username: str) -> Optional[dict]:
+    return await _get_user_by("username", username)
 
 
-def _gen_username(email: str, _conn=None) -> str:
+async def _gen_username(email: str) -> str:
     """Username is the full email address."""
     return email
 
 
-def register_user(username: str, password: str, email: str = "") -> None:
+async def register_user(username: str, password: str, email: str = "") -> None:
     """Create a new local user. Raises ValueError if username or email already taken."""
     if not email:
         email = f"{username}@local"
-    conn = open_db(DB_FILE)
-    try:
-        cur = conn.cursor()
-        cur.execute(f"SELECT 1 FROM users WHERE username = {PH}", (username,))
-        if cur.fetchone():
-            raise ValueError("El nombre de usuario ya está en uso")
-        cur.execute(f"SELECT 1 FROM users WHERE email = {PH}", (email,))
-        if cur.fetchone():
-            raise ValueError("El correo electrónico ya está registrado")
-        now = datetime.now(timezone.utc).isoformat()
-        if IS_PG:
-            cur.execute(
+    async with open_db() as conn:
+        async with conn.transaction():
+            if await conn.fetchone("SELECT 1 FROM users WHERE username = ?", (username,)):
+                raise ValueError("El nombre de usuario ya está en uso")
+            if await conn.fetchone("SELECT 1 FROM users WHERE email = ?", (email,)):
+                raise ValueError("El correo electrónico ya está registrado")
+            now = datetime.now(timezone.utc).isoformat()
+            await conn.execute(
                 "INSERT INTO users (username, email, password_hash, role, is_active, created_at) "
-                f"VALUES ({PH}, {PH}, {PH}, {PH}, {PH}, {PH})",
+                "VALUES (?, ?, ?, ?, ?, ?)",
                 (username, email, hash_password(password), "standard", 1, now),
             )
-        else:
-            conn.execute(
-                "INSERT INTO users (username, email, password_hash, role, is_active, created_at) "
-                f"VALUES ({PH}, {PH}, {PH}, {PH}, {PH}, {PH})",
-                (username, email, hash_password(password), "standard", 1, now),
-            )
-        conn.commit()
-        flog.ok(f"Nuevo usuario: {email}")
-    finally:
-        close_db(conn)
+    flog.ok(f"Nuevo usuario: {email}")
 
 
-def register_user_email(
+async def register_user_email(
     email: str,
     password: str,
     *,
@@ -145,57 +118,47 @@ def register_user_email(
     verification_token is None when EMAIL_VERIFY_ENABLED is False (user auto-verified).
     """
     username = email  # username IS the full email address
-    conn = open_db(DB_FILE)
-    try:
-        cur = conn.cursor()
-        cur.execute(f"SELECT 1 FROM users WHERE email = {PH}", (email,))
-        if cur.fetchone():
-            raise ValueError("El correo electrónico ya está registrado")
-        now = datetime.now(timezone.utc).isoformat()
-        token: Optional[str] = None
-        is_verified = 1
-        if EMAIL_VERIFY_ENABLED:
-            token = secrets.token_urlsafe(32)
-            is_verified = 0
-        cur.execute(
-            "INSERT INTO users "
-            "(username, email, password_hash, display_name, birth_date, gender, "
-            f"country, phone, role, is_active, is_verified, verification_token, created_at) "
-            f"VALUES ({PH},{PH},{PH},{PH},{PH},{PH},{PH},{PH},{PH},{PH},{PH},{PH},{PH})",
-            (
-                username, email, hash_password(password), display_name,
-                birth_date, gender, country, phone,
-                "standard", 1, is_verified, token, now,
-            ),
-        )
-        conn.commit()
-        flog.ok(f"Nuevo usuario: {email}")
-        return username, token
-    finally:
-        close_db(conn)
+    token: Optional[str] = None
+    async with open_db() as conn:
+        async with conn.transaction():
+            if await conn.fetchone("SELECT 1 FROM users WHERE email = ?", (email,)):
+                raise ValueError("El correo electrónico ya está registrado")
+            now = datetime.now(timezone.utc).isoformat()
+            is_verified = 1
+            if EMAIL_VERIFY_ENABLED:
+                token = secrets.token_urlsafe(32)
+                is_verified = 0
+            await conn.execute(
+                "INSERT INTO users "
+                "(username, email, password_hash, display_name, birth_date, gender, "
+                "country, phone, role, is_active, is_verified, verification_token, created_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                (
+                    username, email, hash_password(password), display_name,
+                    birth_date, gender, country, phone,
+                    "standard", 1, is_verified, token, now,
+                ),
+            )
+    flog.ok(f"Nuevo usuario: {email}")
+    return username, token
 
 
-def verify_email_token(token: str) -> Optional[str]:
+async def verify_email_token(token: str) -> Optional[str]:
     """Mark user as verified by their token. Returns the username on success, None if invalid."""
-    conn = open_db(DB_FILE)
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            f"SELECT username FROM users WHERE verification_token = {PH} AND is_verified = 0",
+    async with open_db() as conn:
+        row = await conn.fetchone(
+            "SELECT username FROM users WHERE verification_token = ? AND is_verified = 0",
             (token,),
         )
-        row = cur.fetchone()
         if not row:
             return None
-        username = row["username"] if isinstance(row, dict) else row[0]
-        cur.execute(
-            f"UPDATE users SET is_verified = 1, verification_token = NULL WHERE username = {PH}",
+        username = row[0]
+        await conn.execute(
+            "UPDATE users SET is_verified = 1, verification_token = NULL WHERE username = ?",
             (username,),
         )
-        conn.commit()
+        await conn.commit()
         return username
-    finally:
-        close_db(conn)
 
 
 def _build_email_html(title: str, heading: str, body_html: str, cta_url: str = "", cta_label: str = "") -> str:
@@ -356,178 +319,145 @@ def send_account_status_email(email: str, is_active: bool, base_url: str = "") -
         _send_smtp(email, "Tu cuenta en iAgents Hub ha sido suspendida", html)
 
 
-def create_password_reset_token(email: str) -> Optional[str]:
+async def create_password_reset_token(email: str) -> Optional[str]:
     """Generate a reset token for the given email. Returns None if email not found."""
     from app.config.session import PASSWORD_RESET_EXPIRE_HOURS
 
-    conn = open_db(DB_FILE)
-    try:
-        cur = conn.cursor()
-        cur.execute(f"SELECT username FROM users WHERE email = {PH} AND is_active = 1", (email,))
-        if not cur.fetchone():
+    async with open_db() as conn:
+        if not await conn.fetchone("SELECT username FROM users WHERE email = ? AND is_active = 1", (email,)):
             return None
         token = secrets.token_urlsafe(32)
         expires = (datetime.now(timezone.utc) + timedelta(hours=PASSWORD_RESET_EXPIRE_HOURS)).isoformat()
-        cur.execute(
-            f"UPDATE users SET reset_token = {PH}, reset_token_expires = {PH} WHERE email = {PH}",
+        await conn.execute(
+            "UPDATE users SET reset_token = ?, reset_token_expires = ? WHERE email = ?",
             (token, expires, email),
         )
-        conn.commit()
+        await conn.commit()
         return token
-    finally:
-        close_db(conn)
 
 
-def consume_reset_token(token: str, new_password: str) -> bool:
+async def consume_reset_token(token: str, new_password: str) -> bool:
     """Verify token, apply new password, and invalidate token. Returns False if invalid/expired."""
-    conn = open_db(DB_FILE)
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            f"SELECT email, reset_token_expires FROM users WHERE reset_token = {PH}",
+    async with open_db() as conn:
+        row = await conn.fetchone(
+            "SELECT email, reset_token_expires FROM users WHERE reset_token = ?",
             (token,),
         )
-        row = cur.fetchone()
         if not row:
             return False
-        d = dict(row) if isinstance(row, dict) else {"email": row[0], "reset_token_expires": row[1]}
-        expires = d.get("reset_token_expires") or ""
+        email = row[0]
+        expires = row[1] or ""
         if not expires or datetime.fromisoformat(expires) < datetime.now(timezone.utc):
             return False
-        cur.execute(
-            f"UPDATE users SET password_hash = {PH}, reset_token = NULL, reset_token_expires = NULL "
-            f"WHERE email = {PH}",
-            (hash_password(new_password), d["email"]),
+        await conn.execute(
+            "UPDATE users SET password_hash = ?, reset_token = NULL, reset_token_expires = NULL "
+            "WHERE email = ?",
+            (hash_password(new_password), email),
         )
-        conn.commit()
-        flog.ok(f"[auth] Contraseña reseteada para {d['email']}")
+        await conn.commit()
+        flog.ok(f"[auth] Contraseña reseteada para {email}")
         return True
-    finally:
-        close_db(conn)
 
 
-
-
-def get_user_role(username: str) -> str:
+async def get_user_role(username: str) -> str:
     if username == "guest" or username.startswith("guest_"):
         return "guest"
-    user = _get_user_by("username", username)
+    user = await _get_user_by("username", username)
     return user.get("role", "standard") if user else "standard"
 
 
-def list_users() -> list:
-    conn = open_db(DB_FILE)
-    try:
-        cur = conn.cursor()
-        cur.execute("SELECT * FROM users ORDER BY created_at ASC")
-        rows = cur.fetchall()
+async def list_users() -> list:
+    async with open_db() as conn:
+        rows = await conn.fetchall("SELECT * FROM users ORDER BY created_at ASC")
         result = []
         for row in rows:
-            d = _row_to_dict(row)
-            if d:
-                d.pop("password_hash", None)
-                d.pop("provider_sub", None)
-                result.append(d)
+            d = dict(row)
+            d.pop("password_hash", None)
+            d.pop("provider_sub", None)
+            result.append(d)
         return result
-    finally:
-        close_db(conn)
 
 
-def delete_user(username: str) -> bool:
-    conn = open_db(DB_FILE)
-    try:
-        cur = conn.cursor()
-        cur.execute(f"DELETE FROM users WHERE username = {PH}", (username,))
-        conn.commit()
-        return cur.rowcount > 0
-    finally:
-        close_db(conn)
+async def delete_user(username: str) -> bool:
+    async with open_db() as conn:
+        if not await conn.fetchone("SELECT 1 FROM users WHERE username = ?", (username,)):
+            return False
+        await conn.execute("DELETE FROM users WHERE username = ?", (username,))
+        await conn.commit()
+        return True
 
 
 # ── GDPR ──────────────────────────────────────────────────────────────────────
 
 
-def get_owned_workspaces(username: str) -> list:
+async def get_owned_workspaces(username: str) -> list:
     """Return workspaces where the user is owner (created_by)."""
-    conn = open_db(DB_FILE)
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            f"SELECT id, name FROM workspaces WHERE created_by = {PH}",
+    async with open_db() as conn:
+        rows = await conn.fetchall(
+            "SELECT id, name FROM workspaces WHERE created_by = ?",
             (username,),
         )
-        return [dict(r) for r in cur.fetchall()]
-    finally:
-        close_db(conn)
+        return [dict(r) for r in rows]
 
 
-def schedule_user_deletion(username: str) -> str:
+async def schedule_user_deletion(username: str) -> str:
     """Schedule account deletion 30 days from now. Returns cancellation token."""
     token = secrets.token_urlsafe(32)
     deletion_at = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
-    conn = open_db(DB_FILE)
-    try:
-        conn.cursor().execute(
-            f"UPDATE users SET deletion_requested_at = {PH}, deletion_token = {PH} WHERE username = {PH}",
+    async with open_db() as conn:
+        await conn.execute(
+            "UPDATE users SET deletion_requested_at = ?, deletion_token = ? WHERE username = ?",
             (deletion_at, token, username),
         )
-        conn.commit()
-    finally:
-        close_db(conn)
-    user = get_user_by_username(username)
+        await conn.commit()
+    user = await get_user_by_username(username)
     if user:
         send_deletion_scheduled_email(user["email"], token, deletion_at)
     flog.info(f"[gdpr] Borrado programado para {username} el {deletion_at}")
     return token
 
 
-def cancel_user_deletion(token: str) -> bool:
+async def cancel_user_deletion(token: str) -> bool:
     """Cancel a scheduled deletion via token. Returns True if found and cancelled."""
-    conn = open_db(DB_FILE)
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            f"UPDATE users SET deletion_requested_at = NULL, deletion_token = NULL WHERE deletion_token = {PH}",
+    async with open_db() as conn:
+        if not await conn.fetchone("SELECT 1 FROM users WHERE deletion_token = ?", (token,)):
+            return False
+        await conn.execute(
+            "UPDATE users SET deletion_requested_at = NULL, deletion_token = NULL WHERE deletion_token = ?",
             (token,),
         )
-        conn.commit()
-        return cur.rowcount > 0
-    finally:
-        close_db(conn)
+        await conn.commit()
+        return True
 
 
-def purge_user_data(username: str) -> None:
+async def purge_user_data(username: str) -> None:
     """Hard-delete all user data from DB (cascade) and filesystem."""
     import shutil as _shutil
     import json as _json
 
-    conn = open_db(DB_FILE)
     try:
-        cur = conn.cursor()
-        cur.execute(
-            f"DELETE FROM messages WHERE conversation_id IN (SELECT id FROM conversations WHERE user_id = {PH})",
-            (username,),
-        )
-        cur.execute(f"DELETE FROM conversations WHERE user_id = {PH}", (username,))
-        cur.execute(f"DELETE FROM knowledge_items WHERE owner_id = {PH}", (username,))
-        cur.execute(f"DELETE FROM knowledge_folders WHERE owner_id = {PH}", (username,))
-        cur.execute(f"DELETE FROM connections WHERE owner_id = {PH}", (username,))
-        cur.execute(f"DELETE FROM token_daily WHERE owner_id = {PH}", (username,))
-        cur.execute(f"DELETE FROM accounts WHERE owner_id = {PH}", (username,))
-        cur.execute(f"DELETE FROM resource_groups WHERE shared_by = {PH}", (username,))
-        cur.execute(f"DELETE FROM workspace_group_members WHERE username = {PH}", (username,))
-        cur.execute(f"DELETE FROM workspace_invitations WHERE username = {PH}", (username,))
-        cur.execute(f"DELETE FROM workspace_members WHERE username = {PH}", (username,))
-        cur.execute(f"DELETE FROM workspaces WHERE created_by = {PH}", (username,))
-        cur.execute(f"DELETE FROM users WHERE username = {PH}", (username,))
-        conn.commit()
+        async with open_db() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    "DELETE FROM messages WHERE conversation_id IN (SELECT id FROM conversations WHERE user_id = ?)",
+                    (username,),
+                )
+                await conn.execute("DELETE FROM conversations WHERE user_id = ?", (username,))
+                await conn.execute("DELETE FROM knowledge_items WHERE owner_id = ?", (username,))
+                await conn.execute("DELETE FROM knowledge_folders WHERE owner_id = ?", (username,))
+                await conn.execute("DELETE FROM connections WHERE owner_id = ?", (username,))
+                await conn.execute("DELETE FROM token_daily WHERE owner_id = ?", (username,))
+                await conn.execute("DELETE FROM accounts WHERE owner_id = ?", (username,))
+                await conn.execute("DELETE FROM resource_groups WHERE shared_by = ?", (username,))
+                await conn.execute("DELETE FROM workspace_group_members WHERE username = ?", (username,))
+                await conn.execute("DELETE FROM workspace_invitations WHERE username = ?", (username,))
+                await conn.execute("DELETE FROM workspace_members WHERE username = ?", (username,))
+                await conn.execute("DELETE FROM workspaces WHERE created_by = ?", (username,))
+                await conn.execute("DELETE FROM users WHERE username = ?", (username,))
         flog.ok(f"[gdpr] BD purgada para {username}")
     except Exception as exc:
-        conn.rollback()
         flog.error(f"[gdpr] Error purgando BD de {username}: {exc}")
         raise
-    finally:
-        close_db(conn)
 
     for base_dir in (AGENTS_DIR, SKILLS_DIR):
         for scope_dir in (base_dir / "private", base_dir / "public"):
@@ -546,111 +476,85 @@ def purge_user_data(username: str) -> None:
     flog.ok(f"[gdpr] Purga completa de {username}")
 
 
-def purge_expired_deletions() -> int:
+async def purge_expired_deletions() -> int:
     """Hard-delete accounts whose 30-day grace period has passed. Returns count."""
     now = datetime.now(timezone.utc).isoformat()
-    conn = open_db(DB_FILE)
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            f"SELECT username FROM users WHERE deletion_requested_at IS NOT NULL AND deletion_requested_at <= {PH}",
+    async with open_db() as conn:
+        rows = await conn.fetchall(
+            "SELECT username FROM users WHERE deletion_requested_at IS NOT NULL AND deletion_requested_at <= ?",
             (now,),
         )
-        usernames = [r["username"] for r in cur.fetchall()]
-    finally:
-        close_db(conn)
+    usernames = [r[0] for r in rows]
 
     for username in usernames:
         try:
-            purge_user_data(username)
+            await purge_user_data(username)
         except Exception as exc:
             flog.error(f"[gdpr] No se pudo purgar {username}: {exc}")
 
     return len(usernames)
 
 
-def update_user_profile(username: str, **fields) -> None:
+async def update_user_profile(username: str, **fields) -> None:
     """Update allowed profile fields for a user."""
     allowed = {"birth_date", "gender", "country", "phone", "display_name"}
     updates = {k: v for k, v in fields.items() if k in allowed}
     if not updates:
         return
-    conn = open_db(DB_FILE)
-    try:
-        set_clause = ", ".join(f"{col} = {PH}" for col in updates)
+    async with open_db() as conn:
+        set_clause = ", ".join(f"{col} = ?" for col in updates)
         values = list(updates.values()) + [username]
-        conn.cursor().execute(
-            f"UPDATE users SET {set_clause} WHERE username = {PH}", values
-        )
-        conn.commit()
-    finally:
-        close_db(conn)
+        await conn.execute(f"UPDATE users SET {set_clause} WHERE username = ?", values)
+        await conn.commit()
 
 
-def admin_update_user(username: str, **fields) -> bool:
+async def admin_update_user(username: str, **fields) -> bool:
     """Admin-only: update is_active or role. Returns False if user not found."""
     allowed = {"is_active", "role"}
     updates = {k: v for k, v in fields.items() if k in allowed}
     if not updates:
         return True
-    conn = open_db(DB_FILE)
-    try:
-        cur = conn.cursor()
-        cur.execute(f"SELECT 1 FROM users WHERE username = {PH}", (username,))
-        if not cur.fetchone():
+    async with open_db() as conn:
+        if not await conn.fetchone("SELECT 1 FROM users WHERE username = ?", (username,)):
             return False
-        set_clause = ", ".join(f"{col} = {PH}" for col in updates)
+        set_clause = ", ".join(f"{col} = ?" for col in updates)
         values = list(updates.values()) + [username]
-        cur.execute(f"UPDATE users SET {set_clause} WHERE username = {PH}", values)
-        conn.commit()
+        await conn.execute(f"UPDATE users SET {set_clause} WHERE username = ?", values)
+        await conn.commit()
         return True
-    finally:
-        close_db(conn)
 
 
-def admin_set_password(username: str, new_password: str) -> bool:
+async def admin_set_password(username: str, new_password: str) -> bool:
     """Admin-only: set a new password for another user. Returns False if not found."""
-    conn = open_db(DB_FILE)
-    try:
-        cur = conn.cursor()
-        cur.execute(f"SELECT 1 FROM users WHERE username = {PH}", (username,))
-        if not cur.fetchone():
+    async with open_db() as conn:
+        if not await conn.fetchone("SELECT 1 FROM users WHERE username = ?", (username,)):
             return False
-        cur.execute(
-            f"UPDATE users SET password_hash = {PH} WHERE username = {PH}",
+        await conn.execute(
+            "UPDATE users SET password_hash = ? WHERE username = ?",
             (hash_password(new_password), username),
         )
-        conn.commit()
+        await conn.commit()
         return True
-    finally:
-        close_db(conn)
 
 
 # ── Gestor role helpers ────────────────────────────────────────────────────────
 
 
-def promote_to_gestor(username: str) -> bool:
+async def promote_to_gestor(username: str) -> bool:
     """Promote a standard user to gestor. Returns False if user not found or not standard."""
-    conn = open_db(DB_FILE)
-    try:
-        cur = conn.cursor()
-        cur.execute(f"SELECT role FROM users WHERE username = {PH}", (username,))
-        row = cur.fetchone()
+    async with open_db() as conn:
+        row = await conn.fetchone("SELECT role FROM users WHERE username = ?", (username,))
         if not row:
             return False
-        role = (dict(row) if isinstance(row, dict) else {"role": row[0]})["role"]
+        role = row[0]
         if role not in ("standard",):
             return False
-        cur.execute(
-            f"UPDATE users SET role = 'gestor' WHERE username = {PH}", (username,)
-        )
-        conn.commit()
+        await conn.execute("UPDATE users SET role = 'gestor' WHERE username = ?", (username,))
+        await conn.commit()
         return True
-    finally:
-        close_db(conn)
 
 
-def demote_if_no_teams(username: str) -> bool:
+async def demote_if_no_teams(username: str) -> bool:
     """Demote gestor back to standard if they manage no teams. Returns True if demoted."""
     from app.config.data import DB_FILE as _DB
     from app.storage.teams import TeamStorage
@@ -659,23 +563,16 @@ def demote_if_no_teams(username: str) -> bool:
     managed = ts.list_managed_teams(username)
     if managed:
         return False
-    conn = open_db(DB_FILE)
-    try:
-        cur = conn.cursor()
-        cur.execute(f"SELECT role FROM users WHERE username = {PH}", (username,))
-        row = cur.fetchone()
+    async with open_db() as conn:
+        row = await conn.fetchone("SELECT role FROM users WHERE username = ?", (username,))
         if not row:
             return False
-        role = (dict(row) if isinstance(row, dict) else {"role": row[0]})["role"]
+        role = row[0]
         if role != "gestor":
             return False
-        cur.execute(
-            f"UPDATE users SET role = 'standard' WHERE username = {PH}", (username,)
-        )
-        conn.commit()
+        await conn.execute("UPDATE users SET role = 'standard' WHERE username = ?", (username,))
+        await conn.commit()
         return True
-    finally:
-        close_db(conn)
 
 
 def send_team_invitation_email(
@@ -743,7 +640,7 @@ def decode_workspace_token(token: str) -> tuple[Optional[str], Optional[str]]:
 # ── First-boot admin bootstrap ────────────────────────────────────────────────
 
 
-def ensure_admin_user() -> None:
+async def ensure_admin_user() -> None:
     """Garantiza que existe al menos un admin con el email de GAIA_ADMIN_EMAIL.
 
     Lógica:
@@ -762,18 +659,17 @@ def ensure_admin_user() -> None:
     if not reset_mode and _pass_file and not _pass_file.exists():
         reset_mode = True
 
-    conn = open_db(DB_FILE)
-    try:
-        cur = conn.cursor()
+    password: Optional[str] = None
+    action: Optional[str] = None
 
-        cur.execute(f"SELECT username, role FROM users WHERE email = {PH}", (target_email,))
-        row = cur.fetchone()
+    async with open_db() as conn:
+        row = await conn.fetchone("SELECT username, role FROM users WHERE email = ?", (target_email,))
         target = dict(row) if row else None
 
         if target:
             if target["role"] != "admin":
-                cur.execute(f"UPDATE users SET role = {PH} WHERE email = {PH}", ("admin", target_email))
-                conn.commit()
+                await conn.execute("UPDATE users SET role = ? WHERE email = ?", ("admin", target_email))
+                await conn.commit()
                 if not reset_mode:
                     sep = "=" * 60
                     flog.warning(sep)
@@ -786,32 +682,31 @@ def ensure_admin_user() -> None:
 
             # reset_mode: cambiar contraseña de la cuenta con target_email
             password = secrets.token_urlsafe(12)
-            cur.execute(
-                f"UPDATE users SET password_hash = {PH} WHERE email = {PH}",
+            await conn.execute(
+                "UPDATE users SET password_hash = ? WHERE email = ?",
                 (hash_password(password), target_email),
             )
-            conn.commit()
+            await conn.commit()
             action = "contraseña reseteada"
         else:
             # No hay cuenta con ese email
-            cur.execute(f"SELECT username FROM users WHERE role = {PH} LIMIT 1", ("admin",))
-            existing = cur.fetchone()
+            existing = await conn.fetchone("SELECT username FROM users WHERE role = ? LIMIT 1", ("admin",))
             if existing and not reset_mode:
                 return
 
             password = secrets.token_urlsafe(12)
             now = datetime.now(timezone.utc).isoformat()
-            cur.execute(
+            await conn.execute(
                 "INSERT INTO users "
                 "(username, email, password_hash, role, is_active, is_verified, created_at) "
-                f"VALUES ({PH},{PH},{PH},{PH},{PH},{PH},{PH})",
+                "VALUES (?,?,?,?,?,?,?)",
                 (target_email, target_email, hash_password(password), "admin", 1, 1, now),
             )
-            conn.commit()
+            await conn.commit()
             action = "cuenta creada"
 
-    finally:
-        close_db(conn)
+    if password is None or action is None:
+        return
 
     # Persist plaintext password so gaia.sh can always display it
     data_dir = os.environ.get("GAIA_DATA_DIR", "").strip()

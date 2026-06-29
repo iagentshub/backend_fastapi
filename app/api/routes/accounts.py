@@ -11,7 +11,7 @@ from app.api.routes.auth import require_auth
 from app.auth.auth import get_user_role
 from app.config.data import AGENTS_DIR, DB_FILE, SKILLS_DIR
 from app.storage.accounts import AccountStorage
-from app.storage.db import run_db
+
 from app.storage.storage import AgentStorage, ConnectionStorage, SkillStorage
 
 router = APIRouter(prefix="/api/accounts", tags=["accounts"])
@@ -20,8 +20,8 @@ _storage = AccountStorage(DB_FILE)
 _conn_storage = ConnectionStorage(DB_FILE)
 
 
-def _owner(user: str) -> str:
-    return "admin" if get_user_role(user) == "admin" else user
+async def _owner(user: str) -> str:
+    return "admin" if await get_user_role(user) == "admin" else user
 _agent_storage = AgentStorage(AGENTS_DIR)
 _skill_storage = SkillStorage(SKILLS_DIR)
 
@@ -123,7 +123,7 @@ async def _fetch_models(provider: str, api_key: str, host: str = "") -> List[str
 
 @router.get("")
 async def list_accounts(user: str = Depends(require_auth)) -> List[Dict[str, Any]]:
-    linked = {a["provider"]: a for a in await run_db(lambda: _storage.list(_owner(user)))}
+    linked = {a["provider"]: a for a in await _storage.list(await _owner(user))}
     result = []
     for p in _PROVIDERS:
         if p in linked:
@@ -147,7 +147,7 @@ async def link_account(
     data: Dict[str, Any] = {"api_key": api_key}
     if host:
         data["host"] = host
-    saved = await run_db(lambda: _storage.save(provider, data, _owner(user)))
+    saved = await _storage.save(provider, data, await _owner(user))
     if saved.get("api_key"):
         saved["api_key_masked"] = saved["api_key"][:6] + "..." + saved["api_key"][-4:]
         del saved["api_key"]
@@ -158,7 +158,7 @@ async def link_account(
 async def unlink_account(
     provider: str, user: str = Depends(require_auth)
 ) -> Dict[str, Any]:
-    if not await run_db(lambda: _storage.delete(provider, _owner(user))):
+    if not await _storage.delete(provider, await _owner(user)):
         raise HTTPException(status_code=404, detail="Cuenta no vinculada")
     return {"ok": True}
 
@@ -184,7 +184,7 @@ async def sync_account(
     if provider not in _PROVIDERS:
         raise HTTPException(status_code=400, detail=f"Proveedor no soportado: {provider}")
 
-    account = await run_db(lambda: _storage.get(provider, _owner(user)))
+    account = await _storage.get(provider, await _owner(user))
     if not account:
         raise HTTPException(status_code=404, detail="Cuenta no vinculada")
 
@@ -197,43 +197,40 @@ async def sync_account(
 
     # 2. Create / update one connection per model
     type_id = _PROVIDER_TYPE_IDS.get(provider, provider)
-    owner = _owner(user)
+    owner = await _owner(user)
 
-    def _sync_conns():
-        existing_conns = _conn_storage.list(owner)
-        existing_by_model: Dict[str, Any] = {
-            c["model"]: c for c in existing_conns
-            if c.get("type") == type_id and c.get("model")
+    existing_conns = await _conn_storage.list(owner)
+    existing_by_model: Dict[str, Any] = {
+        c["model"]: c for c in existing_conns
+        if c.get("type") == type_id and c.get("model")
+    }
+    connections_created = 0
+    connections_updated = 0
+    conn_ids: set = set()
+
+    for model_id in models:
+        conn_data: Dict[str, Any] = {
+            "name": f"{label} / {model_id}",
+            "type": type_id,
+            "api_key": api_key,
+            "model": model_id,
         }
-        created = 0
-        updated = 0
-        conn_ids: set = set()
+        if host:
+            conn_data["host"] = host
+        if model_id in existing_by_model:
+            conn_data["id"] = existing_by_model[model_id]["id"]
+            connections_updated += 1
+        else:
+            connections_created += 1
+        saved_conn = await _conn_storage.save(conn_data, owner_id=owner)
+        conn_ids.add(saved_conn["id"])
 
-        for model_id in models:
-            conn_data: Dict[str, Any] = {
-                "name": f"{label} / {model_id}",
-                "type": type_id,
-                "api_key": api_key,
-                "model": model_id,
-            }
-            if host:
-                conn_data["host"] = host
-            if model_id in existing_by_model:
-                conn_data["id"] = existing_by_model[model_id]["id"]
-                updated += 1
-            else:
-                created += 1
-            saved_conn = _conn_storage.save(conn_data, owner_id=owner)
-            conn_ids.add(saved_conn["id"])
+    # Include pre-existing connections of this provider that weren't in the model list
+    for c in existing_conns:
+        if c.get("type") == type_id:
+            conn_ids.add(c["id"])
 
-        # Include pre-existing connections of this provider that weren't in the model list
-        for c in existing_conns:
-            if c.get("type") == type_id:
-                conn_ids.add(c["id"])
-
-        return created, updated, conn_ids
-
-    connections_created, connections_updated, provider_conn_ids = await run_db(_sync_conns)
+    provider_conn_ids = conn_ids
 
     # 3. Find private agents linked to this provider's connections (filesystem, not DB)
     private_agents = _agent_storage.list(scope="private")
@@ -263,7 +260,7 @@ async def sync_account(
     account["models"] = models
     account["last_synced_at"] = _now()
     account["sync_summary"] = summary_data
-    saved = await run_db(lambda: _storage.save(provider, account, _owner(user)))
+    saved = await _storage.save(provider, account, await _owner(user))
 
     if saved.get("api_key"):
         saved["api_key_masked"] = saved["api_key"][:6] + "..." + saved["api_key"][-4:]

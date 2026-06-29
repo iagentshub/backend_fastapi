@@ -63,32 +63,31 @@ def perf_app(perf_data_dir):
 
     import app.auth.auth as auth_mod
     auth_mod.SETTINGS_FILE = perf_data_dir / "settings.json"
-    auth_mod.DB_FILE = db_file
 
     db_mod.IS_PG = False
     db_mod.PH = "?"
-    db_mod._sqlite_pool.clear()
+
+    asyncio.run(db_mod.init_db(db_file))
 
     from app.api.app import create_app
     app = create_app()
 
     from app.auth.auth import create_token, register_user
-    from app.storage.db import PH, close_db, open_db
-    register_user("perf_admin", "pass1234", email="perf@example.com")
-    conn = open_db(db_file)
-    try:
-        conn.cursor().execute(
-            f"UPDATE users SET role = {PH} WHERE username = {PH}",
-            ("admin", "perf_admin"),
-        )
-        conn.commit()
-    finally:
-        close_db(conn)
+    from app.storage.db import open_db
+    asyncio.run(register_user("perf_admin", "pass1234", email="perf@example.com"))
+
+    async def _make_admin():
+        async with open_db() as conn:
+            await conn.execute(
+                "UPDATE users SET role = ? WHERE username = ?",
+                ("admin", "perf_admin"),
+            )
+            await conn.commit()
+
+    asyncio.run(_make_admin())
 
     token = create_token("perf_admin")
     yield app, token
-
-    db_mod._sqlite_pool.clear()
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -315,6 +314,6 @@ async def test_secuencial_vs_concurrente_informe(perf_app):
     print(f"\n  Secuencial : {t_seq:.1f}ms")
     print(f"  Concurrente: {t_con:.1f}ms")
     print(f"  Speedup    : {speedup:.2f}×")
-    print(f"  Nota: speedup≈1 es normal con SQLite singleton; en PostgreSQL será >1")
+    print("  Nota: speedup≈1 es normal con SQLite singleton; en PostgreSQL será >1")
 
     assert all(r.status == 200 for r in con_results), "Algunas peticiones concurrentes fallaron"

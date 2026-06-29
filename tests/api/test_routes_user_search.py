@@ -4,14 +4,16 @@ from __future__ import annotations
 
 def _login(client, username: str, password: str = "pass1234") -> str:
     from app.auth.auth import create_token, register_user
-    register_user(username, password, email=f"{username}@example.com")
+    import asyncio
+    asyncio.run(register_user(username, password, email=f"{username}@example.com"))
     client.cookies.set("ga_token", create_token(username))
     return username
 
 
 def _register(username: str, password: str = "pass1234") -> None:
+    import asyncio
     from app.auth.auth import register_user
-    register_user(username, password, email=f"{username}@example.com")
+    asyncio.run(register_user(username, password, email=f"{username}@example.com"))
 
 
 def test_search_users_returns_list_excluding_self(client):
