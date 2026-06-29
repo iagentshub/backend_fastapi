@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel
 
-from app.api.routes.auth import require_admin, require_auth
+from app.api.routes.auth import require_admin
 from app.utils import flog
 
 router = APIRouter(prefix="/api/admin/logs", tags=["admin-logs"])

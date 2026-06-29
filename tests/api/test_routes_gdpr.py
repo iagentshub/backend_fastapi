@@ -14,7 +14,6 @@ from fastapi.testclient import TestClient
 
 import pytest
 
-import app.auth.auth as auth_mod
 import app.config.data as _cfg
 from app.auth.auth import create_token, register_user, schedule_user_deletion
 

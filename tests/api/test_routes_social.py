@@ -298,7 +298,7 @@ def test_try_agente_privado_devuelve_404(client):
 
 
 def test_try_connection_invalida_devuelve_400(client):
-    user = _login(client, "trytest_conn")
+    _login(client, "trytest_conn")
     agent = _create_agent(client, "Try Agent Conn")
     agent_id = agent["id"]
     _make_agent_public(client, agent_id)

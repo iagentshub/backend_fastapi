@@ -1,7 +1,6 @@
 """Tests de roles de usuario."""
 from __future__ import annotations
 
-import app.config.data as cfg
 from app.auth.auth import get_user_role, register_user
 from app.storage.db import open_db
 
