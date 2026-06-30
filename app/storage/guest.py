@@ -43,7 +43,7 @@ class GuestKnowledgeAdapter:
     def __init__(self, session: GuestSession) -> None:
         self._s = session
 
-    def get(self, item_id: str, owner_id: Any = None) -> Dict[str, Any] | None:
+    async def get(self, item_id: str, owner_id: Any = None) -> Dict[str, Any] | None:
         return next((i for i in self._s.knowledge if i["id"] == item_id), None)
 
 

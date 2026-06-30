@@ -54,6 +54,6 @@ class NvidiaProvider(BaseProvider):
                 msg = json.loads(body).get("detail") or json.loads(body).get("message") or body[:200]
             except Exception:
                 msg = body[:200]
-            return TestResult(False, f"HTTP {e.code}", msg)
+            return TestResult(False, f"HTTP {e.code}", msg)  # nvidia usa "detail", no "error.message"
         except Exception as e:
             return TestResult(False, "Error de conexión", str(e))

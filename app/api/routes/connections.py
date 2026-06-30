@@ -2,8 +2,6 @@
 from __future__ import annotations
 
 import asyncio
-import json as _json
-import urllib.request
 from typing import Any, Dict, List, Set
 from uuid import uuid4
 
@@ -75,29 +73,46 @@ async def _get_conn_any(conn_id: str, user: str, workspace_id: str) -> Dict[str,
     return conn
 
 
+async def _resolve_connections(
+    user: str, workspace_id: str, include_shared: bool = True
+) -> List[Dict[str, Any]]:
+    """Devuelve la lista de conexiones visibles para el usuario según su rol."""
+    if is_guest(user):
+        return list(get_session(user).connections)
+    role = await get_user_role(user)
+    if role == "admin":
+        return await _storage.list(None)
+    raw = await _list_accessible(user, workspace_id)
+    if include_shared:
+        from app.storage.groups import GroupStorage as _GS
+        shared_ids = set(
+            await _GS(DB_FILE).get_user_shared_resource_ids(user, "connection", workspace_id)
+        )
+        own_ids = {i["id"] for i in raw}
+        for rid in (shared_ids - own_ids):
+            c = await _storage.get(rid)
+            if c:
+                c["_shared"] = True
+                raw.append(c)
+    return raw
+
+
 def _fetch_ollama_models(host: str) -> List[str]:
     """Llama a /api/tags y devuelve los nombres de modelos instalados."""
-    for h in [host, host.replace("localhost", "host.docker.internal").replace("127.0.0.1", "host.docker.internal")]:
-        if h == host or h != host:  # always try primary first
-            pass
+    from app.connections.ollama import OllamaProvider
+    try:
+        data = OllamaProvider._fetch_tags(host)
+    except OSError:
+        alt = OllamaProvider._alt_host(host)
+        if not alt:
+            return []
         try:
-            req = urllib.request.Request(f"{h}/api/tags")
-            with urllib.request.urlopen(req, timeout=4) as r:
-                data = _json.loads(r.read())
-            return [m["name"] for m in (data.get("models") or []) if m.get("name")]
+            data = OllamaProvider._fetch_tags(alt)
         except Exception:
-            if h == host:
-                alt = host.replace("localhost", "host.docker.internal").replace("127.0.0.1", "host.docker.internal")
-                if alt == host:
-                    return []
-                try:
-                    req2 = urllib.request.Request(f"{alt}/api/tags")
-                    with urllib.request.urlopen(req2, timeout=4) as r:
-                        data = _json.loads(r.read())
-                    return [m["name"] for m in (data.get("models") or []) if m.get("name")]
-                except Exception:
-                    return []
-    return []
+            return []
+    except Exception:
+        return []
+    return [m["name"] for m in (data.get("models") or []) if m.get("name")]
 
 
 async def _ollama_conns_to_models(ollama_conns: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -146,22 +161,7 @@ async def list_connections_raw(ctx: WorkspaceContext = Depends(require_workspace
     """Devuelve las conexiones tal como están en BD, sin expansión de modelos Ollama.
     Usado por el perfil para gestionar credenciales base."""
     user, workspace_id = ctx.user, ctx.workspace_id
-    if is_guest(user):
-        raw = get_session(user).connections
-    else:
-        role = await get_user_role(user)
-        if role == "admin":
-            raw = await _storage.list(None)
-        else:
-            raw = await _list_accessible(user, workspace_id)
-            from app.storage.groups import GroupStorage as _GS
-            shared_ids = set(await _GS(DB_FILE).get_user_shared_resource_ids(user, "connection", workspace_id))
-            own_ids = {i["id"] for i in raw}
-            for rid in (shared_ids - own_ids):
-                c = await _storage.get(rid)
-                if c:
-                    c["_shared"] = True
-                    raw.append(c)
+    raw = await _resolve_connections(user, workspace_id)
     return [{k: v for k, v in c.items() if k != "api_key"} for c in raw]
 
 
@@ -176,14 +176,11 @@ async def ollama_models(
     _: str = Depends(require_auth),
 ) -> Dict[str, Any]:
     """Devuelve los modelos instalados en una instancia Ollama."""
-    import urllib.request
-    import json as _json
+    from app.connections.ollama import OllamaProvider
     body = await request.json()
     host = (body.get("host") or "http://localhost:11434").strip().rstrip("/")
     try:
-        req = urllib.request.Request(f"{host}/api/tags")
-        with urllib.request.urlopen(req, timeout=5) as r:
-            data = _json.loads(r.read())
+        data = await asyncio.to_thread(OllamaProvider._fetch_tags, host)
         models = [m["name"] for m in (data.get("models") or []) if m.get("name")]
         return {"models": models}
     except Exception as exc:
@@ -203,14 +200,7 @@ async def test_all_connections(
         else {}
     )
     ids = body.get("ids") or None
-    if is_guest(user):
-        conns = get_session(user).connections
-    else:
-        role = await get_user_role(user)
-        if role == "admin":
-            conns = await _storage.list(None)
-        else:
-            conns = await _list_accessible(user, workspace_id)
+    conns = await _resolve_connections(user, workspace_id, include_shared=False)
     if ids:
         conns = [c for c in conns if c.get("id") in ids]
 
@@ -234,22 +224,7 @@ async def list_connections(
     ctx: WorkspaceContext = Depends(require_workspace),
 ) -> List[Dict[str, Any]]:
     user, workspace_id = ctx.user, ctx.workspace_id
-    if is_guest(user):
-        raw = get_session(user).connections
-    else:
-        role = await get_user_role(user)
-        if role == "admin":
-            raw = await _storage.list(None)
-        else:
-            raw = await _list_accessible(user, workspace_id)
-            from app.storage.groups import GroupStorage as _GS
-            shared_ids = set(await _GS(DB_FILE).get_user_shared_resource_ids(user, "connection", workspace_id))
-            own_ids = {i["id"] for i in raw}
-            for rid in (shared_ids - own_ids):
-                c = await _storage.get(rid)
-                if c:
-                    c["_shared"] = True
-                    raw.append(c)
+    raw = await _resolve_connections(user, workspace_id)
 
     non_ollama = [c for c in raw if c.get("type") != "ollama"]
     ollama_raw = [c for c in raw if c.get("type") == "ollama"]
@@ -284,6 +259,53 @@ async def save_connection(
     owner = user if scope == "personal" else workspace_id
     conn = await _storage.save(payload, owner_id=owner)
     return {k: v for k, v in conn.items() if k != "api_key"}
+
+
+@router.get("/tokens-daily")
+async def get_tokens_daily(
+    days: int = 14,
+    ctx: WorkspaceContext = Depends(require_workspace),
+) -> List[Dict[str, Any]]:
+    import datetime as _dt
+
+    days = max(1, min(days, 90))
+    cutoff = (_dt.date.today() - _dt.timedelta(days=days - 1)).isoformat()
+    today = _dt.date.today().isoformat()
+    workspace_id = ctx.workspace_id
+
+    async with open_db() as conn:
+        try:
+            rows = await conn.fetchall(
+                "SELECT day, SUM(tokens) FROM token_daily "
+                "WHERE owner_id = ? AND day >= ? GROUP BY day ORDER BY day ASC",
+                (workspace_id, cutoff),
+            )
+            if not rows:
+                if IS_PG:
+                    await conn.execute(
+                        "INSERT INTO token_daily (day, owner_id, tokens) "
+                        "SELECT ?, owner_id, tokens_in + tokens_out FROM connections "
+                        "WHERE owner_id = ? AND tokens_in + tokens_out > 0 "
+                        "ON CONFLICT (day, owner_id) DO NOTHING",
+                        (today, workspace_id),
+                    )
+                else:
+                    await conn.execute(
+                        "INSERT OR IGNORE INTO token_daily (day, owner_id, tokens) "
+                        "SELECT ?, owner_id, tokens_in + tokens_out FROM connections "
+                        "WHERE owner_id = ? AND tokens_in + tokens_out > 0",
+                        (today, workspace_id),
+                    )
+                await conn.commit()
+                rows = await conn.fetchall(
+                    "SELECT day, SUM(tokens) FROM token_daily "
+                    "WHERE owner_id = ? AND day >= ? GROUP BY day ORDER BY day ASC",
+                    (workspace_id, cutoff),
+                )
+        except Exception:
+            rows = []
+
+    return [{"day": r[0], "tokens": r[1]} for r in rows]
 
 
 @router.get("/{conn_id}")
@@ -583,50 +605,3 @@ async def test_connection(
         return {"ok": False, "message": f"Tipo '{conn.get('type')}' sin proveedor de test"}
     result = await asyncio.to_thread(provider.test, conn)
     return {"ok": result.ok, "message": result.message, "detail": result.detail}
-
-
-@router.get("/tokens-daily")
-async def get_tokens_daily(
-    days: int = 14,
-    ctx: WorkspaceContext = Depends(require_workspace),
-) -> List[Dict[str, Any]]:
-    import datetime as _dt
-
-    days = max(1, min(days, 90))
-    cutoff = (_dt.date.today() - _dt.timedelta(days=days - 1)).isoformat()
-    today = _dt.date.today().isoformat()
-    workspace_id = ctx.workspace_id
-
-    async with open_db() as conn:
-        try:
-            rows = await conn.fetchall(
-                "SELECT day, SUM(tokens) FROM token_daily "
-                "WHERE owner_id = ? AND day >= ? GROUP BY day ORDER BY day ASC",
-                (workspace_id, cutoff),
-            )
-            if not rows:
-                if IS_PG:
-                    await conn.execute(
-                        "INSERT INTO token_daily (day, owner_id, tokens) "
-                        "SELECT ?, owner_id, tokens_in + tokens_out FROM connections "
-                        "WHERE owner_id = ? AND tokens_in + tokens_out > 0 "
-                        "ON CONFLICT (day, owner_id) DO NOTHING",
-                        (today, workspace_id),
-                    )
-                else:
-                    await conn.execute(
-                        "INSERT OR IGNORE INTO token_daily (day, owner_id, tokens) "
-                        "SELECT ?, owner_id, tokens_in + tokens_out FROM connections "
-                        "WHERE owner_id = ? AND tokens_in + tokens_out > 0",
-                        (today, workspace_id),
-                    )
-                await conn.commit()
-                rows = await conn.fetchall(
-                    "SELECT day, SUM(tokens) FROM token_daily "
-                    "WHERE owner_id = ? AND day >= ? GROUP BY day ORDER BY day ASC",
-                    (workspace_id, cutoff),
-                )
-        except Exception:
-            rows = []
-
-    return [{"day": r[0], "tokens": r[1]} for r in rows]

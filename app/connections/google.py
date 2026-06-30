@@ -36,11 +36,6 @@ class GoogleProvider(BaseProvider):
             count = len(data.get("models") or [])
             return TestResult(True, f"OK — {count} modelos disponibles")
         except urllib.error.HTTPError as e:
-            body = e.read().decode("utf-8", errors="replace")
-            try:
-                msg = json.loads(body).get("error", {}).get("message", body)
-            except Exception:
-                msg = body[:200]
-            return TestResult(False, f"HTTP {e.code}", msg)
+            return TestResult(False, f"HTTP {e.code}", cls._http_error_msg(e))
         except Exception as e:
             return TestResult(False, "Error de conexión", str(e))

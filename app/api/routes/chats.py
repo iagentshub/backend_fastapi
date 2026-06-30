@@ -20,7 +20,7 @@ async def list_conversations(
 ) -> List[Dict[str, Any]]:
     if is_guest(user):
         return []
-    return _chat.list_conversations(user, agent_id)
+    return await _chat.list_conversations(user, agent_id)
 
 
 @router.post("/{agent_id}")
@@ -31,7 +31,7 @@ async def new_conversation(
         raise HTTPException(status_code=403, detail="Los invitados no pueden guardar conversaciones")
     body = await request.json()
     title = str(body.get("title") or "")
-    return _chat.new_conversation(user, agent_id, title)
+    return await _chat.new_conversation(user, agent_id, title)
 
 
 @router.get("/{agent_id}/{conv_id}")
@@ -40,10 +40,10 @@ async def get_messages(
 ) -> List[Dict[str, Any]]:
     if is_guest(user):
         return []
-    conv = _chat.get_conversation(conv_id, user)
+    conv = await _chat.get_conversation(conv_id, user)
     if not conv:
         raise HTTPException(status_code=404, detail="Conversación no encontrada")
-    return _chat.get_messages(conv_id, user)
+    return await _chat.get_messages(conv_id, user)
 
 
 @router.delete("/{agent_id}/{conv_id}")
@@ -52,6 +52,6 @@ async def delete_conversation(
 ) -> Dict[str, Any]:
     if is_guest(user):
         raise HTTPException(status_code=403, detail="Los invitados no pueden borrar conversaciones")
-    if not _chat.delete_conversation(conv_id, user):
+    if not await _chat.delete_conversation(conv_id, user):
         raise HTTPException(status_code=404, detail="Conversación no encontrada")
     return {"ok": True}

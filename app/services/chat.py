@@ -6,7 +6,7 @@ import ipaddress
 import json
 import urllib.error
 import urllib.request
-from typing import TYPE_CHECKING, Any, AsyncGenerator, Dict, List, Optional
+from typing import TYPE_CHECKING, Any, AsyncGenerator, Dict, List, Optional, Protocol, runtime_checkable
 
 if TYPE_CHECKING:
     from app.models.agent import Agent
@@ -19,6 +19,22 @@ from app.config.providers import (
     PROVIDER_DEFAULT_MODELS,
 )
 from app.config.security import PRIVATE_HOST_PREFIXES
+
+
+@runtime_checkable
+class _SkillStorage(Protocol):
+    def get(self, scope: str, skill_id: str) -> Optional[Dict[str, Any]]: ...
+
+
+@runtime_checkable
+class _KnowledgeStorage(Protocol):
+    async def get(self, item_id: str, owner_id: Any = None) -> Optional[Dict[str, Any]]: ...
+
+
+@runtime_checkable
+class _MemoryStorage(Protocol):
+    def get(self, filename: str) -> Optional[str]: ...
+    def save(self, filename: str, content: str) -> None: ...
 
 
 def _sse(data: Dict[str, Any]) -> str:
@@ -56,6 +72,83 @@ def _truncate_history(
     return trimmed
 
 
+def _do_openai_stream(
+    url: str, headers: Dict[str, str], payload: Dict[str, Any], timeout: Optional[int]
+) -> "tuple[str, int, int]":
+    """Llama al endpoint OpenAI-compatible y devuelve (reply, tok_in, tok_out)."""
+    data = json.dumps(payload).encode()
+    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    full_reply = ""
+    tok_in = tok_out = 0
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        for raw in resp:
+            line = raw.decode("utf-8", errors="replace").strip()
+            if not line.startswith("data: "):
+                continue
+            chunk = line[6:]
+            if chunk == "[DONE]":
+                break
+            try:
+                obj = json.loads(chunk)
+            except Exception:
+                continue
+            choices = obj.get("choices") or []
+            if choices:
+                full_reply += choices[0].get("delta", {}).get("content") or ""
+            usage = obj.get("usage") or {}
+            if usage:
+                tok_in = usage.get("prompt_tokens", tok_in)
+                tok_out = usage.get("completion_tokens", tok_out)
+    return full_reply, tok_in, tok_out
+
+
+def _do_claude_stream(
+    url: str, headers: Dict[str, str], payload: Dict[str, Any], timeout: Optional[int]
+) -> "tuple[str, int, int]":
+    """Llama a la API de Anthropic y devuelve (reply, tok_in, tok_out)."""
+    data = json.dumps(payload).encode()
+    req = urllib.request.Request(url, data=data, headers=headers, method="POST")
+    full_reply = ""
+    tok_in = tok_out = 0
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        for raw in resp:
+            line = raw.decode("utf-8", errors="replace").strip()
+            if not line.startswith("data: "):
+                continue
+            try:
+                obj = json.loads(line[6:])
+                ev_type = obj.get("type")
+                if ev_type == "message_start":
+                    usage = obj.get("message", {}).get("usage") or {}
+                    tok_in = usage.get("input_tokens", 0)
+                elif ev_type == "content_block_delta":
+                    full_reply += obj.get("delta", {}).get("text", "")
+                elif ev_type == "message_delta":
+                    usage = obj.get("usage") or {}
+                    tok_out = usage.get("output_tokens", tok_out)
+            except Exception:
+                pass
+    return full_reply, tok_in, tok_out
+
+
+def _do_ollama_call(
+    host: str, payload: Dict[str, Any], timeout: Optional[int]
+) -> "tuple[str, int, int]":
+    """Llama a Ollama y devuelve (reply, tok_in, tok_out)."""
+    data = json.dumps(payload).encode()
+    req = urllib.request.Request(
+        f"{host}/api/chat",
+        data=data,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        body = json.loads(resp.read().decode("utf-8"))
+    tok_in = body.get("prompt_eval_count", 0)
+    tok_out = body.get("eval_count", 0)
+    return body.get("message", {}).get("content") or "", tok_in, tok_out
+
+
 def _validate_ollama_host(host: str) -> None:
     """Rechaza hosts que apunten a rangos privados o de metadata de cloud (SSRF)."""
     parsed = urlparse(host)
@@ -82,9 +175,9 @@ async def stream_chat(
     agent: "Dict[str, Any] | Agent",
     conn: Dict[str, Any],
     history: List[Dict[str, Any]],
-    skill_storage: Any,
-    memory_storage: Optional[Any] = None,
-    knowledge_storage: Optional[Any] = None,
+    skill_storage: Optional[_SkillStorage],
+    memory_storage: Optional[_MemoryStorage] = None,
+    knowledge_storage: Optional[_KnowledgeStorage] = None,
 ) -> AsyncGenerator[str, None]:
     import asyncio
     from app.models.agent import Agent
@@ -105,6 +198,8 @@ async def stream_chat(
     # System prompt + skills
     system = agent.system_prompt
     for sid in agent.skills:
+        if skill_storage is None:
+            break
         for scope in ("public", "private"):
             sk = skill_storage.get(scope, sid)
             if sk:
@@ -116,7 +211,7 @@ async def stream_chat(
     # Knowledge injection (URLs + documents attached to the agent)
     if knowledge_storage is not None and agent.knowledge:
         for kid in agent.knowledge:
-            item = knowledge_storage.get(kid)
+            item = await knowledge_storage.get(kid)
             if item and item.get("content"):
                 system += (
                     f"\n\n## Conocimiento: {item.get('title', kid)}\n{item['content']}"
@@ -145,6 +240,7 @@ async def stream_chat(
                 "messages": msgs,
                 "temperature": temperature,
                 "stream": True,
+                "stream_options": {"include_usage": True},
             }
             if max_tokens:
                 payload["max_tokens"] = int(max_tokens)
@@ -152,108 +248,30 @@ async def stream_chat(
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {api_key}",
             }
-
-            payload["stream_options"] = {"include_usage": True}
-
-            def _stream_openai() -> tuple:
-                data = json.dumps(payload).encode()
-                req = urllib.request.Request(
-                    url, data=data, headers=headers, method="POST"
-                )
-                full_reply = ""
-                tok_in = tok_out = 0
-                with urllib.request.urlopen(req, timeout=timeout) as resp:
-                    for raw in resp:
-                        line = raw.decode("utf-8", errors="replace").strip()
-                        if not line.startswith("data: "):
-                            continue
-                        chunk = line[6:]
-                        if chunk == "[DONE]":
-                            break
-                        try:
-                            obj = json.loads(chunk)
-                        except Exception:
-                            continue
-                        choices = obj.get("choices") or []
-                        if choices:
-                            full_reply += (
-                                choices[0].get("delta", {}).get("content") or ""
-                            )
-                        usage = obj.get("usage") or {}
-                        if usage:
-                            tok_in = usage.get("prompt_tokens", tok_in)
-                            tok_out = usage.get("completion_tokens", tok_out)
-                return full_reply, tok_in, tok_out
-
-            reply, tok_in, tok_out = await asyncio.to_thread(_stream_openai)
-            yield _sse(
-                {
-                    "type": "done",
-                    "reply": reply,
-                    "tokens": {"in": tok_in, "out": tok_out},
-                }
+            reply, tok_in, tok_out = await asyncio.to_thread(
+                _do_openai_stream, url, headers, payload, timeout
             )
 
         elif conn_type == "claude":
-            url = (
-                conn.get("url") or f"{PROVIDER_BASE_URLS['claude']}/messages"
-            ).strip()
-            # Asegurar que termina en /messages
+            url = (conn.get("url") or f"{PROVIDER_BASE_URLS['claude']}/messages").strip()
             if not url.endswith("/messages"):
                 url = url.rstrip("/") + "/messages"
-
             payload = {
                 "model": model,
                 "messages": history,
                 "temperature": temperature,
                 "stream": True,
+                "max_tokens": int(max_tokens) if max_tokens else 4096,
             }
             if system:
                 payload["system"] = system
-            if max_tokens:
-                payload["max_tokens"] = int(max_tokens)
-            else:
-                payload["max_tokens"] = 4096
             headers = {
                 "Content-Type": "application/json",
                 "x-api-key": api_key,
                 "anthropic-version": ANTHROPIC_API_VERSION,
             }
-
-            def _stream_claude() -> tuple:
-                data = json.dumps(payload).encode()
-                req = urllib.request.Request(
-                    url, data=data, headers=headers, method="POST"
-                )
-                full_reply = ""
-                tok_in = tok_out = 0
-                with urllib.request.urlopen(req, timeout=timeout) as resp:
-                    for raw in resp:
-                        line = raw.decode("utf-8", errors="replace").strip()
-                        if not line.startswith("data: "):
-                            continue
-                        try:
-                            obj = json.loads(line[6:])
-                            ev_type = obj.get("type")
-                            if ev_type == "message_start":
-                                usage = obj.get("message", {}).get("usage") or {}
-                                tok_in = usage.get("input_tokens", 0)
-                            elif ev_type == "content_block_delta":
-                                full_reply += obj.get("delta", {}).get("text", "")
-                            elif ev_type == "message_delta":
-                                usage = obj.get("usage") or {}
-                                tok_out = usage.get("output_tokens", tok_out)
-                        except Exception:
-                            pass
-                return full_reply, tok_in, tok_out
-
-            reply, tok_in, tok_out = await asyncio.to_thread(_stream_claude)
-            yield _sse(
-                {
-                    "type": "done",
-                    "reply": reply,
-                    "tokens": {"in": tok_in, "out": tok_out},
-                }
+            reply, tok_in, tok_out = await asyncio.to_thread(
+                _do_claude_stream, url, headers, payload, timeout
             )
 
         elif conn_type == "ollama":
@@ -269,37 +287,15 @@ async def stream_chat(
                 "stream": False,
                 "options": {"temperature": temperature},
             }
-
-            def _call_ollama() -> tuple:
-                data = json.dumps(payload_o).encode()
-                req = urllib.request.Request(
-                    f"{host}/api/chat",
-                    data=data,
-                    headers={"Content-Type": "application/json"},
-                    method="POST",
-                )
-                with urllib.request.urlopen(req, timeout=timeout) as resp:
-                    body = json.loads(resp.read().decode("utf-8"))
-                tok_in = body.get("prompt_eval_count", 0)
-                tok_out = body.get("eval_count", 0)
-                return body.get("message", {}).get("content") or "", tok_in, tok_out
-
-            reply, tok_in, tok_out = await asyncio.to_thread(_call_ollama)
-            yield _sse(
-                {
-                    "type": "done",
-                    "reply": reply,
-                    "tokens": {"in": tok_in, "out": tok_out},
-                }
+            reply, tok_in, tok_out = await asyncio.to_thread(
+                _do_ollama_call, host, payload_o, timeout
             )
 
         else:
-            yield _sse(
-                {
-                    "type": "error",
-                    "message": f"Tipo de conexión '{conn_type}' no soportado",
-                }
-            )
+            yield _sse({"type": "error", "message": f"Tipo de conexión '{conn_type}' no soportado"})
+            return
+
+        yield _sse({"type": "done", "reply": reply, "tokens": {"in": tok_in, "out": tok_out}})
 
     except urllib.error.URLError as exc:
         yield _sse({"type": "error", "message": f"Error de conexión: {exc}"})

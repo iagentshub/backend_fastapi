@@ -1,7 +1,6 @@
 """Rutas para cuentas de proveedor vinculadas."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from typing import Any, Dict, List
 
 import httpx
@@ -10,7 +9,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from app.api.routes.auth import require_auth
 from app.auth.auth import get_user_role
 from app.config.data import AGENTS_DIR, DB_FILE, SKILLS_DIR
-from app.storage.accounts import AccountStorage
+from app.storage.accounts import AccountStorage, _mask
+from app.utils import now_iso as _now
 
 from app.storage.storage import AgentStorage, ConnectionStorage, SkillStorage
 
@@ -43,9 +43,6 @@ _PROVIDER_TYPE_IDS: dict[str, str] = {
     "github":    "github",
 }
 
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 async def _fetch_models(provider: str, api_key: str, host: str = "") -> List[str]:
@@ -149,7 +146,7 @@ async def link_account(
         data["host"] = host
     saved = await _storage.save(provider, data, await _owner(user))
     if saved.get("api_key"):
-        saved["api_key_masked"] = saved["api_key"][:6] + "..." + saved["api_key"][-4:]
+        saved["api_key_masked"] = _mask(saved["api_key"])
         del saved["api_key"]
     return saved
 
@@ -263,6 +260,6 @@ async def sync_account(
     saved = await _storage.save(provider, account, await _owner(user))
 
     if saved.get("api_key"):
-        saved["api_key_masked"] = saved["api_key"][:6] + "..." + saved["api_key"][-4:]
+        saved["api_key_masked"] = _mask(saved["api_key"])
         del saved["api_key"]
     return saved

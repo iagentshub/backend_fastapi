@@ -4,16 +4,12 @@ from __future__ import annotations
 import json
 
 from app.utils import flog
-from datetime import datetime, timezone
+from app.utils import now_iso as _now
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from app.storage.crypto import decrypt, encrypt
 from app.storage.db import IS_PG, open_db
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def _mask(key: str) -> str:

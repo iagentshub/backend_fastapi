@@ -3,7 +3,8 @@ from __future__ import annotations
 
 from contextvars import ContextVar
 from fastapi import Request
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
+from starlette.responses import Response
 
 SUPPORTED_LOCALES = ("es", "en")
 DEFAULT_LOCALE = "es"
@@ -21,7 +22,7 @@ def _parse_lang(header: str) -> str:
 
 
 class LocaleMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
+    async def dispatch(self, request: Request, call_next: RequestResponseEndpoint) -> Response:
         lang = _parse_lang(request.headers.get("Accept-Language", DEFAULT_LOCALE))
         token = current_locale.set(lang)
         try:

@@ -1,16 +1,12 @@
 """GroupStorage — grupos dentro de workspaces para compartir recursos."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 from app.storage.db import IS_PG, open_db
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+from app.utils import now_iso as _now
 
 
 class GroupStorage:

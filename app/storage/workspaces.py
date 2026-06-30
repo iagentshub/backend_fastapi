@@ -5,16 +5,14 @@ Solo los workspaces de equipo tienen filas en las tablas workspaces / workspace_
 """
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 from app.storage.db import IS_PG, open_db
+from app.utils import now_iso as _now
 
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+_VALID_ROLES: frozenset[str] = frozenset({"owner", "admin", "member"})
 
 
 def _row(row: Any) -> Optional[Dict[str, Any]]:
@@ -140,7 +138,7 @@ class WorkspaceStorage:
     async def add_member(
         self, workspace_id: str, username: str, role: str = "member"
     ) -> bool:
-        if role not in ("owner", "admin", "member"):
+        if role not in _VALID_ROLES:
             return False
         now = _now()
         async with open_db() as conn:
@@ -172,7 +170,7 @@ class WorkspaceStorage:
     async def update_member_role(
         self, workspace_id: str, username: str, role: str
     ) -> bool:
-        if role not in ("owner", "admin", "member"):
+        if role not in _VALID_ROLES:
             return False
         async with open_db() as conn:
             row = await conn.fetchone(

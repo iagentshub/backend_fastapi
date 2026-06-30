@@ -1,8 +1,11 @@
 """Base types and registry for connection providers."""
 from __future__ import annotations
 
+import json
+import urllib.error
+import urllib.request
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, ClassVar, Dict, List, Optional
 
 
 @dataclass
@@ -29,7 +32,34 @@ class BaseProvider:
     type_id: str = ""
     label: str = ""
     icon: str = "🔌"
-    fields: List[FieldDef] = []
+    fields: ClassVar[List[FieldDef]] = []
+
+    @classmethod
+    def _http_error_msg(cls, e: urllib.error.HTTPError) -> str:
+        body = e.read().decode("utf-8", errors="replace")
+        try:
+            return json.loads(body).get("error", {}).get("message", body)
+        except Exception:
+            return body[:200]
+
+    @classmethod
+    def _test_openai_models(cls, api_key: str, base_url: str) -> TestResult:
+        """Test para proveedores con endpoint /models compatible con OpenAI."""
+        if not api_key:
+            return TestResult(False, "Falta la API Key")
+        try:
+            req = urllib.request.Request(
+                f"{base_url}/models",
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+            with urllib.request.urlopen(req, timeout=10) as r:
+                data = json.loads(r.read())
+            count = len(data.get("data") or [])
+            return TestResult(True, f"OK — {count} modelos disponibles")
+        except urllib.error.HTTPError as e:
+            return TestResult(False, "Error de autenticación", cls._http_error_msg(e))
+        except Exception as e:
+            return TestResult(False, "Error de conexión", str(e))
 
     @classmethod
     def test(cls, config: Dict[str, Any]) -> TestResult:  # noqa: D102

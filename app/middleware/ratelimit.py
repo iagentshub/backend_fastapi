@@ -5,12 +5,8 @@ from typing import Callable
 
 from fastapi import HTTPException, Request
 
-
-def _client_ip(request: Request) -> str:
-    fwd = request.headers.get("x-forwarded-for", "")
-    return fwd.split(",")[0].strip() or (
-        request.client.host if request.client else "unknown"
-    )
+from app.config.session import RATE_MAX_IPS as _MAX_IPS
+from app.utils.net import client_ip as _client_ip
 
 
 class RateLimiter:
@@ -38,6 +34,11 @@ class RateLimiter:
     async def __call__(self, request: Request) -> None:
         key = self._key_func(request)
         now = time.monotonic()
+        # Evictar la mitad más antigua si se acumula demasiado (memory leak prevention)
+        if len(self._data) > _MAX_IPS:
+            old_keys = list(self._data)[:_MAX_IPS // 2]
+            for k in old_keys:
+                del self._data[k]
         events = [t for t in self._data[key] if now - t < self._window]
         self._data[key] = events
         if len(events) >= self._calls:

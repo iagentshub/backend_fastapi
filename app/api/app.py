@@ -15,6 +15,7 @@ from app.utils import flog
 from app.auth.auth import ensure_admin_user, purge_expired_deletions
 from app.config.cors import CORS_ORIGINS
 from app.config import data as _cfg
+from app.config.session import BODY_MAX_BYTES as _BODY_MAX_BYTES
 from app.storage.db import init_db, close_db_pool, open_db
 from app.api.routes import auth, connections, agents, skills, memory, settings, accounts, chats, knowledge, logs, sharing, workspaces, groups
 from app.api.routes.auth import admin_router, users_router
@@ -23,6 +24,18 @@ from app.middleware.locale import LocaleMiddleware
 from app.middleware.security import SecurityHeadersMiddleware
 
 _docs_url = "/docs" if os.getenv("GAIA_DEV_MODE", "").lower() in ("1", "true", "yes") else None
+
+
+class _BodySizeLimitMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request, call_next):
+        cl = request.headers.get("content-length")
+        if cl and int(cl) > _BODY_MAX_BYTES:
+            from fastapi.responses import JSONResponse
+            return JSONResponse(
+                {"detail": "Payload demasiado grande (máx. 2 MB)"},
+                status_code=413,
+            )
+        return await call_next(request)
 
 
 class _RequestLogger(BaseHTTPMiddleware):
@@ -78,6 +91,7 @@ def create_app() -> FastAPI:
     app = FastAPI(title="GAIA Backend", version="1.0.0", docs_url=_docs_url, redoc_url=None, lifespan=_lifespan)
 
     app.add_middleware(_RequestLogger)
+    app.add_middleware(_BodySizeLimitMiddleware)
     app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(LocaleMiddleware)
     app.add_middleware(

@@ -617,6 +617,27 @@ async def _migrate_sqlite(conn: Any) -> None:
     except Exception:
         pass
 
+    # 13. Limpiar tokens guardados en plano (pre-hash). Los hasheados son siempre 64 chars hex.
+    try:
+        await conn.execute(
+            "UPDATE users SET verification_token = NULL "
+            "WHERE verification_token IS NOT NULL "
+            "AND (LENGTH(verification_token) != 64 OR verification_token GLOB '*[^0-9a-f]*')"
+        )
+        await conn.execute(
+            "UPDATE users SET deletion_token = NULL, deletion_requested_at = NULL "
+            "WHERE deletion_token IS NOT NULL "
+            "AND (LENGTH(deletion_token) != 64 OR deletion_token GLOB '*[^0-9a-f]*')"
+        )
+        await conn.execute(
+            "UPDATE users SET reset_token = NULL, reset_token_expires = NULL "
+            "WHERE reset_token IS NOT NULL "
+            "AND (LENGTH(reset_token) != 64 OR reset_token GLOB '*[^0-9a-f]*')"
+        )
+        await conn.commit()
+    except Exception:
+        pass
+
 
 async def _migrate_users_json_sqlite(conn: Any) -> None:
     """Import users.json into the users table if it exists and the table is empty."""
@@ -895,6 +916,22 @@ async def _migrate_pg(conn: Any) -> None:
     )
     await conn.execute(
         "ALTER TABLE resource_social ADD COLUMN IF NOT EXISTS verified BOOLEAN NOT NULL DEFAULT FALSE"
+    )
+    # 13. Limpiar tokens de email/borrado guardados en plano (pre-hash)
+    await conn.execute(
+        "UPDATE users SET verification_token = NULL "
+        "WHERE verification_token IS NOT NULL "
+        "AND (LENGTH(verification_token) != 64 OR verification_token !~ '^[0-9a-f]+$')"
+    )
+    await conn.execute(
+        "UPDATE users SET deletion_token = NULL, deletion_requested_at = NULL "
+        "WHERE deletion_token IS NOT NULL "
+        "AND (LENGTH(deletion_token) != 64 OR deletion_token !~ '^[0-9a-f]+$')"
+    )
+    await conn.execute(
+        "UPDATE users SET reset_token = NULL, reset_token_expires = NULL "
+        "WHERE reset_token IS NOT NULL "
+        "AND (LENGTH(reset_token) != 64 OR reset_token !~ '^[0-9a-f]+$')"
     )
 
 

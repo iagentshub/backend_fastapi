@@ -117,7 +117,7 @@ def admin_client(client, patch_data_dir):
 @pytest.fixture()
 def reset_rate_limiter():
     """Clear rate limiters between tests to avoid interference."""
-    from app.api.routes.auth import _rate_data as auth_rate
-    auth_rate.clear()
+    from app.api.routes.auth import _register_limiter
+    _register_limiter._data.clear()
     yield
-    auth_rate.clear()
+    _register_limiter._data.clear()

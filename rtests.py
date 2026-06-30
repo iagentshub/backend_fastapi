@@ -7,6 +7,7 @@ Uso:
     python3 rtests.py tests/api/   # solo un subdirectorio
     python3 rtests.py -k auth      # filtrar por nombre
 """
+
 import subprocess
 import sys
 
@@ -18,7 +19,14 @@ def main() -> None:
         check=True,
     )
 
-    args = sys.argv[1:] or ["tests", "-v", "--tb=short"]
+    args = sys.argv[1:] or [
+        "tests",
+        "-v",
+        "--tb=short",
+        "--timeout=30",
+        "--ignore=tests/e2e",
+        "--ignore=tests/performance",
+    ]
     result = subprocess.run(
         [sys.executable, "-m", "pytest", *args],
     )

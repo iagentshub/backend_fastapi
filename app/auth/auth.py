@@ -1,17 +1,16 @@
 """Auth: JWT, password hashing y gestión de usuarios (DB-backed)."""
 from __future__ import annotations
 
+import hashlib
 import json
-from pathlib import Path
-
-from app.utils import flog
 import os
+import secrets
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Optional
 
-import secrets
-
 import bcrypt as _bcrypt
+from app.utils import flog
 from jose import JWTError, jwt
 
 from app.config.data import AGENTS_DIR, SETTINGS_FILE, SKILLS_DIR
@@ -45,6 +44,14 @@ def _secret() -> str:
     return secret
 
 
+# ── Token helpers ─────────────────────────────────────────────────────────────
+
+
+def _hash_token(token: str) -> str:
+    """SHA-256 hex digest — lo que se guarda en BD; el token raw va al usuario."""
+    return hashlib.sha256(token.encode()).hexdigest()
+
+
 # ── Password helpers ───────────────────────────────────────────────────────────
 
 
@@ -59,10 +66,20 @@ def verify_password(plain: str, hashed: str) -> bool:
         return False
 
 
+async def verify_password_async(plain: str, hashed: str) -> bool:
+    """Wrapper no-bloqueante — delega bcrypt al thread pool."""
+    import asyncio
+    return await asyncio.to_thread(verify_password, plain, hashed)
+
+
 # ── Internal DB helpers ────────────────────────────────────────────────────────
+
+_ALLOWED_USER_FIELDS = frozenset({"email", "username"})
 
 
 async def _get_user_by(field: str, value: str) -> Optional[dict]:
+    if field not in _ALLOWED_USER_FIELDS:
+        raise ValueError(f"Campo no permitido para búsqueda de usuario: {field!r}")
     async with open_db() as conn:
         row = await conn.fetchone(f"SELECT * FROM users WHERE {field} = ?", (value,))
         return dict(row) if row else None
@@ -125,8 +142,10 @@ async def register_user_email(
                 raise ValueError("El correo electrónico ya está registrado")
             now = datetime.now(timezone.utc).isoformat()
             is_verified = 1
+            token_hash: Optional[str] = None
             if EMAIL_VERIFY_ENABLED:
                 token = secrets.token_urlsafe(32)
+                token_hash = _hash_token(token)
                 is_verified = 0
             await conn.execute(
                 "INSERT INTO users "
@@ -136,7 +155,7 @@ async def register_user_email(
                 (
                     username, email, hash_password(password), display_name,
                     birth_date, gender, country, phone,
-                    "standard", 1, is_verified, token, now,
+                    "standard", 1, is_verified, token_hash, now,
                 ),
             )
     flog.ok(f"Nuevo usuario: {email}")
@@ -148,7 +167,7 @@ async def verify_email_token(token: str) -> Optional[str]:
     async with open_db() as conn:
         row = await conn.fetchone(
             "SELECT username FROM users WHERE verification_token = ? AND is_verified = 0",
-            (token,),
+            (_hash_token(token),),
         )
         if not row:
             return None
@@ -330,7 +349,7 @@ async def create_password_reset_token(email: str) -> Optional[str]:
         expires = (datetime.now(timezone.utc) + timedelta(hours=PASSWORD_RESET_EXPIRE_HOURS)).isoformat()
         await conn.execute(
             "UPDATE users SET reset_token = ?, reset_token_expires = ? WHERE email = ?",
-            (token, expires, email),
+            (_hash_token(token), expires, email),
         )
         await conn.commit()
         return token
@@ -341,7 +360,7 @@ async def consume_reset_token(token: str, new_password: str) -> bool:
     async with open_db() as conn:
         row = await conn.fetchone(
             "SELECT email, reset_token_expires FROM users WHERE reset_token = ?",
-            (token,),
+            (_hash_token(token),),
         )
         if not row:
             return False
@@ -357,6 +376,16 @@ async def consume_reset_token(token: str, new_password: str) -> bool:
         await conn.commit()
         flog.ok(f"[auth] Contraseña reseteada para {email}")
         return True
+
+
+async def set_own_password(username: str, new_password: str) -> None:
+    """Actualiza el hash de contraseña de un usuario existente."""
+    async with open_db() as conn:
+        await conn.execute(
+            "UPDATE users SET password_hash = ? WHERE username = ?",
+            (hash_password(new_password), username),
+        )
+        await conn.commit()
 
 
 async def get_user_role(username: str) -> str:
@@ -401,13 +430,13 @@ async def get_owned_workspaces(username: str) -> list:
 
 
 async def schedule_user_deletion(username: str) -> str:
-    """Schedule account deletion 30 days from now. Returns cancellation token."""
+    """Schedule account deletion 30 days from now. Returns cancellation token (raw)."""
     token = secrets.token_urlsafe(32)
     deletion_at = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
     async with open_db() as conn:
         await conn.execute(
             "UPDATE users SET deletion_requested_at = ?, deletion_token = ? WHERE username = ?",
-            (deletion_at, token, username),
+            (deletion_at, _hash_token(token), username),
         )
         await conn.commit()
     user = await get_user_by_username(username)
@@ -420,20 +449,39 @@ async def schedule_user_deletion(username: str) -> str:
 async def cancel_user_deletion(token: str) -> bool:
     """Cancel a scheduled deletion via token. Returns True if found and cancelled."""
     async with open_db() as conn:
-        if not await conn.fetchone("SELECT 1 FROM users WHERE deletion_token = ?", (token,)):
+        if not await conn.fetchone("SELECT 1 FROM users WHERE deletion_token = ?", (_hash_token(token),)):
             return False
         await conn.execute(
             "UPDATE users SET deletion_requested_at = NULL, deletion_token = NULL WHERE deletion_token = ?",
-            (token,),
+            (_hash_token(token),),
         )
         await conn.commit()
         return True
 
 
+def _purge_user_files(username: str) -> None:
+    """Borra ficheros del usuario del filesystem. Síncrono — llamar desde asyncio.to_thread."""
+    import json as _json
+    import shutil as _shutil
+
+    for base_dir in (AGENTS_DIR, SKILLS_DIR):
+        for scope_dir in (base_dir / "private", base_dir / "public"):
+            if not scope_dir.exists():
+                continue
+            for item_dir in scope_dir.iterdir():
+                cfg = item_dir / "config.json"
+                if not cfg.exists():
+                    continue
+                try:
+                    if _json.loads(cfg.read_text()).get("owner_id") == username:
+                        _shutil.rmtree(item_dir, ignore_errors=True)
+                except Exception:
+                    pass
+
+
 async def purge_user_data(username: str) -> None:
     """Hard-delete all user data from DB (cascade) and filesystem."""
-    import shutil as _shutil
-    import json as _json
+    import asyncio as _asyncio
 
     try:
         async with open_db() as conn:
@@ -459,20 +507,7 @@ async def purge_user_data(username: str) -> None:
         flog.error(f"[gdpr] Error purgando BD de {username}: {exc}")
         raise
 
-    for base_dir in (AGENTS_DIR, SKILLS_DIR):
-        for scope_dir in (base_dir / "private", base_dir / "public"):
-            if not scope_dir.exists():
-                continue
-            for item_dir in scope_dir.iterdir():
-                cfg = item_dir / "config.json"
-                if not cfg.exists():
-                    continue
-                try:
-                    if _json.loads(cfg.read_text()).get("owner_id") == username:
-                        _shutil.rmtree(item_dir, ignore_errors=True)
-                except Exception:
-                    pass
-
+    await _asyncio.to_thread(_purge_user_files, username)
     flog.ok(f"[gdpr] Purga completa de {username}")
 
 
@@ -495,31 +530,45 @@ async def purge_expired_deletions() -> int:
     return len(usernames)
 
 
+_PROFILE_SQL: dict = {
+    "birth_date":   "birth_date = ?",
+    "gender":       "gender = ?",
+    "country":      "country = ?",
+    "phone":        "phone = ?",
+    "display_name": "display_name = ?",
+}
+
+_ADMIN_SQL: dict = {
+    "is_active": "is_active = ?",
+    "role":      "role = ?",
+}
+
+
 async def update_user_profile(username: str, **fields) -> None:
     """Update allowed profile fields for a user."""
-    allowed = {"birth_date", "gender", "country", "phone", "display_name"}
-    updates = {k: v for k, v in fields.items() if k in allowed}
-    if not updates:
+    clauses = [(sql, fields[col]) for col, sql in _PROFILE_SQL.items() if col in fields]
+    if not clauses:
         return
     async with open_db() as conn:
-        set_clause = ", ".join(f"{col} = ?" for col in updates)
-        values = list(updates.values()) + [username]
-        await conn.execute(f"UPDATE users SET {set_clause} WHERE username = ?", values)
+        await conn.execute(
+            "UPDATE users SET " + ", ".join(c[0] for c in clauses) + " WHERE username = ?",
+            [c[1] for c in clauses] + [username],
+        )
         await conn.commit()
 
 
 async def admin_update_user(username: str, **fields) -> bool:
     """Admin-only: update is_active or role. Returns False if user not found."""
-    allowed = {"is_active", "role"}
-    updates = {k: v for k, v in fields.items() if k in allowed}
-    if not updates:
+    clauses = [(sql, fields[col]) for col, sql in _ADMIN_SQL.items() if col in fields]
+    if not clauses:
         return True
     async with open_db() as conn:
         if not await conn.fetchone("SELECT 1 FROM users WHERE username = ?", (username,)):
             return False
-        set_clause = ", ".join(f"{col} = ?" for col in updates)
-        values = list(updates.values()) + [username]
-        await conn.execute(f"UPDATE users SET {set_clause} WHERE username = ?", values)
+        await conn.execute(
+            "UPDATE users SET " + ", ".join(c[0] for c in clauses) + " WHERE username = ?",
+            [c[1] for c in clauses] + [username],
+        )
         await conn.commit()
         return True
 
@@ -539,69 +588,6 @@ async def admin_set_password(username: str, new_password: str) -> bool:
 
 # ── Gestor role helpers ────────────────────────────────────────────────────────
 
-
-async def promote_to_gestor(username: str) -> bool:
-    """Promote a standard user to gestor. Returns False if user not found or not standard."""
-    async with open_db() as conn:
-        row = await conn.fetchone("SELECT role FROM users WHERE username = ?", (username,))
-        if not row:
-            return False
-        role = row[0]
-        if role not in ("standard",):
-            return False
-        await conn.execute("UPDATE users SET role = 'gestor' WHERE username = ?", (username,))
-        await conn.commit()
-        return True
-
-
-async def demote_if_no_teams(username: str) -> bool:
-    """Demote gestor back to standard if they manage no teams. Returns True if demoted."""
-    from app.config.data import DB_FILE as _DB
-    from app.storage.teams import TeamStorage
-
-    ts = TeamStorage(_DB)
-    managed = ts.list_managed_teams(username)
-    if managed:
-        return False
-    async with open_db() as conn:
-        row = await conn.fetchone("SELECT role FROM users WHERE username = ?", (username,))
-        if not row:
-            return False
-        role = row[0]
-        if role != "gestor":
-            return False
-        await conn.execute("UPDATE users SET role = 'standard' WHERE username = ?", (username,))
-        await conn.commit()
-        return True
-
-
-def send_team_invitation_email(
-    email: str,
-    team_name: str,
-    invited_by: str,
-    token: str,
-    base_url: str = "",
-) -> None:
-    from app.config.session import SMTP_HOST
-
-    accept_url = f"{base_url}/profile/?tab=teams&token={token}"
-    if not SMTP_HOST:
-        flog.info(f"[email] SMTP no configurado — invitación equipo '{team_name}': {accept_url}")
-        return
-
-    html = _build_email_html(
-        title="Invitación a equipo",
-        heading=f"Te han invitado al equipo «{team_name}»",
-        body_html=(
-            f"<strong>{invited_by}</strong> te ha invitado a unirte al equipo "
-            f"<strong>{team_name}</strong> en iAgents Hub.<br><br>"
-            "Acepta la invitación desde tu perfil o haz clic en el botón. "
-            "La invitación expira en <strong>48 horas</strong>."
-        ),
-        cta_url=accept_url,
-        cta_label="Ver invitación",
-    )
-    _send_smtp(email, f"Te invitaron al equipo «{team_name}» en iAgents Hub", html)
 
 
 # ── JWT ────────────────────────────────────────────────────────────────────────

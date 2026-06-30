@@ -3,30 +3,53 @@ from __future__ import annotations
 
 import asyncio
 import json
-
-from app.utils import flog
 import re
 import shutil
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TypedDict
 from uuid import uuid4
 
 from app.models.agent import Agent
 from app.storage.crypto import decrypt, encrypt
+from app.utils import flog
+from app.utils import now_iso as _now
 
 import yaml
 
 
 # ─── helpers ──────────────────────────────────────────────────────────────────
 
+class AgentSummary(TypedDict, total=False):
+    id: str
+    name: str
+    agent_type: str
+    description: str
+    icon: str
+    tags: list
+    labels: list
+    language: str
+    connection_id: Optional[str]
+    model: str
+    temperature: float
+    max_tokens: Optional[int]
+    timeout: Optional[int]
+    skills: list
+    use_memory: bool
+    memory_file: Optional[str]
+    knowledge: list
+    tokens_in: int
+    tokens_out: int
+    folder_id: Optional[str]
+    scope: str
+    created_at: Optional[str]
+    updated_at: Optional[str]
+    owner_id: Optional[str]
+
+
 def _slug(value: str) -> str:
     s = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
     return s or f"item-{uuid4().hex[:8]}"
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 # ─── ConnectionStorage ────────────────────────────────────────────────────────
@@ -139,7 +162,7 @@ class ConnectionStorage:
         return self._row_to_dict(row) if row else None
 
     async def save(self, payload: Dict[str, Any], owner_id: str = "admin") -> Dict[str, Any]:
-        from app.storage.db import IS_PG, open_db
+        from app.storage.db import open_db
         conn_id = str(payload.get("id") or "").strip() or uuid4().hex[:12]
         payload["id"] = conn_id
         existing = await self.get(conn_id, owner_id)
@@ -154,25 +177,7 @@ class ConnectionStorage:
         if stored.get("api_key"):
             stored["api_key"] = encrypt(stored["api_key"])
         async with open_db() as conn:
-            if IS_PG:
-                await conn.execute(
-                    "INSERT INTO connections (id, owner_id, data, tokens_in, tokens_out, created_at, updated_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?) "
-                    "ON CONFLICT (id) DO UPDATE SET owner_id=EXCLUDED.owner_id, data=EXCLUDED.data, "
-                    "tokens_in=EXCLUDED.tokens_in, tokens_out=EXCLUDED.tokens_out, updated_at=EXCLUDED.updated_at",
-                    (conn_id, owner_id, json.dumps(stored, ensure_ascii=False),
-                     int(stored.get("tokens_in") or 0), int(stored.get("tokens_out") or 0),
-                     stored["created_at"], stored["updated_at"]),
-                )
-            else:
-                await conn.execute(
-                    "INSERT OR REPLACE INTO connections "
-                    "(id, owner_id, data, tokens_in, tokens_out, created_at, updated_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                    (conn_id, owner_id, json.dumps(stored, ensure_ascii=False),
-                     int(stored.get("tokens_in") or 0), int(stored.get("tokens_out") or 0),
-                     stored["created_at"], stored["updated_at"]),
-                )
+            await self._upsert(conn, stored, owner_id)
             await conn.commit()
         return payload
 
@@ -201,7 +206,6 @@ class ConnectionStorage:
         return True
 
     async def add_tokens(self, conn_id: str, input_tokens: int, output_tokens: int) -> None:
-        from datetime import date
         from app.storage.db import IS_PG, open_db
         async with open_db() as conn:
             async with conn.transaction():
@@ -209,20 +213,12 @@ class ConnectionStorage:
                     "UPDATE connections SET tokens_in = tokens_in + ?, tokens_out = tokens_out + ? WHERE id = ?",
                     (input_tokens, output_tokens, conn_id),
                 )
-                row = await conn.fetchone(
-                    "SELECT data, tokens_in, tokens_out, owner_id FROM connections WHERE id = ?",
-                    (conn_id,),
-                )
-                if row:
-                    d: Dict[str, Any] = json.loads(row["data"])
-                    d["tokens_in"] = row["tokens_in"]
-                    d["tokens_out"] = row["tokens_out"]
-                    await conn.execute(
-                        "UPDATE connections SET data = ? WHERE id = ?",
-                        (json.dumps(d, ensure_ascii=False), conn_id),
+                total = input_tokens + output_tokens
+                if total > 0:
+                    row = await conn.fetchone(
+                        "SELECT owner_id FROM connections WHERE id = ?", (conn_id,)
                     )
-                    total = input_tokens + output_tokens
-                    if total > 0:
+                    if row:
                         today = date.today().isoformat()
                         owner = row["owner_id"]
                         if IS_PG:
@@ -243,12 +239,23 @@ class ConnectionStorage:
 # Agentes públicos:  data/agents/public/<slug>/config.json  (solo lectura en UI)
 # Agentes privados: data/agents/private/<slug>/config.json (CRUD completo)
 
-class AgentStorage:
+class _ScopedFileStorage:
+    """Base para almacenamiento en filesystem con scopes public/private."""
+
     def __init__(self, root_dir: Path) -> None:
         self.root_dir = Path(root_dir)
         (self.root_dir / "public").mkdir(parents=True, exist_ok=True)
+        (self.root_dir / "private").mkdir(parents=True, exist_ok=True)
+
+    def _require_writable(self, scope: str, label: str = "Elemento") -> None:
+        if scope == "public":
+            raise ValueError(f"{label} son de solo lectura")
+
+
+class AgentStorage(_ScopedFileStorage):
+    def __init__(self, root_dir: Path) -> None:
+        super().__init__(root_dir)
         priv = self.root_dir / "private"
-        priv.mkdir(parents=True, exist_ok=True)
         # migrar agentes planos (estructura antigua) a private/
         for p in list(self.root_dir.glob("*/config.json")):
             agent_dir = p.parent
@@ -293,8 +300,7 @@ class AgentStorage:
         return None
 
     def save(self, payload: Dict[str, Any], scope: str = "private", owner_id: Optional[str] = None) -> Dict[str, Any]:
-        if scope == "public":
-            raise ValueError("Los agentes públicos son de solo lectura")
+        self._require_writable(scope, "Los agentes públicos")
         name = str(payload.get("name") or "").strip()
         if not name:
             raise ValueError("name required")
@@ -358,15 +364,14 @@ class AgentStorage:
     def delete(self, agent_id: str, scope: Optional[str] = None) -> bool:
         scopes_to_try = [scope] if scope else ["private"]
         for s in scopes_to_try:
-            if s == "public":
-                raise ValueError("Los agentes públicos son de solo lectura")
+            self._require_writable(s, "Los agentes públicos")
             d = self._dir(s, agent_id)
             if d.exists():
                 shutil.rmtree(d)
                 return True
         return False
 
-    def _summary(self, a: Dict[str, Any]) -> Dict[str, Any]:
+    def _summary(self, a: Dict[str, Any]) -> AgentSummary:
         scope = a.get("scope", "private")
         return {
             "id": a["id"],
@@ -400,11 +405,9 @@ class AgentStorage:
 # Skills públicas:  data/skills/public/<slug>/SKILL.md  (solo lectura en la UI)
 # Skills privadas: data/skills/private/<slug>/SKILL.md (CRUD completo)
 
-class SkillStorage:
+class SkillStorage(_ScopedFileStorage):
     def __init__(self, root_dir: Path) -> None:
-        self.root_dir = Path(root_dir)
-        (self.root_dir / "public").mkdir(parents=True, exist_ok=True)
-        (self.root_dir / "private").mkdir(parents=True, exist_ok=True)
+        super().__init__(root_dir)
 
     def _read(self, path: Path) -> Dict[str, Any]:
         raw = path.read_text(encoding="utf-8")
@@ -483,8 +486,7 @@ class SkillStorage:
         return None
 
     def save(self, scope: str, payload: Dict[str, Any], owner_id: Optional[str] = None) -> Dict[str, Any]:
-        if scope == "public":
-            raise ValueError("Las skills públicas son de solo lectura")
+        self._require_writable(scope, "Las skills públicas")
         name = str(payload.get("name") or "").strip()
         if not name:
             raise ValueError("name required")
@@ -527,8 +529,7 @@ class SkillStorage:
         return True
 
     def delete(self, scope: str, skill_id: str) -> bool:
-        if scope == "public":
-            raise ValueError("Las skills públicas son de solo lectura")
+        self._require_writable(scope, "Las skills públicas")
         d = self._safe_path(scope, skill_id)
         if not d.exists():
             return False
@@ -554,14 +555,12 @@ class MemoryStorage:
     def _load_meta(self) -> Dict[str, Any]:
         if self._meta_path.exists():
             try:
-                import json
                 return json.loads(self._meta_path.read_text(encoding="utf-8"))
             except Exception:
                 return {}
         return {}
 
     def _save_meta(self, meta: Dict[str, Any]) -> None:
-        import json
         self._meta_path.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
 
     def list(self) -> List[Dict[str, Any]]:

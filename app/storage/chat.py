@@ -1,16 +1,12 @@
 """Chat history storage — SQLite/PostgreSQL conversations and messages."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 from app.storage.db import open_db
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+from app.utils import now_iso as _now
 
 
 class ChatStorage:
@@ -121,12 +117,14 @@ class ChatStorage:
     async def get_messages(
         self, conv_id: str, user_id: str, limit: int = 200
     ) -> List[Dict[str, Any]]:
-        if not await self.get_conversation(conv_id, user_id):
-            return []
         async with open_db() as conn:
             rows = await conn.fetchall(
-                "SELECT id, role, content, created_at FROM messages "
-                "WHERE conversation_id = ? ORDER BY created_at ASC LIMIT ?",
-                (conv_id, limit),
+                "SELECT m.id, m.role, m.content, m.created_at "
+                "FROM messages m "
+                "WHERE m.conversation_id = ? "
+                "  AND EXISTS (SELECT 1 FROM conversations c "
+                "              WHERE c.id = ? AND c.user_id = ?) "
+                "ORDER BY m.created_at ASC LIMIT ?",
+                (conv_id, conv_id, user_id, limit),
             )
             return [dict(r) for r in rows]

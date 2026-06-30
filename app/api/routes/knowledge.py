@@ -1,6 +1,7 @@
 """Rutas de conocimiento: URLs, documentos y carpetas."""
 from __future__ import annotations
 
+import asyncio
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
@@ -225,7 +226,7 @@ async def add_url(
     if not url:
         raise HTTPException(status_code=422, detail="URL requerida")
     try:
-        content = fetch_url_text(url)
+        content = await asyncio.to_thread(fetch_url_text, url)
     except Exception as exc:
         raise HTTPException(status_code=422, detail=f"No se pudo obtener la URL: {exc}") from exc
     if not content.strip():

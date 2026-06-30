@@ -2,8 +2,7 @@
 from __future__ import annotations
 
 import re
-import time
-from collections import defaultdict
+import shutil
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response
@@ -22,18 +21,21 @@ from app.auth.auth import (
     get_user_by_email,
     get_user_by_username,
     get_user_role,
-    hash_password,
     list_users,
     register_user_email,
     schedule_user_deletion,
     send_account_status_email,
     send_reset_email,
     send_verification_email,
+    set_own_password,
     verify_email_token,
-    verify_password,
+    verify_password_async,
 )
+from app.config.data import AGENTS_DIR as _AGENTS_DIR
 from app.config.data import DB_FILE as _DB_FILE
 from app.storage.db import IS_PG, open_db
+from app.storage.storage import AgentStorage as _AgentStorage
+from app.utils.net import client_ip as _client_ip
 from app.config.session import (
     EMAIL_VERIFY_ENABLED,
     REGISTER_MAX,
@@ -41,16 +43,16 @@ from app.config.session import (
     REGISTRATION_MODE,
     SECURE_COOKIES,
 )
+from app.middleware.ratelimit import RateLimiter
 from app.storage.groups import GroupStorage as _GroupStorage
 from app.storage.workspaces import WorkspaceStorage as _WorkspaceStorage
 
 _groups = _GroupStorage(_DB_FILE)
 _workspaces = _WorkspaceStorage(_DB_FILE)
+_agents = _AgentStorage(_AGENTS_DIR)
+_register_limiter = RateLimiter(calls=REGISTER_MAX, window=REGISTER_WINDOW, key_func=_client_ip)
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
-
-_rate_data: Dict[str, list] = defaultdict(list)
-
 
 class WorkspaceContext:
     """Contexto de request con usuario y workspace activo."""
@@ -60,22 +62,6 @@ class WorkspaceContext:
         self.user = user
         self.workspace_id = workspace_id
 
-
-def _client_ip(request: Request) -> str:
-    forwarded = request.headers.get("x-forwarded-for")
-    return forwarded.split(",")[0].strip() if forwarded else (request.client.host if request.client else "unknown")
-
-
-def _check_register_rate(ip: str) -> None:
-    now = time.monotonic()
-    events = [t for t in _rate_data[f"reg:{ip}"] if now - t < REGISTER_WINDOW]
-    _rate_data[f"reg:{ip}"] = events
-    if len(events) >= REGISTER_MAX:
-        raise HTTPException(status_code=429, detail="Demasiados registros desde esta dirección. Espera un rato.")
-
-
-def _record_register(ip: str) -> None:
-    _rate_data[f"reg:{ip}"].append(time.monotonic())
 
 
 def require_auth(ga_token: Optional[str] = Cookie(default=None)) -> str:
@@ -118,7 +104,7 @@ async def register(request: Request, response: Response) -> Dict[str, Any]:
         raise HTTPException(status_code=403, detail="El registro está desactivado.")
     if REGISTRATION_MODE == "invite":
         raise HTTPException(status_code=403, detail="El registro requiere invitación de un administrador.")
-    _check_register_rate(_client_ip(request))
+    await _register_limiter(request)
     body = await request.json()
     email = str(body.get("email") or "").strip().lower()
     password = str(body.get("password") or "")
@@ -144,8 +130,6 @@ async def register(request: Request, response: Response) -> Dict[str, Any]:
     except ValueError as exc:
         raise HTTPException(status_code=409, detail=str(exc))
 
-    _record_register(_client_ip(request))
-
     if EMAIL_VERIFY_ENABLED and verify_token:
         base_url = str(request.base_url).rstrip("/")
         send_verification_email(email, verify_token, base_url)
@@ -166,7 +150,7 @@ async def login(request: Request, response: Response) -> Dict[str, Any]:
     user = await get_user_by_email(email)
     if not user or not user.get("password_hash"):
         raise HTTPException(status_code=401, detail="Credenciales incorrectas")
-    if not verify_password(password, user["password_hash"]):
+    if not await verify_password_async(password, user["password_hash"]):
         raise HTTPException(status_code=401, detail="Credenciales incorrectas")
     if not user.get("is_active", 1):
         raise HTTPException(status_code=403, detail="Cuenta desactivada")
@@ -280,14 +264,9 @@ async def change_password(
     user = await get_user_by_username(username)
     if not user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
-    if not verify_password(current, user.get("password_hash", "")):
+    if not await verify_password_async(current, user.get("password_hash", "")):
         raise HTTPException(status_code=401, detail="Contraseña actual incorrecta")
-    async with open_db() as conn:
-        await conn.execute(
-            "UPDATE users SET password_hash = ? WHERE username = ?",
-            (hash_password(new_pw), username),
-        )
-        await conn.commit()
+    await set_own_password(username, new_pw)
     return {"ok": True}
 
 
@@ -532,7 +511,6 @@ admin_router = APIRouter(prefix="/api/admin", tags=["admin"])
 @admin_router.get("/stats")
 async def admin_stats(_: str = Depends(require_admin)) -> Dict[str, Any]:
     import datetime as _dt
-    from app.config.data import AGENTS_DIR
 
     async with open_db() as conn:
         u = await conn.fetchone(
@@ -582,8 +560,8 @@ async def admin_stats(_: str = Depends(require_admin)) -> Dict[str, Any]:
         except Exception:
             tokens_daily = []
 
-    agents_public = len(list(AGENTS_DIR.glob("public/*/config.json"))) if AGENTS_DIR.exists() else 0
-    agents_private = len(list(AGENTS_DIR.glob("private/*/config.json"))) if AGENTS_DIR.exists() else 0
+    agents_public = len(list(_AGENTS_DIR.glob("public/*/config.json"))) if _AGENTS_DIR.exists() else 0
+    agents_private = len(list(_AGENTS_DIR.glob("private/*/config.json"))) if _AGENTS_DIR.exists() else 0
 
     from app.config.session import WEBMAIL_URL
 
@@ -729,9 +707,7 @@ async def admin_delete_connection(
 
 @admin_router.get("/agents")
 async def admin_list_agents(_: str = Depends(require_admin)) -> List[Dict[str, Any]]:
-    from app.config.data import AGENTS_DIR
-    from app.storage.storage import AgentStorage
-    agents = AgentStorage(AGENTS_DIR).list(scope="all")
+    agents = _agents.list(scope="all")
     async with open_db() as conn:
         user_rows = await conn.fetchall("SELECT username, email FROM users")
         conn_rows = await conn.fetchall(
@@ -761,12 +737,7 @@ async def admin_update_agent(
     request: Request,
     _: str = Depends(require_admin),
 ) -> Dict[str, Any]:
-    import re as _re
-    import shutil
-    from app.config.data import AGENTS_DIR
-    from app.storage.storage import AgentStorage
-    store = AgentStorage(AGENTS_DIR)
-    agent = store.get(agent_id, scope="private")
+    agent = _agents.get(agent_id, scope="private")
     if not agent:
         raise HTTPException(status_code=404, detail="Agente no encontrado")
     payload = await request.json()
@@ -775,12 +746,10 @@ async def admin_update_agent(
     new_name = str(updated.get("name") or "").strip()
     if not new_name:
         raise HTTPException(status_code=400, detail="El nombre es obligatorio")
-    new_id = _re.sub(r"[^a-z0-9_\-]", "-", new_name.lower()).strip("-")
+    new_id = re.sub(r"[^a-z0-9_\-]", "-", new_name.lower()).strip("-")
     if new_id != agent_id:
-        old_dir = AGENTS_DIR / "private" / _re.sub(r"[^a-z0-9_\-]", "-", agent_id.lower()).strip("-")
-        if old_dir.exists():
-            shutil.rmtree(old_dir)
-    return store.save(updated, "private", owner_id=agent.get("owner_id"))
+        _agents.delete(agent_id, scope="private")
+    return _agents.save(updated, "private", owner_id=agent.get("owner_id"))
 
 
 @admin_router.delete("/agents/{agent_id}")
@@ -789,13 +758,9 @@ async def admin_delete_agent(
     scope: str = "private",
     _: str = Depends(require_admin),
 ) -> Dict[str, Any]:
-    import re as _re
-    import shutil
-    from app.config.data import AGENTS_DIR
     if scope not in ("public", "private"):
         raise HTTPException(status_code=400, detail="scope debe ser 'public' o 'private'")
-    safe_id = _re.sub(r"[^a-z0-9_\-]", "-", agent_id.lower()).strip("-")
-    agent_dir = AGENTS_DIR / scope / safe_id
+    agent_dir = _agents._dir(scope, agent_id)
     if not agent_dir.exists():
         raise HTTPException(status_code=404, detail="Agente no encontrado")
     shutil.rmtree(agent_dir)

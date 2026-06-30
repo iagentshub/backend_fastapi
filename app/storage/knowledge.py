@@ -11,6 +11,13 @@ from urllib.parse import urlparse
 from app.storage.db import open_db
 
 
+def _owner_filter(item_id: str, owner_id: Optional[str]) -> tuple[str, tuple]:
+    """Devuelve (fragmento WHERE, params) restringiendo por owner si se proporciona."""
+    if owner_id is not None:
+        return "id = ? AND owner_id = ?", (item_id, owner_id)
+    return "id = ?", (item_id,)
+
+
 # ── HTML text extractor ────────────────────────────────────────────────────────
 
 class _TextParser(HTMLParser):
@@ -129,17 +136,13 @@ class KnowledgeStorage:
             return [dict(r) for r in rows]
 
     async def get(self, item_id: str, owner_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+        cond, params = _owner_filter(item_id, owner_id)
         async with open_db() as conn:
-            if owner_id is not None:
-                row = await conn.fetchone(
-                    "SELECT * FROM knowledge_items WHERE id = ? AND owner_id = ?",
-                    (item_id, owner_id),
-                )
-            else:
-                row = await conn.fetchone(
-                    "SELECT * FROM knowledge_items WHERE id = ?",
-                    (item_id,),
-                )
+            row = await conn.fetchone(
+                f"SELECT id, owner_id, type, title, source, content, char_count, folder_id, created_at, updated_at "
+                f"FROM knowledge_items WHERE {cond}",
+                params,
+            )
             return dict(row) if row else None
 
     async def save(
@@ -165,55 +168,23 @@ class KnowledgeStorage:
         return await self.get(item_id)  # type: ignore[return-value]
 
     async def move(self, item_id: str, folder_id: Optional[str], owner_id: Optional[str]) -> bool:
+        cond, params = _owner_filter(item_id, owner_id)
         async with open_db() as conn:
-            if owner_id is not None:
-                exists = await conn.fetchone(
-                    "SELECT id FROM knowledge_items WHERE id = ? AND owner_id = ?",
-                    (item_id, owner_id),
-                )
-            else:
-                exists = await conn.fetchone(
-                    "SELECT id FROM knowledge_items WHERE id = ?",
-                    (item_id,),
-                )
-            if not exists:
+            if not await conn.fetchone(f"SELECT id FROM knowledge_items WHERE {cond}", params):
                 return False
-            if owner_id is not None:
-                await conn.execute(
-                    "UPDATE knowledge_items SET folder_id = ? WHERE id = ? AND owner_id = ?",
-                    (folder_id, item_id, owner_id),
-                )
-            else:
-                await conn.execute(
-                    "UPDATE knowledge_items SET folder_id = ? WHERE id = ?",
-                    (folder_id, item_id),
-                )
+            await conn.execute(
+                f"UPDATE knowledge_items SET folder_id = ? WHERE {cond}",
+                (folder_id, *params),
+            )
             await conn.commit()
             return True
 
     async def delete(self, item_id: str, owner_id: Optional[str]) -> bool:
+        cond, params = _owner_filter(item_id, owner_id)
         async with open_db() as conn:
-            if owner_id is not None:
-                exists = await conn.fetchone(
-                    "SELECT id FROM knowledge_items WHERE id = ? AND owner_id = ?",
-                    (item_id, owner_id),
-                )
-            else:
-                exists = await conn.fetchone(
-                    "SELECT id FROM knowledge_items WHERE id = ?",
-                    (item_id,),
-                )
-            if not exists:
+            if not await conn.fetchone(f"SELECT id FROM knowledge_items WHERE {cond}", params):
                 return False
-            if owner_id is not None:
-                await conn.execute(
-                    "DELETE FROM knowledge_items WHERE id = ? AND owner_id = ?",
-                    (item_id, owner_id),
-                )
-            else:
-                await conn.execute(
-                    "DELETE FROM knowledge_items WHERE id = ?", (item_id,)
-                )
+            await conn.execute(f"DELETE FROM knowledge_items WHERE {cond}", params)
             await conn.commit()
             return True
 
