@@ -6,7 +6,16 @@ import ipaddress
 import json
 import urllib.error
 import urllib.request
-from typing import TYPE_CHECKING, Any, AsyncGenerator, Dict, List, Optional, Protocol, runtime_checkable
+from typing import (
+    TYPE_CHECKING,
+    Any,
+    AsyncGenerator,
+    Dict,
+    List,
+    Optional,
+    Protocol,
+    runtime_checkable,
+)
 
 if TYPE_CHECKING:
     from app.models.agent import Agent
@@ -28,7 +37,9 @@ class _SkillStorage(Protocol):
 
 @runtime_checkable
 class _KnowledgeStorage(Protocol):
-    async def get(self, item_id: str, owner_id: Any = None) -> Optional[Dict[str, Any]]: ...
+    async def get(
+        self, item_id: str, owner_id: Any = None
+    ) -> Optional[Dict[str, Any]]: ...
 
 
 @runtime_checkable
@@ -201,7 +212,7 @@ async def stream_chat(
         if skill_storage is None:
             break
         for scope in ("public", "private"):
-            sk = skill_storage.get(scope, sid)
+            sk = await skill_storage.get(scope, sid)
             if sk:
                 system += (
                     f"\n\n## Skill: {sk.get('name', sid)}\n{sk.get('content', '')}"
@@ -220,7 +231,7 @@ async def stream_chat(
     # Memory injection
     if agent.use_memory and memory_storage is not None:
         mem_file = agent.memory_file or f"{agent.id}.md"
-        mem_content = memory_storage.get(mem_file)
+        mem_content = await memory_storage.get(mem_file)
         if mem_content and mem_content.strip():
             system += f"\n\n## Memoria del agente\n{mem_content}"
 
@@ -253,7 +264,9 @@ async def stream_chat(
             )
 
         elif conn_type == "claude":
-            url = (conn.get("url") or f"{PROVIDER_BASE_URLS['claude']}/messages").strip()
+            url = (
+                conn.get("url") or f"{PROVIDER_BASE_URLS['claude']}/messages"
+            ).strip()
             if not url.endswith("/messages"):
                 url = url.rstrip("/") + "/messages"
             payload = {
@@ -292,10 +305,17 @@ async def stream_chat(
             )
 
         else:
-            yield _sse({"type": "error", "message": f"Tipo de conexión '{conn_type}' no soportado"})
+            yield _sse(
+                {
+                    "type": "error",
+                    "message": f"Tipo de conexión '{conn_type}' no soportado",
+                }
+            )
             return
 
-        yield _sse({"type": "done", "reply": reply, "tokens": {"in": tok_in, "out": tok_out}})
+        yield _sse(
+            {"type": "done", "reply": reply, "tokens": {"in": tok_in, "out": tok_out}}
+        )
 
     except urllib.error.URLError as exc:
         yield _sse({"type": "error", "message": f"Error de conexión: {exc}"})
@@ -316,7 +336,7 @@ async def auto_update_memory(
     if not isinstance(agent, Agent):
         agent = Agent.from_dict(agent)
     mem_file = agent.memory_file or f"{agent.id}.md"
-    existing = memory_storage.get(mem_file) or ""
+    existing = await memory_storage.get(mem_file) or ""
 
     conv_lines: List[str] = []
     for m in history:
@@ -364,6 +384,6 @@ async def auto_update_memory(
                 except Exception:
                     pass
         if updated.strip():
-            memory_storage.save(mem_file, updated.strip())
+            await memory_storage.save(mem_file, updated.strip())
     except Exception:
         pass  # Los errores de memoria no deben afectar al usuario

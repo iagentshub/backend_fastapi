@@ -1,4 +1,5 @@
 """Rutas del catálogo social: visibilidad pública, exploración y stars."""
+
 from __future__ import annotations
 
 import json
@@ -17,8 +18,17 @@ from app.storage.storage import AgentStorage, ConnectionStorage, SkillStorage
 router = APIRouter(tags=["social"])
 
 CATEGORIES = [
-    "Coding", "Writing", "Research", "Data", "DevOps",
-    "Support", "Education", "Productivity", "Marketing", "Finance", "Other",
+    "Coding",
+    "Writing",
+    "Research",
+    "Data",
+    "DevOps",
+    "Support",
+    "Education",
+    "Productivity",
+    "Marketing",
+    "Finance",
+    "Other",
 ]
 
 _PUBLIC_VAL = True if IS_PG else 1
@@ -54,7 +64,18 @@ async def _upsert_social(
             "name=EXCLUDED.name, description=EXCLUDED.description, is_public=EXCLUDED.is_public, "
             "category=EXCLUDED.category, trial_missing_deps=EXCLUDED.trial_missing_deps, "
             "tags=EXCLUDED.tags, labels=EXCLUDED.labels, updated_at=now()",
-            (resource_type, resource_id, owner, name, description, bool(is_public), category, trial_missing_deps, tags, labels),
+            (
+                resource_type,
+                resource_id,
+                owner,
+                name,
+                description,
+                bool(is_public),
+                category,
+                trial_missing_deps,
+                tags,
+                labels,
+            ),
         )
     else:
         await conn.execute(
@@ -65,7 +86,18 @@ async def _upsert_social(
             "name=excluded.name, description=excluded.description, is_public=excluded.is_public, "
             "category=excluded.category, trial_missing_deps=excluded.trial_missing_deps, "
             "tags=excluded.tags, labels=excluded.labels, updated_at=excluded.updated_at",
-            (resource_type, resource_id, owner, name, description, is_public, category, trial_missing_deps, tags, labels),
+            (
+                resource_type,
+                resource_id,
+                owner,
+                name,
+                description,
+                is_public,
+                category,
+                trial_missing_deps,
+                tags,
+                labels,
+            ),
         )
 
 
@@ -99,9 +131,11 @@ async def set_agent_visibility(
 ) -> Dict[str, Any]:
     _check_category(body.category)
     if body.trial_missing_deps not in ("warn", "silent"):
-        raise HTTPException(status_code=422, detail="trial_missing_deps debe ser 'warn' o 'silent'")
+        raise HTTPException(
+            status_code=422, detail="trial_missing_deps debe ser 'warn' o 'silent'"
+        )
     agents = AgentStorage(_cfg.AGENTS_DIR)
-    agent = agents.get(agent_id, scope)
+    agent = await agents.get(agent_id, scope)
     if not agent:
         raise HTTPException(status_code=404, detail="Agente no encontrado")
     resource_labels = agent.get("labels") or ["private"]
@@ -110,7 +144,10 @@ async def set_agent_visibility(
     async with open_db() as conn:
         if body.is_public:
             await _upsert_social(
-                conn, "agent", agent_id, username,
+                conn,
+                "agent",
+                agent_id,
+                username,
                 agent.get("name", agent_id),
                 agent.get("description", ""),
                 body.category,
@@ -138,7 +175,7 @@ async def set_skill_visibility(
 ) -> Dict[str, Any]:
     _check_category(body.category)
     skills = SkillStorage(_cfg.SKILLS_DIR)
-    skill = skills.get(scope, skill_id)
+    skill = await skills.get(scope, skill_id)
     if not skill:
         raise HTTPException(status_code=404, detail="Skill no encontrada")
     resource_labels = skill.get("labels") or ["private"]
@@ -147,7 +184,10 @@ async def set_skill_visibility(
     async with open_db() as conn:
         if body.is_public:
             await _upsert_social(
-                conn, "skill", skill_id, username,
+                conn,
+                "skill",
+                skill_id,
+                username,
                 skill.get("name", skill_id),
                 skill.get("description", ""),
                 body.category,
@@ -184,9 +224,17 @@ async def set_knowledge_visibility(
         folder_name = row["name"]
         if body.is_public:
             await _upsert_social(
-                conn, "knowledge", folder_id, username,
-                folder_name, "", body.category, "warn",
-                "[]", 1, '["private"]',
+                conn,
+                "knowledge",
+                folder_id,
+                username,
+                folder_name,
+                "",
+                body.category,
+                "warn",
+                "[]",
+                1,
+                '["private"]',
             )
         else:
             await conn.execute(
@@ -283,12 +331,12 @@ async def explore_preview(
 
     if resource_type == "agent":
         agents = AgentStorage(_cfg.AGENTS_DIR)
-        agent = agents.get(resource_id)
+        agent = await agents.get(resource_id)
         if agent:
             skills_storage = SkillStorage(_cfg.SKILLS_DIR)
             skill_names = []
             for sid in agent.get("skills", []):
-                sk = skills_storage.get_any(sid)
+                sk = await skills_storage.get_any(sid)
                 if sk:
                     skill_names.append(sk.get("name", sid))
             knowledge_storage = KnowledgeStorage(_cfg.DB_FILE)
@@ -306,7 +354,7 @@ async def explore_preview(
 
     elif resource_type == "skill":
         skills_storage = SkillStorage(_cfg.SKILLS_DIR)
-        sk = skills_storage.get_any(resource_id)
+        sk = await skills_storage.get_any(resource_id)
         if sk:
             base["body"] = (sk.get("body") or "")[:3000]
             base["parameters"] = sk.get("parameters", [])
@@ -601,8 +649,15 @@ async def fork_knowledge(
                 "trial_missing_deps, fork_of_user, fork_of_id) "
                 "VALUES (?, ?, ?, ?, ?, FALSE, 'Other', 'warn', ?, ?) "
                 "ON CONFLICT DO NOTHING",
-                ("knowledge", new_id, username, new_title, source.get("source", ""),
-                 source_owner, source_id),
+                (
+                    "knowledge",
+                    new_id,
+                    username,
+                    new_title,
+                    source.get("source", ""),
+                    source_owner,
+                    source_id,
+                ),
             )
         else:
             await conn.execute(
@@ -610,8 +665,15 @@ async def fork_knowledge(
                 "(resource_type, resource_id, owner, name, description, is_public, category, "
                 "trial_missing_deps, fork_of_user, fork_of_id) "
                 "VALUES (?, ?, ?, ?, ?, 0, 'Other', 'warn', ?, ?)",
-                ("knowledge", new_id, username, new_title, source.get("source", ""),
-                 source_owner, source_id),
+                (
+                    "knowledge",
+                    new_id,
+                    username,
+                    new_title,
+                    source.get("source", ""),
+                    source_owner,
+                    source_id,
+                ),
             )
         await conn.commit()
     return {"ok": True, "knowledge_id": new_id, "name": new_title}
@@ -655,8 +717,15 @@ async def link_knowledge(
                 "trial_missing_deps, linked_to_user, linked_to_id) "
                 "VALUES (?, ?, ?, ?, ?, FALSE, 'Other', 'warn', ?, ?) "
                 "ON CONFLICT DO NOTHING",
-                ("knowledge", new_id, username, link_title, source.get("source", ""),
-                 source_owner, source_id),
+                (
+                    "knowledge",
+                    new_id,
+                    username,
+                    link_title,
+                    source.get("source", ""),
+                    source_owner,
+                    source_id,
+                ),
             )
         else:
             await conn.execute(
@@ -664,8 +733,15 @@ async def link_knowledge(
                 "(resource_type, resource_id, owner, name, description, is_public, category, "
                 "trial_missing_deps, linked_to_user, linked_to_id) "
                 "VALUES (?, ?, ?, ?, ?, 0, 'Other', 'warn', ?, ?)",
-                ("knowledge", new_id, username, link_title, source.get("source", ""),
-                 source_owner, source_id),
+                (
+                    "knowledge",
+                    new_id,
+                    username,
+                    link_title,
+                    source.get("source", ""),
+                    source_owner,
+                    source_id,
+                ),
             )
         await conn.commit()
     return {"ok": True, "knowledge_id": new_id, "name": link_title}
@@ -678,7 +754,7 @@ async def fork_agent(
     username: str = Depends(require_auth),
 ) -> Dict[str, Any]:
     agents = AgentStorage(_cfg.AGENTS_DIR)
-    source = agents.get(source_id, scope)
+    source = await agents.get(source_id, scope)
     if not source:
         raise HTTPException(status_code=404, detail="Agente no encontrado")
 
@@ -694,13 +770,14 @@ async def fork_agent(
 
     source_owner = source.get("owner_id") or ""
     fork_payload = {
-        k: v for k, v in source.items()
+        k: v
+        for k, v in source.items()
         if k not in ("id", "scope", "owner_id", "created_at", "updated_at")
     }
     fork_payload["name"] = f"Fork of {source.get('name', source_id)}"
 
     try:
-        result = agents.save(fork_payload, "private", owner_id=username)
+        result = await agents.save(fork_payload, "private", owner_id=username)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
@@ -709,7 +786,9 @@ async def fork_agent(
         if ol in fork_labels:
             fork_labels.remove(ol)
     fork_labels.append("fork")
-    result = agents.save({**result, "labels": fork_labels}, "private", owner_id=username)
+    result = await agents.save(
+        {**result, "labels": fork_labels}, "private", owner_id=username
+    )
 
     new_id = result["id"]
     fork_name = result["name"]
@@ -723,8 +802,16 @@ async def fork_agent(
                 "trial_missing_deps, fork_of_user, fork_of_id, tags) "
                 "VALUES (?, ?, ?, ?, ?, FALSE, 'Other', 'warn', ?, ?, ?) "
                 "ON CONFLICT DO NOTHING",
-                ("agent", new_id, username, fork_name, source.get("description", ""),
-                 source_owner, source_id, fork_tags),
+                (
+                    "agent",
+                    new_id,
+                    username,
+                    fork_name,
+                    source.get("description", ""),
+                    source_owner,
+                    source_id,
+                    fork_tags,
+                ),
             )
         else:
             await conn.execute(
@@ -732,8 +819,16 @@ async def fork_agent(
                 "(resource_type, resource_id, owner, name, description, is_public, category, "
                 "trial_missing_deps, fork_of_user, fork_of_id, tags) "
                 "VALUES (?, ?, ?, ?, ?, 0, 'Other', 'warn', ?, ?, ?)",
-                ("agent", new_id, username, fork_name, source.get("description", ""),
-                 source_owner, source_id, fork_tags),
+                (
+                    "agent",
+                    new_id,
+                    username,
+                    fork_name,
+                    source.get("description", ""),
+                    source_owner,
+                    source_id,
+                    fork_tags,
+                ),
             )
         await conn.commit()
     return {"ok": True, "agent_id": new_id, "name": fork_name}
@@ -746,7 +841,7 @@ async def fork_skill(
     username: str = Depends(require_auth),
 ) -> Dict[str, Any]:
     skills = SkillStorage(_cfg.SKILLS_DIR)
-    source = skills.get(scope, source_id)
+    source = await skills.get(scope, source_id)
     if not source:
         raise HTTPException(status_code=404, detail="Skill no encontrada")
 
@@ -761,11 +856,13 @@ async def fork_skill(
                 raise HTTPException(status_code=403, detail="La skill no es pública")
 
     source_owner = source.get("owner_id") or ""
-    fork_payload = {k: v for k, v in source.items() if k not in ("id", "scope", "owner_id")}
+    fork_payload = {
+        k: v for k, v in source.items() if k not in ("id", "scope", "owner_id")
+    }
     fork_payload["name"] = f"Fork of {source.get('name', source_id)}"
 
     try:
-        result = skills.save("private", fork_payload, owner_id=username)
+        result = await skills.save("private", fork_payload, owner_id=username)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
@@ -774,7 +871,9 @@ async def fork_skill(
         if ol in fork_labels:
             fork_labels.remove(ol)
     fork_labels.append("fork")
-    result = skills.save("private", {**result, "labels": fork_labels}, owner_id=username)
+    result = await skills.save(
+        "private", {**result, "labels": fork_labels}, owner_id=username
+    )
 
     new_id = result["id"]
     fork_name = result["name"]
@@ -788,8 +887,16 @@ async def fork_skill(
                 "trial_missing_deps, fork_of_user, fork_of_id, tags) "
                 "VALUES (?, ?, ?, ?, ?, FALSE, 'Other', 'warn', ?, ?, ?) "
                 "ON CONFLICT DO NOTHING",
-                ("skill", new_id, username, fork_name, source.get("description", ""),
-                 source_owner, source_id, fork_tags),
+                (
+                    "skill",
+                    new_id,
+                    username,
+                    fork_name,
+                    source.get("description", ""),
+                    source_owner,
+                    source_id,
+                    fork_tags,
+                ),
             )
         else:
             await conn.execute(
@@ -797,8 +904,16 @@ async def fork_skill(
                 "(resource_type, resource_id, owner, name, description, is_public, category, "
                 "trial_missing_deps, fork_of_user, fork_of_id, tags) "
                 "VALUES (?, ?, ?, ?, ?, 0, 'Other', 'warn', ?, ?, ?)",
-                ("skill", new_id, username, fork_name, source.get("description", ""),
-                 source_owner, source_id, fork_tags),
+                (
+                    "skill",
+                    new_id,
+                    username,
+                    fork_name,
+                    source.get("description", ""),
+                    source_owner,
+                    source_id,
+                    fork_tags,
+                ),
             )
         await conn.commit()
     return {"ok": True, "skill_id": new_id, "name": fork_name}
@@ -811,7 +926,7 @@ async def link_agent(
     username: str = Depends(require_auth),
 ) -> Dict[str, Any]:
     agents = AgentStorage(_cfg.AGENTS_DIR)
-    source = agents.get(source_id, scope)
+    source = await agents.get(source_id, scope)
     if not source:
         raise HTTPException(status_code=404, detail="Agente no encontrado")
 
@@ -827,7 +942,8 @@ async def link_agent(
 
     source_owner = source.get("owner_id") or ""
     link_payload = {
-        k: v for k, v in source.items()
+        k: v
+        for k, v in source.items()
         if k not in ("id", "scope", "owner_id", "created_at", "updated_at")
     }
     link_payload["name"] = f"Linked: {source.get('name', source_id)}"
@@ -839,7 +955,7 @@ async def link_agent(
     link_payload["labels"] = link_labels
 
     try:
-        result = agents.save(link_payload, "private", owner_id=username)
+        result = await agents.save(link_payload, "private", owner_id=username)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
@@ -855,8 +971,16 @@ async def link_agent(
                 "trial_missing_deps, linked_to_user, linked_to_id, tags) "
                 "VALUES (?, ?, ?, ?, ?, FALSE, 'Other', 'warn', ?, ?, ?) "
                 "ON CONFLICT DO NOTHING",
-                ("agent", new_id, username, link_name, source.get("description", ""),
-                 source_owner, source_id, link_tags),
+                (
+                    "agent",
+                    new_id,
+                    username,
+                    link_name,
+                    source.get("description", ""),
+                    source_owner,
+                    source_id,
+                    link_tags,
+                ),
             )
         else:
             await conn.execute(
@@ -864,8 +988,16 @@ async def link_agent(
                 "(resource_type, resource_id, owner, name, description, is_public, category, "
                 "trial_missing_deps, linked_to_user, linked_to_id, tags) "
                 "VALUES (?, ?, ?, ?, ?, 0, 'Other', 'warn', ?, ?, ?)",
-                ("agent", new_id, username, link_name, source.get("description", ""),
-                 source_owner, source_id, link_tags),
+                (
+                    "agent",
+                    new_id,
+                    username,
+                    link_name,
+                    source.get("description", ""),
+                    source_owner,
+                    source_id,
+                    link_tags,
+                ),
             )
         await conn.commit()
     return {"ok": True, "agent_id": new_id, "name": link_name}
@@ -878,7 +1010,7 @@ async def link_skill(
     username: str = Depends(require_auth),
 ) -> Dict[str, Any]:
     skills = SkillStorage(_cfg.SKILLS_DIR)
-    source = skills.get(scope, source_id)
+    source = await skills.get(scope, source_id)
     if not source:
         raise HTTPException(status_code=404, detail="Skill no encontrada")
 
@@ -893,7 +1025,9 @@ async def link_skill(
                 raise HTTPException(status_code=403, detail="La skill no es pública")
 
     source_owner = source.get("owner_id") or ""
-    link_payload = {k: v for k, v in source.items() if k not in ("id", "scope", "owner_id")}
+    link_payload = {
+        k: v for k, v in source.items() if k not in ("id", "scope", "owner_id")
+    }
     link_payload["name"] = f"Linked: {source.get('name', source_id)}"
     link_labels = list(link_payload.get("labels") or ["private"])
     for ol in ("fork", "linked"):
@@ -903,7 +1037,7 @@ async def link_skill(
     link_payload["labels"] = link_labels
 
     try:
-        result = skills.save("private", link_payload, owner_id=username)
+        result = await skills.save("private", link_payload, owner_id=username)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
 
@@ -919,8 +1053,16 @@ async def link_skill(
                 "trial_missing_deps, linked_to_user, linked_to_id, tags) "
                 "VALUES (?, ?, ?, ?, ?, FALSE, 'Other', 'warn', ?, ?, ?) "
                 "ON CONFLICT DO NOTHING",
-                ("skill", new_id, username, link_name, source.get("description", ""),
-                 source_owner, source_id, link_tags),
+                (
+                    "skill",
+                    new_id,
+                    username,
+                    link_name,
+                    source.get("description", ""),
+                    source_owner,
+                    source_id,
+                    link_tags,
+                ),
             )
         else:
             await conn.execute(
@@ -928,8 +1070,16 @@ async def link_skill(
                 "(resource_type, resource_id, owner, name, description, is_public, category, "
                 "trial_missing_deps, linked_to_user, linked_to_id, tags) "
                 "VALUES (?, ?, ?, ?, ?, 0, 'Other', 'warn', ?, ?, ?)",
-                ("skill", new_id, username, link_name, source.get("description", ""),
-                 source_owner, source_id, link_tags),
+                (
+                    "skill",
+                    new_id,
+                    username,
+                    link_name,
+                    source.get("description", ""),
+                    source_owner,
+                    source_id,
+                    link_tags,
+                ),
             )
         await conn.commit()
     return {"ok": True, "skill_id": new_id, "name": link_name}
@@ -941,7 +1091,7 @@ async def sync_linked_agent(
     username: str = Depends(require_auth),
 ) -> Dict[str, Any]:
     agents = AgentStorage(_cfg.AGENTS_DIR)
-    local = agents.get(agent_id, "private")
+    local = await agents.get(agent_id, "private")
     if not local or local.get("owner_id") != username:
         raise HTTPException(status_code=404, detail="Agente no encontrado")
 
@@ -953,16 +1103,25 @@ async def sync_linked_agent(
         )
 
     if not row or not row[0]:
-        raise HTTPException(status_code=400, detail="El agente no tiene enlace a un original")
+        raise HTTPException(
+            status_code=400, detail="El agente no tiene enlace a un original"
+        )
 
     original_id = row[0]
-    original = agents.get(original_id, "public")
+    original = await agents.get(original_id, "public")
     if not original:
-        raise HTTPException(status_code=404, detail="El agente original no encontrado o ya no es público")
+        raise HTTPException(
+            status_code=404,
+            detail="El agente original no encontrado o ya no es público",
+        )
 
-    sync_fields = {k: v for k, v in original.items() if k not in ("id", "scope", "owner_id", "created_at", "name")}
+    sync_fields = {
+        k: v
+        for k, v in original.items()
+        if k not in ("id", "scope", "owner_id", "created_at", "name")
+    }
     updated = {**local, **sync_fields}
-    agents.save(updated, "private", owner_id=username)
+    await agents.save(updated, "private", owner_id=username)
 
     return {"ok": True, "synced_from": original_id}
 
@@ -973,7 +1132,7 @@ async def sync_linked_skill(
     username: str = Depends(require_auth),
 ) -> Dict[str, Any]:
     skills = SkillStorage(_cfg.SKILLS_DIR)
-    local = skills.get("private", skill_id)
+    local = await skills.get("private", skill_id)
     if not local or local.get("owner_id") != username:
         raise HTTPException(status_code=404, detail="Skill no encontrada")
 
@@ -985,16 +1144,24 @@ async def sync_linked_skill(
         )
 
     if not row or not row[0]:
-        raise HTTPException(status_code=400, detail="La skill no tiene enlace a un original")
+        raise HTTPException(
+            status_code=400, detail="La skill no tiene enlace a un original"
+        )
 
     original_id = row[0]
-    original = skills.get("public", original_id)
+    original = await skills.get("public", original_id)
     if not original:
-        raise HTTPException(status_code=404, detail="La skill original no encontrada o ya no es pública")
+        raise HTTPException(
+            status_code=404, detail="La skill original no encontrada o ya no es pública"
+        )
 
-    sync_fields = {k: v for k, v in original.items() if k not in ("id", "scope", "owner_id", "name")}
+    sync_fields = {
+        k: v
+        for k, v in original.items()
+        if k not in ("id", "scope", "owner_id", "name")
+    }
     updated = {**local, **sync_fields}
-    skills.save("private", updated, owner_id=username)
+    await skills.save("private", updated, owner_id=username)
 
     return {"ok": True, "synced_from": original_id}
 
@@ -1016,13 +1183,15 @@ async def try_agent(
             ("agent", agent_id, _PUBLIC_VAL),
         )
     if not row:
-        raise HTTPException(status_code=404, detail="Agente no encontrado o no es público")
+        raise HTTPException(
+            status_code=404, detail="Agente no encontrado o no es público"
+        )
 
     trial_missing_deps: str = row["trial_missing_deps"] or "warn"
 
-    # Step 2: Get agent config from file storage
+    # Step 2: Get agent config from DB storage
     agents = AgentStorage(_cfg.AGENTS_DIR)
-    agent_data = agents.get(agent_id, scope)
+    agent_data = await agents.get(agent_id, scope)
     if not agent_data:
         raise HTTPException(status_code=404, detail="Agente no encontrado")
 
@@ -1041,10 +1210,10 @@ async def try_agent(
 
     accessible: List[str] = []
     for skill_id in agent_skills:
-        if skills_storage.get("public", skill_id):
+        if await skills_storage.get("public", skill_id):
             accessible.append(skill_id)
             continue
-        priv = skills_storage.get("private", skill_id)
+        priv = await skills_storage.get("private", skill_id)
         if priv and priv.get("owner_id") == ctx.workspace_id:
             accessible.append(skill_id)
             continue
@@ -1133,7 +1302,7 @@ async def convert_agent_link_to_fork(
         await conn.commit()
 
     agents = AgentStorage(_cfg.AGENTS_DIR)
-    agent_data = agents.get(agent_id, "private")
+    agent_data = await agents.get(agent_id, "private")
     if agent_data:
         updated = dict(agent_data)
         updated.pop("linked_to_user", None)
@@ -1144,7 +1313,7 @@ async def convert_agent_link_to_fork(
         if "fork" not in labels:
             labels.append("fork")
         updated["labels"] = labels
-        agents.save(updated, "private", owner_id=username)
+        await agents.save(updated, "private", owner_id=username)
 
     return {"ok": True, "agent_id": agent_id}
 
@@ -1180,7 +1349,7 @@ async def convert_skill_link_to_fork(
         await conn.commit()
 
     skills = SkillStorage(_cfg.SKILLS_DIR)
-    skill_data = skills.get("private", skill_id)
+    skill_data = await skills.get("private", skill_id)
     if skill_data:
         updated = dict(skill_data)
         updated.pop("linked_to_user", None)
@@ -1191,6 +1360,6 @@ async def convert_skill_link_to_fork(
         if "fork" not in labels_s:
             labels_s.append("fork")
         updated["labels"] = labels_s
-        skills.save("private", updated, owner_id=username)
+        await skills.save("private", updated, owner_id=username)
 
     return {"ok": True, "skill_id": skill_id}

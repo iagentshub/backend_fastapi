@@ -1,8 +1,8 @@
 """Auth routes — shared dependencies and session endpoints."""
+
 from __future__ import annotations
 
 import re
-import shutil
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response
@@ -50,18 +50,21 @@ from app.storage.workspaces import WorkspaceStorage as _WorkspaceStorage
 _groups = _GroupStorage(_DB_FILE)
 _workspaces = _WorkspaceStorage(_DB_FILE)
 _agents = _AgentStorage(_AGENTS_DIR)
-_register_limiter = RateLimiter(calls=REGISTER_MAX, window=REGISTER_WINDOW, key_func=_client_ip)
+_register_limiter = RateLimiter(
+    calls=REGISTER_MAX, window=REGISTER_WINDOW, key_func=_client_ip
+)
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
+
 class WorkspaceContext:
     """Contexto de request con usuario y workspace activo."""
+
     __slots__ = ("user", "workspace_id")
 
     def __init__(self, user: str, workspace_id: str) -> None:
         self.user = user
         self.workspace_id = workspace_id
-
 
 
 def require_auth(ga_token: Optional[str] = Cookie(default=None)) -> str:
@@ -74,7 +77,9 @@ def require_auth(ga_token: Optional[str] = Cookie(default=None)) -> str:
     return username
 
 
-async def require_workspace(ga_token: Optional[str] = Cookie(default=None)) -> WorkspaceContext:
+async def require_workspace(
+    ga_token: Optional[str] = Cookie(default=None),
+) -> WorkspaceContext:
     """Dependency: validates session token and returns WorkspaceContext(user, workspace_id).
 
     Defense-in-depth: even with a valid JWT, verify that the user still belongs to the
@@ -86,7 +91,9 @@ async def require_workspace(ga_token: Optional[str] = Cookie(default=None)) -> W
     if not username:
         raise HTTPException(status_code=401, detail="Token inválido o expirado")
     # Personal workspace: id == username, always accessible
-    if workspace_id != username and not await _workspaces.can_access(workspace_id, username):
+    if workspace_id != username and not await _workspaces.can_access(
+        workspace_id, username
+    ):
         # Membership revoked or token tampered — fall back to personal workspace
         workspace_id = username
     return WorkspaceContext(user=username, workspace_id=workspace_id)
@@ -103,7 +110,10 @@ async def register(request: Request, response: Response) -> Dict[str, Any]:
     if REGISTRATION_MODE == "closed":
         raise HTTPException(status_code=403, detail="El registro está desactivado.")
     if REGISTRATION_MODE == "invite":
-        raise HTTPException(status_code=403, detail="El registro requiere invitación de un administrador.")
+        raise HTTPException(
+            status_code=403,
+            detail="El registro requiere invitación de un administrador.",
+        )
     await _register_limiter(request)
     body = await request.json()
     email = str(body.get("email") or "").strip().lower()
@@ -116,7 +126,9 @@ async def register(request: Request, response: Response) -> Dict[str, Any]:
     if not email or not re.match(r"^[^\s@]+@[^\s@]+\.[^\s@]+$", email):
         raise HTTPException(status_code=400, detail="Email inválido")
     if len(password) < 8:
-        raise HTTPException(status_code=400, detail="La contraseña debe tener al menos 8 caracteres")
+        raise HTTPException(
+            status_code=400, detail="La contraseña debe tener al menos 8 caracteres"
+        )
 
     try:
         username, verify_token = await register_user_email(
@@ -136,7 +148,14 @@ async def register(request: Request, response: Response) -> Dict[str, Any]:
         return {"ok": True, "email": email, "pending_verification": True}
 
     token = create_token(username)
-    response.set_cookie("ga_token", token, httponly=True, samesite="lax", secure=SECURE_COOKIES, max_age=43200)
+    response.set_cookie(
+        "ga_token",
+        token,
+        httponly=True,
+        samesite="lax",
+        secure=SECURE_COOKIES,
+        max_age=43200,
+    )
     return {"ok": True, "email": email, "pending_verification": False}
 
 
@@ -155,9 +174,19 @@ async def login(request: Request, response: Response) -> Dict[str, Any]:
     if not user.get("is_active", 1):
         raise HTTPException(status_code=403, detail="Cuenta desactivada")
     if EMAIL_VERIFY_ENABLED and not user.get("is_verified", 1):
-        raise HTTPException(status_code=403, detail="Cuenta pendiente de verificación. Revisa tu correo.")
+        raise HTTPException(
+            status_code=403,
+            detail="Cuenta pendiente de verificación. Revisa tu correo.",
+        )
     token = create_token(user["username"])
-    response.set_cookie("ga_token", token, httponly=True, samesite="lax", secure=SECURE_COOKIES, max_age=43200)
+    response.set_cookie(
+        "ga_token",
+        token,
+        httponly=True,
+        samesite="lax",
+        secure=SECURE_COOKIES,
+        max_age=43200,
+    )
     return {"ok": True, "username": user["username"]}
 
 
@@ -165,18 +194,35 @@ async def login(request: Request, response: Response) -> Dict[str, Any]:
 async def verify_email(token: str, response: Response) -> Dict[str, Any]:
     username = await verify_email_token(token)
     if not username:
-        raise HTTPException(status_code=400, detail="Enlace de verificación inválido o expirado")
+        raise HTTPException(
+            status_code=400, detail="Enlace de verificación inválido o expirado"
+        )
     auth_token = create_token(username)
-    response.set_cookie("ga_token", auth_token, httponly=True, samesite="lax", secure=SECURE_COOKIES, max_age=43200)
+    response.set_cookie(
+        "ga_token",
+        auth_token,
+        httponly=True,
+        samesite="lax",
+        secure=SECURE_COOKIES,
+        max_age=43200,
+    )
     return {"ok": True, "username": username}
 
 
 @router.post("/guest")
 async def guest_login(response: Response) -> Dict[str, Any]:
     from app.storage.guest import new_guest_id
+
     guest_id = new_guest_id()
     token = create_token(guest_id)
-    response.set_cookie("ga_token", token, httponly=True, samesite="lax", secure=SECURE_COOKIES, max_age=43200)
+    response.set_cookie(
+        "ga_token",
+        token,
+        httponly=True,
+        samesite="lax",
+        secure=SECURE_COOKIES,
+        max_age=43200,
+    )
     return {"ok": True, "username": guest_id}
 
 
@@ -190,6 +236,7 @@ async def logout(response: Response) -> Dict[str, Any]:
 async def me(ctx: WorkspaceContext = Depends(require_workspace)) -> Dict[str, Any]:
     from app.storage.guest import is_guest
     from app.config.session import WEBMAIL_URL
+
     username = ctx.user
     workspace_id = ctx.workspace_id
 
@@ -243,7 +290,9 @@ async def reset_password(request: Request) -> Dict[str, Any]:
     if not token or not new_password:
         raise HTTPException(status_code=400, detail="Token y contraseña requeridos")
     if len(new_password) < 8:
-        raise HTTPException(status_code=400, detail="La contraseña debe tener al menos 8 caracteres")
+        raise HTTPException(
+            status_code=400, detail="La contraseña debe tener al menos 8 caracteres"
+        )
     if not await consume_reset_token(token, new_password):
         raise HTTPException(status_code=400, detail="Enlace inválido o expirado")
     return {"ok": True}
@@ -336,6 +385,7 @@ _ALLOWED_AVATAR_EXT = {".jpg", ".jpeg", ".png", ".webp"}
 
 async def _get_social_fields(username: str) -> Dict[str, Any]:
     import json
+
     async with open_db() as conn:
         row = await conn.fetchone(
             "SELECT avatar, bio, languages, email_public, github, cv, created_at "
@@ -344,14 +394,20 @@ async def _get_social_fields(username: str) -> Dict[str, Any]:
         )
         if not row:
             return {}
-        followers_count = await conn.fetchval(
-            "SELECT COUNT(*) FROM user_follows WHERE following = ?",
-            (username,),
-        ) or 0
-        following_count = await conn.fetchval(
-            "SELECT COUNT(*) FROM user_follows WHERE follower = ?",
-            (username,),
-        ) or 0
+        followers_count = (
+            await conn.fetchval(
+                "SELECT COUNT(*) FROM user_follows WHERE following = ?",
+                (username,),
+            )
+            or 0
+        )
+        following_count = (
+            await conn.fetchval(
+                "SELECT COUNT(*) FROM user_follows WHERE follower = ?",
+                (username,),
+            )
+            or 0
+        )
     try:
         langs = json.loads(row[2] or "[]")
     except Exception:
@@ -410,7 +466,9 @@ async def upload_avatar(
 
     ext = _Path(file.filename or "").suffix.lower()
     if ext not in _ALLOWED_AVATAR_EXT:
-        raise HTTPException(status_code=400, detail="Formato no permitido. Usa jpg, png o webp.")
+        raise HTTPException(
+            status_code=400, detail="Formato no permitido. Usa jpg, png o webp."
+        )
 
     data = await file.read()
     if len(data) > _MAX_AVATAR_BYTES:
@@ -476,7 +534,9 @@ async def get_avatar(username: str, _: str = Depends(require_auth)):
     from fastapi.responses import Response
 
     async with open_db() as conn:
-        row = await conn.fetchone("SELECT avatar FROM users WHERE username=?", (username,))
+        row = await conn.fetchone(
+            "SELECT avatar FROM users WHERE username=?", (username,)
+        )
 
     if not row or not row[0]:
         return Response(status_code=204)
@@ -524,8 +584,12 @@ async def admin_stats(_: str = Depends(require_admin)) -> Dict[str, Any]:
         )
         conns_total, tokens_in, tokens_out = (c[0] or 0, c[1] or 0, c[2] or 0)
 
-        knowledge_total = (await conn.fetchval("SELECT COUNT(*) FROM knowledge_items")) or 0
-        conversations_total = (await conn.fetchval("SELECT COUNT(*) FROM conversations")) or 0
+        knowledge_total = (
+            await conn.fetchval("SELECT COUNT(*) FROM knowledge_items")
+        ) or 0
+        conversations_total = (
+            await conn.fetchval("SELECT COUNT(*) FROM conversations")
+        ) or 0
 
         cutoff = (_dt.date.today() - _dt.timedelta(days=13)).isoformat()
         today = _dt.date.today().isoformat()
@@ -560,8 +624,16 @@ async def admin_stats(_: str = Depends(require_admin)) -> Dict[str, Any]:
         except Exception:
             tokens_daily = []
 
-    agents_public = len(list(_AGENTS_DIR.glob("public/*/config.json"))) if _AGENTS_DIR.exists() else 0
-    agents_private = len(list(_AGENTS_DIR.glob("private/*/config.json"))) if _AGENTS_DIR.exists() else 0
+    agents_public = (
+        len(list(_AGENTS_DIR.glob("public/*/config.json")))
+        if _AGENTS_DIR.exists()
+        else 0
+    )
+    agents_private = (
+        len(list(_AGENTS_DIR.glob("private/*/config.json")))
+        if _AGENTS_DIR.exists()
+        else 0
+    )
 
     from app.config.session import WEBMAIL_URL
 
@@ -603,7 +675,12 @@ async def admin_list_users(
         u["tokens_out"] = tokens["tokens_out"]
     if q:
         q_low = q.lower()
-        users = [u for u in users if q_low in (u.get("username") or "").lower() or q_low in (u.get("email") or "").lower()]
+        users = [
+            u
+            for u in users
+            if q_low in (u.get("username") or "").lower()
+            or q_low in (u.get("email") or "").lower()
+        ]
     if role:
         users = [u for u in users if u.get("role") == role]
     if active is not None:
@@ -622,7 +699,9 @@ async def admin_patch_user(
     admin: str = Depends(require_admin),
 ) -> Dict[str, Any]:
     if username == admin:
-        raise HTTPException(status_code=400, detail="No puedes modificar tu propia cuenta")
+        raise HTTPException(
+            status_code=400, detail="No puedes modificar tu propia cuenta"
+        )
     body = await request.json()
     updates: Dict[str, Any] = {}
     if "is_active" in body:
@@ -633,7 +712,9 @@ async def admin_patch_user(
         updates["role"] = body["role"]
     new_pw = str(body.get("password") or "").strip()
     if new_pw and len(new_pw) < 4:
-        raise HTTPException(status_code=400, detail="La contraseña debe tener al menos 4 caracteres")
+        raise HTTPException(
+            status_code=400, detail="La contraseña debe tener al menos 4 caracteres"
+        )
     if not updates and not new_pw:
         raise HTTPException(status_code=400, detail="Sin cambios")
     if updates and not await admin_update_user(username, **updates):
@@ -654,14 +735,18 @@ async def admin_delete_user(
     username: str, admin: str = Depends(require_admin)
 ) -> Dict[str, Any]:
     if username == admin:
-        raise HTTPException(status_code=400, detail="No puedes eliminar tu propia cuenta")
+        raise HTTPException(
+            status_code=400, detail="No puedes eliminar tu propia cuenta"
+        )
     if not await delete_user(username):
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
     return {"ok": True}
 
 
 @admin_router.get("/connections")
-async def admin_list_connections(_: str = Depends(require_admin)) -> List[Dict[str, Any]]:
+async def admin_list_connections(
+    _: str = Depends(require_admin),
+) -> List[Dict[str, Any]]:
     import json as _json
 
     async with open_db() as conn:
@@ -673,24 +758,34 @@ async def admin_list_connections(_: str = Depends(require_admin)) -> List[Dict[s
     email_map = {r[0]: r[1] for r in email_rows}
     result = []
     for row in rows:
-        d = dict(row) if isinstance(row, dict) else {
-            "id": row[0], "owner_id": row[1], "data": row[2],
-            "tokens_in": row[3], "tokens_out": row[4], "created_at": row[5],
-        }
+        d = (
+            dict(row)
+            if isinstance(row, dict)
+            else {
+                "id": row[0],
+                "owner_id": row[1],
+                "data": row[2],
+                "tokens_in": row[3],
+                "tokens_out": row[4],
+                "created_at": row[5],
+            }
+        )
         try:
             data = _json.loads(d.get("data") or "{}")
         except Exception:
             data = {}
-        result.append({
-            "id": d["id"],
-            "owner_id": d["owner_id"],
-            "owner_email": email_map.get(d["owner_id"], d["owner_id"]),
-            "name": data.get("name", d["id"]),
-            "type": data.get("type", ""),
-            "tokens_in": d["tokens_in"],
-            "tokens_out": d["tokens_out"],
-            "created_at": d["created_at"],
-        })
+        result.append(
+            {
+                "id": d["id"],
+                "owner_id": d["owner_id"],
+                "owner_email": email_map.get(d["owner_id"], d["owner_id"]),
+                "name": data.get("name", d["id"]),
+                "type": data.get("type", ""),
+                "tokens_in": d["tokens_in"],
+                "tokens_out": d["tokens_out"],
+                "created_at": d["created_at"],
+            }
+        )
     return result
 
 
@@ -700,6 +795,7 @@ async def admin_delete_connection(
 ) -> Dict[str, Any]:
     from app.config.data import DB_FILE
     from app.storage.storage import ConnectionStorage
+
     if not await ConnectionStorage(DB_FILE).delete(conn_id, owner_id=None):
         raise HTTPException(status_code=404, detail="Conexión no encontrada")
     return {"ok": True}
@@ -707,14 +803,17 @@ async def admin_delete_connection(
 
 @admin_router.get("/agents")
 async def admin_list_agents(_: str = Depends(require_admin)) -> List[Dict[str, Any]]:
-    agents = _agents.list(scope="all")
+    agents = await _agents.list(scope="all")
     async with open_db() as conn:
         user_rows = await conn.fetchall("SELECT username, email FROM users")
         conn_rows = await conn.fetchall(
             "SELECT id, owner_id, tokens_in, tokens_out FROM connections"
         )
     email_map = {r[0]: r[1] for r in user_rows}
-    conn_data = {r[0]: {"owner_id": r[1], "tokens_in": r[2], "tokens_out": r[3]} for r in conn_rows}
+    conn_data = {
+        r[0]: {"owner_id": r[1], "tokens_in": r[2], "tokens_out": r[3]}
+        for r in conn_rows
+    }
     for a in agents:
         conn_id = a.get("connection_id")
         owner = a.get("owner_id")
@@ -737,7 +836,7 @@ async def admin_update_agent(
     request: Request,
     _: str = Depends(require_admin),
 ) -> Dict[str, Any]:
-    agent = _agents.get(agent_id, scope="private")
+    agent = await _agents.get(agent_id, scope="private")
     if not agent:
         raise HTTPException(status_code=404, detail="Agente no encontrado")
     payload = await request.json()
@@ -748,8 +847,8 @@ async def admin_update_agent(
         raise HTTPException(status_code=400, detail="El nombre es obligatorio")
     new_id = re.sub(r"[^a-z0-9_\-]", "-", new_name.lower()).strip("-")
     if new_id != agent_id:
-        _agents.delete(agent_id, scope="private")
-    return _agents.save(updated, "private", owner_id=agent.get("owner_id"))
+        await _agents.delete(agent_id, scope="private")
+    return await _agents.save(updated, "private", owner_id=agent.get("owner_id"))
 
 
 @admin_router.delete("/agents/{agent_id}")
@@ -759,11 +858,12 @@ async def admin_delete_agent(
     _: str = Depends(require_admin),
 ) -> Dict[str, Any]:
     if scope not in ("public", "private"):
-        raise HTTPException(status_code=400, detail="scope debe ser 'public' o 'private'")
-    agent_dir = _agents._dir(scope, agent_id)
-    if not agent_dir.exists():
+        raise HTTPException(
+            status_code=400, detail="scope debe ser 'public' o 'private'"
+        )
+    deleted = await _agents.delete(agent_id, scope=scope)
+    if not deleted:
         raise HTTPException(status_code=404, detail="Agente no encontrado")
-    shutil.rmtree(agent_dir)
     return {"ok": True}
 
 
@@ -771,12 +871,15 @@ async def admin_delete_agent(
 async def admin_list_knowledge(_: str = Depends(require_admin)) -> List[Dict[str, Any]]:
     from app.config.data import DB_FILE
     from app.storage.knowledge import KnowledgeStorage
+
     async with open_db() as conn:
         user_rows = await conn.fetchall("SELECT username, email FROM users")
     email_map = {r[0]: r[1] for r in user_rows}
     items = await KnowledgeStorage(DB_FILE).list(owner_id=None)
     for item in items:
-        item["owner_email"] = email_map.get(item.get("owner_id", ""), item.get("owner_id", ""))
+        item["owner_email"] = email_map.get(
+            item.get("owner_id", ""), item.get("owner_id", "")
+        )
         item.pop("content", None)
     return items
 
@@ -787,6 +890,7 @@ async def admin_delete_knowledge(
 ) -> Dict[str, Any]:
     from app.config.data import DB_FILE
     from app.storage.knowledge import KnowledgeStorage
+
     if not await KnowledgeStorage(DB_FILE).delete(item_id, owner_id=None):
         raise HTTPException(status_code=404, detail="Elemento no encontrado")
     return {"ok": True}
@@ -806,9 +910,13 @@ async def admin_list_groups(_: str = Depends(require_admin)) -> List[Dict[str, A
         )
     return [
         {
-            "id": r[0], "workspace_id": r[1], "name": r[2],
-            "created_by": r[3], "created_at": r[4],
-            "member_count": r[5], "resource_count": r[6],
+            "id": r[0],
+            "workspace_id": r[1],
+            "name": r[2],
+            "created_by": r[3],
+            "created_at": r[4],
+            "member_count": r[5],
+            "resource_count": r[6],
         }
         for r in rows
     ]
@@ -825,7 +933,9 @@ async def admin_delete_group(
 
 
 @admin_router.get("/workspaces")
-async def admin_list_workspaces(_: str = Depends(require_admin)) -> List[Dict[str, Any]]:
+async def admin_list_workspaces(
+    _: str = Depends(require_admin),
+) -> List[Dict[str, Any]]:
     import json as _json
     from app.config.data import AGENTS_DIR
 
@@ -845,7 +955,10 @@ async def admin_list_workspaces(_: str = Depends(require_admin)) -> List[Dict[st
             "SELECT owner_id, COUNT(*), COALESCE(SUM(tokens_in), 0), COALESCE(SUM(tokens_out), 0) "
             "FROM connections GROUP BY owner_id"
         )
-        conn_stats = {r[0]: {"count": r[1], "tokens_in": r[2], "tokens_out": r[3]} for r in cs_rows}
+        conn_stats = {
+            r[0]: {"count": r[1], "tokens_in": r[2], "tokens_out": r[3]}
+            for r in cs_rows
+        }
         kc_rows = await conn.fetchall(
             "SELECT owner_id, COUNT(*) FROM knowledge_items GROUP BY owner_id"
         )
@@ -866,15 +979,17 @@ async def admin_list_workspaces(_: str = Depends(require_admin)) -> List[Dict[st
     for ws in workspaces:
         ws_id = ws["id"]
         stats = conn_stats.get(ws_id, {"count": 0, "tokens_in": 0, "tokens_out": 0})
-        result.append({
-            **ws,
-            "member_count": member_counts.get(ws_id, 0),
-            "connections_count": stats["count"],
-            "tokens_in": stats["tokens_in"],
-            "tokens_out": stats["tokens_out"],
-            "knowledge_count": know_counts.get(ws_id, 0),
-            "agents_count": agent_counts.get(ws_id, 0),
-        })
+        result.append(
+            {
+                **ws,
+                "member_count": member_counts.get(ws_id, 0),
+                "connections_count": stats["count"],
+                "tokens_in": stats["tokens_in"],
+                "tokens_out": stats["tokens_out"],
+                "knowledge_count": know_counts.get(ws_id, 0),
+                "agents_count": agent_counts.get(ws_id, 0),
+            }
+        )
     return result
 
 
@@ -911,7 +1026,9 @@ async def admin_verify_resource(
             (resource_type, resource_id),
         )
         if not row:
-            raise HTTPException(status_code=404, detail="Recurso no encontrado en el catálogo social")
+            raise HTTPException(
+                status_code=404, detail="Recurso no encontrado en el catálogo social"
+            )
         await conn.execute(
             "UPDATE resource_social SET verified=? WHERE resource_type=? AND resource_id=?",
             (db_val, resource_type, resource_id),
@@ -931,5 +1048,12 @@ async def admin_impersonate(
     if not await get_user_by_username(username):
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
     token = create_token(username)
-    response.set_cookie("ga_token", token, httponly=True, samesite="lax", secure=SECURE_COOKIES, max_age=43200)
+    response.set_cookie(
+        "ga_token",
+        token,
+        httponly=True,
+        samesite="lax",
+        secure=SECURE_COOKIES,
+        max_age=43200,
+    )
     return {"ok": True, "username": username}

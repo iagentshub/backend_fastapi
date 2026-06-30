@@ -1,11 +1,11 @@
 """Storage: Agentes, Conexiones, Skills y Memoria."""
+
 from __future__ import annotations
 
 import asyncio
 import json
 import re
-import shutil
-from datetime import date, datetime, timezone
+from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TypedDict
 from uuid import uuid4
@@ -19,6 +19,9 @@ import yaml
 
 
 # ─── helpers ──────────────────────────────────────────────────────────────────
+
+_PUBLIC_OWNER = "__public__"
+
 
 class AgentSummary(TypedDict, total=False):
     id: str
@@ -54,18 +57,22 @@ def _slug(value: str) -> str:
 
 # ─── ConnectionStorage ────────────────────────────────────────────────────────
 
+
 class ConnectionStorage:
     """DB-backed async connection storage."""
 
     def __init__(self, db_path: Path) -> None:
         self._db_path = Path(db_path)  # informational only
         self._migrated = False
-        self._migrate_lock: "asyncio.Lock | None" = None  # created lazily (needs running loop)
+        self._migrate_lock: "asyncio.Lock | None" = (
+            None  # created lazily (needs running loop)
+        )
 
     async def _migrate_json(self) -> None:
         """One-time import from connections.json if table is empty."""
         from app.storage.db import open_db
         from app.config.data import DATA_DIR
+
         async with open_db() as conn:
             try:
                 count = await conn.fetchval("SELECT COUNT(*) FROM connections")
@@ -95,9 +102,12 @@ class ConnectionStorage:
                 self._migrated = True
                 await self._migrate_json()
 
-    async def _upsert(self, conn: Any, payload: Dict[str, Any], owner_id: str = "admin") -> None:
+    async def _upsert(
+        self, conn: Any, payload: Dict[str, Any], owner_id: str = "admin"
+    ) -> None:
         """Insert or replace a connection row (uses AsyncConn, ? placeholders)."""
         from app.storage.db import IS_PG
+
         conn_id = str(payload.get("id") or "").strip() or uuid4().hex[:12]
         payload["id"] = conn_id
         if IS_PG:
@@ -106,18 +116,30 @@ class ConnectionStorage:
                 "VALUES (?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT (id) DO UPDATE SET owner_id=EXCLUDED.owner_id, data=EXCLUDED.data, "
                 "tokens_in=EXCLUDED.tokens_in, tokens_out=EXCLUDED.tokens_out, updated_at=EXCLUDED.updated_at",
-                (conn_id, owner_id, json.dumps(payload, ensure_ascii=False),
-                 int(payload.get("tokens_in") or 0), int(payload.get("tokens_out") or 0),
-                 str(payload.get("created_at") or _now()), str(payload.get("updated_at") or _now())),
+                (
+                    conn_id,
+                    owner_id,
+                    json.dumps(payload, ensure_ascii=False),
+                    int(payload.get("tokens_in") or 0),
+                    int(payload.get("tokens_out") or 0),
+                    str(payload.get("created_at") or _now()),
+                    str(payload.get("updated_at") or _now()),
+                ),
             )
         else:
             await conn.execute(
                 "INSERT OR REPLACE INTO connections "
                 "(id, owner_id, data, tokens_in, tokens_out, created_at, updated_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?)",
-                (conn_id, owner_id, json.dumps(payload, ensure_ascii=False),
-                 int(payload.get("tokens_in") or 0), int(payload.get("tokens_out") or 0),
-                 str(payload.get("created_at") or _now()), str(payload.get("updated_at") or _now())),
+                (
+                    conn_id,
+                    owner_id,
+                    json.dumps(payload, ensure_ascii=False),
+                    int(payload.get("tokens_in") or 0),
+                    int(payload.get("tokens_out") or 0),
+                    str(payload.get("created_at") or _now()),
+                    str(payload.get("updated_at") or _now()),
+                ),
             )
 
     def _row_to_dict(self, row: Any) -> Dict[str, Any]:
@@ -132,6 +154,7 @@ class ConnectionStorage:
         """owner_id=None → admin sees all. owner_id=str → own connections only."""
         await self._ensure_migrated()
         from app.storage.db import open_db
+
         async with open_db() as conn:
             if owner_id is None:
                 rows = await conn.fetchall(
@@ -145,8 +168,11 @@ class ConnectionStorage:
                 )
         return [self._row_to_dict(r) for r in rows]
 
-    async def get(self, conn_id: str, owner_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    async def get(
+        self, conn_id: str, owner_id: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
         from app.storage.db import open_db
+
         async with open_db() as conn:
             if owner_id is None:
                 row = await conn.fetchone(
@@ -161,8 +187,11 @@ class ConnectionStorage:
                 )
         return self._row_to_dict(row) if row else None
 
-    async def save(self, payload: Dict[str, Any], owner_id: str = "admin") -> Dict[str, Any]:
+    async def save(
+        self, payload: Dict[str, Any], owner_id: str = "admin"
+    ) -> Dict[str, Any]:
         from app.storage.db import open_db
+
         conn_id = str(payload.get("id") or "").strip() or uuid4().hex[:12]
         payload["id"] = conn_id
         existing = await self.get(conn_id, owner_id)
@@ -183,6 +212,7 @@ class ConnectionStorage:
 
     async def delete(self, conn_id: str, owner_id: Optional[str] = None) -> bool:
         from app.storage.db import open_db
+
         async with open_db() as conn:
             if owner_id is None:
                 existing = await conn.fetchone(
@@ -205,8 +235,11 @@ class ConnectionStorage:
             await conn.commit()
         return True
 
-    async def add_tokens(self, conn_id: str, input_tokens: int, output_tokens: int) -> None:
+    async def add_tokens(
+        self, conn_id: str, input_tokens: int, output_tokens: int
+    ) -> None:
         from app.storage.db import IS_PG, open_db
+
         async with open_db() as conn:
             async with conn.transaction():
                 await conn.execute(
@@ -236,140 +269,280 @@ class ConnectionStorage:
 
 
 # ─── AgentStorage ─────────────────────────────────────────────────────────────
-# Agentes públicos:  data/agents/public/<slug>/config.json  (solo lectura en UI)
-# Agentes privados: data/agents/private/<slug>/config.json (CRUD completo)
+# DB-backed. owner_id='__public__' para agentes de sistema/públicos.
 
-class _ScopedFileStorage:
-    """Base para almacenamiento en filesystem con scopes public/private."""
+
+class AgentStorage:
+    """Async DB-backed agent storage (SQLite / PostgreSQL)."""
 
     def __init__(self, root_dir: Path) -> None:
-        self.root_dir = Path(root_dir)
-        (self.root_dir / "public").mkdir(parents=True, exist_ok=True)
-        (self.root_dir / "private").mkdir(parents=True, exist_ok=True)
+        self._root_dir = Path(root_dir)  # solo para la migración única desde ficheros
+        self._migrated = False
+        self._migrate_lock: "asyncio.Lock | None" = None
 
-    def _require_writable(self, scope: str, label: str = "Elemento") -> None:
-        if scope == "public":
-            raise ValueError(f"{label} son de solo lectura")
+    # ── one-time file→DB migration ───────────────────────────────────────────
 
+    async def _migrate_files(self) -> None:
+        from app.storage.db import open_db
 
-class AgentStorage(_ScopedFileStorage):
-    def __init__(self, root_dir: Path) -> None:
-        super().__init__(root_dir)
-        priv = self.root_dir / "private"
-        # migrar agentes planos (estructura antigua) a private/
-        for p in list(self.root_dir.glob("*/config.json")):
-            agent_dir = p.parent
-            if agent_dir.name not in ("public", "private"):
-                dest = priv / agent_dir.name
-                if not dest.exists():
-                    agent_dir.rename(dest)
-
-    def _dir(self, scope: str, agent_id: str) -> Path:
-        safe = re.sub(r"[^a-z0-9_\-]", "-", agent_id.lower()).strip("-")
-        return self.root_dir / scope / safe
-
-    def _path(self, scope: str, agent_id: str) -> Path:
-        return self._dir(scope, agent_id) / "config.json"
-
-    def list(self, scope: str = "all") -> List[Dict[str, Any]]:
-        items = []
-        scopes = []
-        if scope in ("all", "public"):
-            scopes.append("public")
-        if scope in ("all", "private"):
-            scopes.append("private")
-        for s in scopes:
-            for p in sorted((self.root_dir / s).glob("*/config.json")):
-                try:
-                    a = json.loads(p.read_text(encoding="utf-8"))
-                    a["scope"] = s
-                    items.append(self._summary(a))
-                except Exception as exc:
-                    flog.warning(f"[storage] Agente corrupto en {p}: {exc}")
+        async with open_db() as conn:
+            try:
+                count = await conn.fetchval("SELECT COUNT(*) FROM agents")
+                if count:
+                    return
+            except Exception:
+                return
+            for scope, default_owner in [
+                ("public", _PUBLIC_OWNER),
+                ("private", "admin"),
+            ]:
+                scope_dir = self._root_dir / scope
+                if not scope_dir.exists():
                     continue
-        return items
+                for p in sorted(scope_dir.glob("*/config.json")):
+                    try:
+                        data = json.loads(p.read_text(encoding="utf-8"))
+                        data["scope"] = scope
+                        agent_id = data.get("id") or p.parent.name
+                        owner = (
+                            _PUBLIC_OWNER
+                            if scope == "public"
+                            else (data.get("owner_id") or default_owner)
+                        )
+                        await self._upsert(conn, agent_id, owner, scope, data)
+                    except Exception as exc:
+                        flog.warning(f"[agents] Migración fallida {p}: {exc}")
+            await conn.commit()
 
-    def get(self, agent_id: str, scope: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        scopes_to_try = [scope] if scope else ["public", "private"]
-        for s in scopes_to_try:
-            p = self._path(s, agent_id)
-            if p.exists():
-                a = json.loads(p.read_text(encoding="utf-8"))
-                a["scope"] = s
-                return a
-        return None
+    async def _ensure_migrated(self) -> None:
+        if self._migrated:
+            return
+        if self._migrate_lock is None:
+            self._migrate_lock = asyncio.Lock()
+        async with self._migrate_lock:
+            if not self._migrated:
+                self._migrated = True
+                await self._migrate_files()
 
-    def save(self, payload: Dict[str, Any], scope: str = "private", owner_id: Optional[str] = None) -> Dict[str, Any]:
-        self._require_writable(scope, "Los agentes públicos")
+    # ── internal helpers ─────────────────────────────────────────────────────
+
+    async def _upsert(
+        self, conn: Any, agent_id: str, owner_id: str, scope: str, data: Dict[str, Any]
+    ) -> None:
+        from app.storage.db import IS_PG
+
+        data_json = json.dumps(data, ensure_ascii=False)
+        tokens_in = int(data.get("tokens_in") or 0)
+        tokens_out = int(data.get("tokens_out") or 0)
+        folder_id = data.get("folder_id")
+        now = _now()
+        created_at = str(data.get("created_at") or now)
+        updated_at = str(data.get("updated_at") or now)
+        if IS_PG:
+            await conn.execute(
+                "INSERT INTO agents (id, owner_id, scope, data, tokens_in, tokens_out, folder_id, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT (id, owner_id) DO UPDATE SET scope=EXCLUDED.scope, data=EXCLUDED.data, "
+                "tokens_in=EXCLUDED.tokens_in, tokens_out=EXCLUDED.tokens_out, "
+                "folder_id=EXCLUDED.folder_id, updated_at=EXCLUDED.updated_at",
+                (
+                    agent_id,
+                    owner_id,
+                    scope,
+                    data_json,
+                    tokens_in,
+                    tokens_out,
+                    folder_id,
+                    created_at,
+                    updated_at,
+                ),
+            )
+        else:
+            await conn.execute(
+                "INSERT OR REPLACE INTO agents "
+                "(id, owner_id, scope, data, tokens_in, tokens_out, folder_id, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    agent_id,
+                    owner_id,
+                    scope,
+                    data_json,
+                    tokens_in,
+                    tokens_out,
+                    folder_id,
+                    created_at,
+                    updated_at,
+                ),
+            )
+
+    def _row_to_dict(self, row: Any) -> Dict[str, Any]:
+        d: Dict[str, Any] = json.loads(row["data"])
+        d["tokens_in"] = row["tokens_in"]
+        d["tokens_out"] = row["tokens_out"]
+        d["folder_id"] = row["folder_id"]
+        d["scope"] = row["scope"]
+        owner = row["owner_id"]
+        d["owner_id"] = None if owner == _PUBLIC_OWNER else owner
+        return d
+
+    # ── public API ───────────────────────────────────────────────────────────
+
+    async def list(
+        self, scope: str = "all", owner_id: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        await self._ensure_migrated()
+        from app.storage.db import open_db
+
+        async with open_db() as conn:
+            if scope == "public":
+                rows = await conn.fetchall(
+                    "SELECT id, owner_id, scope, data, tokens_in, tokens_out, folder_id "
+                    "FROM agents WHERE scope='public' ORDER BY created_at ASC"
+                )
+            elif scope == "private":
+                if owner_id:
+                    rows = await conn.fetchall(
+                        "SELECT id, owner_id, scope, data, tokens_in, tokens_out, folder_id "
+                        "FROM agents WHERE scope='private' AND owner_id=? ORDER BY created_at ASC",
+                        (owner_id,),
+                    )
+                else:
+                    rows = await conn.fetchall(
+                        "SELECT id, owner_id, scope, data, tokens_in, tokens_out, folder_id "
+                        "FROM agents WHERE scope='private' ORDER BY created_at ASC"
+                    )
+            else:  # all
+                rows = await conn.fetchall(
+                    "SELECT id, owner_id, scope, data, tokens_in, tokens_out, folder_id "
+                    "FROM agents ORDER BY created_at ASC"
+                )
+        return [self._row_to_dict(r) for r in rows]
+
+    async def get(
+        self, agent_id: str, scope: Optional[str] = None, owner_id: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        await self._ensure_migrated()
+        from app.storage.db import open_db
+
+        async with open_db() as conn:
+            if scope == "public":
+                row = await conn.fetchone(
+                    "SELECT id, owner_id, scope, data, tokens_in, tokens_out, folder_id "
+                    "FROM agents WHERE id=? AND scope='public' LIMIT 1",
+                    (agent_id,),
+                )
+            elif scope == "private":
+                row = await conn.fetchone(
+                    "SELECT id, owner_id, scope, data, tokens_in, tokens_out, folder_id "
+                    "FROM agents WHERE id=? AND scope='private' LIMIT 1",
+                    (agent_id,),
+                )
+            else:
+                # prefer private, fall back to public
+                row = await conn.fetchone(
+                    "SELECT id, owner_id, scope, data, tokens_in, tokens_out, folder_id "
+                    "FROM agents WHERE id=? ORDER BY CASE scope WHEN 'private' THEN 0 ELSE 1 END LIMIT 1",
+                    (agent_id,),
+                )
+        return self._row_to_dict(row) if row else None
+
+    async def save(
+        self,
+        payload: Dict[str, Any],
+        scope: str = "private",
+        owner_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        if scope == "public":
+            raise ValueError("Los agentes públicos son de solo lectura")
+        await self._ensure_migrated()
+        from app.storage.db import open_db
+
         name = str(payload.get("name") or "").strip()
         if not name:
             raise ValueError("name required")
-        folder_id = payload.get("folder_id") or None
-        agent_id = _slug(name)
+        agent_id = payload.get("id") or _slug(name)
+        actual_owner = owner_id or "admin"
+        existing = await self.get(agent_id, scope="private")
         now = _now()
+        agent = Agent.from_dict(
+            {
+                **payload,
+                "id": agent_id,
+                "scope": scope,
+                "owner_id": actual_owner,
+                "created_at": existing.get("created_at", now) if existing else now,
+                "updated_at": now,
+            }
+        )
+        data = agent.to_dict()
+        async with open_db() as conn:
+            await self._upsert(conn, agent_id, actual_owner, scope, data)
+            await conn.commit()
+        return data
 
-        # When a folder is specified and the base slug already exists in a different folder,
-        # generate a unique ID so both agents can coexist.
-        if folder_id:
-            existing_path = self._path(scope, agent_id)
-            if existing_path.exists():
-                try:
-                    existing_data = json.loads(existing_path.read_text(encoding="utf-8"))
-                    if existing_data.get("folder_id") != folder_id:
-                        agent_id = f"{agent_id}-{uuid4().hex[:6]}"
-                except Exception:
-                    pass
+    async def move_folder(
+        self, agent_id: str, folder_id: Optional[str], owner_id: Optional[str] = None
+    ) -> bool:
+        await self._ensure_migrated()
+        from app.storage.db import open_db
 
-        agent = Agent.from_dict({**payload, "id": agent_id, "scope": scope, "folder_id": folder_id})
-        d = self._dir(scope, agent_id)
-        d.mkdir(exist_ok=True)
-        p = d / "config.json"
-        if p.exists():
-            existing = json.loads(p.read_text(encoding="utf-8"))
-            agent.created_at = existing.get("created_at", now)
-            agent.owner_id = existing.get("owner_id") or owner_id
-        else:
-            agent.created_at = now
-            agent.owner_id = owner_id
-        agent.updated_at = now
-        p.write_text(json.dumps(agent.to_dict(), indent=2, ensure_ascii=False), encoding="utf-8")
-        return agent.to_dict()
-
-    def move_folder(self, agent_id: str, folder_id: Optional[str]) -> bool:
-        p = self._path("private", agent_id)
-        if not p.exists():
-            return False
-        data = json.loads(p.read_text(encoding="utf-8"))
-        if folder_id:
-            data["folder_id"] = folder_id
-        else:
-            data.pop("folder_id", None)
-        p.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+        async with open_db() as conn:
+            row = await conn.fetchone(
+                "SELECT data FROM agents WHERE id=? AND scope='private' LIMIT 1",
+                (agent_id,),
+            )
+            if not row:
+                return False
+            data = json.loads(row["data"])
+            if folder_id:
+                data["folder_id"] = folder_id
+            else:
+                data.pop("folder_id", None)
+            await conn.execute(
+                "UPDATE agents SET folder_id=?, data=?, updated_at=? WHERE id=? AND scope='private'",
+                (folder_id, json.dumps(data, ensure_ascii=False), _now(), agent_id),
+            )
+            await conn.commit()
         return True
 
-    def add_tokens(self, agent_id: str, tokens_in: int, tokens_out: int) -> None:
-        p = self._path("private", agent_id)
-        if not p.exists():
-            return
-        data = json.loads(p.read_text(encoding="utf-8"))
-        data["tokens_in"] = int(data.get("tokens_in") or 0) + tokens_in
-        data["tokens_out"] = int(data.get("tokens_out") or 0) + tokens_out
-        p.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding="utf-8")
+    async def add_tokens(
+        self,
+        agent_id: str,
+        tokens_in: int,
+        tokens_out: int,
+        owner_id: Optional[str] = None,
+    ) -> None:
+        from app.storage.db import open_db
 
-    def get_model(self, agent_id: str, scope: Optional[str] = None) -> Optional[Agent]:
-        """Typed accessor — returns the correct Agent subclass."""
-        data = self.get(agent_id, scope)
-        return Agent.from_dict(data) if data else None
+        async with open_db() as conn:
+            await conn.execute(
+                "UPDATE agents SET tokens_in=tokens_in+?, tokens_out=tokens_out+? "
+                "WHERE id=? AND scope='private'",
+                (tokens_in, tokens_out, agent_id),
+            )
+            await conn.commit()
 
-    def delete(self, agent_id: str, scope: Optional[str] = None) -> bool:
-        scopes_to_try = [scope] if scope else ["private"]
-        for s in scopes_to_try:
-            self._require_writable(s, "Los agentes públicos")
-            d = self._dir(s, agent_id)
-            if d.exists():
-                shutil.rmtree(d)
-                return True
-        return False
+    async def delete(
+        self, agent_id: str, scope: Optional[str] = None, owner_id: Optional[str] = None
+    ) -> bool:
+        await self._ensure_migrated()
+        if scope == "public":
+            raise ValueError("Los agentes públicos son de solo lectura")
+        from app.storage.db import open_db
+
+        async with open_db() as conn:
+            row = await conn.fetchone(
+                "SELECT id FROM agents WHERE id=? AND scope!='public' LIMIT 1",
+                (agent_id,),
+            )
+            if not row:
+                return False
+            await conn.execute(
+                "DELETE FROM agents WHERE id=? AND scope!='public'",
+                (agent_id,),
+            )
+            await conn.commit()
+        return True
 
     def _summary(self, a: Dict[str, Any]) -> AgentSummary:
         scope = a.get("scope", "private")
@@ -380,7 +553,8 @@ class AgentStorage(_ScopedFileStorage):
             "description": a.get("description", ""),
             "icon": a.get("icon", ""),
             "tags": a.get("tags", []),
-            "labels": a.get("labels") or (["public"] if scope == "public" else ["private"]),
+            "labels": a.get("labels")
+            or (["public"] if scope == "public" else ["private"]),
             "language": a.get("language", ""),
             "connection_id": a.get("connection_id"),
             "model": a.get("model", ""),
@@ -402,98 +576,215 @@ class AgentStorage(_ScopedFileStorage):
 
 
 # ─── SkillStorage ─────────────────────────────────────────────────────────────
-# Skills públicas:  data/skills/public/<slug>/SKILL.md  (solo lectura en la UI)
-# Skills privadas: data/skills/private/<slug>/SKILL.md (CRUD completo)
+# DB-backed. owner_id='__public__' para skills de sistema/públicas.
 
-class SkillStorage(_ScopedFileStorage):
+
+def _parse_skill_md(raw: str, default_id: str = "") -> Dict[str, Any]:
+    """Parsea SKILL.md con frontmatter YAML."""
+    if raw.startswith("---"):
+        parts = raw.split("---", 2)
+        meta = yaml.safe_load(parts[1]) or {}
+        body = parts[2].strip() if len(parts) > 2 else ""
+    else:
+        meta = {}
+        body = raw.strip()
+    meta["content"] = body
+    meta.setdefault("id", default_id)
+    meta.setdefault("name", default_id)
+    return meta
+
+
+class SkillStorage:
+    """Async DB-backed skill storage (SQLite / PostgreSQL)."""
+
     def __init__(self, root_dir: Path) -> None:
-        super().__init__(root_dir)
+        self._root_dir = Path(root_dir)  # solo para la migración única desde ficheros
+        self._migrated = False
+        self._migrate_lock: "asyncio.Lock | None" = None
 
-    def _read(self, path: Path) -> Dict[str, Any]:
-        raw = path.read_text(encoding="utf-8")
-        if raw.startswith("---"):
-            parts = raw.split("---", 2)
-            meta = yaml.safe_load(parts[1]) or {}
-            body = parts[2].strip() if len(parts) > 2 else ""
+    # ── one-time file→DB migration ───────────────────────────────────────────
+
+    async def _migrate_files(self) -> None:
+        from app.storage.db import open_db
+
+        async with open_db() as conn:
+            try:
+                count = await conn.fetchval("SELECT COUNT(*) FROM skills")
+                if count:
+                    return
+            except Exception:
+                return
+            for scope, default_owner in [
+                ("public", _PUBLIC_OWNER),
+                ("private", "admin"),
+            ]:
+                scope_dir = self._root_dir / scope
+                if not scope_dir.exists():
+                    continue
+                for p in sorted(scope_dir.glob("*/SKILL.md")):
+                    try:
+                        meta = _parse_skill_md(
+                            p.read_text(encoding="utf-8"), default_id=p.parent.name
+                        )
+                        meta["scope"] = scope
+                        skill_id = meta.get("id") or p.parent.name
+                        owner = (
+                            _PUBLIC_OWNER
+                            if scope == "public"
+                            else (meta.get("owner_id") or default_owner)
+                        )
+                        await self._upsert(conn, skill_id, owner, scope, meta)
+                    except Exception as exc:
+                        flog.warning(f"[skills] Migración fallida {p}: {exc}")
+            await conn.commit()
+
+    async def _ensure_migrated(self) -> None:
+        if self._migrated:
+            return
+        if self._migrate_lock is None:
+            self._migrate_lock = asyncio.Lock()
+        async with self._migrate_lock:
+            if not self._migrated:
+                self._migrated = True
+                await self._migrate_files()
+
+    # ── internal helpers ─────────────────────────────────────────────────────
+
+    async def _upsert(
+        self, conn: Any, skill_id: str, owner_id: str, scope: str, data: Dict[str, Any]
+    ) -> None:
+        from app.storage.db import IS_PG
+
+        content = str(data.get("content") or "")
+        folder_id = data.get("folder_id")
+        now = _now()
+        created_at = str(data.get("created_at") or now)
+        updated_at = str(data.get("updated_at") or now)
+        meta = {k: v for k, v in data.items() if k not in ("content",)}
+        meta_json = json.dumps(meta, ensure_ascii=False)
+        if IS_PG:
+            await conn.execute(
+                "INSERT INTO skills (id, owner_id, scope, data, content, folder_id, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT (id, owner_id) DO UPDATE SET scope=EXCLUDED.scope, data=EXCLUDED.data, "
+                "content=EXCLUDED.content, folder_id=EXCLUDED.folder_id, updated_at=EXCLUDED.updated_at",
+                (
+                    skill_id,
+                    owner_id,
+                    scope,
+                    meta_json,
+                    content,
+                    folder_id,
+                    created_at,
+                    updated_at,
+                ),
+            )
         else:
-            meta = {}
-            body = raw.strip()
-        meta["content"] = body
-        meta.setdefault("id", path.parent.name)
-        meta.setdefault("name", path.parent.name)
-        return meta
+            await conn.execute(
+                "INSERT OR REPLACE INTO skills "
+                "(id, owner_id, scope, data, content, folder_id, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    skill_id,
+                    owner_id,
+                    scope,
+                    meta_json,
+                    content,
+                    folder_id,
+                    created_at,
+                    updated_at,
+                ),
+            )
 
-    def _write(self, path: Path, payload: Dict[str, Any]) -> None:
-        content = payload.pop("content", "")
-        front = yaml.dump(payload, allow_unicode=True, default_flow_style=False).strip()
-        path.write_text(f"---\n{front}\n---\n\n{content}\n", encoding="utf-8")
+    def _row_to_dict(self, row: Any, include_content: bool = True) -> Dict[str, Any]:
+        d: Dict[str, Any] = json.loads(row["data"])
+        if include_content:
+            d["content"] = row["content"]
+        d["scope"] = row["scope"]
+        d["folder_id"] = row["folder_id"]
+        owner = row["owner_id"]
+        d["owner_id"] = None if owner == _PUBLIC_OWNER else owner
+        return d
 
-    def list(self, scope: str = "all") -> List[Dict[str, Any]]:
-        """scope: 'all' | 'public' | 'private'"""
-        items: List[Dict[str, Any]] = []
-        scopes = []
-        if scope in ("all", "public"):
-            scopes.append("public")
-        if scope in ("all", "private"):
-            scopes.append("private")
-        for s in scopes:
-            for p in sorted((self.root_dir / s).glob("*/SKILL.md")):
-                try:
-                    skill = self._read(p)
-                    skill["scope"] = s
-                    skill.setdefault("folder_id", None)
-                    skill.setdefault("labels", ["public"] if s == "public" else ["private"])
-                    items.append({k: v for k, v in skill.items() if k != "content"})
-                except Exception:
-                    continue
-        return items
+    # ── public API ───────────────────────────────────────────────────────────
 
-    def _safe_path(self, *parts: str) -> "Path":
-        p = (self.root_dir / Path(*parts)).resolve()
-        if not str(p).startswith(str(self.root_dir.resolve())):
-            raise ValueError("Path fuera del directorio de skills")
-        return p
+    async def list(
+        self, scope: str = "all", owner_id: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        await self._ensure_migrated()
+        from app.storage.db import open_db
 
-    def get(self, scope: str, skill_id: str) -> Optional[Dict[str, Any]]:
-        # 1) path exacto con el id tal cual
-        p = self._safe_path(scope, skill_id, "SKILL.md")
-        if not p.exists():
-            # 2) path con el id slugificado
-            p = self._safe_path(scope, _slug(skill_id), "SKILL.md")
-        if not p.exists():
-            # 3) escanear todos los SKILL.md buscando id coincidente en frontmatter
-            scope_dir = self.root_dir / scope
-            for candidate in scope_dir.glob("*/SKILL.md"):
-                try:
-                    meta = self._read(candidate)
-                    if str(meta.get("id") or "").upper() == skill_id.upper():
-                        skill = meta
-                        skill["scope"] = scope
-                        return skill
-                except Exception:
-                    continue
-            return None
-        skill = self._read(p)
-        skill["scope"] = scope
-        return skill
+        async with open_db() as conn:
+            if scope == "public":
+                rows = await conn.fetchall(
+                    "SELECT id, owner_id, scope, data, content, folder_id "
+                    "FROM skills WHERE scope='public' ORDER BY created_at ASC"
+                )
+            elif scope == "private":
+                if owner_id:
+                    rows = await conn.fetchall(
+                        "SELECT id, owner_id, scope, data, content, folder_id "
+                        "FROM skills WHERE scope='private' AND owner_id=? ORDER BY created_at ASC",
+                        (owner_id,),
+                    )
+                else:
+                    rows = await conn.fetchall(
+                        "SELECT id, owner_id, scope, data, content, folder_id "
+                        "FROM skills WHERE scope='private' ORDER BY created_at ASC"
+                    )
+            else:  # all
+                rows = await conn.fetchall(
+                    "SELECT id, owner_id, scope, data, content, folder_id "
+                    "FROM skills ORDER BY created_at ASC"
+                )
+        return [self._row_to_dict(r, include_content=False) for r in rows]
 
-    def get_any(self, skill_id: str) -> Optional[Dict[str, Any]]:
-        """Fetch a skill from any scope. Used for team-shared access."""
+    async def get(
+        self, scope: str, skill_id: str, owner_id: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        await self._ensure_migrated()
+        from app.storage.db import open_db
+
+        async with open_db() as conn:
+            row = await conn.fetchone(
+                "SELECT id, owner_id, scope, data, content, folder_id "
+                "FROM skills WHERE id=? AND scope=? LIMIT 1",
+                (skill_id, scope),
+            )
+            if not row:
+                # try slug variant
+                row = await conn.fetchone(
+                    "SELECT id, owner_id, scope, data, content, folder_id "
+                    "FROM skills WHERE id=? AND scope=? LIMIT 1",
+                    (_slug(skill_id), scope),
+                )
+        return self._row_to_dict(row) if row else None
+
+    async def get_any(
+        self, skill_id: str, owner_id: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Fetch a skill from any scope — public first, then private."""
         for scope in ("public", "private"):
-            result = self.get(scope, skill_id)
+            result = await self.get(scope, skill_id)
             if result:
                 return result
         return None
 
-    def save(self, scope: str, payload: Dict[str, Any], owner_id: Optional[str] = None) -> Dict[str, Any]:
-        self._require_writable(scope, "Las skills públicas")
+    async def save(
+        self, scope: str, payload: Dict[str, Any], owner_id: Optional[str] = None
+    ) -> Dict[str, Any]:
+        if scope == "public":
+            raise ValueError("Las skills públicas son de solo lectura")
+        await self._ensure_migrated()
+        from app.storage.db import open_db
+
         name = str(payload.get("name") or "").strip()
         if not name:
             raise ValueError("name required")
-        skill_id = _slug(name)
-        d = self.root_dir / scope / skill_id
-        d.mkdir(exist_ok=True)
-        folder_id = payload.get("folder_id") or None
+        skill_id = payload.get("id") or _slug(name)
+        actual_owner = owner_id or "admin"
+        now = _now()
+        existing = await self.get(scope, skill_id)
         data: Dict[str, Any] = {
             "id": skill_id,
             "name": name,
@@ -501,123 +792,239 @@ class SkillStorage(_ScopedFileStorage):
             "icon": str(payload.get("icon") or "🔧").strip(),
             "category": str(payload.get("category") or "").strip() or None,
             "content": str(payload.get("content") or "").strip(),
-            "tags": [str(t).strip().lower() for t in (payload.get("tags") or []) if str(t).strip()],
-            "labels": [str(lbl) for lbl in (payload.get("labels") or ["private"]) if lbl],
+            "tags": [
+                str(t).strip().lower()
+                for t in (payload.get("tags") or [])
+                if str(t).strip()
+            ],
+            "labels": [
+                str(lbl) for lbl in (payload.get("labels") or ["private"]) if lbl
+            ],
+            "scope": scope,
+            "owner_id": actual_owner,
+            "folder_id": payload.get("folder_id") or None,
+            "created_at": existing.get("created_at", now) if existing else now,
+            "updated_at": now,
         }
-        if folder_id:
-            data["folder_id"] = folder_id
-        if owner_id:
-            data["owner_id"] = owner_id
-        self._write(d / "SKILL.md", data)
-        result = self._read(d / "SKILL.md")
-        result["scope"] = scope
-        result.setdefault("folder_id", None)
-        return result
+        async with open_db() as conn:
+            await self._upsert(conn, skill_id, actual_owner, scope, data)
+            await conn.commit()
+        data.setdefault("folder_id", None)
+        return data
 
-    def move_folder(self, skill_id: str, folder_id: Optional[str]) -> bool:
-        p = self._safe_path("private", skill_id, "SKILL.md")
-        if not p.exists():
-            p = self._safe_path("private", _slug(skill_id), "SKILL.md")
-        if not p.exists():
-            return False
-        data = self._read(p)
-        if folder_id:
-            data["folder_id"] = folder_id
-        else:
-            data.pop("folder_id", None)
-        self._write(p, data)
+    async def move_folder(
+        self, skill_id: str, folder_id: Optional[str], owner_id: Optional[str] = None
+    ) -> bool:
+        await self._ensure_migrated()
+        from app.storage.db import open_db
+
+        async with open_db() as conn:
+            row = await conn.fetchone(
+                "SELECT data FROM skills WHERE id=? AND scope='private' LIMIT 1",
+                (skill_id,),
+            )
+            if not row:
+                row = await conn.fetchone(
+                    "SELECT data FROM skills WHERE id=? AND scope='private' LIMIT 1",
+                    (_slug(skill_id),),
+                )
+            if not row:
+                return False
+            meta = json.loads(row["data"])
+            if folder_id:
+                meta["folder_id"] = folder_id
+            else:
+                meta.pop("folder_id", None)
+            await conn.execute(
+                "UPDATE skills SET folder_id=?, data=?, updated_at=? WHERE id=? AND scope='private'",
+                (folder_id, json.dumps(meta, ensure_ascii=False), _now(), skill_id),
+            )
+            await conn.commit()
         return True
 
-    def delete(self, scope: str, skill_id: str) -> bool:
-        self._require_writable(scope, "Las skills públicas")
-        d = self._safe_path(scope, skill_id)
-        if not d.exists():
-            return False
-        shutil.rmtree(d)
+    async def delete(
+        self, scope: str, skill_id: str, owner_id: Optional[str] = None
+    ) -> bool:
+        if scope == "public":
+            raise ValueError("Las skills públicas son de solo lectura")
+        await self._ensure_migrated()
+        from app.storage.db import open_db
+
+        async with open_db() as conn:
+            row = await conn.fetchone(
+                "SELECT id FROM skills WHERE id=? AND scope=? LIMIT 1",
+                (skill_id, scope),
+            )
+            if not row:
+                return False
+            await conn.execute(
+                "DELETE FROM skills WHERE id=? AND scope=?", (skill_id, scope)
+            )
+            await conn.commit()
         return True
 
 
 # ─── MemoryStorage ────────────────────────────────────────────────────────────
-# Archivos de memoria: data/memory/<slug>.md  (texto plano Markdown)
+# DB-backed. Memoria por usuario: owner_id=username.
+
+
+def _safe_mem_id(filename: str) -> str:
+    """Sanitiza el nombre de fichero de memoria para la DB."""
+    name = re.sub(r"[^a-z0-9\-]", "-", filename.lower().removesuffix(".md")).strip("-")
+    return name or "memory"
+
 
 class MemoryStorage:
+    """Async DB-backed memory storage (SQLite / PostgreSQL)."""
+
     def __init__(self, root_dir: Path) -> None:
-        self.root_dir = Path(root_dir)
-        self.root_dir.mkdir(parents=True, exist_ok=True)
-        self._meta_path = self.root_dir / "_folder_meta.json"
+        self._root_dir = Path(root_dir)  # solo para la migración única desde ficheros
+        self._migrated = False
+        self._migrate_lock: "asyncio.Lock | None" = None
 
-    def _safe_name(self, filename: str) -> str:
-        """Sanitiza el nombre de fichero para prevenir path traversal."""
-        name = re.sub(r"[^a-z0-9\-]", "-", filename.lower().removesuffix(".md")).strip("-")
-        name = name or "memory"
-        return f"{name}.md"
+    # ── one-time file→DB migration ───────────────────────────────────────────
 
-    def _load_meta(self) -> Dict[str, Any]:
-        if self._meta_path.exists():
+    async def _migrate_files(self) -> None:
+        from app.storage.db import open_db
+
+        async with open_db() as conn:
             try:
-                return json.loads(self._meta_path.read_text(encoding="utf-8"))
+                count = await conn.fetchval("SELECT COUNT(*) FROM memory_files")
+                if count:
+                    return
             except Exception:
-                return {}
-        return {}
+                return
+            meta_path = self._root_dir / "_folder_meta.json"
+            folder_meta: Dict[str, Any] = {}
+            if meta_path.exists():
+                try:
+                    folder_meta = json.loads(meta_path.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
+            now = _now()
+            for p in sorted(self._root_dir.glob("*.md")):
+                try:
+                    content = p.read_text(encoding="utf-8")
+                    mem_id = p.stem
+                    folder_id = folder_meta.get(p.name)
+                    await conn.execute(
+                        "INSERT OR IGNORE INTO memory_files (id, owner_id, content, folder_id, updated_at) "
+                        "VALUES (?, ?, ?, ?, ?)",
+                        (mem_id, "admin", content, folder_id, now),
+                    )
+                except Exception as exc:
+                    flog.warning(f"[memory] Migración fallida {p}: {exc}")
+            await conn.commit()
 
-    def _save_meta(self, meta: Dict[str, Any]) -> None:
-        self._meta_path.write_text(json.dumps(meta, ensure_ascii=False), encoding="utf-8")
+    async def _ensure_migrated(self) -> None:
+        if self._migrated:
+            return
+        if self._migrate_lock is None:
+            self._migrate_lock = asyncio.Lock()
+        async with self._migrate_lock:
+            if not self._migrated:
+                self._migrated = True
+                await self._migrate_files()
 
-    def list(self) -> List[Dict[str, Any]]:
-        meta = self._load_meta()
-        items = []
-        for p in sorted(self.root_dir.glob("*.md")):
-            stat = p.stat()
-            items.append({
-                "id": p.stem,
-                "filename": p.name,
-                "size": stat.st_size,
-                "updated_at": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
-                "folder_id": meta.get(p.name),
-            })
-        return items
+    # ── public API ───────────────────────────────────────────────────────────
 
-    def get(self, filename: str) -> Optional[str]:
-        p = self.root_dir / self._safe_name(filename)
-        if not p.exists():
-            return None
-        return p.read_text(encoding="utf-8")
+    async def list(self, owner_id: str = "admin") -> List[Dict[str, Any]]:
+        await self._ensure_migrated()
+        from app.storage.db import open_db
 
-    def save(self, filename: str, content: str) -> Dict[str, Any]:
-        filename = self._safe_name(filename)
-        p = self.root_dir / filename
-        p.write_text(content, encoding="utf-8")
-        stat = p.stat()
-        meta = self._load_meta()
+        async with open_db() as conn:
+            rows = await conn.fetchall(
+                "SELECT id, content, folder_id, updated_at FROM memory_files "
+                "WHERE owner_id=? ORDER BY updated_at DESC",
+                (owner_id,),
+            )
+        return [
+            {
+                "id": r["id"],
+                "filename": f"{r['id']}.md",
+                "size": len(r["content"]),
+                "updated_at": r["updated_at"],
+                "folder_id": r["folder_id"],
+            }
+            for r in rows
+        ]
+
+    async def get(self, filename: str, owner_id: str = "admin") -> Optional[str]:
+        await self._ensure_migrated()
+        mem_id = _safe_mem_id(filename)
+        from app.storage.db import open_db
+
+        async with open_db() as conn:
+            row = await conn.fetchone(
+                "SELECT content FROM memory_files WHERE id=? AND owner_id=?",
+                (mem_id, owner_id),
+            )
+        return row["content"] if row else None
+
+    async def save(
+        self, filename: str, content: str, owner_id: str = "admin"
+    ) -> Dict[str, Any]:
+        await self._ensure_migrated()
+        mem_id = _safe_mem_id(filename)
+        now = _now()
+        from app.storage.db import IS_PG, open_db
+
+        async with open_db() as conn:
+            if IS_PG:
+                await conn.execute(
+                    "INSERT INTO memory_files (id, owner_id, content, updated_at) VALUES (?, ?, ?, ?) "
+                    "ON CONFLICT (id, owner_id) DO UPDATE SET content=EXCLUDED.content, updated_at=EXCLUDED.updated_at",
+                    (mem_id, owner_id, content, now),
+                )
+            else:
+                await conn.execute(
+                    "INSERT OR REPLACE INTO memory_files (id, owner_id, content, updated_at) VALUES (?, ?, ?, ?)",
+                    (mem_id, owner_id, content, now),
+                )
+            await conn.commit()
         return {
-            "id": p.stem,
-            "filename": p.name,
-            "size": stat.st_size,
-            "updated_at": datetime.fromtimestamp(stat.st_mtime, timezone.utc).isoformat(),
-            "folder_id": meta.get(p.name),
+            "id": mem_id,
+            "filename": f"{mem_id}.md",
+            "size": len(content),
+            "updated_at": now,
+            "folder_id": None,
         }
 
-    def move_folder(self, filename: str, folder_id: Optional[str]) -> bool:
-        safe = self._safe_name(filename)
-        p = self.root_dir / safe
-        if not p.exists():
-            return False
-        meta = self._load_meta()
-        if folder_id:
-            meta[safe] = folder_id
-        else:
-            meta.pop(safe, None)
-        self._save_meta(meta)
+    async def move_folder(
+        self, filename: str, folder_id: Optional[str], owner_id: str = "admin"
+    ) -> bool:
+        await self._ensure_migrated()
+        mem_id = _safe_mem_id(filename)
+        from app.storage.db import open_db
+
+        async with open_db() as conn:
+            row = await conn.fetchone(
+                "SELECT id FROM memory_files WHERE id=? AND owner_id=?",
+                (mem_id, owner_id),
+            )
+            if not row:
+                return False
+            await conn.execute(
+                "UPDATE memory_files SET folder_id=?, updated_at=? WHERE id=? AND owner_id=?",
+                (folder_id, _now(), mem_id, owner_id),
+            )
+            await conn.commit()
         return True
 
-    def delete(self, filename: str) -> bool:
-        safe = self._safe_name(filename)
-        p = self.root_dir / safe
-        if not p.exists():
-            return False
-        p.unlink()
-        meta = self._load_meta()
-        if safe in meta:
-            meta.pop(safe)
-            self._save_meta(meta)
+    async def delete(self, filename: str, owner_id: str = "admin") -> bool:
+        await self._ensure_migrated()
+        mem_id = _safe_mem_id(filename)
+        from app.storage.db import open_db
+
+        async with open_db() as conn:
+            row = await conn.fetchone(
+                "SELECT id FROM memory_files WHERE id=? AND owner_id=?",
+                (mem_id, owner_id),
+            )
+            if not row:
+                return False
+            await conn.execute(
+                "DELETE FROM memory_files WHERE id=? AND owner_id=?", (mem_id, owner_id)
+            )
+            await conn.commit()
         return True

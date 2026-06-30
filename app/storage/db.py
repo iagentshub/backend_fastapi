@@ -8,6 +8,7 @@ Public API:
     await close_db_pool()        — call at app shutdown
     async with open_db() as conn — get an AsyncConn for queries
 """
+
 from __future__ import annotations
 
 import os
@@ -29,6 +30,40 @@ PH: str = "?"
 # ── Schema DDL ─────────────────────────────────────────────────────────────────
 
 _SCHEMA_SQLITE = """
+CREATE TABLE IF NOT EXISTS agents (
+    id          TEXT NOT NULL,
+    owner_id    TEXT NOT NULL DEFAULT '__public__',
+    scope       TEXT NOT NULL DEFAULT 'private',
+    data        TEXT NOT NULL,
+    tokens_in   INTEGER NOT NULL DEFAULT 0,
+    tokens_out  INTEGER NOT NULL DEFAULT 0,
+    folder_id   TEXT,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    PRIMARY KEY (id, owner_id)
+);
+CREATE INDEX IF NOT EXISTS idx_agents_owner ON agents(owner_id, scope, updated_at DESC);
+CREATE TABLE IF NOT EXISTS skills (
+    id          TEXT NOT NULL,
+    owner_id    TEXT NOT NULL DEFAULT '__public__',
+    scope       TEXT NOT NULL DEFAULT 'private',
+    data        TEXT NOT NULL,
+    content     TEXT NOT NULL DEFAULT '',
+    folder_id   TEXT,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    PRIMARY KEY (id, owner_id)
+);
+CREATE INDEX IF NOT EXISTS idx_skills_owner ON skills(owner_id, scope, updated_at DESC);
+CREATE TABLE IF NOT EXISTS memory_files (
+    id          TEXT NOT NULL,
+    owner_id    TEXT NOT NULL DEFAULT 'admin',
+    content     TEXT NOT NULL DEFAULT '',
+    folder_id   TEXT,
+    updated_at  TEXT NOT NULL,
+    PRIMARY KEY (id, owner_id)
+);
+CREATE INDEX IF NOT EXISTS idx_memory_owner ON memory_files(owner_id, updated_at DESC);
 CREATE TABLE IF NOT EXISTS connections (
     id          TEXT PRIMARY KEY,
     owner_id    TEXT NOT NULL DEFAULT 'admin',
@@ -171,6 +206,40 @@ CREATE INDEX IF NOT EXISTS idx_ws_inv_user ON workspace_invitations(username, st
 """
 
 _SCHEMA_PG = """
+CREATE TABLE IF NOT EXISTS agents (
+    id          TEXT NOT NULL,
+    owner_id    TEXT NOT NULL DEFAULT '__public__',
+    scope       TEXT NOT NULL DEFAULT 'private',
+    data        TEXT NOT NULL,
+    tokens_in   INTEGER NOT NULL DEFAULT 0,
+    tokens_out  INTEGER NOT NULL DEFAULT 0,
+    folder_id   TEXT,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    PRIMARY KEY (id, owner_id)
+);
+CREATE INDEX IF NOT EXISTS idx_agents_owner ON agents(owner_id, scope, updated_at DESC);
+CREATE TABLE IF NOT EXISTS skills (
+    id          TEXT NOT NULL,
+    owner_id    TEXT NOT NULL DEFAULT '__public__',
+    scope       TEXT NOT NULL DEFAULT 'private',
+    data        TEXT NOT NULL,
+    content     TEXT NOT NULL DEFAULT '',
+    folder_id   TEXT,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    PRIMARY KEY (id, owner_id)
+);
+CREATE INDEX IF NOT EXISTS idx_skills_owner ON skills(owner_id, scope, updated_at DESC);
+CREATE TABLE IF NOT EXISTS memory_files (
+    id          TEXT NOT NULL,
+    owner_id    TEXT NOT NULL DEFAULT 'admin',
+    content     TEXT NOT NULL DEFAULT '',
+    folder_id   TEXT,
+    updated_at  TEXT NOT NULL,
+    PRIMARY KEY (id, owner_id)
+);
+CREATE INDEX IF NOT EXISTS idx_memory_owner ON memory_files(owner_id, updated_at DESC);
 CREATE TABLE IF NOT EXISTS connections (
     id          TEXT PRIMARY KEY,
     owner_id    TEXT NOT NULL DEFAULT 'admin',
@@ -638,6 +707,41 @@ async def _migrate_sqlite(conn: Any) -> None:
     except Exception:
         pass
 
+    # 14. Create agents, skills, memory_files tables if missing
+    cur = await conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    existing_tables = {row[0] for row in await cur.fetchall()}
+    if "agents" not in existing_tables:
+        await conn.executescript("""
+            CREATE TABLE IF NOT EXISTS agents (
+                id TEXT NOT NULL, owner_id TEXT NOT NULL DEFAULT '__public__',
+                scope TEXT NOT NULL DEFAULT 'private', data TEXT NOT NULL,
+                tokens_in INTEGER NOT NULL DEFAULT 0, tokens_out INTEGER NOT NULL DEFAULT 0,
+                folder_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                PRIMARY KEY (id, owner_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_agents_owner ON agents(owner_id, scope, updated_at DESC);
+        """)
+    if "skills" not in existing_tables:
+        await conn.executescript("""
+            CREATE TABLE IF NOT EXISTS skills (
+                id TEXT NOT NULL, owner_id TEXT NOT NULL DEFAULT '__public__',
+                scope TEXT NOT NULL DEFAULT 'private', data TEXT NOT NULL,
+                content TEXT NOT NULL DEFAULT '', folder_id TEXT,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                PRIMARY KEY (id, owner_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_skills_owner ON skills(owner_id, scope, updated_at DESC);
+        """)
+    if "memory_files" not in existing_tables:
+        await conn.executescript("""
+            CREATE TABLE IF NOT EXISTS memory_files (
+                id TEXT NOT NULL, owner_id TEXT NOT NULL DEFAULT 'admin',
+                content TEXT NOT NULL DEFAULT '', folder_id TEXT,
+                updated_at TEXT NOT NULL, PRIMARY KEY (id, owner_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_memory_owner ON memory_files(owner_id, updated_at DESC);
+        """)
+
 
 async def _migrate_users_json_sqlite(conn: Any) -> None:
     """Import users.json into the users table if it exists and the table is empty."""
@@ -651,7 +755,9 @@ async def _migrate_users_json_sqlite(conn: Any) -> None:
 
     data_dir_env = os.environ.get("GAIA_DATA_DIR", "")
     users_json = (
-        _Path(data_dir_env) / "users.json" if data_dir_env else _Path("data") / "users.json"
+        _Path(data_dir_env) / "users.json"
+        if data_dir_env
+        else _Path("data") / "users.json"
     )
     if not users_json.exists():
         return
@@ -693,11 +799,43 @@ async def _migrate_users_json_sqlite(conn: Any) -> None:
 
 async def _migrate_pg(conn: Any) -> None:
     """Incremental migrations for pre-existing PostgreSQL databases."""
-    await conn.execute("ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS folder_id TEXT")
+    await conn.execute(
+        "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS folder_id TEXT"
+    )
     await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token TEXT")
-    await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token_expires TEXT")
-    await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS deletion_requested_at TEXT")
+    await conn.execute(
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token_expires TEXT"
+    )
+    await conn.execute(
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS deletion_requested_at TEXT"
+    )
     await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS deletion_token TEXT")
+    # agents / skills / memory_files
+    await conn.execute("""CREATE TABLE IF NOT EXISTS agents (
+        id TEXT NOT NULL, owner_id TEXT NOT NULL DEFAULT '__public__',
+        scope TEXT NOT NULL DEFAULT 'private', data TEXT NOT NULL,
+        tokens_in INTEGER NOT NULL DEFAULT 0, tokens_out INTEGER NOT NULL DEFAULT 0,
+        folder_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        PRIMARY KEY (id, owner_id))""")
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_agents_owner ON agents(owner_id, scope, updated_at DESC)"
+    )
+    await conn.execute("""CREATE TABLE IF NOT EXISTS skills (
+        id TEXT NOT NULL, owner_id TEXT NOT NULL DEFAULT '__public__',
+        scope TEXT NOT NULL DEFAULT 'private', data TEXT NOT NULL,
+        content TEXT NOT NULL DEFAULT '', folder_id TEXT,
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        PRIMARY KEY (id, owner_id))""")
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_skills_owner ON skills(owner_id, scope, updated_at DESC)"
+    )
+    await conn.execute("""CREATE TABLE IF NOT EXISTS memory_files (
+        id TEXT NOT NULL, owner_id TEXT NOT NULL DEFAULT 'admin',
+        content TEXT NOT NULL DEFAULT '', folder_id TEXT,
+        updated_at TEXT NOT NULL, PRIMARY KEY (id, owner_id))""")
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_memory_owner ON memory_files(owner_id, updated_at DESC)"
+    )
     await conn.execute("""
         CREATE TABLE IF NOT EXISTS teams (
             id          TEXT PRIMARY KEY,
@@ -852,7 +990,9 @@ async def _migrate_pg(conn: Any) -> None:
         ("github", "TEXT"),
         ("cv", "TEXT"),
     ]:
-        await conn.execute(f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {col} {definition}")
+        await conn.execute(
+            f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {col} {definition}"
+        )
     await conn.execute("""
         CREATE TABLE IF NOT EXISTS user_follows (
             follower    TEXT NOT NULL,
@@ -946,7 +1086,9 @@ async def _migrate_users_json_pg(conn: Any) -> None:
 
     data_dir_env = os.environ.get("GAIA_DATA_DIR", "")
     users_json = (
-        _Path(data_dir_env) / "users.json" if data_dir_env else _Path("data") / "users.json"
+        _Path(data_dir_env) / "users.json"
+        if data_dir_env
+        else _Path("data") / "users.json"
     )
     if not users_json.exists():
         return
@@ -1038,14 +1180,18 @@ class AsyncConn:
 
     async def fetchval(self, query: str, params: Tuple = (), column: int = 0) -> Any:
         if self._is_pg:
-            return await self._conn.fetchval(self._pg_sql(query), *params, column=column)
+            return await self._conn.fetchval(
+                self._pg_sql(query), *params, column=column
+            )
         async with self._conn.execute(query, params) as cur:
             row = await cur.fetchone()
             return row[column] if row is not None else None
 
     async def executemany(self, query: str, params_list: list) -> None:
         if self._is_pg:
-            await self._conn.executemany(self._pg_sql(query), [tuple(p) for p in params_list])
+            await self._conn.executemany(
+                self._pg_sql(query), [tuple(p) for p in params_list]
+            )
         else:
             await self._conn.executemany(query, params_list)
 
@@ -1097,7 +1243,9 @@ async def init_db(sqlite_path: Optional[Path] = None) -> None:
         if sqlite_path:
             _sqlite_path = sqlite_path
         if _sqlite_path is None:
-            raise RuntimeError("init_db() requires sqlite_path when not using PostgreSQL")
+            raise RuntimeError(
+                "init_db() requires sqlite_path when not using PostgreSQL"
+            )
         _sqlite_path.parent.mkdir(parents=True, exist_ok=True)
         async with aiosqlite.connect(str(_sqlite_path)) as conn:
             conn.row_factory = sqlite3.Row

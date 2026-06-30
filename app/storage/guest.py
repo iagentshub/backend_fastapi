@@ -1,4 +1,5 @@
 """Storage efímero en memoria para sesiones guest."""
+
 from __future__ import annotations
 
 import os
@@ -29,10 +30,12 @@ class GuestMemoryAdapter:
     def __init__(self, session: GuestSession) -> None:
         self._s = session
 
-    def get(self, filename: str) -> str | None:
+    async def get(self, filename: str, owner_id: str = "guest") -> str | None:
         return self._s.memory.get(filename)
 
-    def save(self, filename: str, content: str) -> Dict[str, Any]:
+    async def save(
+        self, filename: str, content: str, owner_id: str = "guest"
+    ) -> Dict[str, Any]:
         self._s.memory[filename] = content
         return {"filename": filename}
 
@@ -54,6 +57,7 @@ def is_guest(user: str) -> bool:
 def get_session(guest_id: str) -> GuestSession:
     """Devuelve la sesión en memoria del guest, creándola si no existe. Limpia las expiradas."""
     from fastapi import HTTPException
+
     now = time.time()
     # Limpiar siempre, no solo cuando hay demasiadas sesiones
     expired = [k for k, v in list(_sessions.items()) if now - v.created_at > TTL]
@@ -61,7 +65,9 @@ def get_session(guest_id: str) -> GuestSession:
         del _sessions[k]
     if guest_id not in _sessions:
         if len(_sessions) >= MAX_SESSIONS:
-            raise HTTPException(status_code=503, detail="Servidor saturado. Inténtalo más tarde.")
+            raise HTTPException(
+                status_code=503, detail="Servidor saturado. Inténtalo más tarde."
+            )
         _sessions[guest_id] = GuestSession()
     return _sessions[guest_id]
 

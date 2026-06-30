@@ -1,4 +1,5 @@
 """Rutas de memoria."""
+
 from __future__ import annotations
 
 from typing import Any, Dict, List
@@ -19,8 +20,11 @@ _storage = MemoryStorage(MEMORY_DIR)
 async def list_memory(user: str = Depends(require_auth)) -> List[Dict[str, Any]]:
     if is_guest(user):
         s = get_session(user)
-        return [{"filename": k, "size": len(v), "updated_at": None} for k, v in s.memory.items()]
-    return _storage.list()
+        return [
+            {"filename": k, "size": len(v), "updated_at": None}
+            for k, v in s.memory.items()
+        ]
+    return await _storage.list(owner_id=user)
 
 
 @router.get("/{filename}")
@@ -30,9 +34,11 @@ async def get_memory(
     if is_guest(user):
         content = get_session(user).memory.get(filename)
         if content is None:
-            raise HTTPException(status_code=404, detail="Archivo de memoria no encontrado")
+            raise HTTPException(
+                status_code=404, detail="Archivo de memoria no encontrado"
+            )
         return {"filename": filename, "content": content}
-    content = _storage.get(filename)
+    content = await _storage.get(filename, owner_id=user)
     if content is None:
         raise HTTPException(status_code=404, detail="Archivo de memoria no encontrado")
     return {"filename": filename, "content": content}
@@ -47,7 +53,7 @@ async def save_memory(
     if is_guest(user):
         get_session(user).memory[filename] = content
         return {"filename": filename}
-    return _storage.save(filename, content)
+    return await _storage.save(filename, content, owner_id=user)
 
 
 @router.patch("/{filename}")
@@ -58,7 +64,7 @@ async def patch_memory(
         return {"ok": True}
     body = await request.json()
     folder_id = body.get("folder_id") or None
-    if not _storage.move_folder(filename, folder_id):
+    if not await _storage.move_folder(filename, folder_id, owner_id=user):
         raise HTTPException(status_code=404, detail="Archivo de memoria no encontrado")
     return {"ok": True, "folder_id": folder_id}
 
@@ -70,9 +76,11 @@ async def delete_memory(
     if is_guest(user):
         s = get_session(user)
         if filename not in s.memory:
-            raise HTTPException(status_code=404, detail="Archivo de memoria no encontrado")
+            raise HTTPException(
+                status_code=404, detail="Archivo de memoria no encontrado"
+            )
         del s.memory[filename]
         return {"ok": True}
-    if not _storage.delete(filename):
+    if not await _storage.delete(filename, owner_id=user):
         raise HTTPException(status_code=404, detail="Archivo de memoria no encontrado")
     return {"ok": True}

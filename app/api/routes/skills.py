@@ -1,4 +1,5 @@
 """Rutas de skills."""
+
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
@@ -43,7 +44,7 @@ async def list_skills(
     _check_scope(scope)
     if is_guest(user):
         s = get_session(user)
-        public = _storage.list("public") if scope in ("public", "all") else []
+        public = await _storage.list("public") if scope in ("public", "all") else []
         private = s.skills if scope in ("private", "all") else []
         items = public + private
         if offset:
@@ -51,21 +52,25 @@ async def list_skills(
         if limit:
             items = items[:limit]
         return items
-    items = _storage.list(scope)
+    items = await _storage.list(scope)
     if await get_user_role(user) != "admin":
         # Filter: public skills + own workspace skills + legacy private (no owner_id)
         items = [
-            s for s in items
+            s
+            for s in items
             if s.get("scope") == "public"
             or s.get("owner_id") is None
             or s.get("owner_id") == workspace_id
         ]
         # Inject group-shared skills not already visible
         from app.storage.groups import GroupStorage as _GS
-        shared_ids = set(await _GS(DB_FILE).get_user_shared_resource_ids(user, "skill", workspace_id))
+
+        shared_ids = set(
+            await _GS(DB_FILE).get_user_shared_resource_ids(user, "skill", workspace_id)
+        )
         own_ids = {s["id"] for s in items}
         for sid in shared_ids - own_ids:
-            sk = _storage.get_any(sid)
+            sk = await _storage.get_any(sid)
             if sk:
                 sk["_shared"] = True
                 items.append(sk)
@@ -83,11 +88,13 @@ async def get_skill(
     user = ctx.user
     _check_scope(scope)
     if is_guest(user) and scope == "private":
-        sk = next((s for s in get_session(user).skills if s.get("id") == skill_id), None)
+        sk = next(
+            (s for s in get_session(user).skills if s.get("id") == skill_id), None
+        )
         if not sk:
             raise HTTPException(status_code=404, detail="Skill no encontrada")
         return sk
-    sk = _storage.get(scope, skill_id)
+    sk = await _storage.get(scope, skill_id)
     if not sk:
         raise HTTPException(status_code=404, detail="Skill no encontrada")
     return sk
@@ -102,14 +109,21 @@ async def save_skill(
     payload = await request.json()
     if is_guest(user):
         if scope == "public":
-            raise HTTPException(status_code=403, detail="Los invitados no pueden modificar skills públicas")
+            raise HTTPException(
+                status_code=403,
+                detail="Los invitados no pueden modificar skills públicas",
+            )
         s = get_session(user)
-        skill: Dict[str, Any] = {**payload, "id": payload.get("id") or uuid4().hex[:12], "scope": "private"}
+        skill: Dict[str, Any] = {
+            **payload,
+            "id": payload.get("id") or uuid4().hex[:12],
+            "scope": "private",
+        }
         s.skills = [sk for sk in s.skills if sk.get("id") != skill["id"]]
         s.skills.append(skill)
         return skill
     try:
-        return _storage.save(scope, payload, owner_id=workspace_id)
+        return await _storage.save(scope, payload, owner_id=workspace_id)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
@@ -121,8 +135,10 @@ async def move_skill_folder(
     ctx: WorkspaceContext = Depends(require_workspace),
 ) -> Dict[str, Any]:
     if is_guest(ctx.user):
-        raise HTTPException(status_code=403, detail="Los invitados no pueden mover skills")
-    if not _storage.move_folder(skill_id, body.folder_id):
+        raise HTTPException(
+            status_code=403, detail="Los invitados no pueden mover skills"
+        )
+    if not await _storage.move_folder(skill_id, body.folder_id):
         raise HTTPException(status_code=404, detail="Skill no encontrada")
     return {"ok": True}
 
@@ -135,7 +151,10 @@ async def delete_skill(
     _check_scope(scope)
     if is_guest(user):
         if scope == "public":
-            raise HTTPException(status_code=403, detail="Los invitados no pueden eliminar skills públicas")
+            raise HTTPException(
+                status_code=403,
+                detail="Los invitados no pueden eliminar skills públicas",
+            )
         s = get_session(user)
         before = len(s.skills)
         s.skills = [sk for sk in s.skills if sk.get("id") != skill_id]
@@ -143,11 +162,17 @@ async def delete_skill(
             raise HTTPException(status_code=404, detail="Skill no encontrada")
         return {"ok": True}
     # Ownership check before delete
-    sk = _storage.get_any(skill_id)
-    if sk and await get_user_role(user) != "admin" and sk.get("owner_id") not in (workspace_id, None):
-        raise HTTPException(status_code=403, detail="No tienes permiso para eliminar esta skill")
+    sk = await _storage.get_any(skill_id)
+    if (
+        sk
+        and await get_user_role(user) != "admin"
+        and sk.get("owner_id") not in (workspace_id, None)
+    ):
+        raise HTTPException(
+            status_code=403, detail="No tienes permiso para eliminar esta skill"
+        )
     try:
-        if not _storage.delete(scope, skill_id):
+        if not await _storage.delete(scope, skill_id):
             raise HTTPException(status_code=404, detail="Skill no encontrada")
     except ValueError as e:
         raise HTTPException(status_code=403, detail=str(e))

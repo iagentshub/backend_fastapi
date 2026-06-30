@@ -3,11 +3,12 @@
 Cubre: helpers, paths de guest, filtros de listado, casos de error en CRUD,
 move_folder, export con locale/memory, y el endpoint de chat/stream.
 """
+
 from __future__ import annotations
 
 import asyncio
 import json
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 
 # ── Helpers de fixture ────────────────────────────────────────────────────────
@@ -23,6 +24,7 @@ _CONN_PAYLOAD = {
 
 def _register_and_login(client, username: str) -> str:
     from app.auth.auth import create_token, register_user
+
     asyncio.run(register_user(username, "pass1234", email=f"{username}@cov.test"))
     client.cookies.set("ga_token", create_token(username))
     return username
@@ -56,6 +58,7 @@ async def _fake_stream_gen(*args, **kwargs):
 
 # ── _check_scope — línea 59 ───────────────────────────────────────────────────
 
+
 def test_list_agents_invalid_scope_returns_400(admin_client):
     """Scope inválido en GET /api/agents devuelve 400."""
     r = admin_client.get("/api/agents", params={"scope": "badscope"})
@@ -64,6 +67,7 @@ def test_list_agents_invalid_scope_returns_400(admin_client):
 
 
 # ── list_agents con offset y limit — líneas 120, 122 ─────────────────────────
+
 
 def test_list_agents_with_offset(admin_client):
     """offset=N salta los primeros N agentes (línea 120)."""
@@ -92,7 +96,9 @@ def test_list_agents_with_limit(admin_client):
 
 def test_list_agents_with_label_filter(admin_client):
     """Filtra agentes por label (línea 118)."""
-    admin_client.post("/api/agents", json={"name": "Special Label Agent", "labels": ["special"]})
+    admin_client.post(
+        "/api/agents", json={"name": "Special Label Agent", "labels": ["special"]}
+    )
     admin_client.post("/api/agents", json={"name": "Unlabeled Coverage Agent"})
 
     r = admin_client.get("/api/agents", params={"label": "special"})
@@ -104,6 +110,7 @@ def test_list_agents_with_label_filter(admin_client):
 
 # ── save_agent: scope inválido — línea 134 ───────────────────────────────────
 
+
 def test_save_agent_invalid_scope_returns_400(admin_client):
     """Scope distinto de public/private en POST devuelve 400 (línea 134)."""
     r = admin_client.post("/api/agents", json={**_AGENT, "scope": "invalid"})
@@ -112,6 +119,7 @@ def test_save_agent_invalid_scope_returns_400(admin_client):
 
 
 # ── save_agent: ValueError → 422 — líneas 143-144 ───────────────────────────
+
 
 def test_save_agent_empty_name_returns_422(admin_client):
     """Nombre vacío llega al storage que lanza ValueError → 422 (líneas 143-144)."""
@@ -127,13 +135,16 @@ def test_save_agent_public_scope_raises_422(admin_client):
 
 # ── delete_agent: ValueError → 403 — línea 183 ───────────────────────────────
 
+
 def test_delete_agent_value_error_returns_403(admin_client):
     """Si _agents.delete lanza ValueError (p.ej. scope público) → 403 (línea 183)."""
     agent = _create_agent(admin_client)
 
     with patch("app.api.routes.agents._agents") as mock_agents:
-        mock_agents.get.return_value = agent
-        mock_agents.delete.side_effect = ValueError("Los agentes públicos son de solo lectura")
+        mock_agents.get = AsyncMock(return_value=agent)
+        mock_agents.delete = AsyncMock(
+            side_effect=ValueError("Los agentes públicos son de solo lectura")
+        )
         r = admin_client.delete(f"/api/agents/{agent['id']}")
 
     assert r.status_code == 403
@@ -141,6 +152,7 @@ def test_delete_agent_value_error_returns_403(admin_client):
 
 
 # ── _apply_locale — líneas 65-78 ─────────────────────────────────────────────
+
 
 def test_get_agent_applies_locale_override(admin_client):
     """locale.es.json aplicado cuando existe (cubre líneas 72-78)."""
@@ -150,9 +162,9 @@ def test_get_agent_applies_locale_override(admin_client):
     agent_id = agent["id"]
 
     override = {"name": "Agente Localizado", "description": "Descripción ES"}
-    (AGENTS_DIR / "private" / agent_id / "locale.es.json").write_text(
-        json.dumps(override), encoding="utf-8"
-    )
+    locale_file = AGENTS_DIR / "private" / agent_id / "locale.es.json"
+    locale_file.parent.mkdir(parents=True, exist_ok=True)
+    locale_file.write_text(json.dumps(override), encoding="utf-8")
 
     r = admin_client.get(f"/api/agents/{agent_id}", headers={"Accept-Language": "es"})
     assert r.status_code == 200
@@ -167,9 +179,9 @@ def test_get_agent_locale_fallback_to_es(admin_client):
     agent_id = agent["id"]
 
     override = {"name": "Fallback ES Name"}
-    (AGENTS_DIR / "private" / agent_id / "locale.es.json").write_text(
-        json.dumps(override), encoding="utf-8"
-    )
+    locale_file = AGENTS_DIR / "private" / agent_id / "locale.es.json"
+    locale_file.parent.mkdir(parents=True, exist_ok=True)
+    locale_file.write_text(json.dumps(override), encoding="utf-8")
 
     r = admin_client.get(f"/api/agents/{agent_id}", headers={"Accept-Language": "en"})
     assert r.status_code == 200
@@ -178,14 +190,17 @@ def test_get_agent_locale_fallback_to_es(admin_client):
 
 # ── _apply_locale: early return — línea 64-65 ────────────────────────────────
 
+
 def test_apply_locale_empty_agent_returns_early():
     """_apply_locale({}, 'es') devuelve {} inmediatamente (líneas 64-65)."""
     from app.api.routes.agents import _apply_locale
+
     result = _apply_locale({}, "es")
     assert result == {}
 
 
 # ── _conn_owner helper — línea 46 ────────────────────────────────────────────
+
 
 def test_conn_owner_admin_returns_none():
     """_conn_owner devuelve None para admin (línea 46)."""
@@ -210,6 +225,7 @@ def test_conn_owner_standard_returns_username():
 
 # ── move_agent_folder — líneas 193-197 ───────────────────────────────────────
 
+
 def test_move_folder_guest_returns_403(client):
     """Guest no puede mover agentes a carpeta (línea 193-194)."""
     _setup_guest(client)
@@ -229,7 +245,9 @@ def test_move_folder_success(client):
     """move_folder mueve el agente a la carpeta indicada → 200."""
     _register_and_login(client, "movefolder_user2")
     agent = _create_agent(client, {"name": "Movable Agent"})
-    r = client.patch(f"/api/agents/{agent['id']}/folder", json={"folder_id": "folder-abc"})
+    r = client.patch(
+        f"/api/agents/{agent['id']}/folder", json={"folder_id": "folder-abc"}
+    )
     assert r.status_code == 200
     assert r.json()["ok"] is True
 
@@ -244,6 +262,7 @@ def test_move_folder_clear_folder(client):
 
 
 # ── Rutas guest: list / get / save / delete ───────────────────────────────────
+
 
 def test_guest_list_agents(client):
     """Guest puede listar agentes (líneas 94-104)."""
@@ -263,7 +282,9 @@ def test_guest_list_agents_only_private_scope(client):
 def test_guest_list_agents_with_label_filter(client):
     """Guest: filtrar por label (línea 99)."""
     _setup_guest(client)
-    r = client.post("/api/agents", json={"name": "Guest Labeled", "labels": ["g-label"]})
+    r = client.post(
+        "/api/agents", json={"name": "Guest Labeled", "labels": ["g-label"]}
+    )
     assert r.status_code == 200
 
     r2 = client.get("/api/agents", params={"label": "g-label"})
@@ -342,6 +363,7 @@ def test_guest_delete_agent_success(client):
 
 # ── export: guest path — líneas 207-210 ──────────────────────────────────────
 
+
 def test_export_agent_guest_not_found(client):
     """Guest exportando agente inexistente → 404 (líneas 207-210)."""
     _setup_guest(client)
@@ -358,6 +380,7 @@ def test_export_agent_guest_success(client):
 
 
 # ── export con memory — líneas 296, 325, 338 ─────────────────────────────────
+
 
 def test_export_claude_includes_memory(admin_client):
     """Claude export incluye CLAUDE.md cuando existe memoria (línea 296)."""
@@ -382,7 +405,9 @@ def test_export_openai_includes_memory(admin_client):
     import io
     import zipfile
 
-    agent = _create_agent(admin_client, {"name": "Memory OpenAI Agent", "agent_type": "openai"})
+    agent = _create_agent(
+        admin_client, {"name": "Memory OpenAI Agent", "agent_type": "openai"}
+    )
     admin_client.post(
         f"/api/memory/{agent['id']}.md",
         json={"content": "Memoria OpenAI"},
@@ -415,6 +440,7 @@ def test_export_mcp_includes_memory(admin_client):
 
 # ── chat endpoint — líneas 360-442 ───────────────────────────────────────────
 
+
 def test_chat_agent_not_found_returns_404(client):
     """Chat con agente inexistente → 404 (línea 367)."""
     _register_and_login(client, "chat404user")
@@ -434,7 +460,9 @@ def test_chat_agent_no_connection_returns_422(client):
 def test_chat_streams_sse_response(admin_client):
     """Chat con conexión válida devuelve StreamingResponse SSE (líneas 361-447)."""
     conn = _create_connection(admin_client)
-    agent = _create_agent(admin_client, {"name": "SSE Stream Agent", "connection_id": conn["id"]})
+    agent = _create_agent(
+        admin_client, {"name": "SSE Stream Agent", "connection_id": conn["id"]}
+    )
 
     with patch("app.api.routes.agents.stream_chat", new=_fake_stream_gen):
         r = admin_client.post(
@@ -453,7 +481,9 @@ def test_chat_with_conversation_id(admin_client):
     from app.config.data import DB_FILE
 
     conn = _create_connection(admin_client)
-    agent = _create_agent(admin_client, {"name": "Conv ID Agent", "connection_id": conn["id"]})
+    agent = _create_agent(
+        admin_client, {"name": "Conv ID Agent", "connection_id": conn["id"]}
+    )
 
     # Crear conversación previa para tener un conversation_id válido
     chat_storage = ChatStorage(DB_FILE)

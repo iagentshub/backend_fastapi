@@ -1,4 +1,5 @@
 """Rutas para cuentas de proveedor vinculadas."""
+
 from __future__ import annotations
 
 from typing import Any, Dict, List
@@ -22,6 +23,8 @@ _conn_storage = ConnectionStorage(DB_FILE)
 
 async def _owner(user: str) -> str:
     return "admin" if await get_user_role(user) == "admin" else user
+
+
 _agent_storage = AgentStorage(AGENTS_DIR)
 _skill_storage = SkillStorage(SKILLS_DIR)
 
@@ -36,13 +39,12 @@ _PROVIDER_LABELS = {
 }
 _PROVIDER_TYPE_IDS: dict[str, str] = {
     "anthropic": "claude",
-    "google":    "gemini",
-    "openai":    "openai",
-    "ollama":    "ollama",
-    "nvidia":    "nvidia",
-    "github":    "github",
+    "google": "gemini",
+    "openai": "openai",
+    "ollama": "ollama",
+    "nvidia": "nvidia",
+    "github": "github",
 }
-
 
 
 async def _fetch_models(provider: str, api_key: str, host: str = "") -> List[str]:
@@ -77,7 +79,11 @@ async def _fetch_models(provider: str, api_key: str, host: str = "") -> List[str
             r.raise_for_status()
             data = r.json()
             items = data if isinstance(data, list) else data.get("data", [])
-            return [m.get("id") or m.get("name", "") for m in items if m.get("id") or m.get("name")]
+            return [
+                m.get("id") or m.get("name", "")
+                for m in items
+                if m.get("id") or m.get("name")
+            ]
 
         if provider == "ollama":
             base = (host or "http://localhost:11434").rstrip("/")
@@ -108,10 +114,15 @@ async def _fetch_models(provider: str, api_key: str, host: str = "") -> List[str
             return [m["name"].split("/")[-1] for m in data.get("models", [])]
 
     except httpx.HTTPStatusError as exc:
-        raise HTTPException(status_code=exc.response.status_code, detail=str(exc)) from exc
+        raise HTTPException(
+            status_code=exc.response.status_code, detail=str(exc)
+        ) from exc
     except httpx.ConnectError:
         label = _PROVIDER_LABELS.get(provider, provider)
-        raise HTTPException(status_code=502, detail=f"No se puede conectar con {label}. Comprueba que el servicio está activo y la URL es correcta.") from None
+        raise HTTPException(
+            status_code=502,
+            detail=f"No se puede conectar con {label}. Comprueba que el servicio está activo y la URL es correcta.",
+        ) from None
     except Exception as exc:
         raise HTTPException(status_code=502, detail=str(exc)) from exc
 
@@ -135,7 +146,9 @@ async def link_account(
     provider: str, request: Request, user: str = Depends(require_auth)
 ) -> Dict[str, Any]:
     if provider not in _PROVIDERS:
-        raise HTTPException(status_code=400, detail=f"Proveedor no soportado: {provider}")
+        raise HTTPException(
+            status_code=400, detail=f"Proveedor no soportado: {provider}"
+        )
     body = await request.json()
     api_key = str(body.get("api_key") or "").strip()
     host = str(body.get("host") or "").strip()
@@ -166,7 +179,9 @@ async def test_account(
 ) -> Dict[str, Any]:
     """Prueba las credenciales sin guardarlas."""
     if provider not in _PROVIDERS:
-        raise HTTPException(status_code=400, detail=f"Proveedor no soportado: {provider}")
+        raise HTTPException(
+            status_code=400, detail=f"Proveedor no soportado: {provider}"
+        )
     body = await request.json()
     api_key = str(body.get("api_key") or "").strip()
     host = str(body.get("host") or "").strip()
@@ -179,7 +194,9 @@ async def sync_account(
     provider: str, user: str = Depends(require_auth)
 ) -> Dict[str, Any]:
     if provider not in _PROVIDERS:
-        raise HTTPException(status_code=400, detail=f"Proveedor no soportado: {provider}")
+        raise HTTPException(
+            status_code=400, detail=f"Proveedor no soportado: {provider}"
+        )
 
     account = await _storage.get(provider, await _owner(user))
     if not account:
@@ -198,7 +215,8 @@ async def sync_account(
 
     existing_conns = await _conn_storage.list(owner)
     existing_by_model: Dict[str, Any] = {
-        c["model"]: c for c in existing_conns
+        c["model"]: c
+        for c in existing_conns
         if c.get("type") == type_id and c.get("model")
     }
     connections_created = 0
@@ -229,21 +247,23 @@ async def sync_account(
 
     provider_conn_ids = conn_ids
 
-    # 3. Find private agents linked to this provider's connections (filesystem, not DB)
-    private_agents = _agent_storage.list(scope="private")
+    # 3. Find private agents linked to this provider's connections (DB-backed)
+    private_agents = await _agent_storage.list(scope="private")
     agents_linked = []
     for summary in private_agents:
         if summary.get("connection_id") in provider_conn_ids:
-            full = _agent_storage.get(summary["id"], scope="private") or {}
+            full = await _agent_storage.get(summary["id"], scope="private") or {}
             routines = [r for r in (full.get("routines") or []) if isinstance(r, dict)]
-            agents_linked.append({
-                "id": summary["id"],
-                "name": summary["name"],
-                "routines_count": len(routines),
-            })
+            agents_linked.append(
+                {
+                    "id": summary["id"],
+                    "name": summary["name"],
+                    "routines_count": len(routines),
+                }
+            )
 
-    # 4. Count private skills (filesystem, not DB)
-    private_skills_count = len(_skill_storage.list(scope="private"))
+    # 4. Count private skills (DB-backed)
+    private_skills_count = len(await _skill_storage.list(scope="private"))
 
     # 5. Save updated account with summary
     summary_data = {

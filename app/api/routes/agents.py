@@ -1,4 +1,5 @@
 """Rutas de agentes: CRUD, exportación y chat SSE."""
+
 from __future__ import annotations
 
 import io
@@ -22,19 +23,29 @@ from app.models.agent import Agent
 from app.services.chat import auto_update_memory, stream_chat
 from app.storage.chat import ChatStorage
 
-from app.storage.guest import GuestKnowledgeAdapter, GuestMemoryAdapter, get_session, is_guest
+from app.storage.guest import (
+    GuestKnowledgeAdapter,
+    GuestMemoryAdapter,
+    get_session,
+    is_guest,
+)
 from app.storage.knowledge import FolderStorage, KnowledgeStorage
-from app.storage.storage import AgentStorage, ConnectionStorage, MemoryStorage, SkillStorage
+from app.storage.storage import (
+    AgentStorage,
+    ConnectionStorage,
+    MemoryStorage,
+    SkillStorage,
+)
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
 
-_agents       = AgentStorage(AGENTS_DIR)
-_conns        = ConnectionStorage(DB_FILE)
-_skills       = SkillStorage(SKILLS_DIR)
-_memory       = MemoryStorage(MEMORY_DIR)
-_chat         = ChatStorage(DB_FILE)
-_knowledge    = KnowledgeStorage(DB_FILE)
-_folders      = FolderStorage(DB_FILE)
+_agents = AgentStorage(AGENTS_DIR)
+_conns = ConnectionStorage(DB_FILE)
+_skills = SkillStorage(SKILLS_DIR)
+_memory = MemoryStorage(MEMORY_DIR)
+_chat = ChatStorage(DB_FILE)
+_knowledge = KnowledgeStorage(DB_FILE)
+_folders = FolderStorage(DB_FILE)
 _chat_limiter = RateLimiter(calls=RATE_CHAT_CALLS, window=RATE_CHAT_WINDOW)
 
 
@@ -44,6 +55,7 @@ class _AgentFolderMove(BaseModel):
 
 async def _conn_owner(user: str) -> str | None:
     return None if await get_user_role(user) == "admin" else user
+
 
 _VALID_SCOPES = {"public", "private", "all"}
 _LOCALE_FIELDS = ("name", "description", "system_prompt")
@@ -92,7 +104,7 @@ async def list_agents(
     user, workspace_id = ctx.user, ctx.workspace_id
     if is_guest(user):
         s = get_session(user)
-        public = _agents.list("public") if scope in ("public", "all") else []
+        public = await _agents.list("public") if scope in ("public", "all") else []
         private = s.agents if scope in ("private", "all") else []
         items = public + private
         if label:
@@ -102,13 +114,16 @@ async def list_agents(
         if limit:
             items = items[:limit]
         return [_apply_locale(a, locale) for a in items]
-    agents = _agents.list(scope)
+    agents = await _agents.list(scope)
     role = await get_user_role(user)
     if role not in ("admin", "guest"):
         from app.storage.groups import GroupStorage
+
         gs = GroupStorage(DB_FILE)
         own = [a for a in agents if a.get("owner_id") == workspace_id]
-        shared_ids = set(await gs.get_user_shared_resource_ids(user, "agent", workspace_id))
+        shared_ids = set(
+            await gs.get_user_shared_resource_ids(user, "agent", workspace_id)
+        )
         own_ids = {a["id"] for a in own}
         extra = [a for a in agents if a["id"] in (shared_ids - own_ids)]
         for a in extra:
@@ -134,12 +149,16 @@ async def save_agent(
         raise HTTPException(status_code=400, detail="Scope no válido")
     if is_guest(user):
         s = get_session(user)
-        agent: Dict[str, Any] = {**payload, "id": payload.get("id") or uuid4().hex[:12], "scope": "private"}
+        agent: Dict[str, Any] = {
+            **payload,
+            "id": payload.get("id") or uuid4().hex[:12],
+            "scope": "private",
+        }
         s.agents = [a for a in s.agents if a.get("id") != agent["id"]]
         s.agents.append(agent)
         return agent
     try:
-        return _agents.save(payload, scope, owner_id=workspace_id)
+        return await _agents.save(payload, scope, owner_id=workspace_id)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
@@ -151,11 +170,13 @@ async def get_agent(
     user = ctx.user
     if is_guest(user):
         s = get_session(user)
-        a = next((a for a in s.agents if a.get("id") == agent_id), None) or _agents.get(agent_id, scope="public")
+        a = next(
+            (a for a in s.agents if a.get("id") == agent_id), None
+        ) or await _agents.get(agent_id, scope="public")
         if not a:
             raise HTTPException(status_code=404, detail="Agente no encontrado")
         return _apply_locale(a, get_locale())
-    a = _agents.get(agent_id)
+    a = await _agents.get(agent_id)
     if not a:
         raise HTTPException(status_code=404, detail="Agente no encontrado")
     return _apply_locale(a, get_locale())
@@ -173,11 +194,13 @@ async def delete_agent(
         if len(s.agents) == before:
             raise HTTPException(status_code=404, detail="Agente no encontrado")
         return {"ok": True}
-    a = _agents.get(agent_id)
+    a = await _agents.get(agent_id)
     if a and await get_user_role(user) != "admin" and a.get("owner_id") != workspace_id:
-        raise HTTPException(status_code=403, detail="No tienes permiso para eliminar este agente")
+        raise HTTPException(
+            status_code=403, detail="No tienes permiso para eliminar este agente"
+        )
     try:
-        if not _agents.delete(agent_id):
+        if not await _agents.delete(agent_id):
             raise HTTPException(status_code=404, detail="Agente no encontrado")
     except ValueError as e:
         raise HTTPException(status_code=403, detail=str(e))
@@ -191,8 +214,10 @@ async def move_agent_folder(
     ctx: WorkspaceContext = Depends(require_workspace),
 ) -> Dict[str, Any]:
     if is_guest(ctx.user):
-        raise HTTPException(status_code=403, detail="Los invitados no pueden mover agentes")
-    if not _agents.move_folder(agent_id, body.folder_id):
+        raise HTTPException(
+            status_code=403, detail="Los invitados no pueden mover agentes"
+        )
+    if not await _agents.move_folder(agent_id, body.folder_id):
         raise HTTPException(status_code=404, detail="Agente no encontrado")
     return {"ok": True}
 
@@ -205,11 +230,13 @@ async def export_agent(
     user = ctx.user
     if is_guest(user):
         s = get_session(user)
-        a = next((ag for ag in s.agents if ag.get("id") == agent_id), None) or _agents.get(agent_id, scope="public")
+        a = next(
+            (ag for ag in s.agents if ag.get("id") == agent_id), None
+        ) or await _agents.get(agent_id, scope="public")
         memory_store = GuestMemoryAdapter(s)
         knowledge_store: Any = GuestKnowledgeAdapter(s)
     else:
-        a = _agents.get(agent_id)
+        a = await _agents.get(agent_id)
         memory_store = _memory
         knowledge_store = _knowledge
     if not a:
@@ -218,16 +245,16 @@ async def export_agent(
 
     # Resolve skills
     resolved_skills: List[Dict[str, Any]] = []
-    for sid in (a.get("skills") or []):
+    for sid in a.get("skills") or []:
         for scope in ("public", "private"):
-            sk = _skills.get(scope, sid)
+            sk = await _skills.get(scope, sid)
             if sk:
                 resolved_skills.append(sk)
                 break
 
     # Resolve knowledge items
     resolved_knowledge: List[Dict[str, Any]] = []
-    for kid in (a.get("knowledge") or []):
+    for kid in a.get("knowledge") or []:
         try:
             item = await knowledge_store.get(kid)
             if item:
@@ -237,7 +264,10 @@ async def export_agent(
 
     # Resolve memory
     mem_file = a.get("memory_file") or f"{agent_id}.md"
-    mem_content = (memory_store.get(mem_file) or "").strip()
+    if is_guest(user):
+        mem_content = (await memory_store.get(mem_file) or "").strip()
+    else:
+        mem_content = (await memory_store.get(mem_file, owner_id=user) or "").strip()
 
     # OpenAI: inject skills as text into system_prompt.
     if fmt == "openai":
@@ -246,7 +276,12 @@ async def export_agent(
             for sk in resolved_skills
         )
         if skills_text:
-            a = {**a, "system_prompt": (str(a.get("system_prompt") or "").strip() + skills_text).strip()}
+            a = {
+                **a,
+                "system_prompt": (
+                    str(a.get("system_prompt") or "").strip() + skills_text
+                ).strip(),
+            }
 
     # MCP: pass resolved skills for tool generation.
     if fmt == "mcp":
@@ -256,7 +291,10 @@ async def export_agent(
     try:
         content, media, filename = agent_obj.export(fmt)
     except NotImplementedError:
-        raise HTTPException(status_code=400, detail=f"Formato '{fmt}' no soportado para tipo '{agent_obj.agent_type}'")
+        raise HTTPException(
+            status_code=400,
+            detail=f"Formato '{fmt}' no soportado para tipo '{agent_obj.agent_type}'",
+        )
 
     slug = _name_slug(agent_obj.name)
 
@@ -298,7 +336,9 @@ async def export_agent(
         return Response(
             content=buf.getvalue(),
             media_type="application/zip",
-            headers={"Content-Disposition": f'attachment; filename="{slug}-claude.zip"'},
+            headers={
+                "Content-Disposition": f'attachment; filename="{slug}-claude.zip"'
+            },
         )
 
     if fmt == "github":
@@ -314,7 +354,9 @@ async def export_agent(
         return Response(
             content=buf.getvalue(),
             media_type="application/zip",
-            headers={"Content-Disposition": f'attachment; filename="{slug}-copilot.zip"'},
+            headers={
+                "Content-Disposition": f'attachment; filename="{slug}-copilot.zip"'
+            },
         )
 
     if fmt == "openai":
@@ -327,7 +369,9 @@ async def export_agent(
         return Response(
             content=buf.getvalue(),
             media_type="application/zip",
-            headers={"Content-Disposition": f'attachment; filename="{slug}-openai.zip"'},
+            headers={
+                "Content-Disposition": f'attachment; filename="{slug}-openai.zip"'
+            },
         )
 
     if fmt == "mcp":
@@ -360,9 +404,11 @@ async def chat(
     user, workspace_id = ctx.user, ctx.workspace_id
     if is_guest(user):
         s = get_session(user)
-        a = next((a for a in s.agents if a.get("id") == agent_id), None) or _agents.get(agent_id, scope="public")
+        a = next(
+            (a for a in s.agents if a.get("id") == agent_id), None
+        ) or await _agents.get(agent_id, scope="public")
     else:
-        a = _agents.get(agent_id)
+        a = await _agents.get(agent_id)
     if not a:
         raise HTTPException(status_code=404, detail="Agente no encontrado")
     role = await get_user_role(user)
@@ -396,14 +442,18 @@ async def chat(
         conn = {**conn, "model": ollama_model}
 
     if not conn:
-        raise HTTPException(status_code=422, detail="El agente no tiene conexión configurada")
+        raise HTTPException(
+            status_code=422, detail="El agente no tiene conexión configurada"
+        )
 
     from starlette.background import BackgroundTask
 
     done_event: List[dict] = []
 
     async def _gen():
-        async for chunk in stream_chat(a, conn, history, _skills, memory_store, knowledge_store):
+        async for chunk in stream_chat(
+            a, conn, history, _skills, memory_store, knowledge_store
+        ):
             yield chunk
             if chunk.startswith("data: "):
                 try:
@@ -431,13 +481,17 @@ async def chat(
                     (m for m in reversed(history) if m.get("role") == "user"), None
                 )
                 if user_msg:
-                    await _chat.add_message(conversation_id, "user", str(user_msg.get("content") or ""))
+                    await _chat.add_message(
+                        conversation_id, "user", str(user_msg.get("content") or "")
+                    )
                 if reply:
                     await _chat.add_message(conversation_id, "assistant", reply)
                     title = str(user_msg.get("content") or "")[:80] if user_msg else ""
                     await _chat.touch_conversation(conversation_id, title)
         if a.get("use_memory"):
-            await auto_update_memory(a, conn, history, ev.get("reply", ""), memory_store)
+            await auto_update_memory(
+                a, conn, history, ev.get("reply", ""), memory_store
+            )
 
     return StreamingResponse(
         _gen(),
