@@ -96,6 +96,31 @@ async def get_user_by_username(username: str) -> Optional[dict]:
     return await _get_user_by("username", username)
 
 
+async def get_stripe_customer_id(username: str) -> Optional[str]:
+    async with open_db() as conn:
+        row = await conn.fetchone(
+            "SELECT stripe_customer_id FROM users WHERE username = ?", (username,)
+        )
+        return row["stripe_customer_id"] if row else None
+
+
+async def set_stripe_customer_id(username: str, customer_id: str) -> None:
+    async with open_db() as conn:
+        await conn.execute(
+            "UPDATE users SET stripe_customer_id = ? WHERE username = ?",
+            (customer_id, username),
+        )
+        await conn.commit()
+
+
+async def get_username_by_stripe_customer_id(customer_id: str) -> Optional[str]:
+    async with open_db() as conn:
+        row = await conn.fetchone(
+            "SELECT username FROM users WHERE stripe_customer_id = ?", (customer_id,)
+        )
+        return row["username"] if row else None
+
+
 async def _gen_username(email: str) -> str:
     """Username is the full email address."""
     return email

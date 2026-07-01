@@ -142,9 +142,11 @@ CREATE TABLE IF NOT EXISTS users (
     preferences           TEXT,
     deletion_requested_at TEXT,
     deletion_token        TEXT,
+    stripe_customer_id    TEXT,
     created_at            TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_users_email ON users (email);
+CREATE INDEX IF NOT EXISTS idx_users_stripe_customer ON users (stripe_customer_id);
 CREATE TABLE IF NOT EXISTS workspace_groups (
     id           TEXT PRIMARY KEY,
     workspace_id TEXT NOT NULL,
@@ -203,6 +205,30 @@ CREATE TABLE IF NOT EXISTS workspace_invitations (
     UNIQUE(workspace_id, username)
 );
 CREATE INDEX IF NOT EXISTS idx_ws_inv_user ON workspace_invitations(username, status);
+CREATE TABLE IF NOT EXISTS subscriptions (
+    id                     TEXT PRIMARY KEY,
+    username               TEXT NOT NULL,
+    stripe_customer_id     TEXT NOT NULL,
+    stripe_subscription_id TEXT NOT NULL UNIQUE,
+    tier                   TEXT NOT NULL,
+    seats                  INTEGER NOT NULL DEFAULT 1,
+    self_hosted            INTEGER NOT NULL DEFAULT 0,
+    interval               TEXT NOT NULL,
+    amount_cents           INTEGER NOT NULL DEFAULT 0,
+    status                 TEXT NOT NULL,
+    current_period_end     TEXT,
+    cancel_at_period_end   INTEGER NOT NULL DEFAULT 0,
+    created_at             TEXT NOT NULL,
+    updated_at             TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_subscriptions_username ON subscriptions(username);
+CREATE INDEX IF NOT EXISTS idx_subscriptions_customer ON subscriptions(stripe_customer_id);
+CREATE TABLE IF NOT EXISTS stripe_events (
+    stripe_event_id TEXT PRIMARY KEY,
+    type            TEXT NOT NULL,
+    processed_at    TEXT NOT NULL,
+    payload         TEXT NOT NULL
+);
 """
 
 _SCHEMA_PG = """
@@ -318,9 +344,11 @@ CREATE TABLE IF NOT EXISTS users (
     preferences           TEXT,
     deletion_requested_at TEXT,
     deletion_token        TEXT,
+    stripe_customer_id    TEXT,
     created_at            TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_users_email ON users (email);
+CREATE INDEX IF NOT EXISTS idx_users_stripe_customer ON users (stripe_customer_id);
 CREATE TABLE IF NOT EXISTS workspace_groups (
     id           TEXT PRIMARY KEY,
     workspace_id TEXT NOT NULL,
@@ -379,6 +407,30 @@ CREATE TABLE IF NOT EXISTS workspace_invitations (
     UNIQUE(workspace_id, username)
 );
 CREATE INDEX IF NOT EXISTS idx_ws_inv_user ON workspace_invitations(username, status);
+CREATE TABLE IF NOT EXISTS subscriptions (
+    id                     TEXT PRIMARY KEY,
+    username               TEXT NOT NULL,
+    stripe_customer_id     TEXT NOT NULL,
+    stripe_subscription_id TEXT NOT NULL UNIQUE,
+    tier                   TEXT NOT NULL,
+    seats                  INTEGER NOT NULL DEFAULT 1,
+    self_hosted            SMALLINT NOT NULL DEFAULT 0,
+    interval               TEXT NOT NULL,
+    amount_cents           INTEGER NOT NULL DEFAULT 0,
+    status                 TEXT NOT NULL,
+    current_period_end     TEXT,
+    cancel_at_period_end   SMALLINT NOT NULL DEFAULT 0,
+    created_at             TEXT NOT NULL,
+    updated_at             TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_subscriptions_username ON subscriptions(username);
+CREATE INDEX IF NOT EXISTS idx_subscriptions_customer ON subscriptions(stripe_customer_id);
+CREATE TABLE IF NOT EXISTS stripe_events (
+    stripe_event_id TEXT PRIMARY KEY,
+    type            TEXT NOT NULL,
+    processed_at    TEXT NOT NULL,
+    payload         TEXT NOT NULL
+);
 """
 
 # ── SQLite migrations (async) ──────────────────────────────────────────────────
@@ -471,6 +523,7 @@ async def _migrate_sqlite(conn: Any) -> None:
         ("preferences", "TEXT"),
         ("deletion_requested_at", "TEXT"),
         ("deletion_token", "TEXT"),
+        ("stripe_customer_id", "TEXT"),
     ]:
         if col not in user_cols:
             try:
@@ -740,6 +793,38 @@ async def _migrate_sqlite(conn: Any) -> None:
                 updated_at TEXT NOT NULL, PRIMARY KEY (id, owner_id)
             );
             CREATE INDEX IF NOT EXISTS idx_memory_owner ON memory_files(owner_id, updated_at DESC);
+        """)
+
+    # 15. Create subscriptions / stripe_events tables if missing (Stripe billing)
+    if "subscriptions" not in existing_tables:
+        await conn.executescript("""
+            CREATE TABLE IF NOT EXISTS subscriptions (
+                id                     TEXT PRIMARY KEY,
+                username               TEXT NOT NULL,
+                stripe_customer_id     TEXT NOT NULL,
+                stripe_subscription_id TEXT NOT NULL UNIQUE,
+                tier                   TEXT NOT NULL,
+                seats                  INTEGER NOT NULL DEFAULT 1,
+                self_hosted            INTEGER NOT NULL DEFAULT 0,
+                interval               TEXT NOT NULL,
+                amount_cents           INTEGER NOT NULL DEFAULT 0,
+                status                 TEXT NOT NULL,
+                current_period_end     TEXT,
+                cancel_at_period_end   INTEGER NOT NULL DEFAULT 0,
+                created_at             TEXT NOT NULL,
+                updated_at             TEXT NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_subscriptions_username ON subscriptions(username);
+            CREATE INDEX IF NOT EXISTS idx_subscriptions_customer ON subscriptions(stripe_customer_id);
+        """)
+    if "stripe_events" not in existing_tables:
+        await conn.executescript("""
+            CREATE TABLE IF NOT EXISTS stripe_events (
+                stripe_event_id TEXT PRIMARY KEY,
+                type            TEXT NOT NULL,
+                processed_at    TEXT NOT NULL,
+                payload         TEXT NOT NULL
+            );
         """)
 
 
@@ -1073,6 +1158,45 @@ async def _migrate_pg(conn: Any) -> None:
         "WHERE reset_token IS NOT NULL "
         "AND (LENGTH(reset_token) != 64 OR reset_token !~ '^[0-9a-f]+$')"
     )
+    # 15. Stripe billing: users.stripe_customer_id + subscriptions / stripe_events tables
+    await conn.execute(
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_customer_id TEXT"
+    )
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_users_stripe_customer ON users (stripe_customer_id)"
+    )
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS subscriptions (
+            id                     TEXT PRIMARY KEY,
+            username               TEXT NOT NULL,
+            stripe_customer_id     TEXT NOT NULL,
+            stripe_subscription_id TEXT NOT NULL UNIQUE,
+            tier                   TEXT NOT NULL,
+            seats                  INTEGER NOT NULL DEFAULT 1,
+            self_hosted            SMALLINT NOT NULL DEFAULT 0,
+            interval               TEXT NOT NULL,
+            amount_cents           INTEGER NOT NULL DEFAULT 0,
+            status                 TEXT NOT NULL,
+            current_period_end     TEXT,
+            cancel_at_period_end   SMALLINT NOT NULL DEFAULT 0,
+            created_at             TEXT NOT NULL,
+            updated_at             TEXT NOT NULL
+        )
+    """)
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_subscriptions_username ON subscriptions(username)"
+    )
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_subscriptions_customer ON subscriptions(stripe_customer_id)"
+    )
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS stripe_events (
+            stripe_event_id TEXT PRIMARY KEY,
+            type            TEXT NOT NULL,
+            processed_at    TEXT NOT NULL,
+            payload         TEXT NOT NULL
+        )
+    """)
 
 
 async def _migrate_users_json_pg(conn: Any) -> None:

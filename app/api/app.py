@@ -17,7 +17,7 @@ from app.config.cors import CORS_ORIGINS
 from app.config import data as _cfg
 from app.config.session import BODY_MAX_BYTES as _BODY_MAX_BYTES
 from app.storage.db import init_db, close_db_pool, open_db
-from app.api.routes import auth, connections, agents, skills, memory, settings, accounts, chats, knowledge, logs, sharing, workspaces, groups
+from app.api.routes import auth, connections, agents, skills, memory, settings, accounts, chats, knowledge, logs, sharing, workspaces, groups, billing
 from app.api.routes.auth import admin_router, users_router
 from app.api.routes.social import router as social_router
 from app.middleware.locale import LocaleMiddleware
@@ -117,6 +117,7 @@ def create_app() -> FastAPI:
     app.include_router(sharing.router)
     app.include_router(workspaces.router)
     app.include_router(groups.router)
+    app.include_router(billing.router)
     app.include_router(social_router)
 
     @app.get("/api/health", tags=["health"])
