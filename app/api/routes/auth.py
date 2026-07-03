@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Cookie, Depends, HTTPException, Query, Request, Response
 
 from app.auth.auth import (
     admin_set_password,
@@ -585,6 +585,141 @@ async def get_public_profile(
 # ── Admin ─────────────────────────────────────────────────────────────────────
 
 admin_router = APIRouter(prefix="/api/admin", tags=["admin"])
+
+
+@admin_router.get("/metadata/tables")
+async def admin_metadata_tables(_: str = Depends(require_admin)) -> list:
+    """Metadatos de las tablas: nombre, filas, columnas y tamaño estimado."""
+    async with open_db() as conn:
+        if IS_PG:
+            rows = await conn.fetchall("""
+                SELECT tablename AS name,
+                       (SELECT COUNT(*) FROM information_schema.columns
+                        WHERE table_name=tablename AND table_schema='public') AS col_count,
+                       COALESCE(n_live_tup, 0) AS rows,
+                       pg_total_relation_size(quote_ident(tablename)) AS size_bytes
+                FROM   pg_stat_user_tables ORDER BY n_live_tup DESC
+            """)
+            return [
+                {
+                    "name": r["name"],
+                    "rows": r["rows"],
+                    "col_count": r["col_count"],
+                    "size_bytes": r["size_bytes"],
+                }
+                for r in rows
+            ]
+        else:
+            tables = await conn.fetchall(
+                "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+            )
+            result = []
+            for t in tables:
+                name = t[0]
+                cnt = await conn.fetchval(f'SELECT COUNT(*) FROM "{name}"')
+                cols = await conn.fetchall(f'PRAGMA table_info("{name}")')
+                try:
+                    sz = await conn.fetchval(
+                        "SELECT SUM(payload) FROM dbstat WHERE name=?", (name,)
+                    )
+                except Exception:
+                    sz = None
+                result.append(
+                    {
+                        "name": name,
+                        "rows": cnt or 0,
+                        "col_count": len(cols),
+                        "size_bytes": sz,
+                    }
+                )
+            return result
+
+
+_HIDDEN_COLS = frozenset(
+    {
+        "password_hash",
+        "token",
+        "reset_token",
+        "verification_token",
+        "deletion_token",
+        "jwt_secret",
+        "stripe_secret_key",
+    }
+)
+
+
+@admin_router.get("/metadata/tables/{table_name}/data")
+async def admin_metadata_table_data(
+    table_name: str,
+    q: Optional[str] = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(50, ge=1, le=200),
+    _: str = Depends(require_admin),
+) -> dict:
+    """Datos paginados de una tabla. Columnas sensibles enmascaradas."""
+    async with open_db() as conn:
+        valid = {
+            r[0]
+            for r in await conn.fetchall(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+                if not IS_PG
+                else "SELECT tablename FROM pg_stat_user_tables"
+            )
+        }
+        if table_name not in valid:
+            raise HTTPException(status_code=404, detail="Tabla no encontrada")
+
+        if IS_PG:
+            col_rows = await conn.fetchall(
+                "SELECT column_name FROM information_schema.columns "
+                "WHERE table_name=? AND table_schema='public' ORDER BY ordinal_position",
+                (table_name,),
+            )
+            col_names = [r[0] for r in col_rows]
+        else:
+            col_rows = await conn.fetchall(f'PRAGMA table_info("{table_name}")')
+            col_names = [r[1] for r in col_rows]
+
+        if not col_names:
+            raise HTTPException(status_code=404, detail="Sin columnas")
+
+        if q:
+            cast = "::text" if IS_PG else ""
+            clauses = [f'CAST("{c}"{cast} AS TEXT) LIKE ?' for c in col_names]
+            where = "WHERE " + " OR ".join(clauses)
+            params = [f"%{q}%"] * len(col_names)
+        else:
+            where, params = "", []
+
+        total = await conn.fetchval(
+            f'SELECT COUNT(*) FROM "{table_name}" {where}', tuple(params)
+        )
+        offset = (page - 1) * page_size
+        rows = await conn.fetchall(
+            f'SELECT * FROM "{table_name}" {where} LIMIT ? OFFSET ?',
+            tuple(params + [page_size, offset]),
+        )
+
+        exposed = [c for c in col_names if c not in _HIDDEN_COLS]
+        idx_map = [col_names.index(c) for c in exposed]
+        data_rows = [
+            [
+                "[oculto]"
+                if col_names[i] in _HIDDEN_COLS
+                else (str(row[i]) if row[i] is not None else None)
+                for i in idx_map
+            ]
+            for row in rows
+        ]
+        pages = (total + page_size - 1) // page_size if total else 0
+        return {
+            "columns": exposed,
+            "rows": data_rows,
+            "total": total or 0,
+            "page": page,
+            "page_size": page_size,
+            "pages": pages,
+        }
 
 
 @admin_router.get("/stats")
