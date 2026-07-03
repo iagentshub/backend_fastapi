@@ -1,4 +1,4 @@
-"""Rutas de administración — visor de logs (almacenados en SQLite)."""
+"""Rutas de administración — visor de logs (almacenados en la BD principal)."""
 
 from __future__ import annotations
 
@@ -8,32 +8,18 @@ import json
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional
 
-import aiosqlite
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.api.routes.auth import require_admin
+from app.storage.db import open_db
 from app.utils import flog
-from app.utils.flog import log_db_path
 
 router = APIRouter(prefix="/api/admin/logs", tags=["admin-logs"])
 
 _PAGE_SIZE_DEFAULT = 50
 _PAGE_SIZE_MAX = 500
-
-
-async def _open_log_db() -> Optional[aiosqlite.Connection]:
-    """Abre la conexión a logs.sqlite3. Devuelve None si no está disponible."""
-    import sqlite3
-
-    p = log_db_path()
-    if p is None or not p.exists():
-        return None
-    conn = await aiosqlite.connect(str(p))
-    conn.row_factory = sqlite3.Row
-    await conn.execute("PRAGMA journal_mode=WAL")
-    return conn
 
 
 def _build_where(
@@ -89,40 +75,27 @@ async def list_logs(
     _: str = Depends(require_admin),
 ) -> dict:
     """Logs filtrados y paginados."""
-    conn = await _open_log_db()
-    if conn is None:
-        return {
-            "items": [],
-            "total": 0,
-            "page": page,
-            "page_size": page_size,
-            "pages": 0,
-        }
-    try:
-        where, params = _build_where(date_from, date_to, ip, username, level, source, q)
-        async with conn.execute(
-            f"SELECT COUNT(*) FROM app_logs {where}", params
-        ) as cur:
-            row = await cur.fetchone()
-            total = row[0] if row else 0
-        offset = (page - 1) * page_size
-        sql = (
-            f"SELECT id, ts, date, time, ip, username, level, source, summary "
-            f"FROM app_logs {where} ORDER BY ts DESC LIMIT ? OFFSET ?"
+    where, params = _build_where(date_from, date_to, ip, username, level, source, q)
+    async with open_db() as conn:
+        total = (
+            await conn.fetchval(f"SELECT COUNT(*) FROM app_logs {where}", tuple(params))
+            or 0
         )
-        async with conn.execute(sql, params + [page_size, offset]) as cur:
-            rows = await cur.fetchall()
-        items = [dict(r) for r in rows]
-        pages = (total + page_size - 1) // page_size if total else 0
-        return {
-            "items": items,
-            "total": total,
-            "page": page,
-            "page_size": page_size,
-            "pages": pages,
-        }
-    finally:
-        await conn.close()
+        offset = (page - 1) * page_size
+        rows = await conn.fetchall(
+            f"SELECT id, ts, date, time, ip, username, level, source, summary "
+            f"FROM app_logs {where} ORDER BY ts DESC LIMIT ? OFFSET ?",
+            tuple(params + [page_size, offset]),
+        )
+    items = [dict(r) for r in rows]
+    pages = (total + page_size - 1) // page_size if total else 0
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "page_size": page_size,
+        "pages": pages,
+    }
 
 
 @router.get("/export")
@@ -137,22 +110,13 @@ async def export_logs(
     _: str = Depends(require_admin),
 ):
     """Exporta los logs filtrados como fichero CSV."""
-    conn = await _open_log_db()
-    if conn is None:
-        raise HTTPException(
-            status_code=503, detail="Base de datos de logs no disponible"
-        )
-    try:
-        where, params = _build_where(date_from, date_to, ip, username, level, source, q)
-        sql = (
+    where, params = _build_where(date_from, date_to, ip, username, level, source, q)
+    async with open_db() as conn:
+        rows = await conn.fetchall(
             f"SELECT date, time, ip, username, level, source, summary "
-            f"FROM app_logs {where} ORDER BY ts DESC"
+            f"FROM app_logs {where} ORDER BY ts DESC",
+            tuple(params),
         )
-        async with conn.execute(sql, params) as cur:
-            rows = await cur.fetchall()
-    finally:
-        await conn.close()
-
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow(["Fecha", "Hora", "IP", "Usuario", "Nivel", "Fuente", "Acción"])
@@ -180,11 +144,8 @@ async def export_logs(
 @router.get("/summary", response_model=List[Dict])
 async def logs_summary(_: str = Depends(require_admin)) -> List[Dict]:
     """Resumen por día: total de entradas, errores y warnings por fuente."""
-    conn = await _open_log_db()
-    if conn is None:
-        return []
-    try:
-        sql = """
+    async with open_db() as conn:
+        rows = await conn.fetchall("""
             SELECT date,
                    COUNT(*) as lines,
                    SUM(CASE WHEN level='WARNING' AND source='BE' THEN 1 ELSE 0 END) as be_warnings,
@@ -196,12 +157,8 @@ async def logs_summary(_: str = Depends(require_admin)) -> List[Dict]:
             FROM app_logs
             GROUP BY date
             ORDER BY date DESC
-        """
-        async with conn.execute(sql) as cur:
-            rows = await cur.fetchall()
-        return [dict(r) for r in rows]
-    finally:
-        await conn.close()
+        """)
+    return [dict(r) for r in rows]
 
 
 class _ClientLog(BaseModel):
@@ -237,8 +194,6 @@ async def purge_old_logs(retention_days: Optional[int] = None) -> int:
     """Purga entradas más antiguas que retention_days. Lee la preferencia del admin si no se especifica."""
     if retention_days is None:
         try:
-            from app.storage.db import open_db
-
             async with open_db() as conn:
                 row = await conn.fetchone(
                     "SELECT preferences FROM users WHERE role = 'admin' LIMIT 1"
@@ -248,20 +203,19 @@ async def purge_old_logs(retention_days: Optional[int] = None) -> int:
         except Exception:
             retention_days = 30
 
-    conn = await _open_log_db()
-    if conn is None:
-        return 0
-    try:
-        cutoff = (datetime.now() - timedelta(days=retention_days)).strftime("%Y-%m-%d")
-        async with conn.execute(
-            "DELETE FROM app_logs WHERE date < ?", (cutoff,)
-        ) as cur:
-            deleted = cur.rowcount
-        await conn.commit()
-        if deleted:
-            flog.ok(
-                f"[logs] {deleted} entradas purgadas (retención: {retention_days} días)"
+    cutoff = (datetime.now() - timedelta(days=retention_days)).strftime("%Y-%m-%d")
+    async with open_db() as conn:
+        deleted = (
+            await conn.fetchval(
+                "SELECT COUNT(*) FROM app_logs WHERE date < ?", (cutoff,)
             )
-        return deleted
-    finally:
-        await conn.close()
+            or 0
+        )
+        if deleted:
+            await conn.execute("DELETE FROM app_logs WHERE date < ?", (cutoff,))
+            await conn.commit()
+    if deleted:
+        flog.ok(
+            f"[logs] {deleted} entradas purgadas (retención: {retention_days} días)"
+        )
+    return deleted

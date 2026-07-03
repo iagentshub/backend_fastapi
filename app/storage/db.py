@@ -229,6 +229,23 @@ CREATE TABLE IF NOT EXISTS stripe_events (
     processed_at    TEXT NOT NULL,
     payload         TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS app_logs (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts       REAL    NOT NULL,
+    date     TEXT    NOT NULL,
+    time     TEXT    NOT NULL,
+    ip       TEXT    NOT NULL DEFAULT '-',
+    username TEXT    NOT NULL DEFAULT '-',
+    level    TEXT    NOT NULL,
+    source   TEXT    NOT NULL DEFAULT 'BE',
+    summary  TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_al_ts       ON app_logs(ts DESC);
+CREATE INDEX IF NOT EXISTS idx_al_date     ON app_logs(date);
+CREATE INDEX IF NOT EXISTS idx_al_level    ON app_logs(level);
+CREATE INDEX IF NOT EXISTS idx_al_username ON app_logs(username);
+CREATE INDEX IF NOT EXISTS idx_al_ip       ON app_logs(ip);
+CREATE INDEX IF NOT EXISTS idx_al_source   ON app_logs(source);
 """
 
 _SCHEMA_PG = """
@@ -431,6 +448,23 @@ CREATE TABLE IF NOT EXISTS stripe_events (
     processed_at    TEXT NOT NULL,
     payload         TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS app_logs (
+    id       BIGSERIAL PRIMARY KEY,
+    ts       DOUBLE PRECISION NOT NULL,
+    date     TEXT    NOT NULL,
+    time     TEXT    NOT NULL,
+    ip       TEXT    NOT NULL DEFAULT '-',
+    username TEXT    NOT NULL DEFAULT '-',
+    level    TEXT    NOT NULL,
+    source   TEXT    NOT NULL DEFAULT 'BE',
+    summary  TEXT    NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_al_ts       ON app_logs(ts DESC);
+CREATE INDEX IF NOT EXISTS idx_al_date     ON app_logs(date);
+CREATE INDEX IF NOT EXISTS idx_al_level    ON app_logs(level);
+CREATE INDEX IF NOT EXISTS idx_al_username ON app_logs(username);
+CREATE INDEX IF NOT EXISTS idx_al_ip       ON app_logs(ip);
+CREATE INDEX IF NOT EXISTS idx_al_source   ON app_logs(source);
 """
 
 # ── SQLite migrations (async) ──────────────────────────────────────────────────
@@ -853,6 +887,30 @@ async def _migrate_sqlite(conn: Any) -> None:
             );
         """)
 
+    # 16. Tabla de logs consolidada en hub.db
+    cur = await conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    existing_tables = {row[0] for row in await cur.fetchall()}
+    if "app_logs" not in existing_tables:
+        await conn.executescript("""
+            CREATE TABLE IF NOT EXISTS app_logs (
+                id       INTEGER PRIMARY KEY AUTOINCREMENT,
+                ts       REAL    NOT NULL,
+                date     TEXT    NOT NULL,
+                time     TEXT    NOT NULL,
+                ip       TEXT    NOT NULL DEFAULT '-',
+                username TEXT    NOT NULL DEFAULT '-',
+                level    TEXT    NOT NULL,
+                source   TEXT    NOT NULL DEFAULT 'BE',
+                summary  TEXT    NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS idx_al_ts       ON app_logs(ts DESC);
+            CREATE INDEX IF NOT EXISTS idx_al_date     ON app_logs(date);
+            CREATE INDEX IF NOT EXISTS idx_al_level    ON app_logs(level);
+            CREATE INDEX IF NOT EXISTS idx_al_username ON app_logs(username);
+            CREATE INDEX IF NOT EXISTS idx_al_ip       ON app_logs(ip);
+            CREATE INDEX IF NOT EXISTS idx_al_source   ON app_logs(source);
+        """)
+
 
 async def _migrate_users_json_sqlite(conn: Any) -> None:
     """Import users.json into the users table if it exists and the table is empty."""
@@ -1223,6 +1281,30 @@ async def _migrate_pg(conn: Any) -> None:
             payload         TEXT NOT NULL
         )
     """)
+    # 16. Tabla de logs consolidada en hub.db / PostgreSQL
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS app_logs (
+            id       BIGSERIAL PRIMARY KEY,
+            ts       DOUBLE PRECISION NOT NULL,
+            date     TEXT    NOT NULL,
+            time     TEXT    NOT NULL,
+            ip       TEXT    NOT NULL DEFAULT '-',
+            username TEXT    NOT NULL DEFAULT '-',
+            level    TEXT    NOT NULL,
+            source   TEXT    NOT NULL DEFAULT 'BE',
+            summary  TEXT    NOT NULL
+        )
+    """)
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_al_ts       ON app_logs(ts DESC)"
+    )
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_al_date     ON app_logs(date)")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_al_level    ON app_logs(level)")
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_al_username ON app_logs(username)"
+    )
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_al_ip       ON app_logs(ip)")
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_al_source   ON app_logs(source)")
 
 
 async def _migrate_users_json_pg(conn: Any) -> None:
