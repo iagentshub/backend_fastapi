@@ -1,4 +1,5 @@
 """Rutas de configuración por usuario (tema, idioma, layout de dashboard)."""
+
 from __future__ import annotations
 
 import json
@@ -9,7 +10,7 @@ from typing import List, Optional
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
-from app.api.routes.auth import require_auth
+from app.api.routes.auth import require_auth, require_admin
 from app.storage.db import open_db
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
@@ -19,10 +20,21 @@ _DEFAULTS = {"theme": "dark-red", "language": "es"}
 _KNOWN_WIDGETS = {"summary", "token-usage", "activity", "conn-status", "recent"}
 
 VALID_THEMES = {
-    "dark-red", "dark-blue", "dark-orange", "dark-purple",
-    "light-red", "light-blue", "light-orange", "light-purple",
+    "dark-red",
+    "dark-blue",
+    "dark-orange",
+    "dark-purple",
+    "light-red",
+    "light-blue",
+    "light-orange",
+    "light-purple",
     # legacy names kept for backward compatibility
-    "noir", "marble", "ember", "ocean", "forest", "dusk",
+    "noir",
+    "marble",
+    "ember",
+    "ocean",
+    "forest",
+    "dusk",
 }
 VALID_LANGUAGES = {"es", "en"}
 
@@ -81,7 +93,9 @@ async def update_settings(
         prefs["theme"] = body.theme
     if body.language is not None:
         if body.language not in VALID_LANGUAGES:
-            raise HTTPException(status_code=422, detail=f"Idioma no válido: {body.language}")
+            raise HTTPException(
+                status_code=422, detail=f"Idioma no válido: {body.language}"
+            )
         prefs["language"] = body.language
     await _save_prefs(username, prefs)
     return {k: prefs.get(k, _DEFAULTS[k]) for k in _PUBLIC_KEYS}
@@ -122,3 +136,31 @@ async def update_dashboard_config(
     prefs["dashboard_config"] = body.config
     await _save_prefs(username, prefs)
     return {"config": body.config}
+
+
+class AdminSettingsUpdate(BaseModel):
+    log_retention_days: Optional[int] = None
+
+
+@router.get("/admin")
+async def get_admin_settings(username: str = Depends(require_admin)) -> dict:
+    """Devuelve la configuración exclusiva de admin (p.ej. retención de logs)."""
+    prefs = await _get_prefs(username)
+    return {"log_retention_days": int(prefs.get("log_retention_days", 30))}
+
+
+@router.put("/admin")
+async def update_admin_settings(
+    body: AdminSettingsUpdate,
+    username: str = Depends(require_admin),
+) -> dict:
+    """Actualiza la configuración exclusiva de admin."""
+    prefs = await _get_prefs(username)
+    if body.log_retention_days is not None:
+        if not (1 <= body.log_retention_days <= 365):
+            raise HTTPException(
+                status_code=422, detail="log_retention_days debe estar entre 1 y 365"
+            )
+        prefs["log_retention_days"] = body.log_retention_days
+    await _save_prefs(username, prefs)
+    return {"log_retention_days": int(prefs.get("log_retention_days", 30))}

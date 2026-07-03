@@ -435,6 +435,32 @@ CREATE TABLE IF NOT EXISTS stripe_events (
 
 # ── SQLite migrations (async) ──────────────────────────────────────────────────
 
+# Columns that _SCHEMA_SQLITE references in CREATE INDEX but that may not exist
+# on older databases. Each entry is (table, column, definition).
+_SCHEMA_INDEX_DEPS: list[tuple[str, str, str]] = [
+    ("users", "stripe_customer_id", "TEXT"),
+]
+
+
+async def _pre_migrate_sqlite(conn: Any) -> None:
+    """Adds columns required by _SCHEMA_SQLITE CREATE INDEX statements before
+    executescript runs. Prevents OperationalError on existing databases that
+    were created before a new column was introduced to the schema."""
+    cur = await conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    existing_tables = {row[0] for row in await cur.fetchall()}
+    for table, col, defn in _SCHEMA_INDEX_DEPS:
+        if table not in existing_tables:
+            continue
+        cur = await conn.execute(f"PRAGMA table_info({table})")
+        cols = {row[1] for row in await cur.fetchall()}
+        if col not in cols:
+            try:
+                await conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {defn}")
+                await conn.commit()
+                flog.info(f"[db] pre-migración: {table}.{col} añadida")
+            except Exception as exc:
+                flog.warning(f"[db] pre-migración {table}.{col} fallida: {exc}")
+
 
 async def _migrate_sqlite(conn: Any) -> None:
     """Incremental migrations for pre-existing SQLite databases."""
@@ -1375,6 +1401,12 @@ async def init_db(sqlite_path: Optional[Path] = None) -> None:
             conn.row_factory = sqlite3.Row
             await conn.execute("PRAGMA journal_mode=WAL")
             await conn.execute("PRAGMA foreign_keys=ON")
+            # Pre-migration: add columns that _SCHEMA_SQLITE references in
+            # CREATE INDEX statements BEFORE executescript runs. Without this,
+            # running executescript on an existing DB that lacks a new column
+            # raises OperationalError ("no such column") because CREATE TABLE
+            # IF NOT EXISTS is a no-op on existing tables.
+            await _pre_migrate_sqlite(conn)
             await conn.executescript(_SCHEMA_SQLITE)
             await _migrate_sqlite(conn)
             await _migrate_users_json_sqlite(conn)

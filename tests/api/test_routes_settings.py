@@ -1,4 +1,5 @@
 """Tests para /api/settings — tema, idioma, layout y config del dashboard."""
+
 from __future__ import annotations
 
 import asyncio
@@ -215,3 +216,119 @@ def test_persistence_dashboard_config(client):
     r = client.get("/api/settings/dashboard-config")
     assert r.status_code == 200
     assert r.json()["config"] == cfg
+
+
+# ---------------------------------------------------------------------------
+# GET /api/settings/admin — solo admin
+# ---------------------------------------------------------------------------
+
+
+def test_get_admin_settings_unauthenticated(client):
+    """Sin auth devuelve 401."""
+    r = client.get("/api/settings/admin")
+    assert r.status_code == 401
+
+
+def test_get_admin_settings_forbidden_non_admin(client, reset_rate_limiter):
+    """Usuario estándar devuelve 403."""
+    client.post(
+        "/api/auth/register",
+        json={"email": "std_set@example.com", "password": "pass1234"},
+    )
+    client.post(
+        "/api/auth/login", json={"email": "std_set@example.com", "password": "pass1234"}
+    )
+    r = client.get("/api/settings/admin")
+    assert r.status_code == 403
+
+
+def test_get_admin_settings_default(admin_client):
+    """Admin sin preferencias guardadas devuelve log_retention_days=30."""
+    r = admin_client.get("/api/settings/admin")
+    assert r.status_code == 200
+    assert r.json()["log_retention_days"] == 30
+
+
+# ---------------------------------------------------------------------------
+# PUT /api/settings/admin — solo admin
+# ---------------------------------------------------------------------------
+
+
+def test_put_admin_settings_valid(admin_client):
+    """PUT con valor válido devuelve 200 con el nuevo valor."""
+    r = admin_client.put("/api/settings/admin", json={"log_retention_days": 90})
+    assert r.status_code == 200
+    assert r.json()["log_retention_days"] == 90
+
+
+def test_put_admin_settings_min_value(admin_client):
+    """Valor mínimo permitido: 1 día."""
+    r = admin_client.put("/api/settings/admin", json={"log_retention_days": 1})
+    assert r.status_code == 200
+    assert r.json()["log_retention_days"] == 1
+
+
+def test_put_admin_settings_max_value(admin_client):
+    """Valor máximo permitido: 365 días."""
+    r = admin_client.put("/api/settings/admin", json={"log_retention_days": 365})
+    assert r.status_code == 200
+    assert r.json()["log_retention_days"] == 365
+
+
+def test_put_admin_settings_zero_invalid(admin_client):
+    """0 días no es válido — devuelve 422."""
+    r = admin_client.put("/api/settings/admin", json={"log_retention_days": 0})
+    assert r.status_code == 422
+
+
+def test_put_admin_settings_above_max_invalid(admin_client):
+    """Más de 365 días no es válido — devuelve 422."""
+    r = admin_client.put("/api/settings/admin", json={"log_retention_days": 366})
+    assert r.status_code == 422
+
+
+def test_put_admin_settings_negative_invalid(admin_client):
+    """Valor negativo no es válido — devuelve 422."""
+    r = admin_client.put("/api/settings/admin", json={"log_retention_days": -10})
+    assert r.status_code == 422
+
+
+def test_put_admin_settings_forbidden_non_admin(client, reset_rate_limiter):
+    """Usuario estándar no puede modificar ajustes admin."""
+    client.post(
+        "/api/auth/register",
+        json={"email": "std_set2@example.com", "password": "pass1234"},
+    )
+    client.post(
+        "/api/auth/login",
+        json={"email": "std_set2@example.com", "password": "pass1234"},
+    )
+    r = client.put("/api/settings/admin", json={"log_retention_days": 60})
+    assert r.status_code == 403
+
+
+def test_put_admin_settings_unauthenticated(client):
+    """Sin auth devuelve 401."""
+    r = client.put("/api/settings/admin", json={"log_retention_days": 60})
+    assert r.status_code == 401
+
+
+def test_put_admin_settings_partial_body(admin_client):
+    """Body vacío (sin campos) no cambia nada y devuelve 200."""
+    admin_client.put("/api/settings/admin", json={"log_retention_days": 45})
+    r = admin_client.put("/api/settings/admin", json={})
+    assert r.status_code == 200
+    assert r.json()["log_retention_days"] == 45
+
+
+# ---------------------------------------------------------------------------
+# Persistencia: PUT + GET confirma el valor guardado
+# ---------------------------------------------------------------------------
+
+
+def test_admin_settings_persistence(admin_client):
+    """PUT log_retention_days + GET confirma persistencia."""
+    admin_client.put("/api/settings/admin", json={"log_retention_days": 14})
+    r = admin_client.get("/api/settings/admin")
+    assert r.status_code == 200
+    assert r.json()["log_retention_days"] == 14

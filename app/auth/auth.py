@@ -1,4 +1,5 @@
 """Auth: JWT, password hashing y gestión de usuarios (DB-backed)."""
+
 from __future__ import annotations
 
 import hashlib
@@ -56,7 +57,9 @@ def _hash_token(token: str) -> str:
 
 
 def hash_password(plain: str) -> str:
-    return _bcrypt.hashpw(plain.encode("utf-8"), _bcrypt.gensalt(rounds=12)).decode("utf-8")
+    return _bcrypt.hashpw(plain.encode("utf-8"), _bcrypt.gensalt(rounds=12)).decode(
+        "utf-8"
+    )
 
 
 def verify_password(plain: str, hashed: str) -> bool:
@@ -69,6 +72,7 @@ def verify_password(plain: str, hashed: str) -> bool:
 async def verify_password_async(plain: str, hashed: str) -> bool:
     """Wrapper no-bloqueante — delega bcrypt al thread pool."""
     import asyncio
+
     return await asyncio.to_thread(verify_password, plain, hashed)
 
 
@@ -132,7 +136,9 @@ async def register_user(username: str, password: str, email: str = "") -> None:
         email = f"{username}@local"
     async with open_db() as conn:
         async with conn.transaction():
-            if await conn.fetchone("SELECT 1 FROM users WHERE username = ?", (username,)):
+            if await conn.fetchone(
+                "SELECT 1 FROM users WHERE username = ?", (username,)
+            ):
                 raise ValueError("El nombre de usuario ya está en uso")
             if await conn.fetchone("SELECT 1 FROM users WHERE email = ?", (email,)):
                 raise ValueError("El correo electrónico ya está registrado")
@@ -178,9 +184,19 @@ async def register_user_email(
                 "country, phone, role, is_active, is_verified, verification_token, created_at) "
                 "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
-                    username, email, hash_password(password), display_name,
-                    birth_date, gender, country, phone,
-                    "standard", 1, is_verified, token_hash, now,
+                    username,
+                    email,
+                    hash_password(password),
+                    display_name,
+                    birth_date,
+                    gender,
+                    country,
+                    phone,
+                    "standard",
+                    1,
+                    is_verified,
+                    token_hash,
+                    now,
                 ),
             )
     flog.ok(f"Nuevo usuario: {email}")
@@ -205,7 +221,9 @@ async def verify_email_token(token: str) -> Optional[str]:
         return username
 
 
-def _build_email_html(title: str, heading: str, body_html: str, cta_url: str = "", cta_label: str = "") -> str:
+def _build_email_html(
+    title: str, heading: str, body_html: str, cta_url: str = "", cta_label: str = ""
+) -> str:
     cta_block = ""
     if cta_url and cta_label:
         cta_block = (
@@ -242,7 +260,14 @@ def _send_smtp(to: str, subject: str, html: str) -> None:
     from email.mime.multipart import MIMEMultipart
     from email.mime.text import MIMEText
 
-    from app.config.session import SMTP_FROM, SMTP_HOST, SMTP_PASS, SMTP_PORT, SMTP_TLS, SMTP_USER
+    from app.config.session import (
+        SMTP_FROM,
+        SMTP_HOST,
+        SMTP_PASS,
+        SMTP_PORT,
+        SMTP_TLS,
+        SMTP_USER,
+    )
 
     if not SMTP_HOST:
         return
@@ -310,7 +335,9 @@ def send_reset_email(email: str, token: str, base_url: str = "") -> None:
     _send_smtp(email, "Recupera el acceso a iAgents Hub", html)
 
 
-def send_deletion_scheduled_email(email: str, cancel_token: str, deletion_at: str, base_url: str = "") -> None:
+def send_deletion_scheduled_email(
+    email: str, cancel_token: str, deletion_at: str, base_url: str = ""
+) -> None:
     from app.config.session import SMTP_HOST
 
     cancel_url = f"{base_url}/profile/?deletion_token={cancel_token}"
@@ -368,10 +395,14 @@ async def create_password_reset_token(email: str) -> Optional[str]:
     from app.config.session import PASSWORD_RESET_EXPIRE_HOURS
 
     async with open_db() as conn:
-        if not await conn.fetchone("SELECT username FROM users WHERE email = ? AND is_active = 1", (email,)):
+        if not await conn.fetchone(
+            "SELECT username FROM users WHERE email = ? AND is_active = 1", (email,)
+        ):
             return None
         token = secrets.token_urlsafe(32)
-        expires = (datetime.now(timezone.utc) + timedelta(hours=PASSWORD_RESET_EXPIRE_HOURS)).isoformat()
+        expires = (
+            datetime.now(timezone.utc) + timedelta(hours=PASSWORD_RESET_EXPIRE_HOURS)
+        ).isoformat()
         await conn.execute(
             "UPDATE users SET reset_token = ?, reset_token_expires = ? WHERE email = ?",
             (_hash_token(token), expires, email),
@@ -434,7 +465,9 @@ async def list_users() -> list:
 
 async def delete_user(username: str) -> bool:
     async with open_db() as conn:
-        if not await conn.fetchone("SELECT 1 FROM users WHERE username = ?", (username,)):
+        if not await conn.fetchone(
+            "SELECT 1 FROM users WHERE username = ?", (username,)
+        ):
             return False
         await conn.execute("DELETE FROM users WHERE username = ?", (username,))
         await conn.commit()
@@ -474,7 +507,9 @@ async def schedule_user_deletion(username: str) -> str:
 async def cancel_user_deletion(token: str) -> bool:
     """Cancel a scheduled deletion via token. Returns True if found and cancelled."""
     async with open_db() as conn:
-        if not await conn.fetchone("SELECT 1 FROM users WHERE deletion_token = ?", (_hash_token(token),)):
+        if not await conn.fetchone(
+            "SELECT 1 FROM users WHERE deletion_token = ?", (_hash_token(token),)
+        ):
             return False
         await conn.execute(
             "UPDATE users SET deletion_requested_at = NULL, deletion_token = NULL WHERE deletion_token = ?",
@@ -515,17 +550,40 @@ async def purge_user_data(username: str) -> None:
                     "DELETE FROM messages WHERE conversation_id IN (SELECT id FROM conversations WHERE user_id = ?)",
                     (username,),
                 )
-                await conn.execute("DELETE FROM conversations WHERE user_id = ?", (username,))
-                await conn.execute("DELETE FROM knowledge_items WHERE owner_id = ?", (username,))
-                await conn.execute("DELETE FROM knowledge_folders WHERE owner_id = ?", (username,))
-                await conn.execute("DELETE FROM connections WHERE owner_id = ?", (username,))
-                await conn.execute("DELETE FROM token_daily WHERE owner_id = ?", (username,))
-                await conn.execute("DELETE FROM accounts WHERE owner_id = ?", (username,))
-                await conn.execute("DELETE FROM resource_groups WHERE shared_by = ?", (username,))
-                await conn.execute("DELETE FROM workspace_group_members WHERE username = ?", (username,))
-                await conn.execute("DELETE FROM workspace_invitations WHERE username = ?", (username,))
-                await conn.execute("DELETE FROM workspace_members WHERE username = ?", (username,))
-                await conn.execute("DELETE FROM workspaces WHERE created_by = ?", (username,))
+                await conn.execute(
+                    "DELETE FROM conversations WHERE user_id = ?", (username,)
+                )
+                await conn.execute(
+                    "DELETE FROM knowledge_items WHERE owner_id = ?", (username,)
+                )
+                await conn.execute(
+                    "DELETE FROM knowledge_folders WHERE owner_id = ?", (username,)
+                )
+                await conn.execute(
+                    "DELETE FROM connections WHERE owner_id = ?", (username,)
+                )
+                await conn.execute(
+                    "DELETE FROM token_daily WHERE owner_id = ?", (username,)
+                )
+                await conn.execute(
+                    "DELETE FROM accounts WHERE owner_id = ?", (username,)
+                )
+                await conn.execute(
+                    "DELETE FROM resource_groups WHERE shared_by = ?", (username,)
+                )
+                await conn.execute(
+                    "DELETE FROM workspace_group_members WHERE username = ?",
+                    (username,),
+                )
+                await conn.execute(
+                    "DELETE FROM workspace_invitations WHERE username = ?", (username,)
+                )
+                await conn.execute(
+                    "DELETE FROM workspace_members WHERE username = ?", (username,)
+                )
+                await conn.execute(
+                    "DELETE FROM workspaces WHERE created_by = ?", (username,)
+                )
                 await conn.execute("DELETE FROM users WHERE username = ?", (username,))
         flog.ok(f"[gdpr] BD purgada para {username}")
     except Exception as exc:
@@ -556,16 +614,16 @@ async def purge_expired_deletions() -> int:
 
 
 _PROFILE_SQL: dict = {
-    "birth_date":   "birth_date = ?",
-    "gender":       "gender = ?",
-    "country":      "country = ?",
-    "phone":        "phone = ?",
+    "birth_date": "birth_date = ?",
+    "gender": "gender = ?",
+    "country": "country = ?",
+    "phone": "phone = ?",
     "display_name": "display_name = ?",
 }
 
 _ADMIN_SQL: dict = {
     "is_active": "is_active = ?",
-    "role":      "role = ?",
+    "role": "role = ?",
 }
 
 
@@ -576,7 +634,9 @@ async def update_user_profile(username: str, **fields) -> None:
         return
     async with open_db() as conn:
         await conn.execute(
-            "UPDATE users SET " + ", ".join(c[0] for c in clauses) + " WHERE username = ?",
+            "UPDATE users SET "
+            + ", ".join(c[0] for c in clauses)
+            + " WHERE username = ?",
             [c[1] for c in clauses] + [username],
         )
         await conn.commit()
@@ -588,10 +648,14 @@ async def admin_update_user(username: str, **fields) -> bool:
     if not clauses:
         return True
     async with open_db() as conn:
-        if not await conn.fetchone("SELECT 1 FROM users WHERE username = ?", (username,)):
+        if not await conn.fetchone(
+            "SELECT 1 FROM users WHERE username = ?", (username,)
+        ):
             return False
         await conn.execute(
-            "UPDATE users SET " + ", ".join(c[0] for c in clauses) + " WHERE username = ?",
+            "UPDATE users SET "
+            + ", ".join(c[0] for c in clauses)
+            + " WHERE username = ?",
             [c[1] for c in clauses] + [username],
         )
         await conn.commit()
@@ -601,7 +665,9 @@ async def admin_update_user(username: str, **fields) -> bool:
 async def admin_set_password(username: str, new_password: str) -> bool:
     """Admin-only: set a new password for another user. Returns False if not found."""
     async with open_db() as conn:
-        if not await conn.fetchone("SELECT 1 FROM users WHERE username = ?", (username,)):
+        if not await conn.fetchone(
+            "SELECT 1 FROM users WHERE username = ?", (username,)
+        ):
             return False
         await conn.execute(
             "UPDATE users SET password_hash = ? WHERE username = ?",
@@ -612,7 +678,6 @@ async def admin_set_password(username: str, new_password: str) -> bool:
 
 
 # ── Gestor role helpers ────────────────────────────────────────────────────────
-
 
 
 # ── JWT ────────────────────────────────────────────────────────────────────────
@@ -657,8 +722,10 @@ async def ensure_admin_user() -> None:
     Lógica:
     1. Si GAIA_ADMIN_EMAIL ya tiene cuenta → promoverla a admin si no lo es.
        Con GAIA_ADMIN_RESET=true también resetea su contraseña.
-    2. Si GAIA_ADMIN_EMAIL no tiene cuenta → crearla como admin.
-    3. Si no se puede hacer nada con GAIA_ADMIN_EMAIL y ya hay otro admin
+    2. Si .admin_pass existe pero no coincide con el hash de la DB → resetear
+       automáticamente para que la contraseña mostrada por gaia.sh sea siempre válida.
+    3. Si GAIA_ADMIN_EMAIL no tiene cuenta → crearla como admin.
+    4. Si no se puede hacer nada con GAIA_ADMIN_EMAIL y ya hay otro admin
        sin reset_mode → no tocar nada.
     """
     reset_mode = os.environ.get("GAIA_ADMIN_RESET", "").lower() in ("1", "true", "yes")
@@ -670,21 +737,47 @@ async def ensure_admin_user() -> None:
     if not reset_mode and _pass_file and not _pass_file.exists():
         reset_mode = True
 
+    # Verify .admin_pass against the DB hash — reset if they don't match.
+    # This handles cases where the DB password was changed externally without
+    # updating .admin_pass, which would cause gaia.sh to display a stale password.
+    if not reset_mode and _pass_file and _pass_file.exists():
+        try:
+            stored_pass = _pass_file.read_text(encoding="utf-8").strip()
+            if stored_pass:
+                async with open_db() as _chk:
+                    _row = await _chk.fetchone(
+                        "SELECT password_hash FROM users WHERE email = ?",
+                        (target_email,),
+                    )
+                if _row and _row["password_hash"]:
+                    if not _bcrypt.checkpw(
+                        stored_pass.encode(), _row["password_hash"].encode()
+                    ):
+                        reset_mode = True  # hash mismatch → regenerate
+        except Exception:
+            pass
+
     password: Optional[str] = None
     action: Optional[str] = None
 
     async with open_db() as conn:
-        row = await conn.fetchone("SELECT username, role FROM users WHERE email = ?", (target_email,))
+        row = await conn.fetchone(
+            "SELECT username, role FROM users WHERE email = ?", (target_email,)
+        )
         target = dict(row) if row else None
 
         if target:
             if target["role"] != "admin":
-                await conn.execute("UPDATE users SET role = ? WHERE email = ?", ("admin", target_email))
+                await conn.execute(
+                    "UPDATE users SET role = ? WHERE email = ?", ("admin", target_email)
+                )
                 await conn.commit()
                 if not reset_mode:
                     sep = "=" * 60
                     flog.warning(sep)
-                    flog.warning(f" iAgents Hub — {target_email} promovido a administrador")
+                    flog.warning(
+                        f" iAgents Hub — {target_email} promovido a administrador"
+                    )
                     flog.warning(sep)
                     return
 
@@ -701,7 +794,9 @@ async def ensure_admin_user() -> None:
             action = "contraseña reseteada"
         else:
             # No hay cuenta con ese email
-            existing = await conn.fetchone("SELECT username FROM users WHERE role = ? LIMIT 1", ("admin",))
+            existing = await conn.fetchone(
+                "SELECT username FROM users WHERE role = ? LIMIT 1", ("admin",)
+            )
             if existing and not reset_mode:
                 return
 
@@ -711,7 +806,15 @@ async def ensure_admin_user() -> None:
                 "INSERT INTO users "
                 "(username, email, password_hash, role, is_active, is_verified, created_at) "
                 "VALUES (?,?,?,?,?,?,?)",
-                (target_email, target_email, hash_password(password), "admin", 1, 1, now),
+                (
+                    target_email,
+                    target_email,
+                    hash_password(password),
+                    "admin",
+                    1,
+                    1,
+                    now,
+                ),
             )
             await conn.commit()
             action = "cuenta creada"

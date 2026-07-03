@@ -1,4 +1,5 @@
 """API principal — GAIA Backend."""
+
 from __future__ import annotations
 
 import asyncio
@@ -17,13 +18,30 @@ from app.config.cors import CORS_ORIGINS
 from app.config import data as _cfg
 from app.config.session import BODY_MAX_BYTES as _BODY_MAX_BYTES
 from app.storage.db import init_db, close_db_pool, open_db
-from app.api.routes import auth, connections, agents, skills, memory, settings, accounts, chats, knowledge, logs, sharing, workspaces, groups, billing
+from app.api.routes import (
+    auth,
+    connections,
+    agents,
+    skills,
+    memory,
+    settings,
+    accounts,
+    chats,
+    knowledge,
+    logs,
+    sharing,
+    workspaces,
+    groups,
+    billing,
+)
 from app.api.routes.auth import admin_router, users_router
 from app.api.routes.social import router as social_router
 from app.middleware.locale import LocaleMiddleware
 from app.middleware.security import SecurityHeadersMiddleware
 
-_docs_url = "/docs" if os.getenv("GAIA_DEV_MODE", "").lower() in ("1", "true", "yes") else None
+_docs_url = (
+    "/docs" if os.getenv("GAIA_DEV_MODE", "").lower() in ("1", "true", "yes") else None
+)
 
 
 class _BodySizeLimitMiddleware(BaseHTTPMiddleware):
@@ -31,6 +49,7 @@ class _BodySizeLimitMiddleware(BaseHTTPMiddleware):
         cl = request.headers.get("content-length")
         if cl and int(cl) > _BODY_MAX_BYTES:
             from fastapi.responses import JSONResponse
+
             return JSONResponse(
                 {"detail": "Payload demasiado grande (máx. 2 MB)"},
                 status_code=413,
@@ -44,22 +63,35 @@ class _RequestLogger(BaseHTTPMiddleware):
         response = await call_next(request)
         ms = (time.perf_counter() - t0) * 1000
 
-        user = "-"
+        # Extraer IP del cliente
+        ip = (
+            request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
+            or request.headers.get("X-Real-IP", "")
+            or (request.client.host if request.client else "-")
+            or "-"
+        )
+
+        # Extraer usuario del JWT
+        username = "-"
         try:
             token = request.cookies.get("ga_token", "")
             if token:
                 payload = _jwt.get_unverified_claims(token)
-                user = payload.get("sub") or payload.get("username") or "-"
+                username = payload.get("sub") or payload.get("username") or "-"
+            elif request.cookies.get("ga_guest"):
+                username = "guest"
         except Exception:
             pass
 
-        msg = f"{request.method} {request.url.path} → {response.status_code} ({ms:.0f}ms) user={user}"
+        msg = (
+            f"{request.method} {request.url.path} → {response.status_code} ({ms:.0f}ms)"
+        )
         if response.status_code >= 500:
-            flog.error(msg)
+            flog.error(msg, ip=ip, username=username)
         elif response.status_code >= 400:
-            flog.warning(msg)
+            flog.warning(msg, ip=ip, username=username)
         else:
-            flog.info(msg)
+            flog.info(msg, ip=ip, username=username)
         return response
 
 
@@ -75,20 +107,40 @@ async def _gdpr_purge_loop() -> None:
             flog.error(f"[gdpr] Error en purga automática: {exc}")
 
 
+async def _log_purge_loop() -> None:
+    """Purga entradas de log antiguas cada 24 horas según la retención configurada."""
+    while True:
+        await asyncio.sleep(24 * 3600)
+        try:
+            from app.api.routes.logs import purge_old_logs
+
+            await purge_old_logs()
+        except Exception as exc:
+            flog.error(f"[logs] Error en purga automática: {exc}")
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     await init_db(_cfg.DB_FILE)
     await ensure_admin_user()
     purge_task = asyncio.create_task(_gdpr_purge_loop())
+    log_purge_task = asyncio.create_task(_log_purge_loop())
     flog.ok("iAgents Hub arrancado")
     yield
     purge_task.cancel()
+    log_purge_task.cancel()
     await close_db_pool()
     flog.info("iAgents Hub detenido")
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="GAIA Backend", version="1.0.0", docs_url=_docs_url, redoc_url=None, lifespan=_lifespan)
+    app = FastAPI(
+        title="GAIA Backend",
+        version="1.0.0",
+        docs_url=_docs_url,
+        redoc_url=None,
+        lifespan=_lifespan,
+    )
 
     app.add_middleware(_RequestLogger)
     app.add_middleware(_BodySizeLimitMiddleware)
