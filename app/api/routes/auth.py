@@ -36,6 +36,7 @@ from app.config.data import DB_FILE as _DB_FILE
 from app.storage.db import IS_PG, open_db
 from app.storage.storage import AgentStorage as _AgentStorage
 from app.utils.net import client_ip as _client_ip
+from app.utils import flog
 from app.config.session import (
     EMAIL_VERIFY_ENABLED,
     REGISTER_MAX,
@@ -164,21 +165,39 @@ async def login(request: Request, response: Response) -> Dict[str, Any]:
     body = await request.json()
     email = str(body.get("email") or "").strip().lower()
     password = str(body.get("password") or "")
+
+    # Extraer IP real del cliente
+    _ip = _client_ip(request)
+
     if not email or not password:
+        flog.warning(
+            f"[login] FAIL email={email or '(vacío)'} razón=campos_vacíos", ip=_ip
+        )
         raise HTTPException(status_code=400, detail="Email y contraseña requeridos")
+
     user = await get_user_by_email(email)
     if not user or not user.get("password_hash"):
+        flog.warning(f"[login] FAIL email={email} razón=usuario_no_encontrado", ip=_ip)
         raise HTTPException(status_code=401, detail="Credenciales incorrectas")
     if not await verify_password_async(password, user["password_hash"]):
+        flog.warning(f"[login] FAIL email={email} razón=contraseña_incorrecta", ip=_ip)
         raise HTTPException(status_code=401, detail="Credenciales incorrectas")
     if not user.get("is_active", 1):
+        flog.warning(f"[login] FAIL email={email} razón=cuenta_desactivada", ip=_ip)
         raise HTTPException(status_code=403, detail="Cuenta desactivada")
     if EMAIL_VERIFY_ENABLED and not user.get("is_verified", 1):
+        flog.warning(f"[login] FAIL email={email} razón=pendiente_verificación", ip=_ip)
         raise HTTPException(
             status_code=403,
             detail="Cuenta pendiente de verificación. Revisa tu correo.",
         )
+
     token = create_token(user["username"])
+    flog.ok(
+        f"[login] OK email={email} usuario={user['username']}",
+        ip=_ip,
+        username=user["username"],
+    )
     response.set_cookie(
         "ga_token",
         token,
