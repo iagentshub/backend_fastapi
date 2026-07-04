@@ -164,3 +164,106 @@ async def update_admin_settings(
         prefs["log_retention_days"] = body.log_retention_days
     await _save_prefs(username, prefs)
     return {"log_retention_days": int(prefs.get("log_retention_days", 30))}
+
+
+# ── Configuración de plataforma (settings.json) ───────────────────────────────
+
+_PLATFORM_DEFAULTS: dict = {
+    "billing_enabled": False,
+    "registration": "open",  # open | closed | invite
+    "max_users": 0,  # 0 = sin límite
+    "max_concurrent_sessions": 0,  # 0 = sin límite
+    "guest_enabled": True,
+    "email_verify": False,
+    "log_retention_days": 30,
+}
+
+_VALID_REGISTRATION = {"open", "closed", "invite"}
+
+
+def _read_platform_cfg() -> dict:
+    from app.config.data import SETTINGS_FILE
+    import json as _json
+
+    try:
+        raw = _json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        raw = {}
+    cfg = dict(_PLATFORM_DEFAULTS)
+    for k in _PLATFORM_DEFAULTS:
+        if k in raw:
+            cfg[k] = raw[k]
+    return cfg
+
+
+def _write_platform_cfg(cfg: dict) -> None:
+    from app.config.data import SETTINGS_FILE
+    import json as _json
+
+    try:
+        existing = _json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+    except Exception:
+        existing = {}
+    existing.update(cfg)
+    SETTINGS_FILE.write_text(
+        _json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8"
+    )
+
+
+class PlatformConfigUpdate(BaseModel):
+    billing_enabled: Optional[bool] = None
+    registration: Optional[str] = None
+    max_users: Optional[int] = None
+    max_concurrent_sessions: Optional[int] = None
+    guest_enabled: Optional[bool] = None
+    email_verify: Optional[bool] = None
+    log_retention_days: Optional[int] = None
+
+
+@router.get("/platform/public")
+async def get_platform_config_public() -> dict:
+    """Devuelve solo los campos públicos de la config de plataforma (sin autenticación).
+    Usado por login, registro y otras páginas públicas para adaptar el UI."""
+    cfg = _read_platform_cfg()
+    return {
+        "billing_enabled": cfg.get("billing_enabled", False),
+        "guest_enabled": cfg.get("guest_enabled", True),
+        "registration": cfg.get("registration", "open"),
+    }
+
+
+@router.get("/platform")
+async def get_platform_config(_: str = Depends(require_admin)) -> dict:
+    """Devuelve la configuración global de la plataforma (solo admin)."""
+    return _read_platform_cfg()
+
+
+@router.put("/platform")
+async def update_platform_config(
+    body: PlatformConfigUpdate,
+    _: str = Depends(require_admin),
+) -> dict:
+    """Actualiza la configuración global de la plataforma (escribe en settings.json)."""
+    cfg = _read_platform_cfg()
+    update = body.model_dump(exclude_none=True)
+
+    if "registration" in update and update["registration"] not in _VALID_REGISTRATION:
+        raise HTTPException(
+            status_code=422, detail="registration debe ser 'open', 'closed' o 'invite'"
+        )
+    if "max_users" in update and update["max_users"] < 0:
+        raise HTTPException(status_code=422, detail="max_users debe ser >= 0")
+    if "max_concurrent_sessions" in update and update["max_concurrent_sessions"] < 0:
+        raise HTTPException(
+            status_code=422, detail="max_concurrent_sessions debe ser >= 0"
+        )
+    if "log_retention_days" in update and not (
+        1 <= update["log_retention_days"] <= 365
+    ):
+        raise HTTPException(
+            status_code=422, detail="log_retention_days debe estar entre 1 y 365"
+        )
+
+    cfg.update(update)
+    _write_platform_cfg(cfg)
+    return cfg
