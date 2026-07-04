@@ -1,4 +1,5 @@
 """Base types and registry for connection providers."""
+
 from __future__ import annotations
 
 import json
@@ -12,12 +13,12 @@ from typing import Any, ClassVar, Dict, List, Optional
 class FieldDef:
     key: str
     label: str
-    type: str = "text"           # text | password | number | select
+    type: str = "text"  # text | password | number | select | textarea | checkbox
     placeholder: str = ""
     required: bool = False
     default: str = ""
-    options: List[Dict[str, str]] = field(default_factory=list)   # for select
-    depends_on: Optional[str] = None   # show only when another field == depends_value
+    options: List[Dict[str, str]] = field(default_factory=list)  # for select
+    depends_on: Optional[str] = None  # show only when another field == depends_value
     depends_value: Optional[str] = None
 
 
@@ -32,6 +33,7 @@ class BaseProvider:
     type_id: str = ""
     label: str = ""
     icon: str = "🔌"
+    category: str = "llm"  # llm | machine | database
     fields: ClassVar[List[FieldDef]] = []
 
     @classmethod
@@ -87,6 +89,7 @@ def all_providers() -> List[Dict[str, Any]]:
             "type": p.type_id,
             "label": p.label,
             "icon": p.icon,
+            "category": p.category,
             "fields": [f.__dict__ for f in p.fields],
         }
         for p in _REGISTRY.values()

@@ -291,6 +291,13 @@ async def save_connection(
     scope = payload.pop("scope", "workspace")
     if not get_provider(payload.get("type") or ""):
         raise HTTPException(status_code=422, detail="Tipo de conexión no válido")
+
+    # Las conexiones son siempre privadas — se pueden compartir vía grupos de workspace
+    labels = [l for l in (payload.get("labels") or []) if l != "public"]
+    if "private" not in labels:
+        labels = ["private"] + labels
+    payload["labels"] = labels
+
     if is_guest(user):
         s = get_session(user)
         conn: Dict[str, Any] = {**payload, "id": payload.get("id") or uuid4().hex[:12]}

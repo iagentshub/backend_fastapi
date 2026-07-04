@@ -58,6 +58,10 @@ def _slug(value: str) -> str:
 # ─── ConnectionStorage ────────────────────────────────────────────────────────
 
 
+# Campos sensibles que se cifran en la BD
+_ENCRYPTED_FIELDS = ("api_key", "password", "ssh_key")
+
+
 class ConnectionStorage:
     """DB-backed async connection storage."""
 
@@ -144,8 +148,9 @@ class ConnectionStorage:
 
     def _row_to_dict(self, row: Any) -> Dict[str, Any]:
         d: Dict[str, Any] = json.loads(row["data"])
-        if d.get("api_key"):
-            d["api_key"] = decrypt(d["api_key"])
+        for field in _ENCRYPTED_FIELDS:
+            if d.get(field):
+                d[field] = decrypt(d[field])
         d["tokens_in"] = row["tokens_in"]
         d["tokens_out"] = row["tokens_out"]
         return d
@@ -197,14 +202,17 @@ class ConnectionStorage:
         existing = await self.get(conn_id, owner_id)
         if existing:
             payload["created_at"] = existing.get("created_at", _now())
-            if not payload.get("api_key") and existing.get("api_key"):
-                payload["api_key"] = existing["api_key"]
+            # Conservar campos cifrados si no se envían nuevos
+            for field in _ENCRYPTED_FIELDS:
+                if not payload.get(field) and existing.get(field):
+                    payload[field] = existing[field]
         else:
             payload.setdefault("created_at", _now())
         payload["updated_at"] = _now()
         stored = dict(payload)
-        if stored.get("api_key"):
-            stored["api_key"] = encrypt(stored["api_key"])
+        for field in _ENCRYPTED_FIELDS:
+            if stored.get(field):
+                stored[field] = encrypt(stored[field])
         async with open_db() as conn:
             await self._upsert(conn, stored, owner_id)
             await conn.commit()
