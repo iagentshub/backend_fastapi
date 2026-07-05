@@ -366,11 +366,16 @@ async def export_agent(
     if fmt == "claude":
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            # Hidden path for Claude Code runtime
             zf.writestr(f".claude/agents/{slug}.md", content)
+            # Visible path so users can find the agent in Finder / Explorer
+            zf.writestr(f"agents/{slug}.md", content)
             for sk in resolved_skills:
                 sk_slug = _name_slug(sk.get("name", ""))
                 skill_md = _skill_md(sk)
                 zf.writestr(f".claude/skills/{sk_slug}/SKILL.md", skill_md)
+                # Visible skill copy + importable zip
+                zf.writestr(f"skills/{sk_slug}/SKILL.md", skill_md)
                 skill_zip_buf = io.BytesIO()
                 with zipfile.ZipFile(skill_zip_buf, "w", zipfile.ZIP_DEFLATED) as szf:
                     szf.writestr(f"{sk_slug}/SKILL.md", skill_md)
@@ -389,10 +394,16 @@ async def export_agent(
     if fmt == "github":
         buf = io.BytesIO()
         with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+            # Hidden path for GitHub Copilot runtime
             zf.writestr(f".github/agents/{slug}.md", content)
+            # Visible path so users can find the agent in Finder / Explorer
+            zf.writestr(f"agents/{slug}.md", content)
             for sk in resolved_skills:
                 sk_slug = _name_slug(sk.get("name", ""))
-                zf.writestr(f".github/skills/{sk_slug}/SKILL.md", _skill_md(sk))
+                skill_md = _skill_md(sk)
+                zf.writestr(f".github/skills/{sk_slug}/SKILL.md", skill_md)
+                # Visible skill copy
+                zf.writestr(f"skills/{sk_slug}/SKILL.md", skill_md)
             if mem_content:
                 zf.writestr(".github/COPILOT_INSTRUCTIONS.md", mem_content)
             _add_knowledge(zf)
