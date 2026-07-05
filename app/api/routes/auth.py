@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import time
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Cookie, Depends, HTTPException, Query, Request, Response
@@ -39,6 +40,14 @@ from app.utils.net import client_ip as _client_ip
 from app.utils import flog
 from app.config.session import (
     EMAIL_VERIFY_ENABLED,
+    LOGIN_MAX_FAILS,
+    LOGIN_WINDOW,
+    RATE_FORGOT_CALLS,
+    RATE_FORGOT_WINDOW,
+    RATE_GUEST_CALLS,
+    RATE_GUEST_WINDOW,
+    RATE_RESET_CALLS,
+    RATE_RESET_WINDOW,
     REGISTER_MAX,
     REGISTER_WINDOW,
     REGISTRATION_MODE,
@@ -52,8 +61,39 @@ _agents = _AgentStorage(_AGENTS_DIR)
 _register_limiter = RateLimiter(
     calls=REGISTER_MAX, window=REGISTER_WINDOW, key_func=_client_ip
 )
+_login_limiter = RateLimiter(
+    calls=LOGIN_MAX_FAILS, window=LOGIN_WINDOW, key_func=_client_ip
+)
+_forgot_limiter = RateLimiter(
+    calls=RATE_FORGOT_CALLS, window=RATE_FORGOT_WINDOW, key_func=_client_ip
+)
+_reset_limiter = RateLimiter(
+    calls=RATE_RESET_CALLS, window=RATE_RESET_WINDOW, key_func=_client_ip
+)
+_guest_limiter = RateLimiter(
+    calls=RATE_GUEST_CALLS, window=RATE_GUEST_WINDOW, key_func=_client_ip
+)
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
+
+# ── Caché de is_active para require_auth ──────────────────────────────────────
+# Evita una consulta a BD en cada request autenticado. TTL de 60 s: una cuenta
+# suspendida queda bloqueada en ≤60 s desde la acción del admin, sin sacrificar
+# el rendimiento en producción.
+_ACTIVE_CACHE_TTL = 60  # segundos
+_active_cache: dict[str, tuple[bool, float]] = {}  # {username: (is_active, expires_at)}
+
+
+async def _is_user_active(username: str) -> bool:
+    """Devuelve True si la cuenta está activa. Usa caché con TTL de 60 s."""
+    now = time.monotonic()
+    cached = _active_cache.get(username)
+    if cached and now < cached[1]:
+        return cached[0]
+    user = await get_user_by_username(username)
+    active = bool(user and user.get("is_active", 1))
+    _active_cache[username] = (active, now + _ACTIVE_CACHE_TTL)
+    return active
 
 
 class WorkspaceContext:
@@ -66,13 +106,15 @@ class WorkspaceContext:
         self.workspace_id = workspace_id
 
 
-def require_auth(ga_token: Optional[str] = Cookie(default=None)) -> str:
-    """Dependency: validates session token and returns username."""
+async def require_auth(ga_token: Optional[str] = Cookie(default=None)) -> str:
+    """Dependency: valida el token de sesión y verifica que la cuenta está activa."""
     if not ga_token:
         raise HTTPException(status_code=401, detail="No autenticado")
     username = decode_token(ga_token)
     if not username:
         raise HTTPException(status_code=401, detail="Token inválido o expirado")
+    if not await _is_user_active(username):
+        raise HTTPException(status_code=403, detail="Cuenta desactivada")
     return username
 
 
@@ -154,7 +196,11 @@ async def register(request: Request, response: Response) -> Dict[str, Any]:
 
 
 @router.post("/login")
-async def login(request: Request, response: Response) -> Dict[str, Any]:
+async def login(
+    request: Request,
+    response: Response,
+    _rl: None = Depends(_login_limiter),
+) -> Dict[str, Any]:
     body = await request.json()
     email = str(body.get("email") or "").strip().lower()
     password = str(body.get("password") or "")
@@ -222,7 +268,10 @@ async def verify_email(token: str, response: Response) -> Dict[str, Any]:
 
 
 @router.post("/guest")
-async def guest_login(response: Response) -> Dict[str, Any]:
+async def guest_login(
+    response: Response,
+    _rl: None = Depends(_guest_limiter),
+) -> Dict[str, Any]:
     from app.storage.guest import new_guest_id
 
     guest_id = new_guest_id()
@@ -281,7 +330,10 @@ async def me(ctx: WorkspaceContext = Depends(require_workspace)) -> Dict[str, An
 
 
 @router.post("/forgot-password")
-async def forgot_password(request: Request) -> Dict[str, Any]:
+async def forgot_password(
+    request: Request,
+    _rl: None = Depends(_forgot_limiter),
+) -> Dict[str, Any]:
     body = await request.json()
     email = str(body.get("email") or "").strip().lower()
     if not email or not re.match(r"^[^\s@]+@[^\s@]+\.[^\s@]+$", email):
@@ -295,7 +347,10 @@ async def forgot_password(request: Request) -> Dict[str, Any]:
 
 
 @router.post("/reset-password")
-async def reset_password(request: Request) -> Dict[str, Any]:
+async def reset_password(
+    request: Request,
+    _rl: None = Depends(_reset_limiter),
+) -> Dict[str, Any]:
     body = await request.json()
     token = str(body.get("token") or "").strip()
     new_password = str(body.get("password") or "").strip()

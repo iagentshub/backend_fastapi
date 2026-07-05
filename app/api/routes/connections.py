@@ -13,6 +13,7 @@ from app.api.routes.auth import WorkspaceContext, require_auth, require_workspac
 from app.auth.auth import get_user_role
 from app.connections import all_providers, get_provider
 from app.config.data import AGENTS_DIR, DB_FILE, SKILLS_DIR
+from app.config.security import assert_safe_url
 from app.storage.knowledge import KnowledgeStorage
 from app.config.session import (
     RATE_TEST_CALLS,
@@ -224,6 +225,7 @@ async def ollama_models(
     body = await request.json()
     host = (body.get("host") or "http://localhost:11434").strip().rstrip("/")
     try:
+        assert_safe_url(host)
         data = await asyncio.to_thread(OllamaProvider._fetch_tags, host)
         models = [m["name"] for m in (data.get("models") or []) if m.get("name")]
         return {"models": models}
@@ -437,7 +439,7 @@ async def get_connection(
             conn = await _get_conn_any(conn_id, user, workspace_id)
     if not conn:
         raise HTTPException(status_code=404, detail="Conexión no encontrada")
-    return conn
+    return {k: v for k, v in conn.items() if k != "api_key"}
 
 
 @router.delete("/{conn_id}")

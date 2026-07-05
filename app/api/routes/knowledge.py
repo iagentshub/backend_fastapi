@@ -115,24 +115,32 @@ async def delete_folder(
     user, workspace_id = ctx.user, ctx.workspace_id
     if is_guest(user):
         raise HTTPException(status_code=403, detail="Los invitados no pueden eliminar carpetas")
+
+    owner_id = (await _owner(user, workspace_id)) or workspace_id
+
+    # Verificar ownership ANTES de cualquier borrado en cascade
+    folder = await _folders.get(folder_id)
+    if not folder or folder.get("owner_id") != owner_id:
+        raise HTTPException(status_code=404, detail="Carpeta no encontrada")
+
     if cascade:
-        folder = await _folders.get(folder_id)
-        section = (folder or {}).get("section", "")
+        section = folder.get("section", "")
         if section == "agents":
-            for agent in _agents.list(scope="private"):
+            for agent in await _agents.list(scope="private", owner_id=owner_id):
                 if agent.get("folder_id") == folder_id:
                     try:
-                        _agents.delete(agent["id"])
+                        await _agents.delete(agent["id"])
                     except Exception:
                         pass
         elif section == "skill":
-            for skill in _skills.list(scope="private"):
+            for skill in await _skills.list(scope="private", owner_id=owner_id):
                 if skill.get("folder_id") == folder_id:
                     try:
-                        _skills.delete("private", skill["id"])
+                        await _skills.delete("private", skill["id"])
                     except Exception:
                         pass
-    if not await _folders.delete(folder_id, (await _owner(user, workspace_id)) or workspace_id, cascade=cascade):
+
+    if not await _folders.delete(folder_id, owner_id, cascade=cascade):
         raise HTTPException(status_code=404, detail="Carpeta no encontrada")
     return {"ok": True}
 

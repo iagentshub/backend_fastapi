@@ -6,8 +6,7 @@ from datetime import datetime, timezone
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from urllib.parse import urlparse
-
+from app.config.security import assert_safe_url
 from app.storage.db import open_db
 
 
@@ -57,9 +56,8 @@ def fetch_url_text(url: str) -> str:
     """Download a URL and return its plain text (max 2 MB)."""
     import urllib.request
 
-    parsed = urlparse(url)
-    if parsed.scheme not in ("http", "https"):
-        raise ValueError("Solo se permiten URLs http/https")
+    # Validar que la URL no apunte a redes privadas o endpoints de metadata (SSRF)
+    assert_safe_url(url)
 
     req = urllib.request.Request(
         url,

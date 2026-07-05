@@ -66,5 +66,21 @@ RATE_TESTALL_CALLS  = int(os.getenv("GAIA_RATE_TESTALL_CALLS",  "30"))
 RATE_TESTALL_WINDOW = int(os.getenv("GAIA_RATE_TESTALL_WINDOW", "60"))
 RATE_GUEST_CALLS  = int(os.getenv("GAIA_RATE_GUEST_CALLS",  "5"))
 RATE_GUEST_WINDOW = int(os.getenv("GAIA_RATE_GUEST_WINDOW", "60"))
+# Recuperación de contraseña: límite estricto para prevenir spam SMTP masivo
+RATE_FORGOT_CALLS  = int(os.getenv("GAIA_RATE_FORGOT_CALLS",  "5"))    # intentos
+RATE_FORGOT_WINDOW = int(os.getenv("GAIA_RATE_FORGOT_WINDOW", "3600"))  # por hora
+# Reset de contraseña: token de 256 bits es imprácticable de fuerza bruta,
+# pero limitamos igualmente para prevenir DoS sobre la BD
+RATE_RESET_CALLS  = int(os.getenv("GAIA_RATE_RESET_CALLS",  "10"))
+RATE_RESET_WINDOW = int(os.getenv("GAIA_RATE_RESET_WINDOW", "300"))
 RATE_MAX_IPS      = int(os.getenv("GAIA_RATE_MAX_IPS",      "10000"))  # IPs simultáneas en memoria
 BODY_MAX_BYTES    = int(os.getenv("GAIA_BODY_MAX_BYTES",   str(2 * 1024 * 1024)))  # tamaño máximo de request
+
+# ── Proxies confiables para X-Forwarded-For ────────────────────────────────────
+# Solo se lee el header X-Forwarded-For cuando la conexión TCP viene de una de
+# estas IPs. Si está vacío, se ignora el header y se usa siempre la IP real.
+# Ejemplo: "127.0.0.1,172.17.0.1" para nginx local + Docker host.
+_trusted_raw = os.getenv("GAIA_TRUSTED_PROXIES", "127.0.0.1")
+TRUSTED_PROXIES: frozenset[str] = frozenset(
+    ip.strip() for ip in _trusted_raw.split(",") if ip.strip()
+)

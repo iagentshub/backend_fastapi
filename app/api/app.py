@@ -10,7 +10,9 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from jose import jwt as _jwt
+from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.utils import flog
 from app.auth.auth import ensure_admin_user, purge_expired_deletions
@@ -44,17 +46,56 @@ _docs_url = (
 )
 
 
-class _BodySizeLimitMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request, call_next):
-        cl = request.headers.get("content-length")
-        if cl and int(cl) > _BODY_MAX_BYTES:
-            from fastapi.responses import JSONResponse
+class _BodySizeLimitMiddleware:
+    """Middleware ASGI puro que limita el tamaño real del body (no solo Content-Length).
 
-            return JSONResponse(
-                {"detail": "Payload demasiado grande (máx. 2 MB)"},
-                status_code=413,
-            )
-        return await call_next(request)
+    A diferencia de BaseHTTPMiddleware, envuelve el callable `receive` del protocolo
+    ASGI y cuenta los bytes reales según llegan, lo que impide el bypass vía
+    Content-Length declarado falso sin romper endpoints SSE/streaming.
+    """
+
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        # Rechazo rápido por Content-Length declarado (evita leer el body innecesariamente)
+        headers = {k.lower(): v for k, v in scope.get("headers", [])}
+        cl_raw = headers.get(b"content-length")
+        if cl_raw:
+            try:
+                if int(cl_raw) > _BODY_MAX_BYTES:
+                    response = JSONResponse(
+                        {"detail": "Payload demasiado grande (máx. 2 MB)"}, status_code=413
+                    )
+                    await response(scope, receive, send)
+                    return
+            except (ValueError, OverflowError):
+                pass
+
+        # Envolver receive para contar bytes reales chunk a chunk
+        total_bytes = 0
+        limit_exceeded = False
+
+        async def limited_receive() -> dict:
+            nonlocal total_bytes, limit_exceeded
+            message = await receive()
+            if message.get("type") == "http.request":
+                chunk = message.get("body", b"")
+                total_bytes += len(chunk)
+                if total_bytes > _BODY_MAX_BYTES:
+                    limit_exceeded = True
+                    # Sustituir el body por vacío para que FastAPI no lo procese
+                    return {"type": "http.request", "body": b"", "more_body": False}
+            return message
+
+        await self.app(scope, limited_receive, send)
+
+        # Si se superó el límite durante la lectura, el handler ya habrá respondido
+        # o el error será capturado por FastAPI. El flag queda para depuración.
 
 
 class _RequestLogger(BaseHTTPMiddleware):
