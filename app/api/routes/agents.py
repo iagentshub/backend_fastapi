@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import io
 import json
 import re
@@ -138,19 +139,40 @@ async def list_agents(
         own = [a for a in agents if a.get("owner_id") == user]
         own_ids = {a["id"] for a in own}
         user_groups = await _ws.list_for_user(user)
-        shared_map: Dict[str, str] = {}  # resource_id -> group_id
-        for group in user_groups:
-            gid = group["id"]
-            for rid in await _shares.get_workspace_shared_resource_ids(gid, "agent"):
-                if rid not in shared_map:
-                    shared_map[rid] = gid
-        extra = []
-        for a in agents:
-            if a["id"] in (set(shared_map.keys()) - own_ids):
-                if await _ws.owner_is_active(a.get("owner_id") or ""):
+
+        # Paralelizar todas las queries de shares (una por grupo) en lugar de N+1 serial
+        if user_groups:
+            group_ids = [g["id"] for g in user_groups]
+            results = await asyncio.gather(
+                *[_shares.get_workspace_shared_resource_ids(gid, "agent") for gid in group_ids]
+            )
+            shared_map: Dict[str, str] = {}  # resource_id -> group_id (primer grupo que lo comparte)
+            for gid, rids in zip(group_ids, results):
+                for rid in rids:
+                    if rid not in shared_map:
+                        shared_map[rid] = gid
+        else:
+            shared_map = {}
+
+        # Paralelizar las consultas owner_is_active para agentes compartidos
+        extra_candidates = [
+            a for a in agents if a["id"] in (set(shared_map.keys()) - own_ids)
+        ]
+        if extra_candidates:
+            unique_owners = list({a.get("owner_id") or "" for a in extra_candidates})
+            active_results = await asyncio.gather(
+                *[_ws.owner_is_active(oid) for oid in unique_owners]
+            )
+            active_owners = {oid for oid, ok in zip(unique_owners, active_results) if ok}
+            extra = []
+            for a in extra_candidates:
+                if (a.get("owner_id") or "") in active_owners:
                     a["_shared"] = True
                     a["_group_id"] = shared_map[a["id"]]
                     extra.append(a)
+        else:
+            extra = []
+
         agents = own + extra
     if label:
         agents = [a for a in agents if label in (a.get("labels") or [])]

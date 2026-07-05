@@ -80,7 +80,8 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 # Evita una consulta a BD en cada request autenticado. TTL de 60 s: una cuenta
 # suspendida queda bloqueada en ≤60 s desde la acción del admin, sin sacrificar
 # el rendimiento en producción.
-_ACTIVE_CACHE_TTL = 60  # segundos
+_ACTIVE_CACHE_TTL = 60       # segundos
+_ACTIVE_CACHE_MAX = 5_000    # entradas máximas antes de eviction
 _active_cache: dict[str, tuple[bool, float]] = {}  # {username: (is_active, expires_at)}
 
 
@@ -90,8 +91,22 @@ async def _is_user_active(username: str) -> bool:
     cached = _active_cache.get(username)
     if cached and now < cached[1]:
         return cached[0]
+
     user = await get_user_by_username(username)
     active = bool(user and user.get("is_active", 1))
+
+    # Eviction: si el dict supera el límite, eliminar la mitad de entradas expiradas
+    # (o las más antiguas si no hay suficientes expiradas)
+    if len(_active_cache) >= _ACTIVE_CACHE_MAX:
+        expired = [k for k, (_, exp) in _active_cache.items() if now >= exp]
+        if len(expired) >= _ACTIVE_CACHE_MAX // 2:
+            for k in expired:
+                del _active_cache[k]
+        else:
+            # Eliminar la mitad más antigua por orden de inserción
+            for k in list(_active_cache)[: _ACTIVE_CACHE_MAX // 2]:
+                del _active_cache[k]
+
     _active_cache[username] = (active, now + _ACTIVE_CACHE_TTL)
     return active
 

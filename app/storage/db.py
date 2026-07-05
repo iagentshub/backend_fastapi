@@ -145,8 +145,14 @@ CREATE TABLE IF NOT EXISTS users (
     stripe_customer_id    TEXT,
     created_at            TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_users_email ON users (email);
+CREATE INDEX IF NOT EXISTS idx_users_email    ON users (email);
+CREATE INDEX IF NOT EXISTS idx_users_username ON users (username);
 CREATE INDEX IF NOT EXISTS idx_users_stripe_customer ON users (stripe_customer_id);
+-- Índices de folder_id para filtrado y cascade delete por carpeta
+CREATE INDEX IF NOT EXISTS idx_agents_folder     ON agents(folder_id);
+CREATE INDEX IF NOT EXISTS idx_skills_folder     ON skills(folder_id);
+CREATE INDEX IF NOT EXISTS idx_knowledge_folder  ON knowledge_items(folder_id);
+CREATE INDEX IF NOT EXISTS idx_memory_folder     ON memory_files(folder_id);
 CREATE TABLE IF NOT EXISTS resource_workspace_shares (
     resource_type TEXT NOT NULL,
     resource_id   TEXT NOT NULL,
@@ -359,8 +365,14 @@ CREATE TABLE IF NOT EXISTS users (
     stripe_customer_id    TEXT,
     created_at            TEXT NOT NULL
 );
-CREATE INDEX IF NOT EXISTS idx_users_email ON users (email);
+CREATE INDEX IF NOT EXISTS idx_users_email    ON users (email);
+CREATE INDEX IF NOT EXISTS idx_users_username ON users (username);
 CREATE INDEX IF NOT EXISTS idx_users_stripe_customer ON users (stripe_customer_id);
+-- Índices de folder_id para filtrado y cascade delete por carpeta
+CREATE INDEX IF NOT EXISTS idx_agents_folder     ON agents(folder_id);
+CREATE INDEX IF NOT EXISTS idx_skills_folder     ON skills(folder_id);
+CREATE INDEX IF NOT EXISTS idx_knowledge_folder  ON knowledge_items(folder_id);
+CREATE INDEX IF NOT EXISTS idx_memory_folder     ON memory_files(folder_id);
 CREATE TABLE IF NOT EXISTS resource_workspace_shares (
     resource_type TEXT NOT NULL,
     resource_id   TEXT NOT NULL,

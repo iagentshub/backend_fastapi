@@ -303,7 +303,12 @@ async def upload_document(
     if len(content_bytes) > 10 * 1024 * 1024:
         raise HTTPException(status_code=413, detail="El fichero supera el límite de 10 MB")
     try:
-        content = extract_document_text(content_bytes, filename, file.content_type or "")
+        # extract_document_text usa pypdf (síncrono/bloqueante en PDFs grandes)
+        # → se ejecuta en un thread para no bloquear el event loop
+        import asyncio as _asyncio
+        content = await _asyncio.to_thread(
+            extract_document_text, content_bytes, filename, file.content_type or ""
+        )
     except Exception as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     if not content.strip():
