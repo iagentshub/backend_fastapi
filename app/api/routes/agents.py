@@ -36,6 +36,8 @@ from app.storage.storage import (
     MemoryStorage,
     SkillStorage,
 )
+from app.storage.workspace_shares import WorkspaceShareStorage
+from app.storage.workspaces import WorkspaceStorage
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
 
@@ -43,6 +45,8 @@ _agents = AgentStorage(AGENTS_DIR)
 _conns = ConnectionStorage(DB_FILE)
 _skills = SkillStorage(SKILLS_DIR)
 _memory = MemoryStorage(MEMORY_DIR)
+_shares = WorkspaceShareStorage(DB_FILE)
+_ws = WorkspaceStorage(DB_FILE)
 _chat = ChatStorage(DB_FILE)
 _knowledge = KnowledgeStorage(DB_FILE)
 _folders = FolderStorage(DB_FILE)
@@ -95,13 +99,15 @@ def _apply_locale(agent: Dict[str, Any], locale: str) -> Dict[str, Any]:
 async def list_agents(
     scope: str = "all",
     label: Optional[str] = None,
+    owner_scope: str = "workspace",
+    group_id: Optional[str] = None,
     limit: int = Query(0, ge=0, description="Máx. items. 0 = sin límite"),
     offset: int = Query(0, ge=0),
     ctx: WorkspaceContext = Depends(require_workspace),
 ) -> List[Dict[str, Any]]:
     _check_scope(scope)
     locale = get_locale()
-    user, workspace_id = ctx.user, ctx.workspace_id
+    user = ctx.user
     if is_guest(user):
         s = get_session(user)
         public = await _agents.list("public") if scope in ("public", "all") else []
@@ -116,18 +122,35 @@ async def list_agents(
         return [_apply_locale(a, locale) for a in items]
     agents = await _agents.list(scope)
     role = await get_user_role(user)
-    if role not in ("admin", "guest"):
-        from app.storage.groups import GroupStorage
-
-        gs = GroupStorage(DB_FILE)
-        own = [a for a in agents if a.get("owner_id") == workspace_id]
+    if group_id is not None:
+        # Filtro por grupo: se aplica siempre, incluido admin
+        if role != "admin" and not await _ws.can_access(group_id, user):
+            raise HTTPException(status_code=403, detail="Sin acceso a este grupo")
         shared_ids = set(
-            await gs.get_user_shared_resource_ids(user, "agent", workspace_id)
+            await _shares.get_workspace_shared_resource_ids(group_id, "agent")
         )
-        own_ids = {a["id"] for a in own}
-        extra = [a for a in agents if a["id"] in (shared_ids - own_ids)]
-        for a in extra:
+        agents = [a for a in agents if a["id"] in shared_ids]
+        for a in agents:
             a["_shared"] = True
+            a["_group_id"] = group_id
+    elif role not in ("admin", "guest"):
+        # Vista por defecto: propios + compartidos desde todos los grupos del usuario
+        own = [a for a in agents if a.get("owner_id") == user]
+        own_ids = {a["id"] for a in own}
+        user_groups = await _ws.list_for_user(user)
+        shared_map: Dict[str, str] = {}  # resource_id -> group_id
+        for group in user_groups:
+            gid = group["id"]
+            for rid in await _shares.get_workspace_shared_resource_ids(gid, "agent"):
+                if rid not in shared_map:
+                    shared_map[rid] = gid
+        extra = []
+        for a in agents:
+            if a["id"] in (set(shared_map.keys()) - own_ids):
+                if await _ws.owner_is_active(a.get("owner_id") or ""):
+                    a["_shared"] = True
+                    a["_group_id"] = shared_map[a["id"]]
+                    extra.append(a)
         agents = own + extra
     if label:
         agents = [a for a in agents if label in (a.get("labels") or [])]
@@ -432,9 +455,12 @@ async def chat(
         knowledge_store = GuestKnowledgeAdapter(s)
     else:
         conn_id = base_conn_id
-        conn = await _conns.get(conn_id, None if role == "admin" else workspace_id)
-        if not conn:
-            conn = await _conns.get(conn_id, user)
+        if role == "admin":
+            conn = await _conns.get(conn_id, None)
+        else:
+            from app.api.routes.connections import _get_conn_any
+
+            conn = await _get_conn_any(conn_id, user, workspace_id)
         memory_store = _memory
         knowledge_store = _knowledge
 

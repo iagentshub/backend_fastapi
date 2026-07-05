@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from typing import Any, Dict, List, Optional
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -13,9 +14,76 @@ from app.api.routes.auth import WorkspaceContext, require_auth, require_workspac
 from app.services.chat import stream_chat
 from app.storage.db import IS_PG, open_db
 from app.storage.knowledge import KnowledgeStorage
-from app.storage.storage import AgentStorage, ConnectionStorage, SkillStorage
+from app.storage.storage import AgentStorage, ConnectionStorage, MemoryStorage, SkillStorage
 
 router = APIRouter(tags=["social"])
+
+
+async def _assert_public(resource_type: str, source_id: str) -> None:
+    """Fork/link solo están disponibles para contenido público del marketplace."""
+    async with open_db() as conn:
+        row = await conn.fetchone(
+            "SELECT 1 FROM resource_social WHERE resource_type=? AND resource_id=? AND is_public=?",
+            (resource_type, source_id, _PUBLIC_VAL),
+        )
+    if not row:
+        raise HTTPException(status_code=403, detail="No tienes acceso a este recurso")
+
+
+_inherit_skills_store = SkillStorage(_cfg.SKILLS_DIR)
+_inherit_knowledge_store = KnowledgeStorage(_cfg.DB_FILE)
+_inherit_memory_store = MemoryStorage(_cfg.MEMORY_DIR)
+
+
+async def _inherit_resource_ids(
+    ids: List[str], resource_type: str, target_owner_id: str
+) -> List[str]:
+    """Al forkear/enlazar un agente, sus skills/conocimiento privados se clonan junto
+    con él (heredados) para que sigan siendo accesibles desde el nuevo dueño. Los
+    públicos, o los que ya pertenecen al destino, se referencian tal cual (sin clonar)."""
+    new_ids: List[str] = []
+    for rid in ids:
+        if resource_type == "skill":
+            item = await _inherit_skills_store.get_any(rid)
+        else:
+            item = await _inherit_knowledge_store.get(rid)
+        if not item:
+            continue
+        if item.get("owner_id") == target_owner_id or item.get("scope") == "public":
+            new_ids.append(rid)
+            continue
+        if resource_type == "skill":
+            # id propio (no derivado del nombre) para no colisionar con una skill
+            # homónima de otro owner — GET /api/skills/{scope}/{id} no filtra por
+            # owner_id, así que dos ids iguales de dueños distintos son ambiguos.
+            clone = {k: v for k, v in item.items() if k not in ("id", "scope", "owner_id")}
+            clone["id"] = uuid4().hex[:12]
+            saved = await _inherit_skills_store.save("private", clone, owner_id=target_owner_id)
+        else:
+            saved = await _inherit_knowledge_store.save(
+                type=item.get("type", "url"),
+                title=item.get("title", rid),
+                source=item.get("source", ""),
+                content=item.get("content", ""),
+                owner_id=target_owner_id,
+            )
+        new_ids.append(saved["id"])
+    return new_ids
+
+
+async def _inherit_agent_memory(
+    source_agent: Dict[str, Any],
+    source_owner: str,
+    new_agent_id: str,
+    target_owner_id: str,
+) -> None:
+    """Copia el contenido de memoria del agente original al nuevo, si usa memoria."""
+    if not source_agent.get("use_memory"):
+        return
+    mem_name = source_agent.get("memory_file") or f"{source_agent.get('id')}.md"
+    content = await _inherit_memory_store.get(mem_name, source_owner)
+    if content:
+        await _inherit_memory_store.save(f"{new_agent_id}.md", content, owner_id=target_owner_id)
 
 CATEGORIES = [
     "Coding",
@@ -377,7 +445,7 @@ async def my_resources(
     type: Optional[str] = None,
     username: str = Depends(require_auth),
 ) -> Dict[str, Any]:
-    """All resource_social rows owned by the current user (public + private)."""
+    """All resource_social rows owned by the current user."""
 
     async with open_db() as conn:
         conditions: List[str] = ["owner = ?"]
@@ -419,7 +487,11 @@ async def my_resources(
         still_public = {r["resource_id"] for r in pub_rows}
         for row in rows:
             if row.get("linked_to_id"):
-                row["linked_broken"] = row["linked_to_id"] not in still_public
+                linked_owner = row.get("linked_to_user") or ""
+                still_accessible = linked_owner == username
+                row["linked_broken"] = (
+                    row["linked_to_id"] not in still_public and not still_accessible
+                )
 
     return {"resources": rows}
 
@@ -621,17 +693,10 @@ async def fork_knowledge(
     if not source:
         raise HTTPException(status_code=404, detail="Knowledge no encontrado")
 
-    async with open_db() as conn:
-        row = await conn.fetchone(
-            "SELECT 1 FROM resource_social "
-            "WHERE resource_type=? AND resource_id=? AND is_public=?",
-            ("knowledge", source_id, _PUBLIC_VAL),
-        )
-        if not row:
-            raise HTTPException(status_code=403, detail="El knowledge no es público")
-
     source_owner = source.get("owner_id") or ""
-    new_title = f"Fork of {source.get('title', source_id)}"
+    await _assert_public("knowledge", source_id)
+
+    new_title = source.get("title", source_id)
     result = await knowledge.save(
         type=source.get("type", "url"),
         title=new_title,
@@ -689,17 +754,10 @@ async def link_knowledge(
     if not source:
         raise HTTPException(status_code=404, detail="Knowledge no encontrado")
 
-    async with open_db() as conn:
-        row = await conn.fetchone(
-            "SELECT 1 FROM resource_social "
-            "WHERE resource_type=? AND resource_id=? AND is_public=?",
-            ("knowledge", source_id, _PUBLIC_VAL),
-        )
-        if not row:
-            raise HTTPException(status_code=403, detail="El knowledge no es público")
-
     source_owner = source.get("owner_id") or ""
-    link_title = f"Linked: {source.get('title', source_id)}"
+    await _assert_public("knowledge", source_id)
+
+    link_title = source.get("title", source_id)
     result = await knowledge.save(
         type=source.get("type", "url"),
         title=link_title,
@@ -758,28 +816,36 @@ async def fork_agent(
     if not source:
         raise HTTPException(status_code=404, detail="Agente no encontrado")
 
-    if scope != "public":
-        async with open_db() as conn:
-            row = await conn.fetchone(
-                "SELECT 1 FROM resource_social "
-                "WHERE resource_type=? AND resource_id=? AND is_public=?",
-                ("agent", source_id, _PUBLIC_VAL),
-            )
-            if not row:
-                raise HTTPException(status_code=403, detail="El agente no es público")
-
     source_owner = source.get("owner_id") or ""
+    if scope != "public":
+        await _assert_public("agent", source_id)
+
     fork_payload = {
         k: v
         for k, v in source.items()
         if k not in ("id", "scope", "owner_id", "created_at", "updated_at")
     }
-    fork_payload["name"] = f"Fork of {source.get('name', source_id)}"
+    # id propio (no derivado del nombre): al no renombrar la copia, un id basado en
+    # el nombre colisionaría con el original (misma slug) y una lectura por id sin
+    # filtro de owner (GET /api/agents/{id}) devolvería cualquiera de los dos.
+    fork_payload["id"] = uuid4().hex[:12]
+    if username != source_owner:
+        # Skills/conocimiento privados y memoria se heredan junto con el agente
+        fork_payload["skills"] = await _inherit_resource_ids(
+            fork_payload.get("skills") or [], "skill", username
+        )
+        fork_payload["knowledge"] = await _inherit_resource_ids(
+            fork_payload.get("knowledge") or [], "knowledge", username
+        )
+        fork_payload["memory_file"] = None
 
     try:
         result = await agents.save(fork_payload, "private", owner_id=username)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+
+    if username != source_owner:
+        await _inherit_agent_memory(source, source_owner, result["id"], username)
 
     fork_labels = list(result.get("labels") or ["private"])
     for ol in ("fork", "linked"):
@@ -845,21 +911,15 @@ async def fork_skill(
     if not source:
         raise HTTPException(status_code=404, detail="Skill no encontrada")
 
-    if scope != "public":
-        async with open_db() as conn:
-            row = await conn.fetchone(
-                "SELECT 1 FROM resource_social "
-                "WHERE resource_type=? AND resource_id=? AND is_public=?",
-                ("skill", source_id, _PUBLIC_VAL),
-            )
-            if not row:
-                raise HTTPException(status_code=403, detail="La skill no es pública")
-
     source_owner = source.get("owner_id") or ""
+    if scope != "public":
+        await _assert_public("skill", source_id)
+
     fork_payload = {
         k: v for k, v in source.items() if k not in ("id", "scope", "owner_id")
     }
-    fork_payload["name"] = f"Fork of {source.get('name', source_id)}"
+    # id propio (no derivado del nombre) — ver comentario equivalente en fork_agent.
+    fork_payload["id"] = uuid4().hex[:12]
 
     try:
         result = await skills.save("private", fork_payload, owner_id=username)
@@ -930,34 +990,40 @@ async def link_agent(
     if not source:
         raise HTTPException(status_code=404, detail="Agente no encontrado")
 
-    if scope != "public":
-        async with open_db() as conn:
-            row = await conn.fetchone(
-                "SELECT 1 FROM resource_social "
-                "WHERE resource_type=? AND resource_id=? AND is_public=?",
-                ("agent", source_id, _PUBLIC_VAL),
-            )
-            if not row:
-                raise HTTPException(status_code=403, detail="El agente no es público")
-
     source_owner = source.get("owner_id") or ""
+    if scope != "public":
+        await _assert_public("agent", source_id)
+
     link_payload = {
         k: v
         for k, v in source.items()
         if k not in ("id", "scope", "owner_id", "created_at", "updated_at")
     }
-    link_payload["name"] = f"Linked: {source.get('name', source_id)}"
+    # id propio (no derivado del nombre) — ver comentario equivalente en fork_agent.
+    link_payload["id"] = uuid4().hex[:12]
     link_labels = list(link_payload.get("labels") or ["private"])
     for ol in ("fork", "linked"):
         if ol in link_labels:
             link_labels.remove(ol)
     link_labels.append("linked")
     link_payload["labels"] = link_labels
+    if username != source_owner:
+        # Skills/conocimiento privados y memoria se heredan junto con el agente
+        link_payload["skills"] = await _inherit_resource_ids(
+            link_payload.get("skills") or [], "skill", username
+        )
+        link_payload["knowledge"] = await _inherit_resource_ids(
+            link_payload.get("knowledge") or [], "knowledge", username
+        )
+        link_payload["memory_file"] = None
 
     try:
         result = await agents.save(link_payload, "private", owner_id=username)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc))
+
+    if username != source_owner:
+        await _inherit_agent_memory(source, source_owner, result["id"], username)
 
     new_id = result["id"]
     link_name = result["name"]
@@ -1014,21 +1080,15 @@ async def link_skill(
     if not source:
         raise HTTPException(status_code=404, detail="Skill no encontrada")
 
-    if scope != "public":
-        async with open_db() as conn:
-            row = await conn.fetchone(
-                "SELECT 1 FROM resource_social "
-                "WHERE resource_type=? AND resource_id=? AND is_public=?",
-                ("skill", source_id, _PUBLIC_VAL),
-            )
-            if not row:
-                raise HTTPException(status_code=403, detail="La skill no es pública")
-
     source_owner = source.get("owner_id") or ""
+    if scope != "public":
+        await _assert_public("skill", source_id)
+
     link_payload = {
         k: v for k, v in source.items() if k not in ("id", "scope", "owner_id")
     }
-    link_payload["name"] = f"Linked: {source.get('name', source_id)}"
+    # id propio (no derivado del nombre) — ver comentario equivalente en fork_agent.
+    link_payload["id"] = uuid4().hex[:12]
     link_labels = list(link_payload.get("labels") or ["private"])
     for ol in ("fork", "linked"):
         if ol in link_labels:
@@ -1108,11 +1168,17 @@ async def sync_linked_agent(
         )
 
     original_id = row[0]
-    original = await agents.get(original_id, "public")
+    original = await agents.get(original_id)
     if not original:
         raise HTTPException(
-            status_code=404,
-            detail="El agente original no encontrado o ya no es público",
+            status_code=404, detail="El agente original ya no existe",
+        )
+    try:
+        if original.get("scope") != "public":
+            await _assert_public("agent", original_id)
+    except HTTPException:
+        raise HTTPException(
+            status_code=403, detail="El agente original ya no es accesible",
         )
 
     sync_fields = {
@@ -1121,7 +1187,7 @@ async def sync_linked_agent(
         if k not in ("id", "scope", "owner_id", "created_at", "name")
     }
     updated = {**local, **sync_fields}
-    await agents.save(updated, "private", owner_id=username)
+    await agents.save(updated, "private", owner_id=local.get("owner_id"))
 
     return {"ok": True, "synced_from": original_id}
 
@@ -1149,10 +1215,17 @@ async def sync_linked_skill(
         )
 
     original_id = row[0]
-    original = await skills.get("public", original_id)
+    original = await skills.get_any(original_id)
     if not original:
         raise HTTPException(
-            status_code=404, detail="La skill original no encontrada o ya no es pública"
+            status_code=404, detail="La skill original ya no existe",
+        )
+    try:
+        if original.get("scope") != "public":
+            await _assert_public("skill", original_id)
+    except HTTPException:
+        raise HTTPException(
+            status_code=403, detail="La skill original ya no es accesible",
         )
 
     sync_fields = {
@@ -1161,7 +1234,7 @@ async def sync_linked_skill(
         if k not in ("id", "scope", "owner_id", "name")
     }
     updated = {**local, **sync_fields}
-    await skills.save("private", updated, owner_id=username)
+    await skills.save("private", updated, owner_id=local.get("owner_id"))
 
     return {"ok": True, "synced_from": original_id}
 
@@ -1313,7 +1386,7 @@ async def convert_agent_link_to_fork(
         if "fork" not in labels:
             labels.append("fork")
         updated["labels"] = labels
-        await agents.save(updated, "private", owner_id=username)
+        await agents.save(updated, "private", owner_id=updated.get("owner_id"))
 
     return {"ok": True, "agent_id": agent_id}
 
@@ -1360,6 +1433,6 @@ async def convert_skill_link_to_fork(
         if "fork" not in labels_s:
             labels_s.append("fork")
         updated["labels"] = labels_s
-        await skills.save("private", updated, owner_id=username)
+        await skills.save("private", updated, owner_id=updated.get("owner_id"))
 
     return {"ok": True, "skill_id": skill_id}

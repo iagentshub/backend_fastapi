@@ -6,9 +6,8 @@ import hashlib
 import hmac
 import json
 import time
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import AsyncMock, patch
 
-import stripe
 
 import app.api.routes.billing as billing_routes
 

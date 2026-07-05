@@ -15,11 +15,15 @@ from app.config.data import DB_FILE, SKILLS_DIR
 from app.storage.guest import get_session, is_guest
 from app.storage.knowledge import FolderStorage
 from app.storage.storage import SkillStorage
+from app.storage.workspace_shares import WorkspaceShareStorage
+from app.storage.workspaces import WorkspaceStorage
 
 router = APIRouter(prefix="/api/skills", tags=["skills"])
 
 _storage = SkillStorage(SKILLS_DIR)
 _folders = FolderStorage(DB_FILE)
+_shares = WorkspaceShareStorage(DB_FILE)
+_ws = WorkspaceStorage(DB_FILE)
 
 _VALID_SCOPES = {"public", "private", "all"}
 
@@ -36,16 +40,18 @@ def _check_scope(scope: str) -> None:
 @router.get("")
 async def list_skills(
     scope: str = "all",
+    owner_scope: str = "workspace",
+    group_id: Optional[str] = None,
     limit: int = Query(0, ge=0, description="Máx. items. 0 = sin límite"),
     offset: int = Query(0, ge=0),
     ctx: WorkspaceContext = Depends(require_workspace),
 ) -> List[Dict[str, Any]]:
-    user, workspace_id = ctx.user, ctx.workspace_id
+    user = ctx.user
     _check_scope(scope)
     if is_guest(user):
-        s = get_session(user)
+        s_obj = get_session(user)
         public = await _storage.list("public") if scope in ("public", "all") else []
-        private = s.skills if scope in ("private", "all") else []
+        private = s_obj.skills if scope in ("private", "all") else []
         items = public + private
         if offset:
             items = items[offset:]
@@ -53,27 +59,41 @@ async def list_skills(
             items = items[:limit]
         return items
     items = await _storage.list(scope)
-    if await get_user_role(user) != "admin":
-        # Filter: public skills + own workspace skills + legacy private (no owner_id)
-        items = [
-            s
-            for s in items
-            if s.get("scope") == "public"
-            or s.get("owner_id") is None
-            or s.get("owner_id") == workspace_id
-        ]
-        # Inject group-shared skills not already visible
-        from app.storage.groups import GroupStorage as _GS
-
+    role = await get_user_role(user)
+    if group_id is not None:
+        # Filtro por grupo: se aplica siempre, incluido admin
+        if role != "admin" and not await _ws.can_access(group_id, user):
+            raise HTTPException(status_code=403, detail="Sin acceso a este grupo")
         shared_ids = set(
-            await _GS(DB_FILE).get_user_shared_resource_ids(user, "skill", workspace_id)
+            await _shares.get_workspace_shared_resource_ids(group_id, "skill")
         )
-        own_ids = {s["id"] for s in items}
-        for sid in shared_ids - own_ids:
-            sk = await _storage.get_any(sid)
-            if sk:
-                sk["_shared"] = True
-                items.append(sk)
+        items = [sk for sk in items if sk["id"] in shared_ids]
+        for sk in items:
+            sk["_shared"] = True
+            sk["_group_id"] = group_id
+    elif role != "admin":
+            # Skills propias (personales) + públicas + legacy sin owner + shares de todos los grupos
+            items = [
+                sk
+                for sk in items
+                if sk.get("scope") == "public"
+                or sk.get("owner_id") is None
+                or sk.get("owner_id") == user
+            ]
+            own_ids = {sk["id"] for sk in items}
+            user_groups = await _ws.list_for_user(user)
+            shared_map: Dict[str, str] = {}  # resource_id -> group_id
+            for group in user_groups:
+                gid = group["id"]
+                for rid in await _shares.get_workspace_shared_resource_ids(gid, "skill"):
+                    if rid not in shared_map:
+                        shared_map[rid] = gid
+            for sid in set(shared_map.keys()) - own_ids:
+                sk = await _storage.get_any(sid)
+                if sk and await _ws.owner_is_active(sk.get("owner_id") or ""):
+                    sk["_shared"] = True
+                    sk["_group_id"] = shared_map[sid]
+                    items.append(sk)
     if offset:
         items = items[offset:]
     if limit:

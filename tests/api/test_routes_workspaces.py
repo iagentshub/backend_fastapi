@@ -148,6 +148,62 @@ def test_delete_by_non_creator_rejected(client):
     assert r.status_code == 403
 
 
+# ── Desactivar / reactivar workspace (propietario) ──────────────────────────────
+
+def test_owner_can_disable_workspace(client):
+    _auth(client, "ws_status_owner")
+    ws = client.post("/api/workspaces", json={"name": "A Desactivar"}).json()
+    r = client.post(f"/api/workspaces/{ws['id']}/status", json={"status": "disabled"})
+    assert r.status_code == 200
+    assert r.json()["status"] == "disabled"
+
+
+def test_owner_can_reactivate_workspace(client):
+    _auth(client, "ws_status_owner2")
+    ws = client.post("/api/workspaces", json={"name": "A Reactivar"}).json()
+    client.post(f"/api/workspaces/{ws['id']}/status", json={"status": "disabled"})
+    r = client.post(f"/api/workspaces/{ws['id']}/status", json={"status": "active"})
+    assert r.status_code == 200
+    assert r.json()["status"] == "active"
+
+
+def test_set_status_invalid_value_rejected(client):
+    _auth(client, "ws_status_invalid")
+    ws = client.post("/api/workspaces", json={"name": "Estado Invalido"}).json()
+    r = client.post(f"/api/workspaces/{ws['id']}/status", json={"status": "paused"})
+    assert r.status_code == 422
+
+
+def test_set_status_personal_workspace_rejected(client):
+    _auth(client, "ws_status_personal")
+    r = client.post("/api/workspaces/ws_status_personal/status", json={"status": "disabled"})
+    assert r.status_code == 400
+
+
+def test_set_status_nonexistent_workspace_404(client):
+    _auth(client, "ws_status_404")
+    r = client.post("/api/workspaces/id-que-no-existe/status", json={"status": "disabled"})
+    assert r.status_code == 404
+
+
+def test_set_status_by_non_owner_rejected(client):
+    _auth(client, "ws_status_creator")
+    ws = client.post("/api/workspaces", json={"name": "Privado Estado"}).json()
+    client.post(f"/api/workspaces/{ws['id']}/members",
+                json={"username": "ws_status_member", "role": "admin"})
+    _auth(client, "ws_status_member")
+    r = client.post(f"/api/workspaces/{ws['id']}/status", json={"status": "disabled"})
+    assert r.status_code == 403
+
+
+def test_member_switches_to_disabled_workspace_falls_back_to_personal(client):
+    _auth(client, "ws_status_owner3")
+    ws = client.post("/api/workspaces", json={"name": "Bloqueado"}).json()
+    client.post(f"/api/workspaces/{ws['id']}/status", json={"status": "disabled"})
+    r = client.post(f"/api/workspaces/switch/{ws['id']}")
+    assert r.status_code == 403
+
+
 # ── Cambiar workspace activo ───────────────────────────────────────────────────
 
 def test_switch_to_personal_workspace(client):
@@ -260,6 +316,37 @@ def test_cannot_remove_creator(client):
     ws = client.post("/api/workspaces", json={"name": "Equipo NoDel"}).json()
     r = client.delete(f"/api/workspaces/{ws['id']}/members/ws_rem_creator")
     assert r.status_code == 400
+
+
+def test_member_can_leave_workspace_without_manage_permission(client):
+    """Un miembro sin permisos de gestión puede quitarse a sí mismo (abandonar)."""
+    _auth(client, "ws_leave_member")  # se registra primero para poder invitarlo
+    _auth(client, "ws_leave_creator")
+    ws = client.post("/api/workspaces", json={"name": "Equipo Leave"}).json()
+    client.post(f"/api/workspaces/{ws['id']}/members",
+                json={"username": "ws_leave_member", "role": "member"})
+
+    _auth(client, "ws_leave_member")
+    r = client.delete(f"/api/workspaces/{ws['id']}/members/ws_leave_member")
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+
+
+def test_owner_leaves_after_transferring_ownership(client):
+    """Tras transferir la propiedad, el antiguo propietario puede abandonar el workspace."""
+    _auth(client, "ws_leave_new_owner")  # se registra primero para poder invitarlo
+    _auth(client, "ws_leave_owner")
+    ws = client.post("/api/workspaces", json={"name": "Equipo Transfer Leave"}).json()
+    client.post(f"/api/workspaces/{ws['id']}/members",
+                json={"username": "ws_leave_new_owner", "role": "member"})
+
+    r1 = client.post(f"/api/workspaces/{ws['id']}/transfer-ownership",
+                      json={"username": "ws_leave_new_owner"})
+    assert r1.status_code == 200
+
+    r2 = client.delete(f"/api/workspaces/{ws['id']}/members/ws_leave_owner")
+    assert r2.status_code == 200
+    assert r2.json()["ok"] is True
 
 
 def test_update_member_role(client):

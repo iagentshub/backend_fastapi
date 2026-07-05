@@ -339,51 +339,6 @@ def test_admin_delete_knowledge_ok(admin_client):
     assert r.json()["ok"] is True
 
 
-# ── admin_list_groups (líneas 797-807) ───────────────────────────────────────
-
-def test_admin_list_groups_empty(admin_client):
-    r = admin_client.get("/api/admin/groups")
-    assert r.status_code == 200
-    assert isinstance(r.json(), list)
-
-
-def test_admin_list_groups_with_group(admin_client):
-    ws_r = admin_client.post("/api/workspaces", json={"name": "AdminGroupWS"})
-    assert ws_r.status_code == 200
-    ws_id = ws_r.json()["id"]
-    admin_client.post(f"/api/workspaces/{ws_id}/groups", json={"name": "Test Group"})
-    r = admin_client.get("/api/admin/groups")
-    assert r.status_code == 200
-    groups = r.json()
-    assert len(groups) >= 1
-    g = groups[0]
-    assert "id" in g
-    assert "workspace_id" in g
-    assert "member_count" in g
-    assert "resource_count" in g
-
-
-# ── admin_delete_group — no encontrado (línea 822) ───────────────────────────
-
-def test_admin_delete_group_not_found(admin_client):
-    r = admin_client.delete("/api/admin/groups/nonexistent-group-id")
-    assert r.status_code == 404
-
-
-# ── admin_delete_group — éxito (líneas 823-824) ──────────────────────────────
-
-def test_admin_delete_group_ok(admin_client):
-    ws_r = admin_client.post("/api/workspaces", json={"name": "DeleteGroupWS"})
-    assert ws_r.status_code == 200
-    ws_id = ws_r.json()["id"]
-    grp_r = admin_client.post(f"/api/workspaces/{ws_id}/groups", json={"name": "GrpToDelete"})
-    assert grp_r.status_code == 200
-    group_id = grp_r.json()["id"]
-    r = admin_client.delete(f"/api/admin/groups/{group_id}")
-    assert r.status_code == 200
-    assert r.json()["ok"] is True
-
-
 # ── admin_list_workspaces (líneas 829-878) ───────────────────────────────────
 
 def test_admin_list_workspaces(admin_client):

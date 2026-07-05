@@ -147,38 +147,22 @@ CREATE TABLE IF NOT EXISTS users (
 );
 CREATE INDEX IF NOT EXISTS idx_users_email ON users (email);
 CREATE INDEX IF NOT EXISTS idx_users_stripe_customer ON users (stripe_customer_id);
-CREATE TABLE IF NOT EXISTS workspace_groups (
-    id           TEXT PRIMARY KEY,
-    workspace_id TEXT NOT NULL,
-    name         TEXT NOT NULL,
-    created_by   TEXT NOT NULL,
-    created_at   TEXT NOT NULL,
-    UNIQUE(workspace_id, name)
-);
-CREATE INDEX IF NOT EXISTS idx_ws_groups_ws ON workspace_groups(workspace_id);
-CREATE TABLE IF NOT EXISTS workspace_group_members (
-    group_id     TEXT NOT NULL,
-    workspace_id TEXT NOT NULL,
-    username     TEXT NOT NULL,
-    joined_at    TEXT NOT NULL,
-    PRIMARY KEY (group_id, username)
-);
-CREATE INDEX IF NOT EXISTS idx_wsgm_user ON workspace_group_members(username);
-CREATE TABLE IF NOT EXISTS resource_groups (
+CREATE TABLE IF NOT EXISTS resource_workspace_shares (
     resource_type TEXT NOT NULL,
     resource_id   TEXT NOT NULL,
-    group_id      TEXT NOT NULL,
+    workspace_id  TEXT NOT NULL,
     shared_by     TEXT NOT NULL,
     shared_at     TEXT NOT NULL,
-    PRIMARY KEY (resource_type, resource_id, group_id)
+    PRIMARY KEY (resource_type, resource_id, workspace_id)
 );
-CREATE INDEX IF NOT EXISTS idx_rg_group    ON resource_groups(group_id, resource_type);
-CREATE INDEX IF NOT EXISTS idx_rg_resource ON resource_groups(resource_type, resource_id);
+CREATE INDEX IF NOT EXISTS idx_rws_workspace ON resource_workspace_shares(workspace_id, resource_type);
+CREATE INDEX IF NOT EXISTS idx_rws_resource  ON resource_workspace_shares(resource_type, resource_id);
 CREATE TABLE IF NOT EXISTS workspaces (
     id          TEXT PRIMARY KEY,
     name        TEXT NOT NULL,
     created_by  TEXT NOT NULL,
-    created_at  TEXT NOT NULL
+    created_at  TEXT NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'active'
 );
 CREATE TABLE IF NOT EXISTS workspace_members (
     workspace_id TEXT NOT NULL,
@@ -377,38 +361,22 @@ CREATE TABLE IF NOT EXISTS users (
 );
 CREATE INDEX IF NOT EXISTS idx_users_email ON users (email);
 CREATE INDEX IF NOT EXISTS idx_users_stripe_customer ON users (stripe_customer_id);
-CREATE TABLE IF NOT EXISTS workspace_groups (
-    id           TEXT PRIMARY KEY,
-    workspace_id TEXT NOT NULL,
-    name         TEXT NOT NULL,
-    created_by   TEXT NOT NULL,
-    created_at   TEXT NOT NULL,
-    UNIQUE(workspace_id, name)
-);
-CREATE INDEX IF NOT EXISTS idx_ws_groups_ws ON workspace_groups(workspace_id);
-CREATE TABLE IF NOT EXISTS workspace_group_members (
-    group_id     TEXT NOT NULL,
-    workspace_id TEXT NOT NULL,
-    username     TEXT NOT NULL,
-    joined_at    TEXT NOT NULL,
-    PRIMARY KEY (group_id, username)
-);
-CREATE INDEX IF NOT EXISTS idx_wsgm_user ON workspace_group_members(username);
-CREATE TABLE IF NOT EXISTS resource_groups (
+CREATE TABLE IF NOT EXISTS resource_workspace_shares (
     resource_type TEXT NOT NULL,
     resource_id   TEXT NOT NULL,
-    group_id      TEXT NOT NULL,
+    workspace_id  TEXT NOT NULL,
     shared_by     TEXT NOT NULL,
     shared_at     TEXT NOT NULL,
-    PRIMARY KEY (resource_type, resource_id, group_id)
+    PRIMARY KEY (resource_type, resource_id, workspace_id)
 );
-CREATE INDEX IF NOT EXISTS idx_rg_group    ON resource_groups(group_id, resource_type);
-CREATE INDEX IF NOT EXISTS idx_rg_resource ON resource_groups(resource_type, resource_id);
+CREATE INDEX IF NOT EXISTS idx_rws_workspace ON resource_workspace_shares(workspace_id, resource_type);
+CREATE INDEX IF NOT EXISTS idx_rws_resource  ON resource_workspace_shares(resource_type, resource_id);
 CREATE TABLE IF NOT EXISTS workspaces (
     id          TEXT PRIMARY KEY,
     name        TEXT NOT NULL,
     created_by  TEXT NOT NULL,
-    created_at  TEXT NOT NULL
+    created_at  TEXT NOT NULL,
+    status      TEXT NOT NULL DEFAULT 'active'
 );
 CREATE TABLE IF NOT EXISTS workspace_members (
     workspace_id TEXT NOT NULL,
@@ -640,7 +608,8 @@ async def _migrate_sqlite(conn: Any) -> None:
                 id          TEXT PRIMARY KEY,
                 name        TEXT NOT NULL,
                 created_by  TEXT NOT NULL,
-                created_at  TEXT NOT NULL
+                created_at  TEXT NOT NULL,
+                status      TEXT NOT NULL DEFAULT 'active'
             );
             CREATE TABLE IF NOT EXISTS workspace_members (
                 workspace_id TEXT NOT NULL,
@@ -655,6 +624,14 @@ async def _migrate_sqlite(conn: Any) -> None:
     try:
         await conn.execute(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_teams_name_creator ON teams(name, created_by)"
+        )
+        await conn.commit()
+    except Exception:
+        pass
+
+    try:
+        await conn.execute(
+            "ALTER TABLE workspaces ADD COLUMN status TEXT NOT NULL DEFAULT 'active'"
         )
         await conn.commit()
     except Exception:
@@ -691,43 +668,18 @@ async def _migrate_sqlite(conn: Any) -> None:
             CREATE INDEX IF NOT EXISTS idx_ws_inv_user ON workspace_invitations(username, status);
         """)
 
-    # 10. Migrate teams → workspace_groups (drop old, create new)
-    cur = await conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
-    existing_tables = {row[0] for row in await cur.fetchall()}
-    if "workspace_groups" not in existing_tables:
-        await conn.executescript("""
-            DROP TABLE IF EXISTS resource_teams;
-            DROP TABLE IF EXISTS team_invitations;
-            DROP TABLE IF EXISTS team_members;
-            DROP TABLE IF EXISTS teams;
-            CREATE TABLE IF NOT EXISTS workspace_groups (
-                id           TEXT PRIMARY KEY,
-                workspace_id TEXT NOT NULL,
-                name         TEXT NOT NULL,
-                created_by   TEXT NOT NULL,
-                created_at   TEXT NOT NULL,
-                UNIQUE(workspace_id, name)
-            );
-            CREATE INDEX IF NOT EXISTS idx_ws_groups_ws ON workspace_groups(workspace_id);
-            CREATE TABLE IF NOT EXISTS workspace_group_members (
-                group_id     TEXT NOT NULL,
-                workspace_id TEXT NOT NULL,
-                username     TEXT NOT NULL,
-                joined_at    TEXT NOT NULL,
-                PRIMARY KEY (group_id, username)
-            );
-            CREATE INDEX IF NOT EXISTS idx_wsgm_user ON workspace_group_members(username);
-            CREATE TABLE IF NOT EXISTS resource_groups (
-                resource_type TEXT NOT NULL,
-                resource_id   TEXT NOT NULL,
-                group_id      TEXT NOT NULL,
-                shared_by     TEXT NOT NULL,
-                shared_at     TEXT NOT NULL,
-                PRIMARY KEY (resource_type, resource_id, group_id)
-            );
-            CREATE INDEX IF NOT EXISTS idx_rg_group    ON resource_groups(group_id, resource_type);
-            CREATE INDEX IF NOT EXISTS idx_rg_resource ON resource_groups(resource_type, resource_id);
-        """)
+    # 10. Limpieza de "teams" legacy y de "grupos de workspace" (funcionalidad
+    # eliminada por completo — el workspace en sí es ahora el único límite de
+    # compartición, sin subgrupos dentro de él).
+    await conn.executescript("""
+        DROP TABLE IF EXISTS resource_teams;
+        DROP TABLE IF EXISTS team_invitations;
+        DROP TABLE IF EXISTS team_members;
+        DROP TABLE IF EXISTS teams;
+        DROP TABLE IF EXISTS resource_groups;
+        DROP TABLE IF EXISTS workspace_group_members;
+        DROP TABLE IF EXISTS workspace_groups;
+    """)
 
     # 11. Social profile fields + follow + stars
     cur = await conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
@@ -771,6 +723,20 @@ async def _migrate_sqlite(conn: Any) -> None:
                 PRIMARY KEY (username, resource_type, resource_id)
             );
             CREATE INDEX IF NOT EXISTS idx_rs_resource ON resource_stars(resource_type, resource_id);
+        """)
+
+    if "resource_workspace_shares" not in existing_tables:
+        await conn.executescript("""
+            CREATE TABLE IF NOT EXISTS resource_workspace_shares (
+                resource_type TEXT NOT NULL,
+                resource_id   TEXT NOT NULL,
+                workspace_id  TEXT NOT NULL,
+                shared_by     TEXT NOT NULL,
+                shared_at     TEXT NOT NULL,
+                PRIMARY KEY (resource_type, resource_id, workspace_id)
+            );
+            CREATE INDEX IF NOT EXISTS idx_rws_workspace ON resource_workspace_shares(workspace_id, resource_type);
+            CREATE INDEX IF NOT EXISTS idx_rws_resource  ON resource_workspace_shares(resource_type, resource_id);
         """)
 
     # 12. Resource social catalog
@@ -1100,9 +1066,13 @@ async def _migrate_pg(conn: Any) -> None:
             id          TEXT PRIMARY KEY,
             name        TEXT NOT NULL,
             created_by  TEXT NOT NULL,
-            created_at  TEXT NOT NULL
+            created_at  TEXT NOT NULL,
+            status      TEXT NOT NULL DEFAULT 'active'
         )
     """)
+    await conn.execute(
+        "ALTER TABLE workspaces ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active'"
+    )
     await conn.execute("""
         CREATE TABLE IF NOT EXISTS workspace_members (
             workspace_id TEXT NOT NULL,
@@ -1140,52 +1110,16 @@ async def _migrate_pg(conn: Any) -> None:
     await conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_ws_inv_user ON workspace_invitations(username, status)"
     )
-    # 10. Migrate teams → workspace_groups
+    # 10. Limpieza de "teams" legacy y de "grupos de workspace" (funcionalidad
+    # eliminada por completo — el workspace en sí es ahora el único límite de
+    # compartición, sin subgrupos dentro de él).
     await conn.execute("DROP TABLE IF EXISTS resource_teams CASCADE")
     await conn.execute("DROP TABLE IF EXISTS team_invitations CASCADE")
     await conn.execute("DROP TABLE IF EXISTS team_members CASCADE")
     await conn.execute("DROP TABLE IF EXISTS teams CASCADE")
-    await conn.execute("""
-        CREATE TABLE IF NOT EXISTS workspace_groups (
-            id           TEXT PRIMARY KEY,
-            workspace_id TEXT NOT NULL,
-            name         TEXT NOT NULL,
-            created_by   TEXT NOT NULL,
-            created_at   TEXT NOT NULL,
-            UNIQUE(workspace_id, name)
-        )
-    """)
-    await conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_ws_groups_ws ON workspace_groups(workspace_id)"
-    )
-    await conn.execute("""
-        CREATE TABLE IF NOT EXISTS workspace_group_members (
-            group_id     TEXT NOT NULL,
-            workspace_id TEXT NOT NULL,
-            username     TEXT NOT NULL,
-            joined_at    TEXT NOT NULL,
-            PRIMARY KEY (group_id, username)
-        )
-    """)
-    await conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_wsgm_user ON workspace_group_members(username)"
-    )
-    await conn.execute("""
-        CREATE TABLE IF NOT EXISTS resource_groups (
-            resource_type TEXT NOT NULL,
-            resource_id   TEXT NOT NULL,
-            group_id      TEXT NOT NULL,
-            shared_by     TEXT NOT NULL,
-            shared_at     TEXT NOT NULL,
-            PRIMARY KEY (resource_type, resource_id, group_id)
-        )
-    """)
-    await conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_rg_group ON resource_groups(group_id, resource_type)"
-    )
-    await conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_rg_resource ON resource_groups(resource_type, resource_id)"
-    )
+    await conn.execute("DROP TABLE IF EXISTS resource_groups CASCADE")
+    await conn.execute("DROP TABLE IF EXISTS workspace_group_members CASCADE")
+    await conn.execute("DROP TABLE IF EXISTS workspace_groups CASCADE")
     # 11. Social profile fields + follow + stars
     for col, definition in [
         ("avatar", "TEXT"),
@@ -1223,6 +1157,22 @@ async def _migrate_pg(conn: Any) -> None:
     """)
     await conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_rs_resource ON resource_stars(resource_type, resource_id)"
+    )
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS resource_workspace_shares (
+            resource_type TEXT NOT NULL,
+            resource_id   TEXT NOT NULL,
+            workspace_id  TEXT NOT NULL,
+            shared_by     TEXT NOT NULL,
+            shared_at     TEXT NOT NULL,
+            PRIMARY KEY (resource_type, resource_id, workspace_id)
+        )
+    """)
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_rws_workspace ON resource_workspace_shares(workspace_id, resource_type)"
+    )
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_rws_resource ON resource_workspace_shares(resource_type, resource_id)"
     )
     # 12. Resource social catalog
     await conn.execute("""

@@ -374,7 +374,8 @@ def test_feed_con_filtro_tipo_agent(client):
 def test_fork_knowledge_ok(client):
     """Líneas 566-617: fork de knowledge pública."""
     owner = _login(client, _uid("fkw1"))
-    kid = _insert_public_knowledge(owner, title=f"Forkable Knowledge {uuid4().hex[:6]}")
+    title = f"Forkable Knowledge {uuid4().hex[:6]}"
+    kid = _insert_public_knowledge(owner, title=title)
 
     forker = _uid("fkw1_fork")
     _login(client, forker)
@@ -383,7 +384,7 @@ def test_fork_knowledge_ok(client):
     data = r.json()
     assert data["ok"] is True
     assert "knowledge_id" in data
-    assert "Fork of" in data["name"]
+    assert data["name"] == title
 
 
 def test_fork_knowledge_inexistente(client):
@@ -406,7 +407,8 @@ def test_fork_knowledge_no_publico(client):
 def test_link_knowledge_ok(client):
     """Líneas 620-671: link de knowledge pública."""
     owner = _login(client, _uid("lkw1"))
-    kid = _insert_public_knowledge(owner, title=f"Linkable Knowledge {uuid4().hex[:6]}")
+    title = f"Linkable Knowledge {uuid4().hex[:6]}"
+    kid = _insert_public_knowledge(owner, title=title)
 
     linker = _uid("lkw1_lnk")
     _login(client, linker)
@@ -415,7 +417,7 @@ def test_link_knowledge_ok(client):
     data = r.json()
     assert data["ok"] is True
     assert "knowledge_id" in data
-    assert "Linked:" in data["name"]
+    assert data["name"] == title
 
 
 def test_link_knowledge_inexistente(client):
@@ -438,7 +440,8 @@ def test_link_knowledge_no_publico(client):
 def test_fork_agent_privado_ok(client):
     """Líneas 674-739: fork de agente privado (is_public en social) → 200."""
     _login(client, _uid("fagok"))
-    agent_id = _make_public_agent(client, f"ForkableAgent {uuid4().hex[:6]}")
+    agent_name = f"ForkableAgent {uuid4().hex[:6]}"
+    agent_id = _make_public_agent(client, agent_name)
 
     forker = _uid("fagok_fk")
     _login(client, forker)
@@ -447,7 +450,7 @@ def test_fork_agent_privado_ok(client):
     data = r.json()
     assert data["ok"] is True
     assert "agent_id" in data
-    assert "Fork of" in data["name"]
+    assert data["name"] == agent_name
 
 
 def test_fork_agent_no_encontrado(client):
@@ -476,7 +479,8 @@ def test_fork_agent_privado_no_publico(client):
 def test_fork_skill_ok(client):
     """Líneas 742-804: fork de skill pública → 200."""
     _login(client, _uid("fsk1"))
-    skill_id = _make_public_skill(client, f"ForkableSkill {uuid4().hex[:6]}")
+    skill_name = f"ForkableSkill {uuid4().hex[:6]}"
+    skill_id = _make_public_skill(client, skill_name)
 
     forker = _uid("fsk1_fk")
     _login(client, forker)
@@ -485,7 +489,7 @@ def test_fork_skill_ok(client):
     data = r.json()
     assert data["ok"] is True
     assert "skill_id" in data
-    assert "Fork of" in data["name"]
+    assert data["name"] == skill_name
 
 
 def test_fork_skill_no_encontrada(client):
@@ -518,7 +522,8 @@ def test_fork_skill_no_publica(client):
 def test_link_agent_ok(client):
     """Líneas 807-871: link de agente público → 200."""
     _login(client, _uid("lagok"))
-    agent_id = _make_public_agent(client, f"LinkableAgent {uuid4().hex[:6]}")
+    agent_name = f"LinkableAgent {uuid4().hex[:6]}"
+    agent_id = _make_public_agent(client, agent_name)
 
     linker = _uid("lagok_lnk")
     _login(client, linker)
@@ -527,7 +532,7 @@ def test_link_agent_ok(client):
     data = r.json()
     assert data["ok"] is True
     assert "agent_id" in data
-    assert "Linked:" in data["name"]
+    assert data["name"] == agent_name
 
 
 def test_link_agent_no_encontrado(client):
@@ -555,7 +560,8 @@ def test_link_agent_no_publico(client):
 def test_link_skill_ok(client):
     """Líneas 874-935: link de skill pública → 200."""
     _login(client, _uid("lskillok"))
-    skill_id = _make_public_skill(client, f"LinkableSkill {uuid4().hex[:6]}")
+    skill_name = f"LinkableSkill {uuid4().hex[:6]}"
+    skill_id = _make_public_skill(client, skill_name)
 
     linker = _uid("lskillok_lnk")
     _login(client, linker)
@@ -564,7 +570,7 @@ def test_link_skill_ok(client):
     data = r.json()
     assert data["ok"] is True
     assert "skill_id" in data
-    assert "Linked:" in data["name"]
+    assert data["name"] == skill_name
 
 
 def test_link_skill_no_encontrada(client):

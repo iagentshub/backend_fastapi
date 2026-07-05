@@ -16,12 +16,16 @@ from app.config.data import AGENTS_DIR, DB_FILE, SKILLS_DIR
 from app.storage.guest import get_session, is_guest
 from app.storage.knowledge import FolderStorage, KnowledgeStorage, extract_document_text, fetch_url_text
 from app.storage.storage import AgentStorage, SkillStorage
+from app.storage.workspace_shares import WorkspaceShareStorage
+from app.storage.workspaces import WorkspaceStorage
 router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
 
 _storage = KnowledgeStorage(DB_FILE)
 _folders = FolderStorage(DB_FILE)
 _agents  = AgentStorage(AGENTS_DIR)
 _skills  = SkillStorage(SKILLS_DIR)
+_shares  = WorkspaceShareStorage(DB_FILE)
+_ws      = WorkspaceStorage(DB_FILE)
 
 _ALLOWED_EXTS = {".txt", ".md", ".pdf"}
 _VALID_SECTIONS = {"document", "url", "skill", "agents", "memory"}
@@ -138,11 +142,15 @@ async def delete_folder(
 @router.get("", response_model=List[Dict[str, Any]])
 async def list_items(
     type: Optional[str] = None,
+    owner_scope: str = "workspace",
+    group_id: Optional[str] = None,
     limit: int = Query(0, ge=0, description="Máx. items. 0 = sin límite"),
     offset: int = Query(0, ge=0),
     ctx: WorkspaceContext = Depends(require_workspace),
 ) -> List[Dict[str, Any]]:
     user, workspace_id = ctx.user, ctx.workspace_id
+    if owner_scope == "personal":
+        workspace_id = user
     if is_guest(user):
         items = get_session(user).knowledge
         filtered = [i for i in items if not type or i["type"] == type]
@@ -151,20 +159,50 @@ async def list_items(
         if limit:
             filtered = filtered[:limit]
         return filtered
-    items = await _storage.list(await _owner(user, workspace_id), type)
     role = await get_user_role(user)
-    if role not in ("admin",):
-        from app.storage.groups import GroupStorage as _GS
-
-        shared_ids = set(await _GS(DB_FILE).get_user_shared_resource_ids(user, "knowledge", workspace_id))
-        own_ids = {i["id"] for i in items}
-        extra = []
-        for kid in (shared_ids - own_ids):
+    if group_id is not None:
+        # Filtro por grupo: se aplica siempre, incluido admin
+        if role != "admin" and not await _ws.can_access(group_id, user):
+            raise HTTPException(status_code=403, detail="Sin acceso a este grupo")
+        shared_ids = set(
+            await _shares.get_workspace_shared_resource_ids(group_id, "knowledge")
+        )
+        items: List[Dict[str, Any]] = []
+        for kid in shared_ids:
             k = await _storage.get(kid)
-            if k and (not type or k.get("type") == type):
+            if (
+                k
+                and (not type or k.get("type") == type)
+                and await _ws.owner_is_active(k.get("owner_id") or "")
+            ):
                 k["_shared"] = True
-                extra.append(k)
-        items = items + extra
+                k["_group_id"] = group_id
+                items.append(k)
+    else:
+        items = await _storage.list(await _owner(user, workspace_id), type)
+        if role not in ("admin",):
+            own_ids = {i["id"] for i in items}
+            # Acumula shares de todos los grupos del usuario
+            user_groups = await _ws.list_for_user(user)
+            shared_map: Dict[str, str] = {}  # resource_id -> group_id
+            for group in user_groups:
+                gid = group["id"]
+                for rid in await _shares.get_workspace_shared_resource_ids(gid, "knowledge"):
+                    if rid not in shared_map:
+                        shared_map[rid] = gid
+            extra: List[Dict[str, Any]] = []
+            for kid, gid in shared_map.items():
+                if kid not in own_ids:
+                    k = await _storage.get(kid)
+                    if (
+                        k
+                        and (not type or k.get("type") == type)
+                        and await _ws.owner_is_active(k.get("owner_id") or "")
+                    ):
+                        k["_shared"] = True
+                        k["_group_id"] = gid
+                        extra.append(k)
+            items = items + extra
     if offset:
         items = items[offset:]
     if limit:

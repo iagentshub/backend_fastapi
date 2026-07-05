@@ -569,11 +569,7 @@ async def purge_user_data(username: str) -> None:
                     "DELETE FROM accounts WHERE owner_id = ?", (username,)
                 )
                 await conn.execute(
-                    "DELETE FROM resource_groups WHERE shared_by = ?", (username,)
-                )
-                await conn.execute(
-                    "DELETE FROM workspace_group_members WHERE username = ?",
-                    (username,),
+                    "DELETE FROM resource_workspace_shares WHERE shared_by = ?", (username,)
                 )
                 await conn.execute(
                     "DELETE FROM workspace_invitations WHERE username = ?", (username,)

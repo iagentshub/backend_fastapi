@@ -31,7 +31,6 @@ from app.api.routes import (
     logs,
     sharing,
     workspaces,
-    groups,
     billing,
 )
 from app.api.routes.auth import admin_router, users_router
@@ -170,7 +169,6 @@ def create_app() -> FastAPI:
     app.include_router(logs.router)
     app.include_router(sharing.router)
     app.include_router(workspaces.router)
-    app.include_router(groups.router)
     app.include_router(billing.router)
     app.include_router(social_router)
 

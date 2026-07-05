@@ -78,8 +78,59 @@ class WorkspaceStorage:
             return row is not None
 
     async def delete(self, workspace_id: str) -> bool:
+        """Elimina el workspace y TODO su contenido: lo creado directamente en él y
+        lo enlazado/forkeado hacia él (una vez copiado, vive ahí — no se toca el
+        original en su owner real). No afecta a nada fuera del workspace."""
         async with open_db() as conn:
             async with conn.transaction():
+                agent_ids = [
+                    r[0] for r in await conn.fetchall(
+                        "SELECT id FROM agents WHERE owner_id = ?", (workspace_id,)
+                    )
+                ]
+                skill_ids = [
+                    r[0] for r in await conn.fetchall(
+                        "SELECT id FROM skills WHERE owner_id = ?", (workspace_id,)
+                    )
+                ]
+                knowledge_ids = [
+                    r[0] for r in await conn.fetchall(
+                        "SELECT id FROM knowledge_items WHERE owner_id = ?", (workspace_id,)
+                    )
+                ]
+                connection_ids = [
+                    r[0] for r in await conn.fetchall(
+                        "SELECT id FROM connections WHERE owner_id = ?", (workspace_id,)
+                    )
+                ]
+
+                for resource_type, ids in (
+                    ("agent", agent_ids),
+                    ("skill", skill_ids),
+                    ("knowledge", knowledge_ids),
+                    ("connection", connection_ids),
+                ):
+                    for rid in ids:
+                        await conn.execute(
+                            "DELETE FROM resource_social WHERE resource_type = ? AND resource_id = ?",
+                            (resource_type, rid),
+                        )
+                        await conn.execute(
+                            "DELETE FROM resource_workspace_shares WHERE resource_type = ? AND resource_id = ?",
+                            (resource_type, rid),
+                        )
+
+                await conn.execute("DELETE FROM agents WHERE owner_id = ?", (workspace_id,))
+                await conn.execute("DELETE FROM skills WHERE owner_id = ?", (workspace_id,))
+                await conn.execute("DELETE FROM knowledge_items WHERE owner_id = ?", (workspace_id,))
+                await conn.execute("DELETE FROM knowledge_folders WHERE owner_id = ?", (workspace_id,))
+                await conn.execute("DELETE FROM connections WHERE owner_id = ?", (workspace_id,))
+                await conn.execute(
+                    "DELETE FROM resource_workspace_shares WHERE workspace_id = ?", (workspace_id,)
+                )
+                await conn.execute(
+                    "DELETE FROM workspace_invitations WHERE workspace_id = ?", (workspace_id,)
+                )
                 await conn.execute(
                     "DELETE FROM workspace_members WHERE workspace_id = ?",
                     (workspace_id,),
@@ -89,6 +140,31 @@ class WorkspaceStorage:
                     (workspace_id,),
                 )
             return row is not None
+
+    async def set_status(self, workspace_id: str, status: str) -> bool:
+        async with open_db() as conn:
+            row = await conn.fetchone(
+                "UPDATE workspaces SET status = ? WHERE id = ? RETURNING id",
+                (status, workspace_id),
+            )
+            await conn.commit()
+            return row is not None
+
+    async def is_active(self, workspace_id: str, username: str) -> bool:
+        """True si el workspace está activo. Un workspace personal siempre lo está."""
+        if workspace_id == username:
+            return True
+        ws = await self.get(workspace_id)
+        return bool(ws) and ws.get("status", "active") == "active"
+
+    async def owner_is_active(self, owner_id: str) -> bool:
+        """True si owner_id es un espacio personal (no hay fila en workspaces) o un
+        workspace de equipo activo. Usado para bloquear contenido compartido desde
+        un workspace desactivado."""
+        ws = await self.get(owner_id)
+        if not ws:
+            return True
+        return ws.get("status", "active") == "active"
 
     async def transfer_ownership(self, workspace_id: str, new_owner: str) -> bool:
         """Transfer ownership to an existing member. Returns False if not a member."""

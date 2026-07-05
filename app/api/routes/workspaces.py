@@ -3,13 +3,11 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi import APIRouter, Depends, HTTPException, Request
 
-from app.api.routes.auth import WorkspaceContext, require_workspace
-from app.auth.auth import create_token, get_user_by_username, get_user_role
-from app.api.routes.auth import require_auth
+from app.api.routes.auth import WorkspaceContext, require_auth, require_workspace
+from app.auth.auth import get_user_by_username, get_user_role
 from app.config.data import DB_FILE
-from app.config.session import SECURE_COOKIES
 from app.storage.guest import is_guest
 from app.storage.workspaces import WorkspaceStorage
 
@@ -30,17 +28,8 @@ async def list_workspaces(ctx: WorkspaceContext = Depends(require_workspace)) ->
     _assert_not_guest(ctx.user)
     team_workspaces = await _ws.list_for_user(ctx.user)
     return [
-        {
-            "id": ctx.user,
-            "name": "Personal",
-            "type": "personal",
-            "role": "owner",
-            "active": ctx.workspace_id == ctx.user,
-        },
-        *[
-            {**ws, "type": "team", "active": ctx.workspace_id == ws["id"]}
-            for ws in team_workspaces
-        ],
+        {**ws, "type": "team", "active": False}
+        for ws in team_workspaces
     ]
 
 
@@ -102,25 +91,30 @@ async def delete_workspace(
     return {"ok": True}
 
 
-# ── Cambiar workspace activo ───────────────────────────────────────────────────
+# ── Desactivar / reactivar workspace (propietario) ──────────────────────────────
 
-@router.post("/switch/{workspace_id}")
-async def switch_workspace(
+@router.post("/{workspace_id}/status")
+async def set_workspace_status(
     workspace_id: str,
-    response: Response,
+    request: Request,
     ctx: WorkspaceContext = Depends(require_workspace),
 ) -> Dict[str, Any]:
     _assert_not_guest(ctx.user)
-    user = ctx.user
-    role = await get_user_role(user)
-    if workspace_id != user and not await _ws.can_access(workspace_id, user) and role != "admin":
-        raise HTTPException(status_code=403, detail="No tienes acceso a este workspace")
-    token = create_token(user, workspace_id=workspace_id)
-    response.set_cookie(
-        "ga_token", token, httponly=True, samesite="lax",
-        secure=SECURE_COOKIES, max_age=43200,
-    )
-    return {"ok": True, "workspace_id": workspace_id}
+    if workspace_id == ctx.user:
+        raise HTTPException(status_code=400, detail="El workspace personal no se puede desactivar")
+    body = await request.json()
+    status = str(body.get("status") or "").strip()
+    if status not in ("active", "disabled"):
+        raise HTTPException(status_code=422, detail="status debe ser 'active' o 'disabled'")
+    ws = await _ws.get(workspace_id)
+    if not ws:
+        raise HTTPException(status_code=404, detail="Workspace no encontrado")
+    if ws["created_by"] != ctx.user and await get_user_role(ctx.user) != "admin":
+        raise HTTPException(
+            status_code=403, detail="Solo el propietario puede cambiar el estado del workspace"
+        )
+    await _ws.set_status(workspace_id, status)
+    return {"ok": True, "status": status}
 
 
 # ── Miembros ───────────────────────────────────────────────────────────────────

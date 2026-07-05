@@ -508,8 +508,8 @@ def test_list_accessible_personal_conns_in_team_workspace(client):
 
 # ── 18. _resolve_connections conexiones compartidas (líneas 93-96) ────────────
 
-def test_resolve_connections_includes_shared_from_group(admin_client):
-    """Conexiones compartidas en grupos aparecen en la lista del usuario (líneas 93-96)."""
+def test_resolve_connections_includes_shared_from_workspace(admin_client):
+    """Conexiones compartidas con el workspace aparecen en la lista del usuario."""
     conn = _create_conn(admin_client, {**_CONN_OPENAI, "name": "Shared Conn M2"})
     shared_id = conn["id"]
 
@@ -518,7 +518,7 @@ def test_resolve_connections_includes_shared_from_group(admin_client):
     admin_client.cookies.set("ga_token", create_token("shared_u_m2"))
 
     with patch(
-        "app.storage.groups.GroupStorage.get_user_shared_resource_ids",
+        "app.storage.workspace_shares.WorkspaceShareStorage.get_workspace_shared_resource_ids",
         new_callable=AsyncMock,
         return_value=[shared_id],
     ):

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict, List, Set
+from typing import Any, Dict, List, Optional, Set
 from uuid import uuid4
 
 import httpx
@@ -24,6 +24,8 @@ from app.middleware.ratelimit import RateLimiter
 from app.storage.db import IS_PG, open_db
 from app.storage.guest import get_session, is_guest
 from app.storage.storage import AgentStorage, ConnectionStorage, SkillStorage
+from app.storage.workspace_shares import WorkspaceShareStorage
+from app.storage.workspaces import WorkspaceStorage
 
 
 def _safe_name(name: str, taken: Set[str], hub_label: str) -> str:
@@ -45,6 +47,8 @@ _storage = ConnectionStorage(DB_FILE)
 _agent_storage = AgentStorage(AGENTS_DIR)
 _skill_storage = SkillStorage(SKILLS_DIR)
 _know_storage = KnowledgeStorage(DB_FILE)
+_shares = WorkspaceShareStorage(DB_FILE)
+_ws = WorkspaceStorage(DB_FILE)
 _test_limiter = RateLimiter(calls=RATE_TEST_CALLS, window=RATE_TEST_WINDOW)
 _test_all_limiter = RateLimiter(calls=RATE_TESTALL_CALLS, window=RATE_TESTALL_WINDOW)
 
@@ -75,10 +79,22 @@ async def _list_accessible(user: str, workspace_id: str) -> List[Dict[str, Any]]
 async def _get_conn_any(
     conn_id: str, user: str, workspace_id: str
 ) -> Dict[str, Any] | None:
-    """Obtiene una conexión buscando primero en el workspace activo y después en el personal."""
+    """Obtiene una conexión buscando en el workspace activo, el personal, y por último
+    entre las compartidas directamente con el workspace (referencia sin duplicar)."""
     conn = await _storage.get(conn_id, workspace_id)
     if conn is None and workspace_id != user:
         conn = await _storage.get(conn_id, user)
+    if conn is None:
+        granted_ids = await _shares.get_workspace_shared_resource_ids(
+            workspace_id, "connection"
+        )
+        if conn_id in granted_ids:
+            async with open_db() as db:
+                owner_row = await db.fetchone(
+                    "SELECT owner_id FROM connections WHERE id = ?", (conn_id,)
+                )
+            if owner_row and await _ws.owner_is_active(owner_row[0]):
+                conn = await _storage.get(conn_id, None)
     return conn
 
 
@@ -93,15 +109,17 @@ async def _resolve_connections(
         return await _storage.list(None)
     raw = await _list_accessible(user, workspace_id)
     if include_shared:
-        from app.storage.groups import GroupStorage as _GS
-
         shared_ids = set(
-            await _GS(DB_FILE).get_user_shared_resource_ids(
-                user, "connection", workspace_id
-            )
+            await _shares.get_workspace_shared_resource_ids(workspace_id, "connection")
         )
         own_ids = {i["id"] for i in raw}
         for rid in shared_ids - own_ids:
+            async with open_db() as db:
+                owner_row = await db.fetchone(
+                    "SELECT owner_id FROM connections WHERE id = ?", (rid,)
+                )
+            if not owner_row or not await _ws.owner_is_active(owner_row[0]):
+                continue
             c = await _storage.get(rid)
             if c:
                 c["_shared"] = True
@@ -258,12 +276,58 @@ async def test_all_connections(
 
 @router.get("")
 async def list_connections(
+    group_id: Optional[str] = None,
     limit: int = Query(0, ge=0, description="Máx. items. 0 = sin límite"),
     offset: int = Query(0, ge=0),
     ctx: WorkspaceContext = Depends(require_workspace),
 ) -> List[Dict[str, Any]]:
     user, workspace_id = ctx.user, ctx.workspace_id
-    raw = await _resolve_connections(user, workspace_id)
+
+    if group_id is not None and not is_guest(user):
+        role = await get_user_role(user)
+        if role != "admin" and not await _ws.can_access(group_id, user):
+            raise HTTPException(status_code=403, detail="Sin acceso a este grupo")
+        # Devuelve solo las conexiones compartidas con este grupo específico
+        shared_ids = set(
+            await _shares.get_workspace_shared_resource_ids(group_id, "connection")
+        )
+        raw: List[Dict[str, Any]] = []
+        for rid in shared_ids:
+            async with open_db() as db:
+                owner_row = await db.fetchone(
+                    "SELECT owner_id FROM connections WHERE id = ?", (rid,)
+                )
+            if not owner_row or not await _ws.owner_is_active(owner_row[0]):
+                continue
+            c = await _storage.get(rid)
+            if c:
+                c["_shared"] = True
+                c["_group_id"] = group_id
+                raw.append(c)
+    else:
+        raw = await _resolve_connections(user, workspace_id)
+        # Para usuarios normales, añadir shares de todos los grupos del usuario
+        if not is_guest(user) and await get_user_role(user) != "admin":
+            own_ids = {c["id"] for c in raw}
+            user_groups = await _ws.list_for_user(user)
+            shared_map: Dict[str, str] = {}  # resource_id -> group_id
+            for group in user_groups:
+                gid = group["id"]
+                for rid in await _shares.get_workspace_shared_resource_ids(gid, "connection"):
+                    if rid not in shared_map:
+                        shared_map[rid] = gid
+            for rid in set(shared_map.keys()) - own_ids:
+                async with open_db() as db:
+                    owner_row = await db.fetchone(
+                        "SELECT owner_id FROM connections WHERE id = ?", (rid,)
+                    )
+                if not owner_row or not await _ws.owner_is_active(owner_row[0]):
+                    continue
+                c = await _storage.get(rid)
+                if c:
+                    c["_shared"] = True
+                    c["_group_id"] = shared_map[rid]
+                    raw.append(c)
 
     non_ollama = [c for c in raw if c.get("type") != "ollama"]
     ollama_raw = [c for c in raw if c.get("type") == "ollama"]
@@ -292,8 +356,8 @@ async def save_connection(
     if not get_provider(payload.get("type") or ""):
         raise HTTPException(status_code=422, detail="Tipo de conexión no válido")
 
-    # Las conexiones son siempre privadas — se pueden compartir vía grupos de workspace
-    labels = [l for l in (payload.get("labels") or []) if l != "public"]
+    # Las conexiones son siempre privadas — se pueden compartir con un workspace completo
+    labels = [lbl for lbl in (payload.get("labels") or []) if lbl != "public"]
     if "private" not in labels:
         labels = ["private"] + labels
     payload["labels"] = labels

@@ -178,7 +178,7 @@ _PLATFORM_DEFAULTS: dict = {
     "log_retention_days": 30,
 }
 
-_VALID_REGISTRATION = {"open", "closed", "invite"}
+_VALID_REGISTRATION = {"open", "closed"}
 
 
 def _read_platform_cfg() -> dict:
@@ -249,7 +249,7 @@ async def update_platform_config(
 
     if "registration" in update and update["registration"] not in _VALID_REGISTRATION:
         raise HTTPException(
-            status_code=422, detail="registration debe ser 'open', 'closed' o 'invite'"
+            status_code=422, detail="registration debe ser 'open' o 'closed'"
         )
     if "max_users" in update and update["max_users"] < 0:
         raise HTTPException(status_code=422, detail="max_users debe ser >= 0")

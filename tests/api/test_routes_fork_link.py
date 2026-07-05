@@ -120,7 +120,7 @@ def test_link_agente_publico_devuelve_200(client):
     body = r2.json()
     assert body["ok"] is True
     assert "agent_id" in body
-    assert body["name"].startswith("Linked: ")
+    assert body["name"] == "Agente Linkeable"
 
 
 def test_link_agente_tiene_label_linked(client):
@@ -195,7 +195,7 @@ def test_link_skill_publico_devuelve_200(client):
     body = r2.json()
     assert body["ok"] is True
     assert "skill_id" in body
-    assert body["name"].startswith("Linked: ")
+    assert body["name"] == "Skill Linkeable"
 
 
 def test_link_skill_tiene_label_linked(client):

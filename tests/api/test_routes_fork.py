@@ -56,7 +56,7 @@ def test_fork_agente_publico_devuelve_200(client):
     body = r2.json()
     assert body["ok"] is True
     assert "agent_id" in body
-    assert body["name"].startswith("Fork of ")
+    assert body["name"] == "Forkable Agent One"
 
 
 def test_fork_agente_no_publico_devuelve_403(client):
@@ -111,7 +111,7 @@ def test_fork_skill_publico_devuelve_200(client):
     body = r2.json()
     assert body["ok"] is True
     assert "skill_id" in body
-    assert body["name"].startswith("Fork of ")
+    assert body["name"] == "Forkable Skill Five"
 
 
 def test_fork_agente_aparece_en_lista_privada(client):

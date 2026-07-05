@@ -15,12 +15,12 @@ from app.auth.auth import (
     create_password_reset_token,
     create_token,
     decode_token,
-    decode_workspace_token,
     delete_user,
     get_owned_workspaces,
     get_user_by_email,
     get_user_by_username,
     get_user_role,
+    hash_password,
     list_users,
     register_user_email,
     schedule_user_deletion,
@@ -45,10 +45,8 @@ from app.config.session import (
     SECURE_COOKIES,
 )
 from app.middleware.ratelimit import RateLimiter
-from app.storage.groups import GroupStorage as _GroupStorage
 from app.storage.workspaces import WorkspaceStorage as _WorkspaceStorage
 
-_groups = _GroupStorage(_DB_FILE)
 _workspaces = _WorkspaceStorage(_DB_FILE)
 _agents = _AgentStorage(_AGENTS_DIR)
 _register_limiter = RateLimiter(
@@ -81,23 +79,18 @@ def require_auth(ga_token: Optional[str] = Cookie(default=None)) -> str:
 async def require_workspace(
     ga_token: Optional[str] = Cookie(default=None),
 ) -> WorkspaceContext:
-    """Dependency: validates session token and returns WorkspaceContext(user, workspace_id).
+    """Dependency: validates session token and returns WorkspaceContext with personal workspace.
 
-    Defense-in-depth: even with a valid JWT, verify that the user still belongs to the
-    workspace in the token (handles removed members and any token-creation bugs).
+    Todos los recursos se crean siempre en el espacio personal (workspace_id = username).
+    Los grupos de trabajo solo determinan qué recursos compartidos son visibles, no dónde
+    se crean los nuevos recursos.
     """
     if not ga_token:
         raise HTTPException(status_code=401, detail="No autenticado")
-    username, workspace_id = decode_workspace_token(ga_token)
+    username = decode_token(ga_token)
     if not username:
         raise HTTPException(status_code=401, detail="Token inválido o expirado")
-    # Personal workspace: id == username, always accessible
-    if workspace_id != username and not await _workspaces.can_access(
-        workspace_id, username
-    ):
-        # Membership revoked or token tampered — fall back to personal workspace
-        workspace_id = username
-    return WorkspaceContext(user=username, workspace_id=workspace_id)
+    return WorkspaceContext(user=username, workspace_id=username)
 
 
 async def require_admin(username: str = Depends(require_auth)) -> str:
@@ -884,6 +877,68 @@ async def admin_patch_user(
     return {"ok": True}
 
 
+@admin_router.post("/users")
+async def admin_create_user(
+    request: Request,
+    _: str = Depends(require_admin),
+) -> Dict[str, Any]:
+    """Crea un usuario directamente desde el panel de admin.
+
+    El usuario queda verificado y activo. No se envía email de verificación.
+    """
+    from datetime import datetime, timezone as _tz
+
+    body = await request.json()
+    email = str(body.get("email") or "").strip().lower()
+    password = str(body.get("password") or "").strip()
+    role = str(body.get("role") or "standard").strip()
+    display_name = str(body.get("display_name") or "").strip()
+
+    if not email:
+        raise HTTPException(status_code=400, detail="El email es obligatorio")
+    if "@" not in email:
+        raise HTTPException(status_code=400, detail="Email no válido")
+    if not password:
+        raise HTTPException(status_code=400, detail="La contraseña es obligatoria")
+    if len(password) < 4:
+        raise HTTPException(status_code=400, detail="La contraseña debe tener al menos 4 caracteres")
+    if role not in ("standard", "admin"):
+        raise HTTPException(status_code=422, detail="role debe ser 'standard' o 'admin'")
+
+    username = email  # username = email (igual que en el registro normal)
+    now = datetime.now(_tz.utc).isoformat()
+    try:
+        async with open_db() as conn:
+            async with conn.transaction():
+                if await conn.fetchone("SELECT 1 FROM users WHERE email = ?", (email,)):
+                    raise HTTPException(status_code=409, detail="El email ya está registrado")
+                if await conn.fetchone("SELECT 1 FROM users WHERE username = ?", (username,)):
+                    raise HTTPException(status_code=409, detail="El usuario ya existe")
+                await conn.execute(
+                    "INSERT INTO users "
+                    "(username, email, password_hash, display_name, role, "
+                    "is_active, is_verified, created_at) "
+                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                    (
+                        username,
+                        email,
+                        hash_password(password),
+                        display_name or None,
+                        role,
+                        1,
+                        1,   # verificado — el admin crea la cuenta directamente
+                        now,
+                    ),
+                )
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc)) from exc
+
+    flog.ok(f"Admin creó usuario: {email} (rol={role})")
+    return {"ok": True, "username": username, "email": email, "role": role}
+
+
 @admin_router.delete("/users/{username}")
 async def admin_delete_user(
     username: str, admin: str = Depends(require_admin)
@@ -1050,42 +1105,6 @@ async def admin_delete_knowledge(
     return {"ok": True}
 
 
-@admin_router.get("/groups")
-async def admin_list_groups(_: str = Depends(require_admin)) -> List[Dict[str, Any]]:
-    async with open_db() as conn:
-        rows = await conn.fetchall(
-            "SELECT wg.id, wg.workspace_id, wg.name, wg.created_by, wg.created_at, "
-            "COUNT(DISTINCT wgm.username) AS member_count, "
-            "COUNT(DISTINCT rg.resource_id || '|' || rg.resource_type) AS resource_count "
-            "FROM workspace_groups wg "
-            "LEFT JOIN workspace_group_members wgm ON wg.id = wgm.group_id "
-            "LEFT JOIN resource_groups rg ON wg.id = rg.group_id "
-            "GROUP BY wg.id ORDER BY wg.created_at DESC"
-        )
-    return [
-        {
-            "id": r[0],
-            "workspace_id": r[1],
-            "name": r[2],
-            "created_by": r[3],
-            "created_at": r[4],
-            "member_count": r[5],
-            "resource_count": r[6],
-        }
-        for r in rows
-    ]
-
-
-@admin_router.delete("/groups/{group_id}")
-async def admin_delete_group(
-    group_id: str, _: str = Depends(require_admin)
-) -> Dict[str, Any]:
-    if not await _groups.get(group_id):
-        raise HTTPException(status_code=404, detail="Grupo no encontrado")
-    await _groups.delete(group_id)
-    return {"ok": True}
-
-
 @admin_router.get("/workspaces")
 async def admin_list_workspaces(
     _: str = Depends(require_admin),
@@ -1095,10 +1114,10 @@ async def admin_list_workspaces(
 
     async with open_db() as conn:
         ws_rows = await conn.fetchall(
-            "SELECT id, name, created_by, created_at FROM workspaces ORDER BY created_at DESC"
+            "SELECT id, name, created_by, created_at, status FROM workspaces ORDER BY created_at DESC"
         )
         workspaces = [
-            {"id": r[0], "name": r[1], "created_by": r[2], "created_at": r[3]}
+            {"id": r[0], "name": r[1], "created_by": r[2], "created_at": r[3], "status": r[4]}
             for r in ws_rows
         ]
         mc_rows = await conn.fetchall(
@@ -1155,6 +1174,20 @@ async def admin_delete_workspace(
         raise HTTPException(status_code=404, detail="Workspace no encontrado")
     await _workspaces.delete(workspace_id)
     return {"ok": True}
+
+
+@admin_router.post("/workspaces/{workspace_id}/status")
+async def admin_set_workspace_status(
+    workspace_id: str, request: Request, _: str = Depends(require_admin)
+) -> Dict[str, Any]:
+    body = await request.json()
+    status = str(body.get("status") or "").strip()
+    if status not in ("active", "disabled"):
+        raise HTTPException(status_code=422, detail="status debe ser 'active' o 'disabled'")
+    if not await _workspaces.get(workspace_id):
+        raise HTTPException(status_code=404, detail="Workspace no encontrado")
+    await _workspaces.set_status(workspace_id, status)
+    return {"ok": True, "status": status}
 
 
 @admin_router.put("/resources/{resource_type}/{resource_id}/verify")
