@@ -37,6 +37,7 @@ from app.api.routes import (
 from app.api.routes.auth import admin_router, users_router
 from app.api.routes.social import router as social_router
 from app.middleware.locale import LocaleMiddleware
+from app.middleware.licenses import LicenseGateMiddleware
 from app.middleware.security import SecurityHeadersMiddleware
 
 _docs_url = (
@@ -146,6 +147,7 @@ def create_app() -> FastAPI:
     app.add_middleware(_BodySizeLimitMiddleware)
     app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(LocaleMiddleware)
+    app.add_middleware(LicenseGateMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=CORS_ORIGINS,

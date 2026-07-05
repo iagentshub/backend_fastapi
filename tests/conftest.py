@@ -42,6 +42,10 @@ def patch_data_dir(tmp_data_dir, tmp_path, monkeypatch):
 
     monkeypatch.setenv("DATABASE_URL", "")
     monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_data_dir))
+    (tmp_data_dir / "settings.json").write_text(
+        json.dumps({"jwt_secret": "test-secret-key-for-tests-only"}),
+        encoding="utf-8",
+    )
 
     # Patch config module attrs — _cfg.DB_FILE is read dynamically by app lifespan
     import app.config.data as cfg

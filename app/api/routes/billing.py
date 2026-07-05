@@ -74,6 +74,17 @@ def _row_to_state(row: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
+def _license_error(exc: ValueError) -> HTTPException:
+    detail = str(exc)
+    status = {
+        "subscription_not_active": 404,
+        "user_not_found": 404,
+        "license_already_assigned": 409,
+        "no_seats_available": 409,
+    }.get(detail, 400)
+    return HTTPException(status_code=status, detail=detail)
+
+
 def _parse_body_plan(body: Dict[str, Any]) -> tuple[str, int, str, bool]:
     tier = str(body.get("tier") or "")
     interval = str(body.get("interval") or "")
@@ -159,7 +170,7 @@ async def subscribe(
         raise HTTPException(status_code=502, detail=str(exc))
 
     current_period_end = _extract_period_end(subscription)
-    await _billing.upsert(
+    saved = await _billing.upsert(
         username=user,
         stripe_customer_id=customer_id,
         stripe_subscription_id=subscription.id,
@@ -172,6 +183,7 @@ async def subscribe(
         current_period_end=current_period_end,
         cancel_at_period_end=False,
     )
+    await _billing.ensure_owner_license(saved)
 
     return {
         "subscription_id": subscription.id,
@@ -213,7 +225,7 @@ async def confirm(request: Request, user: str = Depends(require_auth)) -> Dict[s
     if not row:
         raise HTTPException(status_code=404, detail="Suscripción no encontrada")
 
-    await _billing.upsert(
+    saved = await _billing.upsert(
         username=user,
         stripe_customer_id=customer_id,
         stripe_subscription_id=subscription_id,
@@ -226,6 +238,7 @@ async def confirm(request: Request, user: str = Depends(require_auth)) -> Dict[s
         current_period_end=_extract_period_end(subscription),
         cancel_at_period_end=bool(_safe_get(subscription, "cancel_at_period_end", False)),
     )
+    await _billing.ensure_owner_license(saved)
     updated = await _billing.get_by_stripe_subscription_id(subscription_id)
     return _row_to_state(updated)  # type: ignore[arg-type]
 
@@ -236,6 +249,49 @@ async def get_subscription(user: str = Depends(require_auth)) -> Dict[str, Any]:
     if not row:
         return _free_state()
     return _row_to_state(row)
+
+
+@router.get("/licenses")
+async def get_licenses(user: str = Depends(require_auth)) -> Dict[str, Any]:
+    return await _billing.license_summary_for_owner(user)
+
+
+@router.post("/licenses/{username}")
+async def assign_license(
+    username: str, user: str = Depends(require_auth)
+) -> Dict[str, Any]:
+    row = await _billing.get_active_by_username(user)
+    if not row:
+        raise HTTPException(status_code=404, detail="No tienes una suscripción activa")
+    if row["tier"] != "business":
+        raise HTTPException(
+            status_code=400, detail="Solo el plan Business permite asignar licencias"
+        )
+    try:
+        await _billing.assign_license(
+            subscription_id=row["id"], target_username=username, assigned_by=user
+        )
+    except ValueError as exc:
+        raise _license_error(exc)
+    return await _billing.license_summary_for_owner(user)
+
+
+@router.delete("/licenses/{username}")
+async def revoke_license(
+    username: str, user: str = Depends(require_auth)
+) -> Dict[str, Any]:
+    row = await _billing.get_active_by_username(user)
+    if not row:
+        raise HTTPException(status_code=404, detail="No tienes una suscripción activa")
+    if row["tier"] != "business":
+        raise HTTPException(
+            status_code=400, detail="Solo el plan Business permite quitar licencias"
+        )
+    if username == user:
+        raise HTTPException(status_code=400, detail="No puedes quitar tu propia licencia")
+    if not await _billing.revoke_license(subscription_id=row["id"], target_username=username):
+        raise HTTPException(status_code=404, detail="Licencia no encontrada")
+    return await _billing.license_summary_for_owner(user)
 
 
 @router.post("/change-seats")
@@ -251,6 +307,13 @@ async def change_seats(request: Request, user: str = Depends(require_auth)) -> D
         raise HTTPException(status_code=404, detail="No tienes una suscripción activa")
     if row["tier"] != "business":
         raise HTTPException(status_code=400, detail="Solo el plan Business admite cambiar asientos")
+
+    used = await _billing.assigned_count(row["id"])
+    if seats < used:
+        raise HTTPException(
+            status_code=409,
+            detail=f"No puedes bajar a {seats} licencias: ya hay {used} asignadas",
+        )
 
     try:
         totals = compute_total_cents("business", seats, row["interval"], bool(row["self_hosted"]))
@@ -421,7 +484,7 @@ async def _handle_subscription_event(sub: Dict[str, Any], event_type: str) -> No
 
     status = "canceled" if event_type == "customer.subscription.deleted" else sub["status"]
 
-    await _billing.upsert(
+    saved = await _billing.upsert(
         username=username,
         stripe_customer_id=sub["customer"],
         stripe_subscription_id=sub["id"],
@@ -434,3 +497,4 @@ async def _handle_subscription_event(sub: Dict[str, Any], event_type: str) -> No
         current_period_end=_extract_period_end(sub),
         cancel_at_period_end=bool(_safe_get(sub, "cancel_at_period_end", False)),
     )
+    await _billing.ensure_owner_license(saved)

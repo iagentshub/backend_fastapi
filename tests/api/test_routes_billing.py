@@ -65,6 +65,19 @@ def _setup_user(client, username="alice"):
     return username
 
 
+def _login_as(client, username):
+    from app.auth.auth import create_token
+    client.cookies.set("ga_token", create_token(username))
+
+
+def _enable_billing():
+    import app.config.data as cfg
+    cfg.SETTINGS_FILE.write_text(
+        json.dumps({"jwt_secret": "test-secret-key-for-tests-only", "billing_enabled": True}),
+        encoding="utf-8",
+    )
+
+
 # ── /quote ──────────────────────────────────────────────────────────────────
 
 def test_quote_developer(client):
@@ -141,6 +154,7 @@ def test_get_subscription_free_default(client):
 # ── /cancel, /reactivate ──────────────────────────────────────────────────────
 
 def _subscribe(client, **plan):
+    billing_routes._subscribe_limiter._data.clear()
     fake_sub = _fake_subscription(**{k: v for k, v in plan.items() if k in ("tier", "seats", "interval", "self_hosted")})
     with patch.object(billing_routes.stripe.Customer, "create", return_value=FakeStripeObject(id="cus_123")), \
          patch.object(billing_routes.stripe.Subscription, "create", return_value=fake_sub):
@@ -208,6 +222,103 @@ def test_change_seats_rejected_for_developer_tier(client):
     _subscribe(client, tier="developer", seats=1)
     r = client.post("/api/billing/change-seats", json={"seats": 5})
     assert r.status_code == 400
+
+
+# ── /licenses + license gate ─────────────────────────────────────────────────
+
+def test_business_subscription_auto_assigns_owner_license(client):
+    _setup_user(client, "alice")
+    _subscribe(client, tier="business", seats=3)
+
+    r = client.get("/api/billing/licenses")
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["tier"] == "business"
+    assert data["seats"] == 3
+    assert data["used"] == 1
+    assert data["available"] == 2
+    assert any(u["username"] == "alice" and u["licensed"] for u in data["users"])
+
+
+def test_assigning_licenses_respects_seat_limit_and_revoke_frees_slot(client):
+    _setup_user(client, "alice")
+    _setup_user(client, "bob")
+    _setup_user(client, "carol")
+    _setup_user(client, "dave")
+    _login_as(client, "alice")
+    _subscribe(client, tier="business", seats=3)
+
+    assert client.post("/api/billing/licenses/bob", json={}).status_code == 200
+    assert client.post("/api/billing/licenses/carol", json={}).status_code == 200
+    over = client.post("/api/billing/licenses/dave", json={})
+    assert over.status_code == 409
+
+    revoked = client.delete("/api/billing/licenses/bob")
+    assert revoked.status_code == 200
+    assert revoked.json()["available"] == 1
+    assert client.post("/api/billing/licenses/dave", json={}).status_code == 200
+
+
+def test_non_owner_cannot_assign_licenses(client):
+    _setup_user(client, "alice")
+    _setup_user(client, "bob")
+    _login_as(client, "alice")
+    _subscribe(client, tier="business", seats=3)
+
+    _login_as(client, "bob")
+    r = client.post("/api/billing/licenses/bob", json={})
+    assert r.status_code == 404
+
+
+def test_license_gate_blocks_standard_user_without_license(client):
+    _enable_billing()
+    _setup_user(client, "alice")
+    r = client.get("/api/connections")
+    assert r.status_code == 403
+    assert r.json()["detail"] == "license_required"
+
+
+def test_license_gate_allows_assigned_user(client):
+    _enable_billing()
+    _setup_user(client, "alice")
+    _setup_user(client, "bob")
+    _login_as(client, "alice")
+    _subscribe(client, tier="business", seats=3)
+    client.post("/api/billing/licenses/bob", json={})
+
+    _login_as(client, "bob")
+    r = client.get("/api/connections")
+    assert r.status_code == 200
+
+
+def test_canceled_subscription_license_does_not_grant_access(client):
+    _enable_billing()
+    _setup_user(client, "alice")
+    _setup_user(client, "bob")
+    _login_as(client, "alice")
+    _subscribe(client, tier="business", seats=3)
+    client.post("/api/billing/licenses/bob", json={})
+    row = asyncio.run(billing_routes._billing.get_active_by_username("alice"))
+    asyncio.run(
+        billing_routes._billing.upsert(
+            username="alice",
+            stripe_customer_id=row["stripe_customer_id"],
+            stripe_subscription_id=row["stripe_subscription_id"],
+            tier=row["tier"],
+            seats=row["seats"],
+            self_hosted=bool(row["self_hosted"]),
+            interval=row["interval"],
+            amount_cents=row["amount_cents"],
+            status="canceled",
+            current_period_end=row["current_period_end"],
+            cancel_at_period_end=True,
+        )
+    )
+
+    _login_as(client, "bob")
+    r = client.get("/api/connections")
+    assert r.status_code == 403
+    assert r.json()["detail"] == "license_required"
 
 
 # ── /webhook ───────────────────────────────────────────────────────────────────
