@@ -7,11 +7,13 @@ import urllib.error
 import urllib.request
 from typing import Any, Dict
 
+from app.config.security import assert_safe_url
 from .base import BaseProvider, FieldDef, TestResult, register
 
 
 def _login(url: str, username: str, password: str) -> str:
     """Autentica contra el hub remoto y devuelve el ga_token. Lanza excepción si falla."""
+    assert_safe_url(url)  # C2: prevenir SSRF a redes privadas
     jar = http.cookiejar.CookieJar()
     opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
     payload = json.dumps({"username": username, "password": password}).encode()

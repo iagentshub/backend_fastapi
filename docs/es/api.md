@@ -58,14 +58,6 @@ Todos los endpoints de admin requieren el rol `admin`.
 | `GET` | `/api/admin/knowledge` | Listar todos los elementos de conocimiento; cada item incluye `owner_email` y `char_count` |
 | `DELETE` | `/api/admin/knowledge/{id}` | Eliminar un elemento de conocimiento |
 
-### Grupos
-
-| Método | Endpoint | Descripción |
-|---|---|---|
-| `GET` | `/api/admin/teams` | Listar todos los grupos; cada item incluye `member_count` y `resource_count` |
-| `GET` | `/api/admin/teams/{id}` | Detalle de un grupo: info, lista de miembros y contenido compartido (con nombres resueltos) |
-| `DELETE` | `/api/admin/teams/{id}` | Eliminar un grupo y todos sus miembros, invitaciones y recursos compartidos |
-
 ### Estadísticas
 
 | Método | Endpoint | Descripción |
@@ -190,45 +182,21 @@ Las preferencias se guardan por usuario en la base de datos. Cambiarlas en un di
 
 ---
 
-## Grupos
-
-Gestión de grupos dentro de workspaces. Los grupos son subconjuntos de usuarios de un workspace y sirven para compartir recursos entre sus miembros.
-
-### Grupos de usuario
-
-| Método | Endpoint | Descripción |
-|---|---|---|
-| `GET` | `/api/workspaces/{workspace_id}/groups` | Listar los grupos del workspace |
-| `POST` | `/api/workspaces/{workspace_id}/groups` | Crear un grupo en el workspace |
-| `PATCH` | `/api/workspaces/{workspace_id}/groups/{group_id}` | Renombrar un grupo |
-| `DELETE` | `/api/workspaces/{workspace_id}/groups/{group_id}` | Eliminar un grupo |
-| `GET` | `/api/workspaces/{workspace_id}/groups/{group_id}/members` | Listar los miembros del grupo |
-| `POST` | `/api/workspaces/{workspace_id}/groups/{group_id}/members` | Añadir un miembro al grupo |
-| `DELETE` | `/api/workspaces/{workspace_id}/groups/{group_id}/members/{username}` | Eliminar un miembro del grupo |
-
-### Grupos (admin)
-
-| Método | Endpoint | Descripción |
-|---|---|---|
-| `GET` | `/api/admin/groups` | Listar todos los grupos; cada item incluye `member_count` y `resource_count` |
-| `DELETE` | `/api/admin/groups/{group_id}` | Eliminar un grupo y todos sus miembros y recursos compartidos |
-
----
-
 ## Compartición de recursos
 
-Permite compartir recursos privados (agentes, skills, conexiones, conocimiento) con grupos. Solo el propietario puede compartir/dejar de compartir su recurso.
+Permite compartir recursos privados (agentes, skills, conexiones, conocimiento) con un workspace. No mueve ni copia el recurso — solo concede acceso de uso a todos los miembros del workspace destino. El `owner_id` del recurso no cambia.
+
+Solo el dueño directo del recurso (o un admin) puede compartirlo.
 
 | Método | Endpoint | Descripción |
 |---|---|---|
-| `GET` | `/api/sharing/{type}/{resource_id}` | Listar los grupos con los que está compartido un recurso |
-| `POST` | `/api/sharing/{type}/{resource_id}` | Compartir un recurso con un grupo (`body: {"group_id": "..."}`) |
-| `DELETE` | `/api/sharing/{type}/{resource_id}/{group_id}` | Dejar de compartir un recurso con un grupo |
-| `GET` | `/api/sharing/by-group/{group_id}/{type}` | Recursos de un tipo compartidos con un grupo (requiere ser miembro) |
+| `GET` | `/api/sharing/{type}/{resource_id}/groups` | Listar los workspaces con los que está compartido un recurso |
+| `POST` | `/api/sharing/{type}/{resource_id}` | Compartir un recurso con un workspace (`body: {"workspace_id": "..."}`) |
+| `DELETE` | `/api/sharing/{type}/{resource_id}/{workspace_id}` | Retirar el acceso de un workspace a un recurso |
 
 Tipos válidos para `{type}`: `agent`, `skill`, `connection`, `knowledge`.
 
-Los recursos compartidos con el usuario aparecen en los listados normales (`/api/skills`, `/api/agents`, etc.) con el campo `_shared: true`. El receptor puede usarlos pero no editarlos ni exportarlos.
+Los recursos compartidos con el usuario aparecen en los listados normales (`/api/skills`, `/api/agents`, etc.) con el campo `_shared: true`. El receptor puede usarlos pero no editarlos ni redistribuirlos.
 
 ---
 

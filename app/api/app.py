@@ -15,6 +15,7 @@ from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.utils import flog
+from app.utils.net import client_ip as _client_ip_util
 from app.auth.auth import ensure_admin_user, purge_expired_deletions
 from app.config.cors import CORS_ORIGINS
 from app.config import data as _cfg
@@ -104,13 +105,8 @@ class _RequestLogger(BaseHTTPMiddleware):
         response = await call_next(request)
         ms = (time.perf_counter() - t0) * 1000
 
-        # Extraer IP del cliente
-        ip = (
-            request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
-            or request.headers.get("X-Real-IP", "")
-            or (request.client.host if request.client else "-")
-            or "-"
-        )
+        # A3: usar client_ip() para respetar TRUSTED_PROXIES y evitar log injection
+        ip = _client_ip_util(request) or "-"
 
         # Extraer usuario del JWT
         username = "-"

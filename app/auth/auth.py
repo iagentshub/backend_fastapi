@@ -8,7 +8,7 @@ import os
 import secrets
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 import bcrypt as _bcrypt
 from app.utils import flog
@@ -424,14 +424,27 @@ async def consume_reset_token(token: str, new_password: str) -> bool:
         expires = row[1] or ""
         if not expires or datetime.fromisoformat(expires) < datetime.now(timezone.utc):
             return False
+        row2 = await conn.fetchone("SELECT username FROM users WHERE email = ?", (email,))
         await conn.execute(
             "UPDATE users SET password_hash = ?, reset_token = NULL, reset_token_expires = NULL "
             "WHERE email = ?",
             (hash_password(new_password), email),
         )
+        # A2: invalidar tokens emitidos antes de este cambio de contraseña
+        if row2:
+            await _touch_password_changed_at(conn, row2[0])
         await conn.commit()
         flog.ok(f"[auth] Contraseña reseteada para {email}")
         return True
+
+
+async def _touch_password_changed_at(conn: Any, username: str) -> None:
+    """Marca el instante de cambio de contraseña para invalidar tokens anteriores (A2)."""
+    now = datetime.now(timezone.utc).isoformat()
+    await conn.execute(
+        "UPDATE users SET password_changed_at = ? WHERE username = ?",
+        (now, username),
+    )
 
 
 async def set_own_password(username: str, new_password: str) -> None:
@@ -441,6 +454,7 @@ async def set_own_password(username: str, new_password: str) -> None:
             "UPDATE users SET password_hash = ? WHERE username = ?",
             (hash_password(new_password), username),
         )
+        await _touch_password_changed_at(conn, username)
         await conn.commit()
 
 
@@ -669,6 +683,7 @@ async def admin_set_password(username: str, new_password: str) -> bool:
             "UPDATE users SET password_hash = ? WHERE username = ?",
             (hash_password(new_password), username),
         )
+        await _touch_password_changed_at(conn, username)  # A2
         await conn.commit()
         return True
 
@@ -680,10 +695,12 @@ async def admin_set_password(username: str, new_password: str) -> bool:
 
 
 def create_token(username: str, workspace_id: Optional[str] = None) -> str:
-    expire = datetime.now(timezone.utc) + timedelta(hours=JWT_EXPIRE_HOURS)
+    now = datetime.now(timezone.utc)
+    expire = now + timedelta(hours=JWT_EXPIRE_HOURS)
     payload = {
         "sub": username,
         "wid": workspace_id or username,  # workspace personal = username
+        "iat": now,                        # A2: issued-at para invalidación por cambio de contraseña
         "exp": expire,
     }
     return jwt.encode(payload, _secret(), algorithm=JWT_ALGORITHM)
@@ -698,6 +715,25 @@ def decode_token(token: str) -> Optional[str]:
         return None
 
 
+def decode_token_with_iat(token: str) -> tuple[Optional[str], Optional[float]]:
+    """Return (username, iat_epoch) o (None, None) si el token es inválido.
+
+    El campo ``iat`` (issued-at) se usa en ``require_auth`` para invalidar
+    sesiones cuyo token fue emitido antes de un cambio de contraseña.
+    """
+    try:
+        data = jwt.decode(token, _secret(), algorithms=[JWT_ALGORITHM])
+        iat = data.get("iat")
+        # python-jose puede devolver iat como datetime o como int; normalizamos a float
+        if isinstance(iat, datetime):
+            iat = iat.timestamp()
+        elif iat is not None:
+            iat = float(iat)
+        return data.get("sub"), iat
+    except JWTError:
+        return None, None
+
+
 def decode_workspace_token(token: str) -> tuple[Optional[str], Optional[str]]:
     """Return (username, workspace_id). workspace_id defaults to username if not present."""
     try:
@@ -707,6 +743,29 @@ def decode_workspace_token(token: str) -> tuple[Optional[str], Optional[str]]:
         return username, workspace_id
     except JWTError:
         return None, None
+
+
+def decode_workspace_token_full(
+    token: str,
+) -> tuple[Optional[str], Optional[str], Optional[float]]:
+    """Return (username, workspace_id, iat_epoch).
+
+    Versión extendida de ``decode_workspace_token`` que también extrae el campo
+    ``iat`` (issued-at) necesario para invalidar sesiones tras cambio de
+    contraseña (C1).
+    """
+    try:
+        data = jwt.decode(token, _secret(), algorithms=[JWT_ALGORITHM])
+        username = data.get("sub")
+        workspace_id = data.get("wid") or username
+        iat = data.get("iat")
+        if isinstance(iat, datetime):
+            iat = iat.timestamp()
+        elif iat is not None:
+            iat = float(iat)
+        return username, workspace_id, iat
+    except JWTError:
+        return None, None, None
 
 
 # ── First-boot admin bootstrap ────────────────────────────────────────────────

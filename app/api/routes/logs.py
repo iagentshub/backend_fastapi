@@ -15,6 +15,7 @@ from pydantic import BaseModel
 from app.api.routes.auth import require_admin
 from app.storage.db import open_db
 from app.utils import flog
+from app.utils.net import client_ip as _client_ip
 
 router = APIRouter(prefix="/api/admin/logs", tags=["admin-logs"])
 
@@ -117,19 +118,29 @@ async def export_logs(
             f"FROM app_logs {where} ORDER BY ts DESC",
             tuple(params),
         )
+    def _csv_safe(value: Optional[str]) -> str:
+        """A3: prevenir CSV/formula injection prefijando con comilla si el valor
+        comienza con = + - @ que Excel/LibreOffice interpretan como fórmulas."""
+        if not value:
+            return ""
+        s = str(value)
+        if s and s[0] in ("=", "+", "-", "@", "\t", "\r"):
+            return "'" + s
+        return s
+
     buf = io.StringIO()
     writer = csv.writer(buf)
     writer.writerow(["Fecha", "Hora", "IP", "Usuario", "Nivel", "Fuente", "Acción"])
     for r in rows:
         writer.writerow(
             [
-                r["date"],
-                r["time"],
-                r["ip"],
-                r["username"],
-                r["level"],
-                r["source"],
-                r["summary"],
+                _csv_safe(r["date"]),
+                _csv_safe(r["time"]),
+                _csv_safe(r["ip"]),
+                _csv_safe(r["username"]),
+                _csv_safe(r["level"]),
+                _csv_safe(r["source"]),
+                _csv_safe(r["summary"]),
             ]
         )
     buf.seek(0)
@@ -173,12 +184,7 @@ async def client_log(
     admin_user: str = Depends(require_admin),
 ) -> dict:
     """Recibe una entrada de log desde el frontend y la almacena."""
-    ip = (
-        request.headers.get("X-Forwarded-For", "").split(",")[0].strip()
-        or request.headers.get("X-Real-IP", "")
-        or (request.client.host if request.client else "-")
-        or "-"
-    )
+    ip = _client_ip(request) or "-"  # N4: respetar TRUSTED_PROXIES, evitar spoofing
     msg = f"[frontend] {entry.message}"
     lvl = entry.level.upper()
     if lvl == "ERROR":

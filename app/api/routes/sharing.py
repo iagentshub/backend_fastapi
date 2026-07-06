@@ -135,6 +135,9 @@ async def _cascade_share_agent(
         item = await knowledge_storage.get(know_id)
         if not item:
             continue
+        # A1: no exponer knowledge ajeno — solo los items del usuario que comparte
+        if item.get("owner_id") not in _owner_ids:
+            continue
         await _shares.share_with_workspace("knowledge", know_id, group_id, shared_by)
         cascaded.append(know_id)
 

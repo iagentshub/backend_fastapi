@@ -52,6 +52,9 @@ _shares = WorkspaceShareStorage(DB_FILE)
 _ws = WorkspaceStorage(DB_FILE)
 _test_limiter = RateLimiter(calls=RATE_TEST_CALLS, window=RATE_TEST_WINDOW)
 _test_all_limiter = RateLimiter(calls=RATE_TESTALL_CALLS, window=RATE_TESTALL_WINDOW)
+# N2: limitar hub-sync para evitar amplificación de peticiones HTTP externas
+# 20 syncs/min por IP es un límite útil en producción sin romper tests
+_hub_sync_limiter = RateLimiter(calls=20, window=60)
 
 
 async def _owner(user: str, workspace_id: str) -> str | None:
@@ -131,8 +134,10 @@ async def _resolve_connections(
 def _fetch_ollama_models(host: str) -> List[str]:
     """Llama a /api/tags y devuelve los nombres de modelos instalados."""
     from app.connections.ollama import OllamaProvider
+    from app.config.security import assert_safe_url
 
     try:
+        assert_safe_url(host)  # C3: prevenir SSRF via hosts de conexiones almacenadas
         data = OllamaProvider._fetch_tags(host)
     except OSError:
         alt = OllamaProvider._alt_host(host)
@@ -467,6 +472,7 @@ async def delete_connection(
 async def hub_sync(
     conn_id: str,
     ctx: WorkspaceContext = Depends(require_workspace),
+    _rl: None = Depends(_hub_sync_limiter),  # N2: prevenir amplificación HTTP
 ) -> Dict[str, Any]:
     """Sincroniza agentes, skills, conocimiento y conexiones desde un hub remoto."""
     user, workspace_id = ctx.user, ctx.workspace_id
@@ -488,6 +494,13 @@ async def hub_sync(
     password = conn.get("api_key") or ""
     hub_label = conn.get("name") or "Hub"
     owner = workspace_id
+
+    # C1: validar URL contra SSRF antes de hacer cualquier petición HTTP
+    from app.config.security import assert_safe_url as _assert_safe_hub_url
+    try:
+        _assert_safe_hub_url(url)
+    except ValueError as _ssrf_err:
+        raise HTTPException(status_code=400, detail=str(_ssrf_err))
 
     from app.connections.iagentshub import _login
 

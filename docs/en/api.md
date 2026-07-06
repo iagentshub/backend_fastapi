@@ -58,14 +58,6 @@ All admin endpoints require the `admin` role.
 | `GET` | `/api/admin/knowledge` | List all knowledge items; each item includes `owner_email` and `char_count` |
 | `DELETE` | `/api/admin/knowledge/{id}` | Delete a knowledge item |
 
-### Groups
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `GET` | `/api/admin/teams` | List all groups; each item includes `member_count` and `resource_count` |
-| `GET` | `/api/admin/teams/{id}` | Group detail: info, member list, and shared content (with resolved names) |
-| `DELETE` | `/api/admin/teams/{id}` | Delete a group and all its members, invitations, and shared resources |
-
 ### Stats
 
 | Method | Endpoint | Description |
@@ -185,45 +177,21 @@ Known widget IDs: `summary`, `token-usage`, `activity`, `conn-status`, `recent`.
 
 ---
 
-## Groups
-
-Group management within workspaces. Groups are subsets of workspace members used to share resources.
-
-### User groups
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `GET` | `/api/workspaces/{workspace_id}/groups` | List groups in the workspace |
-| `POST` | `/api/workspaces/{workspace_id}/groups` | Create a group in the workspace |
-| `PATCH` | `/api/workspaces/{workspace_id}/groups/{group_id}` | Rename a group |
-| `DELETE` | `/api/workspaces/{workspace_id}/groups/{group_id}` | Delete a group |
-| `GET` | `/api/workspaces/{workspace_id}/groups/{group_id}/members` | List group members |
-| `POST` | `/api/workspaces/{workspace_id}/groups/{group_id}/members` | Add a member to the group |
-| `DELETE` | `/api/workspaces/{workspace_id}/groups/{group_id}/members/{username}` | Remove a member from the group |
-
-### Groups (admin)
-
-| Method | Endpoint | Description |
-|---|---|---|
-| `GET` | `/api/admin/groups` | List all groups; each item includes `member_count` and `resource_count` |
-| `DELETE` | `/api/admin/groups/{group_id}` | Delete a group and all its members and shared resources |
-
----
-
 ## Resource Sharing
 
-Allows sharing private resources (agents, skills, connections, knowledge) with groups. Only the owner can share or unshare their resource.
+Allows sharing private resources (agents, skills, connections, knowledge) with a workspace. The resource is not moved or copied — access is granted to all members of the destination workspace. The `owner_id` of the resource does not change.
+
+Only the direct owner of the resource (or an admin) can share it.
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/sharing/{type}/{resource_id}` | List groups a resource is shared with |
-| `POST` | `/api/sharing/{type}/{resource_id}` | Share a resource with a group (`body: {"group_id": "..."}`) |
-| `DELETE` | `/api/sharing/{type}/{resource_id}/{group_id}` | Stop sharing a resource with a group |
-| `GET` | `/api/sharing/by-group/{group_id}/{type}` | Resources of a given type shared with a group (requires membership) |
+| `GET` | `/api/sharing/{type}/{resource_id}/groups` | List workspaces a resource is shared with |
+| `POST` | `/api/sharing/{type}/{resource_id}` | Share a resource with a workspace (`body: {"workspace_id": "..."}`) |
+| `DELETE` | `/api/sharing/{type}/{resource_id}/{workspace_id}` | Revoke a workspace's access to a resource |
 
 Valid values for `{type}`: `agent`, `skill`, `connection`, `knowledge`.
 
-Resources shared with the user appear in the standard listing endpoints (`/api/skills`, `/api/agents`, etc.) with `_shared: true`. Recipients can use them but cannot edit or export them.
+Resources shared with the user appear in the standard listing endpoints (`/api/skills`, `/api/agents`, etc.) with `_shared: true`. Recipients can use them but cannot edit or redistribute them.
 
 ---
 

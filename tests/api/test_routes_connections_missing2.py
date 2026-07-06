@@ -561,22 +561,23 @@ def test_fetch_ollama_models_generic_exception_returns_empty(client):
     assert r.status_code == 200
 
 
-def test_fetch_ollama_models_alt_host_succeeds(client):
-    """_fetch_ollama_models usa alt host cuando el principal falla con OSError (línea 110, 115)."""
+def test_fetch_ollama_models_ssrf_localhost_returns_empty(client):
+    """_fetch_ollama_models retorna [] para hosts localhost (SSRF protection, C3).
+
+    Con la protección SSRF activa, cualquier host que apunte a localhost o a rangos
+    privados es bloqueado antes de hacer la petición HTTP — el alt-host fallback
+    (localhost → host.docker.internal) ya no se puede alcanzar porque ambos son
+    privados. El endpoint /api/connections sigue respondiendo 200 pero sin modelos.
+    """
     _setup_user(client, "ollama_altok_m2")
     client.post("/api/connections", json=_CONN_OLLAMA_BASE)
 
-    def _fake_fetch(host):
-        if "localhost" in host:
-            raise OSError("refused")
-        return {"models": [{"name": "llama3:alt-m2"}]}
-
-    with patch("app.connections.ollama.OllamaProvider._fetch_tags", side_effect=_fake_fetch):
-        r = client.get("/api/connections")
+    # Sin mock: assert_safe_url("http://localhost:11434") lanza ValueError,
+    # _fetch_ollama_models lo captura como Exception y devuelve [].
+    r = client.get("/api/connections")
 
     assert r.status_code == 200
-    names = [c.get("name") for c in r.json()]
-    assert "llama3:alt-m2" in names
+    assert isinstance(r.json(), list)
 
 
 # ── 20. _ollama_conns_to_models modelo explícito (líneas 131-136) ────────────

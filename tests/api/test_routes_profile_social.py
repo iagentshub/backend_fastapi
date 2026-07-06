@@ -18,7 +18,7 @@ def test_actualizar_perfil_campos_basicos(client):
         "bio": "Desarrollador de agentes IA",
         "languages": ["es", "en"],
         "email_public": "public@example.com",
-        "github": "myghuser",
+        "github": "https://github.com/myghuser",
         "cv": "# Mi CV\n\nExperiencia en Python.",
     })
     assert r.status_code == 200
@@ -30,7 +30,7 @@ def test_perfil_publico_devuelve_campos(client):
     client.put("/api/auth/me/profile", json={
         "bio": "Bio pública",
         "languages": ["es"],
-        "github": "perfilgh",
+        "github": "https://github.com/perfilgh",
     })
     r = client.get("/api/users/perfiluser")
     assert r.status_code == 200
@@ -38,7 +38,7 @@ def test_perfil_publico_devuelve_campos(client):
     assert data["username"] == "perfiluser"
     assert data["bio"] == "Bio pública"
     assert "es" in data["languages"]
-    assert data["github"] == "perfilgh"
+    assert data["github"] == "https://github.com/perfilgh"
     assert "joined_at" in data
 
 
@@ -67,6 +67,23 @@ def test_campos_opcionales_vacios(client):
     assert data["cv"] is None
     assert data["avatar_url"] is None
     assert data["languages"] == []
+
+
+def test_github_url_invalida_rechazada(client):
+    """N3: el campo github solo acepta URLs https://."""
+    _register_and_login(client, "ghvalidation")
+    # javascript: URI debe ser rechazado con 422
+    r = client.put("/api/auth/me/profile", json={"github": "javascript:alert(1)"})
+    assert r.status_code == 422
+    # URL http:// también rechazada
+    r2 = client.put("/api/auth/me/profile", json={"github": "http://github.com/user"})
+    assert r2.status_code == 422
+    # Valor vacío permitido
+    r3 = client.put("/api/auth/me/profile", json={"github": ""})
+    assert r3.status_code == 200
+    # URL https:// válida
+    r4 = client.put("/api/auth/me/profile", json={"github": "https://github.com/user"})
+    assert r4.status_code == 200
 
 
 def test_idiomas_invalidos_filtrados(client):

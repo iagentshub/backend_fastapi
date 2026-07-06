@@ -600,6 +600,7 @@ async def _migrate_sqlite(conn: Any) -> None:
         ("deletion_requested_at", "TEXT"),
         ("deletion_token", "TEXT"),
         ("stripe_customer_id", "TEXT"),
+        ("password_changed_at", "TEXT"),  # A2: para invalidar tokens tras cambio de contraseña
     ]:
         if col not in user_cols:
             try:
@@ -1271,6 +1272,10 @@ async def _migrate_pg(conn: Any) -> None:
     # 15. Stripe billing: users.stripe_customer_id + subscriptions / stripe_events tables
     await conn.execute(
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS stripe_customer_id TEXT"
+    )
+    # A2: columna para invalidar tokens tras cambio de contraseña
+    await conn.execute(
+        "ALTER TABLE users ADD COLUMN IF NOT EXISTS password_changed_at TEXT"
     )
     await conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_users_stripe_customer ON users (stripe_customer_id)"

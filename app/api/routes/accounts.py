@@ -87,6 +87,8 @@ async def _fetch_models(provider: str, api_key: str, host: str = "") -> List[str
 
         if provider == "ollama":
             base = (host or "http://localhost:11434").rstrip("/")
+            from app.config.security import assert_safe_url as _assu
+            _assu(base)  # C3: prevenir SSRF via hosts almacenados en cuentas
             async with httpx.AsyncClient(timeout=10) as client:
                 r = await client.get(f"{base}/api/tags")
             r.raise_for_status()

@@ -11,12 +11,19 @@ from pydantic import BaseModel
 
 import app.config.data as _cfg
 from app.api.routes.auth import WorkspaceContext, require_auth, require_workspace
+from app.middleware.ratelimit import RateLimiter
 from app.services.chat import stream_chat
 from app.storage.db import IS_PG, open_db
 from app.storage.knowledge import KnowledgeStorage
 from app.storage.storage import AgentStorage, ConnectionStorage, MemoryStorage, SkillStorage
 
 router = APIRouter(tags=["social"])
+
+# A4: tipos de recurso válidos para star/unstar y endpoints sociales
+_VALID_SOCIAL_RESOURCE_TYPES: frozenset[str] = frozenset({"agent", "skill", "knowledge"})
+
+# N2: rate limiting para endpoints sociales (star, follow)
+_social_limiter = RateLimiter(calls=30, window=60)
 
 
 async def _assert_public(resource_type: str, source_id: str) -> None:
@@ -537,6 +544,7 @@ async def user_resources(
 async def follow_user(
     target: str,
     username: str = Depends(require_auth),
+    _rl: None = Depends(_social_limiter),
 ) -> Dict[str, Any]:
     if target == username:
         raise HTTPException(status_code=400, detail="No puedes seguirte a ti mismo")
@@ -564,6 +572,7 @@ async def follow_user(
 async def unfollow_user(
     target: str,
     username: str = Depends(require_auth),
+    _rl: None = Depends(_social_limiter),
 ) -> Dict[str, Any]:
 
     async with open_db() as conn:
@@ -652,7 +661,11 @@ async def star_resource(
     resource_type: str,
     resource_id: str,
     username: str = Depends(require_auth),
+    _rl: None = Depends(_social_limiter),
 ) -> Dict[str, Any]:
+    # A4: validar resource_type para evitar contaminación de la tabla resource_stars
+    if resource_type not in _VALID_SOCIAL_RESOURCE_TYPES:
+        raise HTTPException(status_code=422, detail=f"Tipo de recurso no válido: {resource_type!r}")
 
     async with open_db() as conn:
         if IS_PG:
@@ -1320,7 +1333,11 @@ async def unstar_resource(
     resource_type: str,
     resource_id: str,
     username: str = Depends(require_auth),
+    _rl: None = Depends(_social_limiter),
 ) -> Dict[str, Any]:
+    # A4: validar resource_type
+    if resource_type not in _VALID_SOCIAL_RESOURCE_TYPES:
+        raise HTTPException(status_code=422, detail=f"Tipo de recurso no válido: {resource_type!r}")
 
     async with open_db() as conn:
         await conn.execute(

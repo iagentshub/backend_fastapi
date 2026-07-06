@@ -8,6 +8,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from app.api.routes.auth import WorkspaceContext, require_auth, require_workspace
 from app.auth.auth import create_token, get_user_by_username, get_user_role
 from app.config.data import DB_FILE
+from app.config.session import SECURE_COOKIES
 from app.storage.guest import is_guest
 from app.storage.workspaces import WorkspaceStorage
 
@@ -320,7 +321,8 @@ async def switch_workspace(
     if workspace_id == username:
         token = create_token(username, workspace_id=username)
         response.set_cookie(
-            "ga_token", token, httponly=True, samesite="lax", max_age=604_800
+            "ga_token", token, httponly=True, samesite="lax",
+            secure=SECURE_COOKIES, max_age=43200,  # A1: flag Secure, A2: 12h = mismo que login
         )
         return {"ok": True, "workspace_id": workspace_id}
 
@@ -332,7 +334,8 @@ async def switch_workspace(
         raise HTTPException(status_code=403, detail="No eres miembro de este workspace")
     token = create_token(username, workspace_id=workspace_id)
     response.set_cookie(
-        "ga_token", token, httponly=True, samesite="lax", max_age=604_800
+        "ga_token", token, httponly=True, samesite="lax",
+        secure=SECURE_COOKIES, max_age=43200,  # A1: flag Secure, A2: 12h = mismo que login
     )
     return {"ok": True, "workspace_id": workspace_id}
 

@@ -16,8 +16,8 @@ from app.auth.auth import (
     consume_reset_token,
     create_password_reset_token,
     create_token,
-    decode_token,
-    decode_workspace_token,
+    decode_token_with_iat,
+    decode_workspace_token_full,
     delete_user,
     get_owned_workspaces,
     get_user_by_email,
@@ -93,37 +93,40 @@ _guest_limiter = RateLimiter(
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
-# ── Caché de is_active para require_auth ──────────────────────────────────────
+# ── Caché de estado de autenticación para require_auth ────────────────────────
 # Evita una consulta a BD en cada request autenticado. TTL de 60 s: una cuenta
 # suspendida queda bloqueada en ≤60 s desde la acción del admin, sin sacrificar
 # el rendimiento en producción.
+# A2: también cachea password_changed_at para invalidar tokens emitidos antes
+#     de un cambio de contraseña, sin una consulta a BD por request.
 _ACTIVE_CACHE_TTL = 60       # segundos
 _ACTIVE_CACHE_MAX = 5_000    # entradas máximas antes de eviction
-_active_cache: dict[str, tuple[bool, float]] = {}  # {username: (is_active, expires_at)}
+# {username: (is_active, password_changed_at, expires_at)}
+_active_cache: dict[str, tuple[bool, Optional[str], float]] = {}
 
 
-async def _is_user_active(username: str) -> bool:
-    """Devuelve True si la cuenta está activa. Usa caché con TTL de 60 s.
+async def _get_user_auth_state(username: str) -> tuple[bool, Optional[str]]:
+    """Devuelve (is_active, password_changed_at). Usa caché con TTL de 60 s.
 
-    Los usuarios guest (prefix "guest:") son siempre activos — no tienen
-    fila en la tabla users, se validan por sesión en memoria.
+    Los usuarios guest son siempre activos y no tienen password_changed_at.
     """
     from app.storage.guest import is_guest as _is_guest_fn
     if _is_guest_fn(username):
-        return True
+        return True, None
 
     now = time.monotonic()
     cached = _active_cache.get(username)
-    if cached and now < cached[1]:
-        return cached[0]
+    if cached and now < cached[2]:
+        return cached[0], cached[1]
 
     user = await get_user_by_username(username)
     active = bool(user and user.get("is_active", 1))
+    pwd_changed = user.get("password_changed_at") if user else None
 
     # Eviction: si el dict supera el límite, eliminar la mitad de entradas expiradas
     # (o las más antiguas si no hay suficientes expiradas)
     if len(_active_cache) >= _ACTIVE_CACHE_MAX:
-        expired = [k for k, (_, exp) in _active_cache.items() if now >= exp]
+        expired = [k for k, (_, _, exp) in _active_cache.items() if now >= exp]
         if len(expired) >= _ACTIVE_CACHE_MAX // 2:
             for k in expired:
                 del _active_cache[k]
@@ -132,7 +135,13 @@ async def _is_user_active(username: str) -> bool:
             for k in list(_active_cache)[: _ACTIVE_CACHE_MAX // 2]:
                 del _active_cache[k]
 
-    _active_cache[username] = (active, now + _ACTIVE_CACHE_TTL)
+    _active_cache[username] = (active, pwd_changed, now + _ACTIVE_CACHE_TTL)
+    return active, pwd_changed
+
+
+async def _is_user_active(username: str) -> bool:
+    """Compatibilidad: devuelve True si la cuenta está activa."""
+    active, _ = await _get_user_auth_state(username)
     return active
 
 
@@ -147,14 +156,35 @@ class WorkspaceContext:
 
 
 async def require_auth(ga_token: Optional[str] = Cookie(default=None)) -> str:
-    """Dependency: valida el token de sesión y verifica que la cuenta está activa."""
+    """Dependency: valida el token de sesión y verifica que la cuenta está activa.
+
+    A2: también comprueba que el token fue emitido DESPUÉS del último cambio de
+    contraseña, invalidando sesiones robadas si la víctima cambió su contraseña.
+    """
     if not ga_token:
         raise HTTPException(status_code=401, detail="No autenticado")
-    username = decode_token(ga_token)
+    username, token_iat = decode_token_with_iat(ga_token)
     if not username:
         raise HTTPException(status_code=401, detail="Token inválido o expirado")
-    if not await _is_user_active(username):
+    is_active, password_changed_at = await _get_user_auth_state(username)
+    if not is_active:
         raise HTTPException(status_code=403, detail="Cuenta desactivada")
+    # Invalidar tokens emitidos antes del último cambio de contraseña
+    if password_changed_at and token_iat is not None:
+        try:
+            from datetime import datetime, timezone as _tz
+            changed_ts = datetime.fromisoformat(password_changed_at).replace(
+                tzinfo=_tz.utc
+            ).timestamp()
+            if token_iat < changed_ts:
+                raise HTTPException(
+                    status_code=401,
+                    detail="Sesión expirada tras cambio de contraseña. Inicia sesión de nuevo.",
+                )
+        except HTTPException:
+            raise
+        except Exception:
+            pass  # fecha malformada en BD → no bloquear
     return username
 
 
@@ -166,15 +196,36 @@ async def require_workspace(
     Lee el workspace_id (wid) del JWT. Si el workspace está activo y el
     usuario es miembro, lo usa como contexto. En caso contrario cae de
     vuelta al workspace personal (workspace_id = username).
+
+    C1: también valida iat contra password_changed_at para invalidar tokens
+    emitidos antes de un cambio de contraseña (igual que require_auth).
     """
     if not ga_token:
         raise HTTPException(status_code=401, detail="No autenticado")
-    username, wid = decode_workspace_token(ga_token)
+    username, wid, token_iat = decode_workspace_token_full(ga_token)
     if not username:
         raise HTTPException(status_code=401, detail="Token inválido o expirado")
     from app.storage.guest import is_guest as _is_guest
-    if not _is_guest(username) and not await _is_user_active(username):
-        raise HTTPException(status_code=403, detail="Cuenta desactivada")
+    if not _is_guest(username):
+        is_active, password_changed_at = await _get_user_auth_state(username)
+        if not is_active:
+            raise HTTPException(status_code=403, detail="Cuenta desactivada")
+        # C1: invalidar tokens emitidos antes del último cambio de contraseña
+        if password_changed_at and token_iat is not None:
+            try:
+                from datetime import datetime, timezone as _tz
+                changed_ts = datetime.fromisoformat(password_changed_at).replace(
+                    tzinfo=_tz.utc
+                ).timestamp()
+                if token_iat < changed_ts:
+                    raise HTTPException(
+                        status_code=401,
+                        detail="Sesión expirada tras cambio de contraseña. Inicia sesión de nuevo.",
+                    )
+            except HTTPException:
+                raise
+            except Exception:
+                pass  # fecha malformada en BD → no bloquear
 
     # Si el wid es distinto del username → validar workspace de equipo
     if wid and wid != username:
@@ -425,8 +476,8 @@ async def change_password(
     new_pw = str(body.get("new_password") or "").strip()
     if not current or not new_pw:
         raise HTTPException(status_code=400, detail="Completa todos los campos")
-    if len(new_pw) < 4:
-        raise HTTPException(status_code=400, detail="La nueva contraseña es muy corta")
+    if len(new_pw) < 8:  # N4: mínimo coherente con el registro (8 caracteres)
+        raise HTTPException(status_code=400, detail="La nueva contraseña debe tener al menos 8 caracteres")
 
     user = await get_user_by_username(username)
     if not user:
@@ -567,7 +618,11 @@ async def update_profile(
     raw_langs = body.get("languages") or []
     languages = json.dumps([lang for lang in raw_langs if lang in _ALLOWED_LANGUAGES])
     email_public = str(body.get("email_public") or "").strip()[:200] or None
-    github = str(body.get("github") or "").strip()[:100] or None
+    # N3: solo permitir URLs https:// para el campo github (bloquear javascript: y otros)
+    _github_raw = str(body.get("github") or "").strip()[:100]
+    if _github_raw and not _github_raw.startswith("https://"):
+        raise HTTPException(status_code=422, detail="El campo github debe ser una URL https://")
+    github = _github_raw or None
     cv = str(body.get("cv") or "").strip()[:20000] or None
 
     async with open_db() as conn:
@@ -976,9 +1031,9 @@ async def admin_patch_user(
             raise HTTPException(status_code=400, detail="Rol inválido")
         updates["role"] = body["role"]
     new_pw = str(body.get("password") or "").strip()
-    if new_pw and len(new_pw) < 4:
+    if new_pw and len(new_pw) < 8:  # N4: mínimo coherente con el registro
         raise HTTPException(
-            status_code=400, detail="La contraseña debe tener al menos 4 caracteres"
+            status_code=400, detail="La contraseña debe tener al menos 8 caracteres"
         )
     if not updates and not new_pw:
         raise HTTPException(status_code=400, detail="Sin cambios")
@@ -1014,12 +1069,12 @@ async def admin_create_user(
 
     if not email:
         raise HTTPException(status_code=400, detail="El email es obligatorio")
-    if "@" not in email:
+    if not _EMAIL_RE.match(email):  # N1: misma regex estricta que en /register
         raise HTTPException(status_code=400, detail="Email no válido")
     if not password:
         raise HTTPException(status_code=400, detail="La contraseña es obligatoria")
-    if len(password) < 4:
-        raise HTTPException(status_code=400, detail="La contraseña debe tener al menos 4 caracteres")
+    if len(password) < 8:  # N4: mínimo coherente con el registro
+        raise HTTPException(status_code=400, detail="La contraseña debe tener al menos 8 caracteres")
     if role not in ("standard", "admin"):
         raise HTTPException(status_code=422, detail="role debe ser 'standard' o 'admin'")
 
@@ -1352,6 +1407,8 @@ async def admin_impersonate(
         raise HTTPException(status_code=400, detail="Ya eres este usuario")
     if not await get_user_by_username(username):
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
+    # N3: registrar la impersonación para auditoría de seguridad
+    flog.warning(f"[admin] IMPERSONACIÓN: admin={admin!r} → usuario={username!r}")
     token = create_token(username)
     response.set_cookie(
         "ga_token",
