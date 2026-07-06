@@ -78,6 +78,41 @@ def _compute_origin(agent: Dict[str, Any], current_user: str) -> str:
     return "owner"
 
 
+async def _assert_can_read_agent(
+    agent_id: str,
+    agent: Dict[str, Any],
+    ctx: WorkspaceContext,
+) -> None:
+    """Lanza 403 si el usuario no tiene derecho de lectura sobre el agente.
+
+    Acceso permitido cuando se cumple al menos una condición:
+    - El agente es público (scope == "public")
+    - owner_id coincide con el usuario o con su workspace activo
+    - El usuario tiene rol "admin"
+    - El agente está compartido con algún workspace al que pertenece el usuario
+    """
+    if agent.get("scope") == "public":
+        return
+    user = ctx.user
+    workspace_id = ctx.workspace_id
+    owner_id = agent.get("owner_id")
+    if owner_id in (user, workspace_id):
+        return
+    if await get_user_role(user) == "admin":
+        return
+    # Comprobar shares activos con los workspaces del usuario
+    user_groups = await _ws.list_for_user(user)
+    if user_groups:
+        group_ids = [g["id"] for g in user_groups]
+        results = await asyncio.gather(
+            *[_shares.get_workspace_shared_resource_ids(gid, "agent") for gid in group_ids]
+        )
+        for shared_ids in results:
+            if agent_id in shared_ids:
+                return
+    raise HTTPException(status_code=403, detail="No tienes acceso a este agente")
+
+
 async def _conn_owner(user: str) -> str | None:
     return None if await get_user_role(user) == "admin" else user
 
@@ -276,6 +311,7 @@ async def get_agent(
     a = await _agents.get(agent_id)
     if not a:
         raise HTTPException(status_code=404, detail="Agente no encontrado")
+    await _assert_can_read_agent(agent_id, a, ctx)
     a = _apply_locale(a, get_locale())
     a["origin_type"] = _compute_origin(a, user)
     return a
@@ -315,6 +351,16 @@ async def move_agent_folder(
     if is_guest(ctx.user):
         raise HTTPException(
             status_code=403, detail="Los invitados no pueden mover agentes"
+        )
+    a = await _agents.get(agent_id)
+    if not a:
+        raise HTTPException(status_code=404, detail="Agente no encontrado")
+    if (
+        await get_user_role(ctx.user) != "admin"
+        and a.get("owner_id") not in (ctx.user, ctx.workspace_id)
+    ):
+        raise HTTPException(
+            status_code=403, detail="Solo el propietario puede mover este agente"
         )
     if not await _agents.move_folder(agent_id, body.folder_id):
         raise HTTPException(status_code=404, detail="Agente no encontrado")
@@ -382,6 +428,8 @@ async def export_agent(
         knowledge_store = _knowledge
     if not a:
         raise HTTPException(status_code=404, detail="Agente no encontrado")
+    if not is_guest(user):
+        await _assert_can_read_agent(agent_id, a, ctx)
     a = _apply_locale(a, get_locale())
 
     # Resolve skills
@@ -550,6 +598,8 @@ async def chat(
     if not a:
         raise HTTPException(status_code=404, detail="Agente no encontrado")
     role = await get_user_role(user)
+    if not is_guest(user):
+        await _assert_can_read_agent(agent_id, a, ctx)
     a = _apply_locale(a, get_locale())
 
     body = await request.json()

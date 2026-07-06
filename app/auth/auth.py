@@ -832,7 +832,7 @@ async def ensure_admin_user() -> None:
     flog.warning(sep)
     flog.warning(f" iAgents Hub — Administrador ({action})")
     flog.warning(f" Email:      {target_email}")
-    flog.warning(f" Contraseña: {password}")
+    flog.warning(f" Contraseña: [ver {data_dir}/.admin_pass — borrar tras primer login]")
     flog.warning(" Accede a /login/ y cambia la contraseña desde /profile/")
     flog.warning(sep)
 

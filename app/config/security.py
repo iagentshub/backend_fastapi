@@ -1,6 +1,7 @@
 """Constantes de seguridad: rangos de red bloqueados y otras restricciones."""
 from __future__ import annotations
 
+import ipaddress
 from urllib.parse import urlparse
 
 # Prefijos de hostname/IP bloqueados para prevenir SSRF hacia redes privadas,
@@ -15,12 +16,22 @@ PRIVATE_HOST_PREFIXES: tuple[str, ...] = (
     "localhost",                                   # hostname literal
 )
 
+_SSRF_ERROR = (
+    "La URL apunta a una dirección de red privada o reservada, "
+    "lo cual no está permitido por seguridad."
+)
+
 
 def assert_safe_url(url: str) -> None:
     """Lanza ValueError si la URL apunta a una red privada o metadata de cloud.
 
     Úsalo antes de cualquier fetch externo iniciado por input del usuario
     para prevenir SSRF (Server-Side Request Forgery).
+
+    Aplica dos capas de verificación:
+    1. Prefijos de string (rápido, sin red) — cubre casos habituales.
+    2. ipaddress — cubre IPv4-mapped IPv6 (::ffff:7f00:1, ::ffff:169.254.x.x)
+       que el check de prefijos no detecta.
     """
     try:
         parsed = urlparse(url)
@@ -34,8 +45,34 @@ def assert_safe_url(url: str) -> None:
     if not host:
         raise ValueError("URL sin hostname")
 
+    # Check 1: prefix-based (rápido, sin red)
     if any(host == p.rstrip(".") or host.startswith(p) for p in PRIVATE_HOST_PREFIXES):
-        raise ValueError(
-            "La URL apunta a una dirección de red privada o reservada, "
-            "lo cual no está permitido por seguridad."
+        raise ValueError(_SSRF_ERROR)
+
+    # Check 2: ipaddress — detecta IPv4-mapped IPv6 y otras representaciones
+    # que el check de prefijos no cubre (e.g. ::ffff:7f00:0001 = 127.0.0.1)
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        # El host es un nombre de dominio, no una IP literal — OK
+        return
+
+    is_dangerous = (
+        addr.is_private
+        or addr.is_loopback
+        or addr.is_link_local
+        or addr.is_reserved
+        or addr.is_unspecified
+        or addr.is_multicast
+    )
+    # IPv4-mapped IPv6: ::ffff:169.254.169.254, ::ffff:127.0.0.1, etc.
+    ipv4_mapped = getattr(addr, "ipv4_mapped", None)
+    if ipv4_mapped:
+        is_dangerous = is_dangerous or (
+            ipv4_mapped.is_private
+            or ipv4_mapped.is_loopback
+            or ipv4_mapped.is_link_local
         )
+
+    if is_dangerous:
+        raise ValueError(_SSRF_ERROR)

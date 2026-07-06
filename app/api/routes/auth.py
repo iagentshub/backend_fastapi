@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 import time
 from typing import Any, Dict, List, Optional
@@ -59,6 +60,21 @@ from app.storage.workspaces import WorkspaceStorage as _WorkspaceStorage
 
 _workspaces = _WorkspaceStorage(_DB_FILE)
 _agents = _AgentStorage(_AGENTS_DIR)
+
+# Regex estricta de email (RFC 5321): bloquea payloads XSS como x'><script>@a.com
+_EMAIL_RE = re.compile(r"^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$")
+
+
+def _public_base_url(request: Request) -> str:
+    """URL base canónica para construir enlaces en emails.
+
+    Usa GAIA_FRONTEND_URL si está configurada (evita Host Header Injection).
+    Solo recurre a request.base_url en entornos de desarrollo sin esa variable.
+    """
+    configured = os.getenv("GAIA_FRONTEND_URL", "").rstrip("/")
+    if configured:
+        return configured
+    return str(request.base_url).rstrip("/")
 _register_limiter = RateLimiter(
     calls=REGISTER_MAX, window=REGISTER_WINDOW, key_func=_client_ip
 )
@@ -194,7 +210,7 @@ async def register(request: Request, response: Response) -> Dict[str, Any]:
     country = str(body.get("country") or "").strip() or None
     phone = str(body.get("phone") or "").strip() or None
 
-    if not email or not re.match(r"^[^\s@]+@[^\s@]+\.[^\s@]+$", email):
+    if not email or not _EMAIL_RE.match(email):
         raise HTTPException(status_code=400, detail="Email inválido")
     if len(password) < 8:
         raise HTTPException(
@@ -214,7 +230,7 @@ async def register(request: Request, response: Response) -> Dict[str, Any]:
         raise HTTPException(status_code=409, detail=str(exc))
 
     if EMAIL_VERIFY_ENABLED and verify_token:
-        base_url = str(request.base_url).rstrip("/")
+        base_url = _public_base_url(request)
         send_verification_email(email, verify_token, base_url)
         return {"ok": True, "email": email, "pending_verification": True}
 
@@ -371,11 +387,11 @@ async def forgot_password(
 ) -> Dict[str, Any]:
     body = await request.json()
     email = str(body.get("email") or "").strip().lower()
-    if not email or not re.match(r"^[^\s@]+@[^\s@]+\.[^\s@]+$", email):
+    if not email or not _EMAIL_RE.match(email):
         raise HTTPException(status_code=400, detail="Email inválido")
     token = await create_password_reset_token(email)
     if token:
-        base_url = str(request.base_url).rstrip("/")
+        base_url = _public_base_url(request)
         send_reset_email(email, token, base_url)
     # Respuesta siempre igual para no revelar si el email existe
     return {"ok": True}
@@ -418,6 +434,18 @@ async def change_password(
     if not await verify_password_async(current, user.get("password_hash", "")):
         raise HTTPException(status_code=401, detail="Contraseña actual incorrecta")
     await set_own_password(username, new_pw)
+
+    # ALTO-8: al cambiar la contraseña del admin, borrar .admin_pass del disco
+    # para que la contraseña temporal no persista indefinidamente.
+    if user.get("role") == "admin":
+        import pathlib
+        _data_dir = os.getenv("GAIA_DATA_DIR", "").strip()
+        if _data_dir:
+            try:
+                pathlib.Path(_data_dir, ".admin_pass").unlink(missing_ok=True)
+            except OSError:
+                pass
+
     return {"ok": True}
 
 
@@ -962,7 +990,7 @@ async def admin_patch_user(
         user = await get_user_by_username(username)
         email = user.get("email") if user else None
         if email:
-            base_url = str(request.base_url).rstrip("/")
+            base_url = _public_base_url(request)
             send_account_status_email(email, bool(updates["is_active"]), base_url)
     return {"ok": True}
 

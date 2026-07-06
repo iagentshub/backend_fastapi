@@ -64,9 +64,8 @@ def test_e2e_claude_export_zip_contents(auth_client):
     skill_files = [n for n in names if n.startswith(".claude/skills/") and n.endswith("SKILL.md")]
     assert len(skill_files) == 1
 
-    # Skill as importable ZIP
-    skill_zips = [n for n in names if n.startswith("skills/") and n.endswith(".zip")]
-    assert len(skill_zips) == 1
+    # No debe haber directorio raíz skills/ — todo bajo .claude/
+    assert not any(n.startswith("skills/") for n in names)
 
     # Skill content NOT injected into agent body
     agent_body = zip_read(r.content, agent_files[0])

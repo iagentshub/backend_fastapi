@@ -99,28 +99,22 @@ def test_claude_export_zip_structure(admin_client):
     agent = _create_agent(admin_client)
     r = admin_client.get(f"/api/agents/{agent['id']}/export/claude")
     names = _zip_names(r.content)
-    # Hidden path for Claude Code runtime
+    # Solo la ruta .claude/ — no debe haber directorios raíz agents/ o skills/
     hidden_agent_files = [n for n in names if n.startswith(".claude/agents/")]
     assert len(hidden_agent_files) == 1
     assert hidden_agent_files[0].endswith(".md")
-    # Visible path so users can find the agent in Finder / Explorer
-    visible_agent_files = [n for n in names if n.startswith("agents/")]
-    assert len(visible_agent_files) == 1
-    assert visible_agent_files[0].endswith(".md")
+    assert not any(n.startswith("agents/") for n in names), "No debe haber directorio raíz agents/"
 
 
 def test_claude_export_agent_frontmatter(admin_client):
     agent = _create_agent(admin_client)
     r = admin_client.get(f"/api/agents/{agent['id']}/export/claude")
     names = _zip_names(r.content)
-    # Verify both the hidden and visible copies have the correct frontmatter
-    for agent_md in [
-        next(n for n in names if n.startswith(".claude/agents/")),
-        next(n for n in names if n.startswith("agents/")),
-    ]:
-        content = _zip_read(r.content, agent_md)
-        assert "name: My Agent" in content
-        assert "You are a helpful assistant." in content
+    # Solo la copia .claude/ — frontmatter correcto
+    agent_md = next(n for n in names if n.startswith(".claude/agents/"))
+    content = _zip_read(r.content, agent_md)
+    assert "name: My Agent" in content
+    assert "You are a helpful assistant." in content
 
 
 def test_claude_export_skills_as_skill_files(admin_client):
@@ -128,15 +122,11 @@ def test_claude_export_skills_as_skill_files(admin_client):
     agent = _create_agent(admin_client, {"skills": [skill["id"]]})
     r = admin_client.get(f"/api/agents/{agent['id']}/export/claude")
     names = _zip_names(r.content)
-    # Hidden skill files for Claude Code
+    # Solo la ruta .claude/skills/ — no debe haber directorio raíz skills/
     hidden_skill_files = [n for n in names if n.startswith(".claude/skills/")]
     assert len(hidden_skill_files) == 1, "Skill must appear as a .claude/skills/ file"
     assert hidden_skill_files[0].endswith("SKILL.md"), "Skill file must be named SKILL.md"
-    # Visible skill folder + importable zip
-    visible_skill_files = [n for n in names if n.startswith("skills/") and n.endswith("SKILL.md")]
-    skill_zips = [n for n in names if n.startswith("skills/") and n.endswith(".zip")]
-    assert len(visible_skill_files) == 1, "Skill must appear as a visible skills/ file"
-    assert len(skill_zips) == 1, "Skill must also have a native .zip for import"
+    assert not any(n.startswith("skills/") for n in names), "No debe haber directorio raíz skills/"
     # Skill content must NOT be injected into the agent body
     agent_md = next(n for n in names if n.startswith(".claude/agents/"))
     agent_body = _zip_read(r.content, agent_md)
@@ -156,17 +146,13 @@ def test_github_export_agent_file(admin_client):
     agent = _create_agent(admin_client, {"agent_type": "github", "copilot_topic": "productivity"})
     r = admin_client.get(f"/api/agents/{agent['id']}/export/github")
     names = _zip_names(r.content)
-    # Hidden path for GitHub Copilot runtime
+    # Solo la ruta .github/agents/ — no debe haber directorio raíz agents/
     hidden_agent_files = [n for n in names if n.startswith(".github/agents/")]
     assert len(hidden_agent_files) == 1
     content = _zip_read(r.content, hidden_agent_files[0])
     assert "name: My Agent" in content
     assert "topic: productivity" in content
-    # Visible path so users can find the agent in Finder / Explorer
-    visible_agent_files = [n for n in names if n.startswith("agents/")]
-    assert len(visible_agent_files) == 1
-    visible_content = _zip_read(r.content, visible_agent_files[0])
-    assert "name: My Agent" in visible_content
+    assert not any(n.startswith("agents/") for n in names), "No debe haber directorio raíz agents/"
 
 
 def test_github_export_skills_as_separate_files(admin_client):
@@ -175,19 +161,14 @@ def test_github_export_skills_as_separate_files(admin_client):
     r = admin_client.get(f"/api/agents/{agent['id']}/export/github")
     names = _zip_names(r.content)
 
-    # Hidden skill for GitHub Copilot runtime
+    # Solo la ruta .github/skills/ — no debe haber directorio raíz skills/
     hidden_skill_files = [n for n in names if n.startswith(".github/skills/")]
     assert len(hidden_skill_files) == 1, "Each skill must be a .github/skills/{slug}/SKILL.md"
     assert hidden_skill_files[0].endswith("SKILL.md")
     hidden_content = _zip_read(r.content, hidden_skill_files[0])
     assert "GitHub Ops" in hidden_content
     assert "gh pr list" in hidden_content
-
-    # Visible skill copy for user inspection
-    visible_skill_files = [n for n in names if n.startswith("skills/") and n.endswith("SKILL.md")]
-    assert len(visible_skill_files) == 1, "Each skill must also appear as a visible skills/ file"
-    visible_content = _zip_read(r.content, visible_skill_files[0])
-    assert "GitHub Ops" in visible_content
+    assert not any(n.startswith("skills/") for n in names), "No debe haber directorio raíz skills/"
 
 
 def test_github_export_skills_not_in_agent_body(admin_client):
@@ -284,7 +265,8 @@ def test_claude_export_includes_knowledge(admin_client):
     agent = _create_agent(admin_client, {"knowledge": [doc["id"]]})
     r = admin_client.get(f"/api/agents/{agent['id']}/export/claude")
     names = _zip_names(r.content)
-    knowledge_files = [n for n in names if n.startswith("knowledge/")]
+    # Knowledge bajo .claude/knowledge/ para seguir la nomenclatura de Claude Code
+    knowledge_files = [n for n in names if n.startswith(".claude/knowledge/")]
     assert len(knowledge_files) == 1
     content = _zip_read(r.content, knowledge_files[0])
     assert "Doc de prueba" in content
@@ -296,7 +278,8 @@ def test_github_export_includes_knowledge(admin_client):
     agent = _create_agent(admin_client, {"knowledge": [doc["id"]]})
     r = admin_client.get(f"/api/agents/{agent['id']}/export/github")
     names = _zip_names(r.content)
-    knowledge_files = [n for n in names if n.startswith("knowledge/")]
+    # Knowledge bajo .github/knowledge/ para seguir la nomenclatura de GitHub Copilot
+    knowledge_files = [n for n in names if n.startswith(".github/knowledge/")]
     assert len(knowledge_files) == 1
 
 
@@ -327,11 +310,12 @@ def test_mcp_export_includes_knowledge(admin_client):
 
 
 def test_export_no_knowledge_no_folder(admin_client):
-    """Agents with no knowledge produce no knowledge/ folder."""
+    """Agents with no knowledge produce no knowledge folder in any path."""
     agent = _create_agent(admin_client)
     for fmt in ("claude", "github", "openai", "mcp"):
         r = admin_client.get(f"/api/agents/{agent['id']}/export/{fmt}")
-        assert not any(n.startswith("knowledge/") for n in _zip_names(r.content)), fmt
+        names = _zip_names(r.content)
+        assert not any("knowledge/" in n for n in names), fmt
 
 
 # ── Unknown format ────────────────────────────────────────────────────────────

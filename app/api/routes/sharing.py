@@ -97,11 +97,16 @@ async def list_resource_groups(
     return {"group_ids": [row[0] for row in rows]}
 
 
-async def _cascade_share_agent(agent_id: str, group_id: str, shared_by: str) -> List[str]:
+async def _cascade_share_agent(
+    agent_id: str,
+    group_id: str,
+    shared_by: str,
+    shared_by_workspace: str = "",
+) -> List[str]:
     """Al compartir un agente, comparte también sus skills y knowledge privados.
 
-    Nunca comparte conexiones (credenciales). Devuelve la lista de IDs de recursos
-    compartidos en cascada.
+    Nunca comparte conexiones (credenciales) ni recursos ajenos al usuario que
+    comparte. Devuelve la lista de IDs de recursos compartidos en cascada.
     """
     agent = await AgentStorage(_cfg.AGENTS_DIR).get(agent_id)
     if not agent:
@@ -110,12 +115,18 @@ async def _cascade_share_agent(agent_id: str, group_id: str, shared_by: str) -> 
     skill_storage = SkillStorage(_cfg.SKILLS_DIR)
     knowledge_storage = KnowledgeStorage(_cfg.DB_FILE)
 
+    # Identidades válidas del usuario que comparte (personal + workspace de equipo)
+    _owner_ids = {shared_by, shared_by_workspace} - {""}
+
     for skill_id in (agent.get("skills") or []):
         skill = await skill_storage.get_any(skill_id)
         if not skill:
             continue
         # Solo skills privadas; las públicas ya son accesibles para todos
         if skill.get("scope", "private") != "private":
+            continue
+        # ALTO-5: no exponer skills ajenas — solo las del usuario que comparte
+        if skill.get("owner_id") not in _owner_ids:
             continue
         await _shares.share_with_workspace("skill", skill_id, group_id, shared_by)
         cascaded.append(skill_id)
@@ -163,7 +174,7 @@ async def share_resource_with_workspace(
     # Cascade para agentes: compartir también skills y knowledge
     cascaded: List[str] = []
     if resource_type == "agent":
-        cascaded = await _cascade_share_agent(resource_id, group_id, ctx.user)
+        cascaded = await _cascade_share_agent(resource_id, group_id, ctx.user, ctx.workspace_id)
 
     return {"ok": True, "cascaded": cascaded}
 

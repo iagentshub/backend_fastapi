@@ -121,6 +121,25 @@ async def get_skill(
     sk = await _storage.get(scope, skill_id)
     if not sk:
         raise HTTPException(status_code=404, detail="Skill no encontrada")
+
+    # Control de acceso: skills privadas solo para su propietario, admin o
+    # miembros de un workspace al que la skill está compartida.
+    if scope == "private" and not is_guest(user):
+        user_ws = ctx.workspace_id
+        owner_id = sk.get("owner_id")
+        if owner_id not in (user, user_ws) and await get_user_role(user) != "admin":
+            user_groups = await _ws.list_for_user(user)
+            allowed = False
+            if user_groups:
+                group_ids = [g["id"] for g in user_groups]
+                for gid in group_ids:
+                    shared = await _shares.get_workspace_shared_resource_ids(gid, "skill")
+                    if skill_id in shared:
+                        allowed = True
+                        break
+            if not allowed:
+                raise HTTPException(status_code=403, detail="No tienes acceso a esta skill")
+
     return sk
 
 
