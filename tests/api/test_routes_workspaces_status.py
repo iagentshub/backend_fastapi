@@ -144,7 +144,10 @@ def test_shared_connection_blocked_when_source_workspace_disabled(admin_client):
     }).json()
 
     _set_cookie(admin_client, "wss_owner_f", workspace_id=ws_target["id"])
-    r = admin_client.post(f"/api/sharing/connection/{conn['id']}")
+    r = admin_client.post(
+        f"/api/sharing/connection/{conn['id']}",
+        json={"group_id": ws_target["id"]},
+    )
     assert r.status_code == 200
 
     _set_cookie(admin_client, "wss_member_f", workspace_id=ws_target["id"])
@@ -205,7 +208,10 @@ def test_delete_workspace_does_not_touch_shared_original(admin_client):
     ws = admin_client.post("/api/workspaces", json={"name": "WS Linker H"}).json()
 
     _set_cookie(admin_client, "wss_h", workspace_id=ws["id"])
-    r = admin_client.post(f"/api/sharing/agent/{original['id']}")
+    r = admin_client.post(
+        f"/api/sharing/agent/{original['id']}",
+        json={"group_id": ws["id"]},
+    )
     assert r.status_code == 200
 
     _set_cookie(admin_client, "testadmin")

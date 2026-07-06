@@ -79,6 +79,12 @@ def patch_data_dir(tmp_data_dir, tmp_path, monkeypatch):
     monkeypatch.setattr(memory_routes, "_storage", isolated_memory)
     monkeypatch.setattr(agents_routes, "_memory", isolated_memory)
 
+    # Patch el binding local de AGENTS_DIR en agents.py — se importa a nivel
+    # de módulo con "from app.config.data import AGENTS_DIR", por lo que
+    # parchear solo cfg.AGENTS_DIR no es suficiente para que _apply_locale
+    # encuentre los archivos de locale del test.
+    monkeypatch.setattr(agents_routes, "AGENTS_DIR", tmp_data_dir / "agents")
+
     yield
 
     # Reset DB state after test
@@ -118,10 +124,49 @@ def admin_client(client, patch_data_dir):
     return client
 
 
+@pytest.fixture(autouse=True)
+def clear_all_rate_limiters():
+    """Limpia el estado de TODOS los rate limiters antes y después de cada test.
+
+    Los limiters son singletons a nivel de módulo y comparten IP entre tests
+    (TestClient siempre usa 'testclient' como peer). Sin limpiar, el 6.º test
+    que llama a /api/auth/guest recibe 429 porque _guest_limiter (límite=5) ya
+    está saturado.
+    """
+    def _clear():
+        try:
+            from app.api.routes.auth import (
+                _forgot_limiter, _guest_limiter, _login_limiter,
+                _register_limiter, _reset_limiter,
+            )
+            for lim in (_register_limiter, _login_limiter, _forgot_limiter,
+                        _reset_limiter, _guest_limiter):
+                lim._data.clear()
+        except ImportError:
+            pass
+        try:
+            from app.api.routes.agents import _chat_limiter
+            _chat_limiter._data.clear()
+        except ImportError:
+            pass
+        try:
+            from app.api.routes.connections import _test_all_limiter, _test_limiter
+            _test_limiter._data.clear()
+            _test_all_limiter._data.clear()
+        except ImportError:
+            pass
+        try:
+            from app.api.routes.billing import _subscribe_limiter
+            _subscribe_limiter._data.clear()
+        except ImportError:
+            pass
+
+    _clear()
+    yield
+    _clear()
+
+
 @pytest.fixture()
 def reset_rate_limiter():
-    """Clear rate limiters between tests to avoid interference."""
-    from app.api.routes.auth import _register_limiter
-    _register_limiter._data.clear()
+    """Alias de compatibilidad — clear_all_rate_limiters ya es autouse."""
     yield
-    _register_limiter._data.clear()

@@ -7,6 +7,7 @@ import io
 import json
 import re
 import zipfile
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
@@ -14,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from app.api.routes.auth import WorkspaceContext, require_workspace
+from app.api.routes.auth import WorkspaceContext, require_auth, require_workspace
 from app.auth.auth import get_user_role
 from app.config.data import AGENTS_DIR, DB_FILE, MEMORY_DIR, SKILLS_DIR
 from app.config.session import RATE_CHAT_CALLS, RATE_CHAT_WINDOW
@@ -24,6 +25,7 @@ from app.models.agent import Agent
 from app.services.chat import auto_update_memory, stream_chat
 from app.storage.chat import ChatStorage
 
+from app.storage.db import IS_PG, PH, open_db
 from app.storage.guest import (
     GuestKnowledgeAdapter,
     GuestMemoryAdapter,
@@ -56,6 +58,24 @@ _chat_limiter = RateLimiter(calls=RATE_CHAT_CALLS, window=RATE_CHAT_WINDOW)
 
 class _AgentFolderMove(BaseModel):
     folder_id: Optional[str] = None
+
+
+class _AgentPreferenceBody(BaseModel):
+    connection_id: Optional[str] = None
+
+
+def _compute_origin(agent: Dict[str, Any], current_user: str) -> str:
+    """Compute origin_type for an agent relative to the current user.
+
+    - "linked"  → agent arrived via workspace share (_shared=True)
+    - "fork"    → agent is a copy of another resource (fork_of_id or fork_of_user set)
+    - "owner"   → user created this agent
+    """
+    if agent.get("_shared") is True:
+        return "linked"
+    if agent.get("fork_of_id") or agent.get("fork_of_user"):
+        return "fork"
+    return "owner"
 
 
 async def _conn_owner(user: str) -> str | None:
@@ -120,7 +140,12 @@ async def list_agents(
             items = items[offset:]
         if limit:
             items = items[:limit]
-        return [_apply_locale(a, locale) for a in items]
+        result: List[Dict[str, Any]] = []
+        for a in items:
+            a = _apply_locale(a, locale)
+            a["origin_type"] = _compute_origin(a, user)
+            result.append(a)
+        return result
     agents = await _agents.list(scope)
     role = await get_user_role(user)
     if group_id is not None:
@@ -135,8 +160,13 @@ async def list_agents(
             a["_shared"] = True
             a["_group_id"] = group_id
     elif role not in ("admin", "guest"):
-        # Vista por defecto: propios + compartidos desde todos los grupos del usuario
-        own = [a for a in agents if a.get("owner_id") == user]
+        # Vista por defecto: propios + recursos del workspace activo + compartidos
+        # En workspace de equipo (workspace_id != user), owner_id puede ser el UUID del workspace.
+        workspace_id = ctx.workspace_id
+        own = [
+            a for a in agents
+            if a.get("owner_id") == user or a.get("owner_id") == workspace_id
+        ]
         own_ids = {a["id"] for a in own}
         user_groups = await _ws.list_for_user(user)
 
@@ -180,7 +210,12 @@ async def list_agents(
         agents = agents[offset:]
     if limit:
         agents = agents[:limit]
-    return [_apply_locale(a, locale) for a in agents]
+    enriched: List[Dict[str, Any]] = []
+    for a in agents:
+        a = _apply_locale(a, locale)
+        a["origin_type"] = _compute_origin(a, user)
+        enriched.append(a)
+    return enriched
 
 
 @router.post("")
@@ -202,6 +237,21 @@ async def save_agent(
         s.agents = [a for a in s.agents if a.get("id") != agent["id"]]
         s.agents.append(agent)
         return agent
+    # Restrict editing to owner: if payload has an existing ID owned by someone else, block it
+    agent_id_in_payload = payload.get("id")
+    if agent_id_in_payload:
+        existing = await _agents.get(agent_id_in_payload)
+        if (
+            existing
+            and existing.get("owner_id") is not None
+            and existing.get("owner_id") != workspace_id
+        ):
+            role = await get_user_role(user)
+            if role != "admin":
+                raise HTTPException(
+                    status_code=403,
+                    detail="Solo el propietario puede editar este agente",
+                )
     try:
         return await _agents.save(payload, scope, owner_id=workspace_id)
     except ValueError as e:
@@ -220,11 +270,15 @@ async def get_agent(
         ) or await _agents.get(agent_id, scope="public")
         if not a:
             raise HTTPException(status_code=404, detail="Agente no encontrado")
-        return _apply_locale(a, get_locale())
+        a = _apply_locale(a, get_locale())
+        a["origin_type"] = _compute_origin(a, user)
+        return a
     a = await _agents.get(agent_id)
     if not a:
         raise HTTPException(status_code=404, detail="Agente no encontrado")
-    return _apply_locale(a, get_locale())
+    a = _apply_locale(a, get_locale())
+    a["origin_type"] = _compute_origin(a, user)
+    return a
 
 
 @router.delete("/{agent_id}")
@@ -264,6 +318,48 @@ async def move_agent_folder(
         )
     if not await _agents.move_folder(agent_id, body.folder_id):
         raise HTTPException(status_code=404, detail="Agente no encontrado")
+    return {"ok": True}
+
+
+@router.get("/{agent_id}/preferences")
+async def get_agent_preferences(
+    agent_id: str,
+    user: str = Depends(require_auth),
+) -> Dict[str, Any]:
+    """Return the saved connection preference for this user/agent pair."""
+    async with open_db() as conn:
+        row = await conn.fetchone(
+            f"SELECT connection_id FROM user_agent_preferences "
+            f"WHERE username={PH} AND agent_id={PH}",
+            (user, agent_id),
+        )
+    return {"connection_id": row["connection_id"] if row else None}
+
+
+@router.put("/{agent_id}/preferences")
+async def put_agent_preferences(
+    agent_id: str,
+    body: _AgentPreferenceBody,
+    user: str = Depends(require_auth),
+) -> Dict[str, Any]:
+    """Upsert a connection preference for this user/agent pair."""
+    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+    async with open_db() as conn:
+        if IS_PG:
+            await conn.execute(
+                f"INSERT INTO user_agent_preferences (username, agent_id, connection_id, updated_at) "
+                f"VALUES ({PH}, {PH}, {PH}, {PH}) "
+                f"ON CONFLICT (username, agent_id) DO UPDATE SET "
+                f"connection_id=EXCLUDED.connection_id, updated_at=EXCLUDED.updated_at",
+                (user, agent_id, body.connection_id, now_str),
+            )
+        else:
+            await conn.execute(
+                f"INSERT OR REPLACE INTO user_agent_preferences "
+                f"(username, agent_id, connection_id, updated_at) VALUES ({PH}, {PH}, {PH}, {PH})",
+                (user, agent_id, body.connection_id, now_str),
+            )
+        await conn.commit()
     return {"ok": True}
 
 
@@ -476,6 +572,18 @@ async def chat(
 
     # Ollama virtual connections: "base_id::model_name"
     raw_conn_id = a.get("connection_id") or ""
+
+    # Override connection for non-owners based on their saved preferences
+    if not is_guest(user) and a.get("owner_id") != user:
+        async with open_db() as _pref_conn:
+            _pref_row = await _pref_conn.fetchone(
+                f"SELECT connection_id FROM user_agent_preferences "
+                f"WHERE username={PH} AND agent_id={PH}",
+                (user, agent_id),
+            )
+        if _pref_row and _pref_row["connection_id"]:
+            raw_conn_id = _pref_row["connection_id"]
+
     if "::" in raw_conn_id:
         base_conn_id, ollama_model = raw_conn_id.split("::", 1)
     else:

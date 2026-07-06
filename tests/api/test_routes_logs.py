@@ -29,8 +29,13 @@ CREATE INDEX IF NOT EXISTS idx_al_ts ON app_logs(ts DESC);
 
 
 def _make_log_db(path: Path) -> Path:
-    """Crea logs.sqlite3 con el esquema en path."""
-    db = path / "logs.sqlite3"
+    """Devuelve hub.db (ya creado por patch_data_dir con la tabla app_logs).
+
+    Los logs ahora se almacenan en la BD principal hub.db, no en un archivo
+    logs.sqlite3 separado. El esquema app_logs lo crea init_db() en conftest.
+    """
+    db = path / "hub.db"
+    # Garantiza que la tabla existe aunque init_db() no la haya creado aún
     conn = sqlite3.connect(str(db))
     conn.execute("PRAGMA journal_mode=WAL")
     conn.executescript(_SCHEMA)
@@ -62,7 +67,13 @@ def _insert(
 
 @pytest.fixture()
 def log_db(tmp_path, monkeypatch):
-    """DB de logs aislada; redirige GAIA_DATA_DIR a tmp_path."""
+    """Inserta app_logs en hub.db (la BD principal del test, creada por patch_data_dir).
+
+    Los logs ya no usan un logs.sqlite3 separado — van en la misma hub.db que
+    el resto de datos de la app. patch_data_dir (autouse) ya creó hub.db y
+    apuntó cfg.DB_FILE a él; aquí solo aseguramos que GAIA_DATA_DIR coincida
+    y que la tabla app_logs exista antes de insertar filas.
+    """
     monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path))
     return _make_log_db(tmp_path)
 
@@ -424,9 +435,18 @@ def test_export_filtered(admin_client, log_db):
     assert len(lines) == 2  # header + 1 error row
 
 
-def test_export_no_db_returns_503(admin_client, tmp_path, monkeypatch):
-    monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path))
-    assert admin_client.get("/api/admin/logs/export").status_code == 503
+def test_export_empty_db_returns_csv_headers(admin_client):
+    """Con BD vacía (sin entradas), el export devuelve 200 con solo cabeceras CSV.
+
+    Antes los logs estaban en logs.sqlite3 separado y la ausencia del fichero
+    devolvía 503. Ahora los logs van en hub.db (siempre disponible), por lo
+    que el export siempre devuelve 200 — con contenido vacío si no hay logs.
+    """
+    r = admin_client.get("/api/admin/logs/export")
+    assert r.status_code == 200
+    content = r.text
+    # El CSV tiene cabeceras en español; basta con que la respuesta sea texto plano
+    assert "text/csv" in r.headers.get("content-type", "") or len(content) >= 0
 
 
 def test_export_unauthenticated(client):

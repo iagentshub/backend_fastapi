@@ -247,6 +247,13 @@ CREATE INDEX IF NOT EXISTS idx_al_level    ON app_logs(level);
 CREATE INDEX IF NOT EXISTS idx_al_username ON app_logs(username);
 CREATE INDEX IF NOT EXISTS idx_al_ip       ON app_logs(ip);
 CREATE INDEX IF NOT EXISTS idx_al_source   ON app_logs(source);
+CREATE TABLE IF NOT EXISTS user_agent_preferences (
+    username      TEXT NOT NULL,
+    agent_id      TEXT NOT NULL,
+    connection_id TEXT,
+    updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+    PRIMARY KEY (username, agent_id)
+);
 """
 
 _SCHEMA_PG = """
@@ -467,6 +474,13 @@ CREATE INDEX IF NOT EXISTS idx_al_level    ON app_logs(level);
 CREATE INDEX IF NOT EXISTS idx_al_username ON app_logs(username);
 CREATE INDEX IF NOT EXISTS idx_al_ip       ON app_logs(ip);
 CREATE INDEX IF NOT EXISTS idx_al_source   ON app_logs(source);
+CREATE TABLE IF NOT EXISTS user_agent_preferences (
+    username      TEXT NOT NULL,
+    agent_id      TEXT NOT NULL,
+    connection_id TEXT,
+    updated_at    TEXT NOT NULL DEFAULT (NOW()::TEXT),
+    PRIMARY KEY (username, agent_id)
+);
 """
 
 # ── SQLite migrations (async) ──────────────────────────────────────────────────
@@ -925,6 +939,20 @@ async def _migrate_sqlite(conn: Any) -> None:
             CREATE INDEX IF NOT EXISTS idx_al_source   ON app_logs(source);
         """)
 
+    # 17. Preferencias de conexión por usuario y agente
+    cur = await conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    existing_tables = {row[0] for row in await cur.fetchall()}
+    if "user_agent_preferences" not in existing_tables:
+        await conn.executescript("""
+            CREATE TABLE IF NOT EXISTS user_agent_preferences (
+                username      TEXT NOT NULL,
+                agent_id      TEXT NOT NULL,
+                connection_id TEXT,
+                updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
+                PRIMARY KEY (username, agent_id)
+            );
+        """)
+
 
 async def _migrate_users_json_sqlite(conn: Any) -> None:
     """Import users.json into the users table if it exists and the table is empty."""
@@ -1321,6 +1349,16 @@ async def _migrate_pg(conn: Any) -> None:
     )
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_al_ip       ON app_logs(ip)")
     await conn.execute("CREATE INDEX IF NOT EXISTS idx_al_source   ON app_logs(source)")
+    # 17. Preferencias de conexión por usuario y agente
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS user_agent_preferences (
+            username      TEXT NOT NULL,
+            agent_id      TEXT NOT NULL,
+            connection_id TEXT,
+            updated_at    TEXT NOT NULL DEFAULT (NOW()::TEXT),
+            PRIMARY KEY (username, agent_id)
+        )
+    """)
 
 
 async def _migrate_users_json_pg(conn: Any) -> None:

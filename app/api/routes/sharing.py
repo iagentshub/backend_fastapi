@@ -143,8 +143,15 @@ async def share_resource_with_workspace(
     Las conexiones NUNCA se comparten en cascada.
     """
     _assert_valid_type(resource_type)
-    body = await request.json()
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
     group_id = str(body.get("group_id") or "").strip()
+    if not group_id:
+        # Inferir del workspace activo si es un workspace de equipo (no personal)
+        if ctx.workspace_id and ctx.workspace_id != ctx.user:
+            group_id = ctx.workspace_id
     if not group_id:
         raise HTTPException(status_code=400, detail="group_id es obligatorio")
     role = await get_user_role(ctx.user)
@@ -181,6 +188,10 @@ async def unshare_resource_from_workspace(
             group_id = str(body.get("group_id") or "").strip()
         except Exception:
             group_id = ""
+    if not group_id:
+        # Inferir del workspace activo si es un workspace de equipo (no personal)
+        if ctx.workspace_id and ctx.workspace_id != ctx.user:
+            group_id = ctx.workspace_id
     if not group_id:
         raise HTTPException(status_code=400, detail="group_id es obligatorio")
 

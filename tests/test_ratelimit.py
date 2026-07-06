@@ -35,6 +35,13 @@ def test_blocks_over_limit():
 
 
 def test_different_ips_independent(monkeypatch):
+    # TestClient envía peticiones con peer="testclient". client_ip() solo lee
+    # X-Forwarded-For si el peer pertenece a TRUSTED_PROXIES. Parcheamos el
+    # atributo local de net.py para que "testclient" sea considerado proxy
+    # confiable y así poder distinguir las dos IPs del test.
+    import app.utils.net as net_mod
+    monkeypatch.setattr(net_mod, "TRUSTED_PROXIES", frozenset({"testclient"}))
+
     app = FastAPI()
     limiter = RateLimiter(calls=1, window=60)
     call_count = {"n": 0}

@@ -235,7 +235,10 @@ def test_ollama_models_returns_models_when_available(client):
     """Cuando Ollama responde, devuelve la lista de modelos."""
     _setup_user(client, "ollamauser2")
     fake_tags = {"models": [{"name": "llama3:latest"}, {"name": "mistral:7b"}]}
-    with patch("app.connections.ollama.OllamaProvider._fetch_tags", return_value=fake_tags):
+    # assert_safe_url bloquea localhost (anti-SSRF); en tests lo deshabilitamos
+    # para poder ejercer el path feliz sin necesitar un servidor Ollama real.
+    with patch("app.api.routes.connections.assert_safe_url"), \
+         patch("app.connections.ollama.OllamaProvider._fetch_tags", return_value=fake_tags):
         r = client.post(
             "/api/connections/ollama-models",
             json={"host": "http://localhost:11434"},

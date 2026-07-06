@@ -9,16 +9,18 @@ from .base import BaseProvider, FieldDef, TestResult, register
 
 # ── Campos comunes a todos los motores ────────────────────────────────────────
 
-_COMMON_AUTH = [
-    FieldDef("host", "Host", "text", "localhost", required=True),
-    FieldDef("port", "Puerto", "number", default="", required=True),
-    FieldDef("dbname", "Base de datos", "text", "", required=True),
-    FieldDef("username", "Usuario", "text", "", required=True),
-    FieldDef("password", "Contraseña", "password", ""),
-    FieldDef(
-        "readonly", "Solo lectura (prohibir INSERT/UPDATE/DELETE/DDL)", "checkbox"
-    ),
-]
+def _common_auth(default_port: str) -> list:
+    """Devuelve los campos estándar con el puerto por defecto del motor."""
+    return [
+        FieldDef("host", "Host", "text", "localhost", required=True),
+        FieldDef("port", "Puerto", "number", default=default_port, required=True),
+        FieldDef("dbname", "Base de datos", "text", "", required=True),
+        FieldDef("username", "Usuario", "text", "", required=True),
+        FieldDef("password", "Contraseña", "password", ""),
+        FieldDef(
+            "readonly", "Solo lectura (prohibir INSERT/UPDATE/DELETE/DDL)", "checkbox"
+        ),
+    ]
 
 
 def _tcp_test(config: Dict[str, Any], default_port: int) -> TestResult:
@@ -47,7 +49,7 @@ class PostgreSQLProvider(BaseProvider):
     category = "database"
     label = "PostgreSQL"
     icon = "🐘"
-    fields = _COMMON_AUTH + [
+    fields = _common_auth("5432") + [
         FieldDef("ssl", "Conexión SSL", "checkbox"),
     ]
 
@@ -65,9 +67,7 @@ class MySQLProvider(BaseProvider):
     category = "database"
     label = "MySQL / MariaDB"
     icon = "🐬"
-    fields = _COMMON_AUTH[
-        :
-    ]  # sin SSL por defecto, igual que Postgres pero sin ese campo
+    fields = _common_auth("3306")  # sin SSL por defecto, igual que Postgres pero sin ese campo
 
     @classmethod
     def test(cls, config: Dict[str, Any]) -> TestResult:

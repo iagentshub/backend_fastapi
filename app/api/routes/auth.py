@@ -16,6 +16,7 @@ from app.auth.auth import (
     create_password_reset_token,
     create_token,
     decode_token,
+    decode_workspace_token,
     delete_user,
     get_owned_workspaces,
     get_user_by_email,
@@ -86,7 +87,15 @@ _active_cache: dict[str, tuple[bool, float]] = {}  # {username: (is_active, expi
 
 
 async def _is_user_active(username: str) -> bool:
-    """Devuelve True si la cuenta está activa. Usa caché con TTL de 60 s."""
+    """Devuelve True si la cuenta está activa. Usa caché con TTL de 60 s.
+
+    Los usuarios guest (prefix "guest:") son siempre activos — no tienen
+    fila en la tabla users, se validan por sesión en memoria.
+    """
+    from app.storage.guest import is_guest as _is_guest_fn
+    if _is_guest_fn(username):
+        return True
+
     now = time.monotonic()
     cached = _active_cache.get(username)
     if cached and now < cached[1]:
@@ -136,17 +145,28 @@ async def require_auth(ga_token: Optional[str] = Cookie(default=None)) -> str:
 async def require_workspace(
     ga_token: Optional[str] = Cookie(default=None),
 ) -> WorkspaceContext:
-    """Dependency: validates session token and returns WorkspaceContext with personal workspace.
+    """Dependency: validates session token and returns WorkspaceContext.
 
-    Todos los recursos se crean siempre en el espacio personal (workspace_id = username).
-    Los grupos de trabajo solo determinan qué recursos compartidos son visibles, no dónde
-    se crean los nuevos recursos.
+    Lee el workspace_id (wid) del JWT. Si el workspace está activo y el
+    usuario es miembro, lo usa como contexto. En caso contrario cae de
+    vuelta al workspace personal (workspace_id = username).
     """
     if not ga_token:
         raise HTTPException(status_code=401, detail="No autenticado")
-    username = decode_token(ga_token)
+    username, wid = decode_workspace_token(ga_token)
     if not username:
         raise HTTPException(status_code=401, detail="Token inválido o expirado")
+    from app.storage.guest import is_guest as _is_guest
+    if not _is_guest(username) and not await _is_user_active(username):
+        raise HTTPException(status_code=403, detail="Cuenta desactivada")
+
+    # Si el wid es distinto del username → validar workspace de equipo
+    if wid and wid != username:
+        ws = await _workspaces.get(wid)
+        if ws and ws.get("status", "active") == "active":
+            if await _workspaces.is_member(wid, username):
+                return WorkspaceContext(user=username, workspace_id=wid)
+        # Workspace desactivado, eliminado o no miembro → espacio personal
     return WorkspaceContext(user=username, workspace_id=username)
 
 

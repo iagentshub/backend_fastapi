@@ -72,13 +72,17 @@ async def list_skills(
             sk["_shared"] = True
             sk["_group_id"] = group_id
     elif role != "admin":
-            # Skills propias (personales) + públicas + legacy sin owner + shares de todos los grupos
+            # Skills propias (personales o del workspace activo) + públicas + legacy sin owner
+            # + shares de todos los grupos del usuario.
+            # En workspace de equipo (workspace_id != user), owner_id puede ser el UUID del workspace.
+            workspace_id = ctx.workspace_id
             items = [
                 sk
                 for sk in items
                 if sk.get("scope") == "public"
                 or sk.get("owner_id") is None
                 or sk.get("owner_id") == user
+                or sk.get("owner_id") == workspace_id
             ]
             own_ids = {sk["id"] for sk in items}
             user_groups = await _ws.list_for_user(user)

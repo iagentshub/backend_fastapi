@@ -305,4 +305,4 @@ def test_log_db_path_sin_env(monkeypatch):
 def test_log_db_path_con_env(monkeypatch, tmp_path):
     monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path))
     p = flog_mod.log_db_path()
-    assert p == tmp_path / "logs.sqlite3"
+    assert p == tmp_path / "hub.db"

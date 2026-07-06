@@ -3,10 +3,10 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from app.api.routes.auth import WorkspaceContext, require_auth, require_workspace
-from app.auth.auth import get_user_by_username, get_user_role
+from app.auth.auth import create_token, get_user_by_username, get_user_role
 from app.config.data import DB_FILE
 from app.storage.guest import is_guest
 from app.storage.workspaces import WorkspaceStorage
@@ -27,10 +27,18 @@ def _assert_not_guest(user: str) -> None:
 async def list_workspaces(ctx: WorkspaceContext = Depends(require_workspace)) -> List[Dict[str, Any]]:
     _assert_not_guest(ctx.user)
     team_workspaces = await _ws.list_for_user(ctx.user)
-    return [
-        {**ws, "type": "team", "active": False}
+    personal_ws = {
+        "id": ctx.user,
+        "name": "Personal",
+        "type": "personal",
+        "role": "owner",
+        "active": ctx.workspace_id == ctx.user,
+    }
+    team_list = [
+        {**ws, "type": "team", "active": ws["id"] == ctx.workspace_id}
         for ws in team_workspaces
     ]
+    return [personal_ws] + team_list
 
 
 # ── Crear workspace de equipo ──────────────────────────────────────────────────
@@ -292,3 +300,39 @@ async def transfer_workspace_ownership(
     if not await _ws.transfer_ownership(workspace_id, new_owner):
         raise HTTPException(status_code=400, detail="El usuario no es miembro de este workspace")
     return {"ok": True}
+
+
+# ── Cambio de workspace activo ─────────────────────────────────────────────────
+
+@router.post("/switch/{workspace_id}")
+async def switch_workspace(
+    workspace_id: str,
+    response: Response,
+    username: str = Depends(require_auth),
+) -> Dict[str, Any]:
+    """Cambia el workspace activo del usuario y emite un nuevo token.
+
+    Devuelve 403 si el workspace está desactivado o el usuario no es miembro.
+    """
+    _assert_not_guest(username)
+
+    # Cambio al workspace personal propio: siempre permitido
+    if workspace_id == username:
+        token = create_token(username, workspace_id=username)
+        response.set_cookie(
+            "ga_token", token, httponly=True, samesite="lax", max_age=604_800
+        )
+        return {"ok": True, "workspace_id": workspace_id}
+
+    # Workspace de equipo: debe estar activo y el usuario debe ser miembro
+    ws = await _ws.get(workspace_id)
+    if not ws or ws.get("status", "active") != "active":
+        raise HTTPException(status_code=403, detail="Workspace no disponible o desactivado")
+    if not await _ws.is_member(workspace_id, username):
+        raise HTTPException(status_code=403, detail="No eres miembro de este workspace")
+    token = create_token(username, workspace_id=workspace_id)
+    response.set_cookie(
+        "ga_token", token, httponly=True, samesite="lax", max_age=604_800
+    )
+    return {"ok": True, "workspace_id": workspace_id}
+
