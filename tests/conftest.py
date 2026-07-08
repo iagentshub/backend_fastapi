@@ -113,6 +113,10 @@ def patch_data_dir(tmp_data_dir, tmp_path, monkeypatch):
 
     guest_mod._sessions.clear()
 
+    # Forzar SECURE_COOKIES=False: con Secure=True las cookies no se almacenan
+    # en el TestClient (HTTP), lo que provoca 401 en todas las llamadas siguientes.
+    monkeypatch.setattr(auth_routes, "SECURE_COOKIES", False)
+
     yield
 
     # Reset DB state after test
