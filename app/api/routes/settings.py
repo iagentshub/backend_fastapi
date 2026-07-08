@@ -176,6 +176,10 @@ _PLATFORM_DEFAULTS: dict = {
     "guest_enabled": True,
     "email_verify": False,
     "log_retention_days": 30,
+    # Si está activo, "/" muestra una landing de presentación del proyecto en
+    # vez de redirigir directo a /login/. Pensado para el despliegue SaaS
+    # público; en instalaciones self-hosted lo natural es dejarlo desactivado.
+    "landing_enabled": False,
 }
 
 _VALID_REGISTRATION = {"open", "closed"}
@@ -218,6 +222,7 @@ class PlatformConfigUpdate(BaseModel):
     guest_enabled: Optional[bool] = None
     email_verify: Optional[bool] = None
     log_retention_days: Optional[int] = None
+    landing_enabled: Optional[bool] = None
 
 
 @router.get("/platform/public")
@@ -229,6 +234,7 @@ async def get_platform_config_public() -> dict:
         "billing_enabled": cfg.get("billing_enabled", False),
         "guest_enabled": cfg.get("guest_enabled", True),
         "registration": cfg.get("registration", "open"),
+        "landing_enabled": cfg.get("landing_enabled", False),
     }
 
 
