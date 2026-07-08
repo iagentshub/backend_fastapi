@@ -95,11 +95,23 @@ def patch_data_dir(tmp_data_dir, tmp_path, monkeypatch):
 
     # Forzar REGISTRATION_MODE="open" en los tests para que client.post("/api/auth/register")
     # funcione independientemente del entorno de producción (GAIA_REGISTRATION=closed/invite).
-    # El binding es local en auth.py (from app.config.session import REGISTRATION_MODE),
-    # por lo que hay que parchearlo directamente en el módulo de rutas.
     import app.api.routes.auth as auth_routes
 
     monkeypatch.setattr(auth_routes, "REGISTRATION_MODE", "open")
+
+    # Forzar EMAIL_VERIFY_ENABLED=False para que el registro no quede en "pending"
+    # cuando GAIA_EMAIL_VERIFY=true en producción. Los tests que necesiten True
+    # lo parchean ellos mismos con unittest.mock.patch.
+    monkeypatch.setattr(auth_routes, "EMAIL_VERIFY_ENABLED", False)
+    import app.auth.auth as auth_mod
+
+    monkeypatch.setattr(auth_mod, "EMAIL_VERIFY_ENABLED", False)
+
+    # Limpiar sesiones guest antes de cada test para evitar que _sessions se
+    # acumule y supere MAX_SESSIONS (que en producción puede ser inferior a 200).
+    import app.storage.guest as guest_mod
+
+    guest_mod._sessions.clear()
 
     yield
 
