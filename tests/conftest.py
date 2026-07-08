@@ -1,4 +1,5 @@
 """Shared test fixtures."""
+
 from __future__ import annotations
 
 import asyncio
@@ -49,9 +50,12 @@ def patch_data_dir(tmp_data_dir, tmp_path, monkeypatch):
 
     # Patch config module attrs — _cfg.DB_FILE is read dynamically by app lifespan
     import app.config.data as cfg
+
     monkeypatch.setattr(cfg, "DATA_DIR", tmp_data_dir)
     monkeypatch.setattr(cfg, "DB_FILE", db_file)
-    monkeypatch.setattr(cfg, "CONN_FILE", tmp_data_dir / "connections" / "connections.json")
+    monkeypatch.setattr(
+        cfg, "CONN_FILE", tmp_data_dir / "connections" / "connections.json"
+    )
     monkeypatch.setattr(cfg, "AGENTS_DIR", tmp_data_dir / "agents")
     monkeypatch.setattr(cfg, "SKILLS_DIR", tmp_data_dir / "skills")
     monkeypatch.setattr(cfg, "MEMORY_DIR", memory_dir)
@@ -59,6 +63,7 @@ def patch_data_dir(tmp_data_dir, tmp_path, monkeypatch):
 
     # Force SQLite mode and initialize the per-test DB BEFORE importing routes
     import app.storage.db as db_mod
+
     monkeypatch.setattr(db_mod, "IS_PG", False)
     monkeypatch.setattr(db_mod, "PH", "?")
 
@@ -69,13 +74,16 @@ def patch_data_dir(tmp_data_dir, tmp_path, monkeypatch):
 
     # Patch auth module paths
     import app.auth.auth as auth_mod
+
     monkeypatch.setattr(auth_mod, "SETTINGS_FILE", tmp_data_dir / "settings.json")
 
     # Patch MemoryStorage live instances
     from app.storage.storage import MemoryStorage
+
     isolated_memory = MemoryStorage(memory_dir)
     import app.api.routes.memory as memory_routes
     import app.api.routes.agents as agents_routes
+
     monkeypatch.setattr(memory_routes, "_storage", isolated_memory)
     monkeypatch.setattr(agents_routes, "_memory", isolated_memory)
 
@@ -84,6 +92,14 @@ def patch_data_dir(tmp_data_dir, tmp_path, monkeypatch):
     # parchear solo cfg.AGENTS_DIR no es suficiente para que _apply_locale
     # encuentre los archivos de locale del test.
     monkeypatch.setattr(agents_routes, "AGENTS_DIR", tmp_data_dir / "agents")
+
+    # Forzar REGISTRATION_MODE="open" en los tests para que client.post("/api/auth/register")
+    # funcione independientemente del entorno de producción (GAIA_REGISTRATION=closed/invite).
+    # El binding es local en auth.py (from app.config.session import REGISTRATION_MODE),
+    # por lo que hay que parchearlo directamente en el módulo de rutas.
+    import app.api.routes.auth as auth_routes
+
+    monkeypatch.setattr(auth_routes, "REGISTRATION_MODE", "open")
 
     yield
 
@@ -97,6 +113,7 @@ def patch_data_dir(tmp_data_dir, tmp_path, monkeypatch):
 def client(patch_data_dir):
     """TestClient for FastAPI with isolated data."""
     from app.api.app import create_app
+
     app = create_app()
     with TestClient(app, raise_server_exceptions=True) as c:
         yield c
@@ -133,30 +150,43 @@ def clear_all_rate_limiters():
     que llama a /api/auth/guest recibe 429 porque _guest_limiter (límite=5) ya
     está saturado.
     """
+
     def _clear():
         try:
             from app.api.routes.auth import (
-                _forgot_limiter, _guest_limiter, _login_limiter,
-                _register_limiter, _reset_limiter,
+                _forgot_limiter,
+                _guest_limiter,
+                _login_limiter,
+                _register_limiter,
+                _reset_limiter,
             )
-            for lim in (_register_limiter, _login_limiter, _forgot_limiter,
-                        _reset_limiter, _guest_limiter):
+
+            for lim in (
+                _register_limiter,
+                _login_limiter,
+                _forgot_limiter,
+                _reset_limiter,
+                _guest_limiter,
+            ):
                 lim._data.clear()
         except ImportError:
             pass
         try:
             from app.api.routes.agents import _chat_limiter
+
             _chat_limiter._data.clear()
         except ImportError:
             pass
         try:
             from app.api.routes.connections import _test_all_limiter, _test_limiter
+
             _test_limiter._data.clear()
             _test_all_limiter._data.clear()
         except ImportError:
             pass
         try:
             from app.api.routes.billing import _subscribe_limiter
+
             _subscribe_limiter._data.clear()
         except ImportError:
             pass
