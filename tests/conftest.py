@@ -107,11 +107,14 @@ def patch_data_dir(tmp_data_dir, tmp_path, monkeypatch):
 
     monkeypatch.setattr(auth_mod, "EMAIL_VERIFY_ENABLED", False)
 
-    # Limpiar sesiones guest antes de cada test para evitar que _sessions se
-    # acumule y supere MAX_SESSIONS (que en producción puede ser inferior a 200).
+    # Limpiar sesiones guest y forzar MAX_SESSIONS=200 antes de cada test:
+    # - En producción GAIA_MAX_GUEST_SESSIONS puede ser 0 (guest desactivado),
+    #   lo que hace que get_session() lance 503 para CUALQUIER sesión nueva.
+    # - Limpiar _sessions evita que las sesiones se acumulen entre tests.
     import app.storage.guest as guest_mod
 
     guest_mod._sessions.clear()
+    monkeypatch.setattr(guest_mod, "MAX_SESSIONS", 200)
 
     # Forzar SECURE_COOKIES=False: con Secure=True las cookies no se almacenan
     # en el TestClient (HTTP), lo que provoca 401 en todas las llamadas siguientes.
