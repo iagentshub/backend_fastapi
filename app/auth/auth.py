@@ -424,7 +424,9 @@ async def consume_reset_token(token: str, new_password: str) -> bool:
         expires = row[1] or ""
         if not expires or datetime.fromisoformat(expires) < datetime.now(timezone.utc):
             return False
-        row2 = await conn.fetchone("SELECT username FROM users WHERE email = ?", (email,))
+        row2 = await conn.fetchone(
+            "SELECT username FROM users WHERE email = ?", (email,)
+        )
         await conn.execute(
             "UPDATE users SET password_hash = ?, reset_token = NULL, reset_token_expires = NULL "
             "WHERE email = ?",
@@ -571,9 +573,6 @@ async def purge_user_data(username: str) -> None:
                     "DELETE FROM knowledge_items WHERE owner_id = ?", (username,)
                 )
                 await conn.execute(
-                    "DELETE FROM knowledge_folders WHERE owner_id = ?", (username,)
-                )
-                await conn.execute(
                     "DELETE FROM connections WHERE owner_id = ?", (username,)
                 )
                 await conn.execute(
@@ -583,7 +582,8 @@ async def purge_user_data(username: str) -> None:
                     "DELETE FROM accounts WHERE owner_id = ?", (username,)
                 )
                 await conn.execute(
-                    "DELETE FROM resource_workspace_shares WHERE shared_by = ?", (username,)
+                    "DELETE FROM resource_workspace_shares WHERE shared_by = ?",
+                    (username,),
                 )
                 await conn.execute(
                     "DELETE FROM workspace_invitations WHERE username = ?", (username,)
@@ -700,7 +700,7 @@ def create_token(username: str, workspace_id: Optional[str] = None) -> str:
     payload = {
         "sub": username,
         "wid": workspace_id or username,  # workspace personal = username
-        "iat": now,                        # A2: issued-at para invalidación por cambio de contraseña
+        "iat": now,  # A2: issued-at para invalidación por cambio de contraseña
         "exp": expire,
     }
     return jwt.encode(payload, _secret(), algorithm=JWT_ALGORITHM)
@@ -891,7 +891,9 @@ async def ensure_admin_user() -> None:
     flog.warning(sep)
     flog.warning(f" iAgents Hub — Administrador ({action})")
     flog.warning(f" Email:      {target_email}")
-    flog.warning(f" Contraseña: [ver {data_dir}/.admin_pass — borrar tras primer login]")
+    flog.warning(
+        f" Contraseña: [ver {data_dir}/.admin_pass — borrar tras primer login]"
+    )
     flog.warning(" Accede a /login/ y cambia la contraseña desde /profile/")
     flog.warning(sep)
 

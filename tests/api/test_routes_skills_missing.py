@@ -1,4 +1,5 @@
 """Tests de skills — casos no cubiertos: guest, paginación, move_folder, ownership."""
+
 from __future__ import annotations
 
 
@@ -10,6 +11,7 @@ _PAYLOAD = {"name": "Skill Test", "description": "desc", "content": "contenido"}
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
+
 def _guest_client(client):
     gid = new_guest_id()
     client.cookies.set("ga_token", create_token(gid))
@@ -17,6 +19,7 @@ def _guest_client(client):
 
 
 # ── Guest — list skills ────────────────────────────────────────────────────────
+
 
 def test_guest_list_skills_all(client):
     _guest_client(client)
@@ -50,6 +53,7 @@ def test_guest_list_skills_offset_limit(client):
 
 # ── Scope inválido ─────────────────────────────────────────────────────────────
 
+
 def test_list_skills_invalid_scope(admin_client):
     r = admin_client.get("/api/skills?scope=invalid")
     assert r.status_code == 400
@@ -67,6 +71,7 @@ def test_save_skill_invalid_scope(admin_client):
 
 # ── Guest — get private skill ──────────────────────────────────────────────────
 
+
 def test_guest_get_private_skill(client):
     _guest_client(client)
     created = client.post("/api/skills/private", json=_PAYLOAD).json()
@@ -83,6 +88,7 @@ def test_guest_get_private_skill_not_found(client):
 
 # ── Guest — save private skill ─────────────────────────────────────────────────
 
+
 def test_guest_save_private_skill(client):
     _guest_client(client)
     r = client.post("/api/skills/private", json=_PAYLOAD)
@@ -97,6 +103,7 @@ def test_guest_save_public_skill_forbidden(client):
 
 
 # ── Guest — delete private skill ───────────────────────────────────────────────
+
 
 def test_guest_delete_private_skill(client):
     _guest_client(client)
@@ -118,36 +125,8 @@ def test_guest_delete_public_skill_forbidden(client):
     assert r.status_code == 403
 
 
-# ── Move skill folder ──────────────────────────────────────────────────────────
-
-def test_move_skill_folder(admin_client):
-    created = admin_client.post("/api/skills/private", json=_PAYLOAD).json()
-    r = admin_client.patch(
-        f"/api/skills/private/{created['id']}/folder",
-        json={"folder_id": "folder-xyz"},
-    )
-    assert r.status_code == 200
-    assert r.json()["ok"] is True
-
-
-def test_move_skill_folder_not_found(admin_client):
-    r = admin_client.patch(
-        "/api/skills/private/noexiste/folder",
-        json={"folder_id": "folder-xyz"},
-    )
-    assert r.status_code == 404
-
-
-def test_move_skill_folder_guest_forbidden(client):
-    _guest_client(client)
-    r = client.patch(
-        "/api/skills/private/algoid/folder",
-        json={"folder_id": "folder-xyz"},
-    )
-    assert r.status_code == 403
-
-
 # ── Paginación registrado ──────────────────────────────────────────────────────
+
 
 def test_list_skills_with_limit(admin_client):
     for i in range(3):

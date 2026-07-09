@@ -5,9 +5,8 @@ Cubre:
 - fetch_url_text() (lines 58-84): HTML, texto plano, charset, esquema inválido
 - extract_document_text() — PDF con pypdf (lines 93-100)
 - extract_document_text() — fallback errors=replace (line 107)
-- FolderStorage.get() con owner_id (line 210)
-- FolderStorage CRUD completo
 """
+
 from __future__ import annotations
 
 import sys
@@ -16,7 +15,6 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.storage.knowledge import (
-    FolderStorage,
     _TextParser,
     extract_document_text,
     fetch_url_text,
@@ -24,6 +22,7 @@ from app.storage.knowledge import (
 
 
 # ── _TextParser ────────────────────────────────────────────────────────────────
+
 
 def test_textparser_init():
     p = _TextParser()
@@ -83,6 +82,7 @@ def test_textparser_text_joins_parts():
 
 # ── fetch_url_text() ──────────────────────────────────────────────────────────
 
+
 def _mock_urlopen_resp(body: bytes, content_type: str = "text/html; charset=utf-8"):
     resp = MagicMock()
     resp.headers = MagicMock()
@@ -131,6 +131,7 @@ def test_fetch_url_text_no_charset_defaults_utf8():
 
 # ── extract_document_text() ───────────────────────────────────────────────────
 
+
 def test_extract_pdf_with_pypdf():
     """Extracción de PDF usando pypdf — mock de PdfReader."""
     mock_page = MagicMock()
@@ -156,7 +157,9 @@ def test_extract_pdf_by_mime_type():
     mock_pypdf.PdfReader.return_value = mock_reader_instance
 
     with patch.dict(sys.modules, {"pypdf": mock_pypdf}):
-        result = extract_document_text(b"binary data", "file.bin", mime="application/pdf")
+        result = extract_document_text(
+            b"binary data", "file.bin", mime="application/pdf"
+        )
 
     assert "Contenido PDF" in result
 
@@ -175,133 +178,3 @@ def test_extract_document_fallback_errors_replace():
     bad = _UndecodableBytes(b"\xff\xfe data")
     result = extract_document_text(bad, "data.bin")
     assert isinstance(result, str)
-
-
-# ── FolderStorage ─────────────────────────────────────────────────────────────
-
-@pytest.fixture()
-async def fs(patch_data_dir):
-    from app.config.data import DB_FILE
-    return FolderStorage(DB_FILE)
-
-
-async def test_folder_list_empty(fs):
-    folders = await fs.list("user1")
-    assert folders == []
-
-
-async def test_folder_create_returns_dict(fs):
-    folder = await fs.create("user1", "docs", "Mi carpeta")
-    assert "id" in folder
-    assert folder["name"] == "Mi carpeta"
-    assert folder["owner_id"] == "user1"
-    assert folder["section"] == "docs"
-
-
-async def test_folder_list_returns_created(fs):
-    await fs.create("user1", "docs", "Carpeta A")
-    await fs.create("user1", "docs", "Carpeta B")
-    folders = await fs.list("user1")
-    assert len(folders) == 2
-
-
-async def test_folder_list_filter_by_section(fs):
-    await fs.create("user1", "docs", "Doc Folder")
-    await fs.create("user1", "urls", "URL Folder")
-    docs = await fs.list("user1", section="docs")
-    assert len(docs) == 1
-    assert docs[0]["section"] == "docs"
-
-
-async def test_folder_get_with_owner_id(fs):
-    """Cubre line 210: fetchone con owner_id en FolderStorage.get()."""
-    folder = await fs.create("user1", "docs", "Carpeta con owner")
-    found = await fs.get(folder["id"], owner_id="user1")
-    assert found is not None
-    assert found["id"] == folder["id"]
-
-
-async def test_folder_get_with_owner_id_wrong_owner(fs):
-    """Buscar con owner incorrecto debe devolver None."""
-    folder = await fs.create("user1", "docs", "Carpeta")
-    result = await fs.get(folder["id"], owner_id="user2")
-    assert result is None
-
-
-async def test_folder_get_without_owner_id(fs):
-    """Sin owner_id se busca solo por id (else branch, line 215)."""
-    folder = await fs.create("user1", "docs", "Carpeta sin owner")
-    found = await fs.get(folder["id"])
-    assert found is not None
-    assert found["name"] == "Carpeta sin owner"
-
-
-async def test_folder_get_nonexistent(fs):
-    result = await fs.get("nonexistent-id")
-    assert result is None
-
-
-async def test_folder_rename(fs):
-    folder = await fs.create("user1", "docs", "Nombre viejo")
-    updated = await fs.rename(folder["id"], "user1", "Nombre nuevo")
-    assert updated is not None
-    assert updated["name"] == "Nombre nuevo"
-
-
-async def test_folder_rename_not_found(fs):
-    result = await fs.rename("ghost-id", "user1", "Nuevo")
-    assert result is None
-
-
-async def test_folder_delete(fs):
-    folder = await fs.create("user1", "docs", "Para borrar")
-    ok = await fs.delete(folder["id"], "user1")
-    assert ok is True
-    assert await fs.get(folder["id"]) is None
-
-
-async def test_folder_delete_not_found(fs):
-    ok = await fs.delete("nonexistent", "user1")
-    assert ok is False
-
-
-async def test_folder_delete_cascade_removes_items(fs, patch_data_dir):
-    """cascade=True debe eliminar los knowledge_items dentro de la carpeta."""
-    from app.config.data import DB_FILE
-    from app.storage.knowledge import KnowledgeStorage
-
-    ks = KnowledgeStorage(DB_FILE)
-    folder = await fs.create("user1", "docs", "Carpeta cascade")
-    item = await ks.save(
-        type="document",
-        title="Doc en carpeta",
-        source="doc.txt",
-        content="contenido",
-        owner_id="user1",
-        folder_id=folder["id"],
-    )
-    ok = await fs.delete(folder["id"], "user1", cascade=True)
-    assert ok is True
-    assert await ks.get(item["id"]) is None
-
-
-async def test_folder_delete_no_cascade_nullifies_folder_id(fs, patch_data_dir):
-    """cascade=False debe poner folder_id=NULL en los items, no borrarlos."""
-    from app.config.data import DB_FILE
-    from app.storage.knowledge import KnowledgeStorage
-
-    ks = KnowledgeStorage(DB_FILE)
-    folder = await fs.create("user1", "docs", "Carpeta no-cascade")
-    item = await ks.save(
-        type="document",
-        title="Doc sin cascade",
-        source="doc.txt",
-        content="texto",
-        owner_id="user1",
-        folder_id=folder["id"],
-    )
-    ok = await fs.delete(folder["id"], "user1", cascade=False)
-    assert ok is True
-    retrieved = await ks.get(item["id"])
-    assert retrieved is not None
-    assert retrieved["folder_id"] is None

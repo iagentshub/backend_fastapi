@@ -15,25 +15,6 @@ def _guest_client(client):
     return client, gid
 
 
-# ── PATCH (move_folder) — usuario registrado ───────────────────────────────────
-
-def test_patch_memory_move_folder(admin_client):
-    admin_client.post("/api/memory/mover.md", json={"content": "datos"})
-    r = admin_client.patch("/api/memory/mover.md", json={"folder_id": "folder-abc"})
-    assert r.status_code == 200
-    assert r.json()["ok"] is True
-
-
-def test_patch_memory_not_found(admin_client):
-    r = admin_client.patch("/api/memory/fantasma.md", json={"folder_id": "folder-abc"})
-    assert r.status_code == 404
-
-
-def test_patch_memory_sin_auth(client):
-    r = client.patch("/api/memory/algo.md", json={"folder_id": "x"})
-    assert r.status_code == 401
-
-
 # ── Guest — list ───────────────────────────────────────────────────────────────
 
 def test_guest_list_memory_vacio(client):

@@ -1,4 +1,5 @@
 """Base domain model for an AI agent."""
+
 from __future__ import annotations
 
 import json
@@ -64,7 +65,9 @@ def _routines_guide(routines: List[dict]) -> List[str]:
                     f"Then update the schedule: `/schedule update` → cron `{cron}`",
                 ]
         elif tt == "webhook":
-            lines.append("**Trigger**: API — configure at <https://claude.ai/code/routines>")
+            lines.append(
+                "**Trigger**: API — configure at <https://claude.ai/code/routines>"
+            )
             if prompt:
                 lines += ["", f"Prompt: {prompt}"]
         else:
@@ -94,10 +97,12 @@ class Agent:
     # ── LLM — portable across platforms ───────────────────────────────────────
     connection_id: Optional[str] = None
     model: str = ""
-    system_prompt: str = ""   # maps to: Claude→system, OpenAI→instructions, GitHub→MD body
+    system_prompt: str = (
+        ""  # maps to: Claude→system, OpenAI→instructions, GitHub→MD body
+    )
     temperature: float = 0.7
     max_tokens: Optional[int] = None
-    timeout: Optional[int] = None   # None = usar preferencia global; 0 = indefinido
+    timeout: Optional[int] = None  # None = usar preferencia global; 0 = indefinido
 
     # ── Composition ───────────────────────────────────────────────────────────
     skills: List[str] = field(default_factory=list)
@@ -108,9 +113,6 @@ class Agent:
 
     # ── Semantic labels ───────────────────────────────────────────────────────
     labels: List[str] = field(default_factory=lambda: ["private"])
-
-    # ── Organisation ──────────────────────────────────────────────────────────
-    folder_id: Optional[str] = None
 
     # ── Runtime-only (not persisted) ──────────────────────────────────────────
     resolved_skills: List[dict] = field(default_factory=list)
@@ -150,7 +152,9 @@ class Agent:
             connection_id=str(data.get("connection_id") or "").strip() or None,
             model=str(data.get("model") or "").strip(),
             system_prompt=str(data.get("system_prompt") or "").strip(),
-            temperature=float(data["temperature"]) if data.get("temperature") is not None else 0.7,
+            temperature=float(data["temperature"])
+            if data.get("temperature") is not None
+            else 0.7,
             max_tokens=int(data["max_tokens"]) if data.get("max_tokens") else None,
             timeout=int(data["timeout"]) if data.get("timeout") is not None else None,
             skills=[str(s) for s in (data.get("skills") or []) if s],
@@ -159,11 +163,14 @@ class Agent:
             memory_file=str(data.get("memory_file") or "").strip() or None,
             routines=[r for r in (data.get("routines") or []) if isinstance(r, dict)],
             labels=[str(lbl) for lbl in (data.get("labels") or ["private"]) if lbl],
-            folder_id=str(data.get("folder_id") or "").strip() or None,
             created_at=str(data.get("created_at") or ""),
             updated_at=str(data.get("updated_at") or ""),
-            owner_id=str(data["owner_id"]).strip() or None if data.get("owner_id") else None,
-            resolved_skills=[r for r in (data.get("_resolved_skills") or []) if isinstance(r, dict)],
+            owner_id=str(data["owner_id"]).strip() or None
+            if data.get("owner_id")
+            else None,
+            resolved_skills=[
+                r for r in (data.get("_resolved_skills") or []) if isinstance(r, dict)
+            ],
         )
 
     # ── Serialisation ─────────────────────────────────────────────────────────
@@ -191,7 +198,6 @@ class Agent:
             "use_memory": self.use_memory,
             "memory_file": self.memory_file,
             "routines": self.routines,
-            "folder_id": self.folder_id,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "owner_id": self.owner_id,
@@ -229,11 +235,20 @@ class Agent:
             }
             if self.max_tokens:
                 payload["max_response_output_tokens"] = self.max_tokens
-            return json.dumps(payload, indent=2, ensure_ascii=False), "application/json", f"{self.id}-openai.json"
+            return (
+                json.dumps(payload, indent=2, ensure_ascii=False),
+                "application/json",
+                f"{self.id}-openai.json",
+            )
 
         if fmt == "github":
             desc = (self.description or self.name).replace(chr(34), chr(92) + chr(34))
-            fm: List[str] = ["---", f"name: {self.name}", f'description: "{desc}"', "---"]
+            fm: List[str] = [
+                "---",
+                f"name: {self.name}",
+                f'description: "{desc}"',
+                "---",
+            ]
             body: List[str] = [""]
             if self.system_prompt:
                 body.append(self.system_prompt)
@@ -260,7 +275,7 @@ class Agent:
                         "",
                         "",
                         "@mcp.tool()",
-                        f'def {fn}(prompt: str) -> str:',
+                        f"def {fn}(prompt: str) -> str:",
                         f'    """{desc}"""',
                         "    raise NotImplementedError",
                     ]
@@ -271,7 +286,7 @@ class Agent:
                     "",
                     "",
                     "@mcp.tool()",
-                    f'def {agent_fn}(prompt: str) -> str:',
+                    f"def {agent_fn}(prompt: str) -> str:",
                     f'    """{desc}"""',
                     "    raise NotImplementedError",
                 ]
@@ -279,4 +294,6 @@ class Agent:
             content = "\n".join(lines) + "\n"
             return content, "text/x-python", f"{self.id}-mcp.py"
 
-        raise NotImplementedError(f"Export format {fmt!r} not supported for agent_type={self.agent_type!r}")
+        raise NotImplementedError(
+            f"Export format {fmt!r} not supported for agent_type={self.agent_type!r}"
+        )

@@ -251,44 +251,6 @@ def test_conn_owner_standard_returns_username():
     asyncio.run(_run())
 
 
-# ── move_agent_folder — líneas 193-197 ───────────────────────────────────────
-
-
-def test_move_folder_guest_returns_403(client):
-    """Guest no puede mover agentes a carpeta (línea 193-194)."""
-    _setup_guest(client)
-    r = client.patch("/api/agents/some-agent-id/folder", json={"folder_id": "f1"})
-    assert r.status_code == 403
-    assert "invitados" in r.json()["detail"].lower()
-
-
-def test_move_folder_not_found_returns_404(client):
-    """Agente inexistente en move_folder → 404 (líneas 195-197)."""
-    _register_and_login(client, "movefolder_user1")
-    r = client.patch("/api/agents/nonexistent-agent/folder", json={"folder_id": "f1"})
-    assert r.status_code == 404
-
-
-def test_move_folder_success(client):
-    """move_folder mueve el agente a la carpeta indicada → 200."""
-    _register_and_login(client, "movefolder_user2")
-    agent = _create_agent(client, {"name": "Movable Agent"})
-    r = client.patch(
-        f"/api/agents/{agent['id']}/folder", json={"folder_id": "folder-abc"}
-    )
-    assert r.status_code == 200
-    assert r.json()["ok"] is True
-
-
-def test_move_folder_clear_folder(client):
-    """move_folder con folder_id=None elimina la carpeta del agente."""
-    _register_and_login(client, "movefolder_user3")
-    agent = _create_agent(client, {"name": "No Folder Agent"})
-    r = client.patch(f"/api/agents/{agent['id']}/folder", json={"folder_id": None})
-    assert r.status_code == 200
-    assert r.json()["ok"] is True
-
-
 # ── Rutas guest: list / get / save / delete ───────────────────────────────────
 
 

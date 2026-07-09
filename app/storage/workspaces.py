@@ -3,6 +3,7 @@
 Los workspaces personales son virtuales (workspace_id = username), sin entrada en BD.
 Solo los workspaces de equipo tienen filas en las tablas workspaces / workspace_members.
 """
+
 from __future__ import annotations
 
 from pathlib import Path
@@ -84,22 +85,27 @@ class WorkspaceStorage:
         async with open_db() as conn:
             async with conn.transaction():
                 agent_ids = [
-                    r[0] for r in await conn.fetchall(
+                    r[0]
+                    for r in await conn.fetchall(
                         "SELECT id FROM agents WHERE owner_id = ?", (workspace_id,)
                     )
                 ]
                 skill_ids = [
-                    r[0] for r in await conn.fetchall(
+                    r[0]
+                    for r in await conn.fetchall(
                         "SELECT id FROM skills WHERE owner_id = ?", (workspace_id,)
                     )
                 ]
                 knowledge_ids = [
-                    r[0] for r in await conn.fetchall(
-                        "SELECT id FROM knowledge_items WHERE owner_id = ?", (workspace_id,)
+                    r[0]
+                    for r in await conn.fetchall(
+                        "SELECT id FROM knowledge_items WHERE owner_id = ?",
+                        (workspace_id,),
                     )
                 ]
                 connection_ids = [
-                    r[0] for r in await conn.fetchall(
+                    r[0]
+                    for r in await conn.fetchall(
                         "SELECT id FROM connections WHERE owner_id = ?", (workspace_id,)
                     )
                 ]
@@ -120,16 +126,25 @@ class WorkspaceStorage:
                             (resource_type, rid),
                         )
 
-                await conn.execute("DELETE FROM agents WHERE owner_id = ?", (workspace_id,))
-                await conn.execute("DELETE FROM skills WHERE owner_id = ?", (workspace_id,))
-                await conn.execute("DELETE FROM knowledge_items WHERE owner_id = ?", (workspace_id,))
-                await conn.execute("DELETE FROM knowledge_folders WHERE owner_id = ?", (workspace_id,))
-                await conn.execute("DELETE FROM connections WHERE owner_id = ?", (workspace_id,))
                 await conn.execute(
-                    "DELETE FROM resource_workspace_shares WHERE workspace_id = ?", (workspace_id,)
+                    "DELETE FROM agents WHERE owner_id = ?", (workspace_id,)
                 )
                 await conn.execute(
-                    "DELETE FROM workspace_invitations WHERE workspace_id = ?", (workspace_id,)
+                    "DELETE FROM skills WHERE owner_id = ?", (workspace_id,)
+                )
+                await conn.execute(
+                    "DELETE FROM knowledge_items WHERE owner_id = ?", (workspace_id,)
+                )
+                await conn.execute(
+                    "DELETE FROM connections WHERE owner_id = ?", (workspace_id,)
+                )
+                await conn.execute(
+                    "DELETE FROM resource_workspace_shares WHERE workspace_id = ?",
+                    (workspace_id,),
+                )
+                await conn.execute(
+                    "DELETE FROM workspace_invitations WHERE workspace_id = ?",
+                    (workspace_id,),
                 )
                 await conn.execute(
                     "DELETE FROM workspace_members WHERE workspace_id = ?",
@@ -199,7 +214,9 @@ class WorkspaceStorage:
             )
             return [dict(r) for r in rows]
 
-    async def get_member(self, workspace_id: str, username: str) -> Optional[Dict[str, Any]]:
+    async def get_member(
+        self, workspace_id: str, username: str
+    ) -> Optional[Dict[str, Any]]:
         async with open_db() as conn:
             row = await conn.fetchone(
                 "SELECT * FROM workspace_members WHERE workspace_id = ? AND username = ?",

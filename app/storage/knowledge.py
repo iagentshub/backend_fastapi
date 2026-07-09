@@ -1,4 +1,5 @@
 """Storage and text extraction for knowledge items (URLs + documents)."""
+
 from __future__ import annotations
 
 import uuid
@@ -18,6 +19,7 @@ def _owner_filter(item_id: str, owner_id: Optional[str]) -> tuple[str, tuple]:
 
 
 # ── HTML text extractor ────────────────────────────────────────────────────────
+
 
 class _TextParser(HTMLParser):
     _SKIP_TAGS = {"script", "style", "nav", "footer", "header", "noscript"}
@@ -89,10 +91,13 @@ def extract_document_text(content_bytes: bytes, filename: str, mime: str = "") -
 
     if is_pdf:
         import io
+
         try:
             from pypdf import PdfReader
         except ImportError as exc:
-            raise ValueError("pypdf no instalado — reconstruye la imagen Docker") from exc
+            raise ValueError(
+                "pypdf no instalado — reconstruye la imagen Docker"
+            ) from exc
         reader = PdfReader(io.BytesIO(content_bytes))
         pages = [page.extract_text() or "" for page in reader.pages]
         return "\n".join(pages)[:MAX_CONTENT]
@@ -107,6 +112,7 @@ def extract_document_text(content_bytes: bytes, filename: str, mime: str = "") -
 
 # ── Storage ────────────────────────────────────────────────────────────────────
 
+
 class KnowledgeStorage:
     def __init__(self, db_path: Path) -> None:
         self._db_path = db_path
@@ -115,7 +121,7 @@ class KnowledgeStorage:
         self, owner_id: Optional[str], type: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         query = (
-            "SELECT id, owner_id, type, title, source, char_count, folder_id, created_at, updated_at "
+            "SELECT id, owner_id, type, title, source, char_count, created_at, updated_at "
             "FROM knowledge_items"
         )
         params: list = []
@@ -133,11 +139,13 @@ class KnowledgeStorage:
             rows = await conn.fetchall(query, params)
             return [dict(r) for r in rows]
 
-    async def get(self, item_id: str, owner_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    async def get(
+        self, item_id: str, owner_id: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
         cond, params = _owner_filter(item_id, owner_id)
         async with open_db() as conn:
             row = await conn.fetchone(
-                f"SELECT id, owner_id, type, title, source, content, char_count, folder_id, created_at, updated_at "
+                f"SELECT id, owner_id, type, title, source, content, char_count, created_at, updated_at "
                 f"FROM knowledge_items WHERE {cond}",
                 params,
             )
@@ -151,118 +159,36 @@ class KnowledgeStorage:
         source: str,
         content: str,
         owner_id: str,
-        folder_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         now = datetime.now(timezone.utc).isoformat()
         item_id = uuid.uuid4().hex[:16]
         async with open_db() as conn:
             await conn.execute(
                 "INSERT INTO knowledge_items "
-                "(id, owner_id, type, title, source, content, char_count, folder_id, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (item_id, owner_id, type, title, source, content, len(content), folder_id, now, now),
+                "(id, owner_id, type, title, source, content, char_count, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    item_id,
+                    owner_id,
+                    type,
+                    title,
+                    source,
+                    content,
+                    len(content),
+                    now,
+                    now,
+                ),
             )
             await conn.commit()
         return await self.get(item_id)  # type: ignore[return-value]
 
-    async def move(self, item_id: str, folder_id: Optional[str], owner_id: Optional[str]) -> bool:
-        cond, params = _owner_filter(item_id, owner_id)
-        async with open_db() as conn:
-            if not await conn.fetchone(f"SELECT id FROM knowledge_items WHERE {cond}", params):
-                return False
-            await conn.execute(
-                f"UPDATE knowledge_items SET folder_id = ? WHERE {cond}",
-                (folder_id, *params),
-            )
-            await conn.commit()
-            return True
-
     async def delete(self, item_id: str, owner_id: Optional[str]) -> bool:
         cond, params = _owner_filter(item_id, owner_id)
         async with open_db() as conn:
-            if not await conn.fetchone(f"SELECT id FROM knowledge_items WHERE {cond}", params):
+            if not await conn.fetchone(
+                f"SELECT id FROM knowledge_items WHERE {cond}", params
+            ):
                 return False
             await conn.execute(f"DELETE FROM knowledge_items WHERE {cond}", params)
             await conn.commit()
             return True
-
-
-class FolderStorage:
-    def __init__(self, db_path: Path) -> None:
-        self._db_path = db_path
-
-    async def list(self, owner_id: str, section: Optional[str] = None) -> List[Dict[str, Any]]:
-        params: list = [owner_id]
-        query = "SELECT id, owner_id, section, name, created_at FROM knowledge_folders WHERE owner_id = ?"
-        if section:
-            query += " AND section = ?"
-            params.append(section)
-        query += " ORDER BY name ASC"
-        async with open_db() as conn:
-            rows = await conn.fetchall(query, params)
-            return [dict(r) for r in rows]
-
-    async def get(self, folder_id: str, owner_id: Optional[str] = None) -> Optional[Dict[str, Any]]:
-        async with open_db() as conn:
-            if owner_id is not None:
-                row = await conn.fetchone(
-                    "SELECT * FROM knowledge_folders WHERE id = ? AND owner_id = ?",
-                    (folder_id, owner_id),
-                )
-            else:
-                row = await conn.fetchone(
-                    "SELECT * FROM knowledge_folders WHERE id = ?", (folder_id,)
-                )
-            return dict(row) if row else None
-
-    async def create(self, owner_id: str, section: str, name: str) -> Dict[str, Any]:
-        now = datetime.now(timezone.utc).isoformat()
-        folder_id = uuid.uuid4().hex[:16]
-        async with open_db() as conn:
-            await conn.execute(
-                "INSERT INTO knowledge_folders (id, owner_id, section, name, created_at) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (folder_id, owner_id, section, name.strip(), now),
-            )
-            await conn.commit()
-        return await self.get(folder_id)  # type: ignore[return-value]
-
-    async def rename(self, folder_id: str, owner_id: str, name: str) -> Optional[Dict[str, Any]]:
-        async with open_db() as conn:
-            exists = await conn.fetchone(
-                "SELECT id FROM knowledge_folders WHERE id = ? AND owner_id = ?",
-                (folder_id, owner_id),
-            )
-            if not exists:
-                return None
-            await conn.execute(
-                "UPDATE knowledge_folders SET name = ? WHERE id = ? AND owner_id = ?",
-                (name.strip(), folder_id, owner_id),
-            )
-            await conn.commit()
-        return await self.get(folder_id)
-
-    async def delete(self, folder_id: str, owner_id: str, cascade: bool = False) -> bool:
-        async with open_db() as conn:
-            async with conn.transaction():
-                exists = await conn.fetchone(
-                    "SELECT id FROM knowledge_folders WHERE id = ? AND owner_id = ?",
-                    (folder_id, owner_id),
-                )
-                if not exists:
-                    return False
-                if cascade:
-                    await conn.execute(
-                        "DELETE FROM knowledge_items WHERE folder_id = ? AND owner_id = ?",
-                        (folder_id, owner_id),
-                    )
-                else:
-                    await conn.execute(
-                        "UPDATE knowledge_items SET folder_id = NULL WHERE folder_id = ? AND owner_id = ?",
-                        (folder_id, owner_id),
-                    )
-                await conn.execute(
-                    "DELETE FROM knowledge_folders WHERE id = ? AND owner_id = ?",
-                    (folder_id, owner_id),
-                )
-        return True

@@ -1,4 +1,5 @@
 """Tests de cobertura adicionales para app/api/routes/social.py."""
+
 from __future__ import annotations
 
 import asyncio
@@ -7,12 +8,14 @@ from uuid import uuid4
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 
+
 def _uid(prefix: str = "u") -> str:
     return f"{prefix}{uuid4().hex[:8]}"
 
 
 def _login(client, username: str, password: str = "pass1234") -> str:
     from app.auth.auth import create_token, register_user
+
     asyncio.run(register_user(username, password, email=f"{username}@test.com"))
     client.cookies.set("ga_token", create_token(username))
     return username
@@ -20,33 +23,48 @@ def _login(client, username: str, password: str = "pass1234") -> str:
 
 def _make_public_agent(client, name: str) -> str:
     """Crea un agente (labels=public) y lo registra como público en resource_social."""
-    r = client.post("/api/agents", json={
-        "name": name,
-        "description": "agent for social tests",
-        "labels": ["public"],
-    })
+    r = client.post(
+        "/api/agents",
+        json={
+            "name": name,
+            "description": "agent for social tests",
+            "labels": ["public"],
+        },
+    )
     assert r.status_code == 200
     agent_id = r.json()["id"]
-    rv = client.put(f"/api/agents/private/{agent_id}/visibility", json={
-        "is_public": True, "category": "Coding", "trial_missing_deps": "warn",
-    })
+    rv = client.put(
+        f"/api/agents/private/{agent_id}/visibility",
+        json={
+            "is_public": True,
+            "category": "Coding",
+            "trial_missing_deps": "warn",
+        },
+    )
     assert rv.status_code == 200
     return agent_id
 
 
 def _make_public_skill(client, name: str) -> str:
     """Crea una skill (labels=public) y la registra como pública en resource_social."""
-    r = client.post("/api/skills/private", json={
-        "name": name,
-        "description": "skill for social tests",
-        "content": "# skill content",
-        "labels": ["public"],
-    })
+    r = client.post(
+        "/api/skills/private",
+        json={
+            "name": name,
+            "description": "skill for social tests",
+            "content": "# skill content",
+            "labels": ["public"],
+        },
+    )
     assert r.status_code == 200
     skill_id = r.json()["id"]
-    rv = client.put(f"/api/skills/private/{skill_id}/visibility", json={
-        "is_public": True, "category": "Coding",
-    })
+    rv = client.put(
+        f"/api/skills/private/{skill_id}/visibility",
+        json={
+            "is_public": True,
+            "category": "Coding",
+        },
+    )
     assert rv.status_code == 200
     return skill_id
 
@@ -126,8 +144,15 @@ def _insert_social_row(
                 "category, trial_missing_deps, tags, labels, "
                 "linked_to_user, linked_to_id, updated_at) "
                 "VALUES (?, ?, ?, ?, '', ?, 'Other', 'warn', '[]', '[\"private\"]', ?, ?, datetime('now'))",
-                (resource_type, resource_id, username, name, is_public,
-                 linked_to_user, linked_to_id),
+                (
+                    resource_type,
+                    resource_id,
+                    username,
+                    name,
+                    is_public,
+                    linked_to_user,
+                    linked_to_id,
+                ),
             )
             await conn.commit()
 
@@ -136,58 +161,68 @@ def _insert_social_row(
 
 def _register(username: str) -> None:
     from app.auth.auth import register_user
+
     asyncio.run(register_user(username, "pass1234", email=f"{username}@test.com"))
 
 
 # ── set_agent_visibility — líneas 102, 106 ────────────────────────────────────
 
+
 def test_set_agent_visibility_trial_missing_deps_invalido(client):
     """Línea 102: trial_missing_deps con valor inválido devuelve 422."""
     _login(client, _uid("vis1"))
-    r = client.post("/api/agents", json={
-        "name": f"VisTrialAgent {uuid4().hex[:6]}",
-        "labels": ["public"],
-    })
+    r = client.post(
+        "/api/agents",
+        json={
+            "name": f"VisTrialAgent {uuid4().hex[:6]}",
+            "labels": ["public"],
+        },
+    )
     assert r.status_code == 200
     agent_id = r.json()["id"]
-    rv = client.put(f"/api/agents/private/{agent_id}/visibility", json={
-        "is_public": True, "category": "Coding", "trial_missing_deps": "invalido",
-    })
+    rv = client.put(
+        f"/api/agents/private/{agent_id}/visibility",
+        json={
+            "is_public": True,
+            "category": "Coding",
+            "trial_missing_deps": "invalido",
+        },
+    )
     assert rv.status_code == 422
 
 
 def test_set_agent_visibility_agente_inexistente(client):
     """Línea 106: agente no encontrado devuelve 404."""
     _login(client, _uid("vis2"))
-    rv = client.put("/api/agents/private/agente-no-existe-xyz999/visibility", json={
-        "is_public": True, "category": "Coding", "trial_missing_deps": "warn",
-    })
+    rv = client.put(
+        "/api/agents/private/agente-no-existe-xyz999/visibility",
+        json={
+            "is_public": True,
+            "category": "Coding",
+            "trial_missing_deps": "warn",
+        },
+    )
     assert rv.status_code == 404
 
 
 # ── set_skill_visibility — línea 143 ─────────────────────────────────────────
 
+
 def test_set_skill_visibility_skill_inexistente(client):
     """Línea 143: skill no encontrada devuelve 404."""
     _login(client, _uid("skvis"))
-    rv = client.put("/api/skills/private/skill-no-existe-xyz999/visibility", json={
-        "is_public": True, "category": "Coding",
-    })
-    assert rv.status_code == 404
-
-
-# ── set_knowledge_visibility — línea 183 ─────────────────────────────────────
-
-def test_set_knowledge_visibility_folder_inexistente(client):
-    """Línea 183: carpeta no encontrada devuelve 404."""
-    _login(client, _uid("kvis"))
-    rv = client.put("/api/knowledge/folders/carpeta-no-existe-xyz999/visibility", json={
-        "is_public": True, "category": "Education",
-    })
+    rv = client.put(
+        "/api/skills/private/skill-no-existe-xyz999/visibility",
+        json={
+            "is_public": True,
+            "category": "Coding",
+        },
+    )
     assert rv.status_code == 404
 
 
 # ── explore con label filter — líneas 230-231 ────────────────────────────────
+
 
 def test_explore_filtra_por_label_existente(client):
     """Líneas 230-231: filtro ?label=public devuelve el recurso con esa label."""
@@ -210,6 +245,7 @@ def test_explore_filtra_por_label_inexistente(client):
 
 
 # ── explore_preview — líneas 266-324 ─────────────────────────────────────────
+
 
 def test_explore_preview_agente_ok(client):
     """Líneas 266-306: preview de agente público devuelve campos del agente."""
@@ -270,6 +306,7 @@ def test_explore_preview_no_publico(client):
 
 # ── my_resources — líneas 327-376 ────────────────────────────────────────────
 
+
 def test_mis_recursos_sin_filtro(client):
     """Líneas 327-376: GET /api/social/me/resources devuelve recursos propios."""
     _login(client, _uid("myres"))
@@ -317,6 +354,7 @@ def test_mis_recursos_vacio(client):
 
 # ── user_resources — líneas 379-413 ──────────────────────────────────────────
 
+
 def test_user_resources_con_filtro_tipo(client):
     """Líneas 406-411: GET /api/users/{user}/resources?type=agent."""
     user = _login(client, _uid("ures"))
@@ -331,7 +369,10 @@ def test_user_resources_con_filtro_tipo(client):
 
 # ── feed con filtro tipo — líneas 485-527 ────────────────────────────────────
 
-def _insert_feed_resource(owner: str, resource_id: str, resource_type: str = "agent") -> None:
+
+def _insert_feed_resource(
+    owner: str, resource_id: str, resource_type: str = "agent"
+) -> None:
     from app.storage.db import open_db
 
     async def _do() -> None:
@@ -341,7 +382,12 @@ def _insert_feed_resource(owner: str, resource_id: str, resource_type: str = "ag
                 "(resource_type, resource_id, owner, name, description, is_public, "
                 "category, trial_missing_deps, tags, labels, updated_at) "
                 "VALUES (?, ?, ?, ?, '', 1, 'Coding', 'warn', '[]', '[\"public\"]', datetime('now'))",
-                (resource_type, resource_id, owner, f"Feed {resource_type} {resource_id[:6]}"),
+                (
+                    resource_type,
+                    resource_id,
+                    owner,
+                    f"Feed {resource_type} {resource_id[:6]}",
+                ),
             )
             await conn.commit()
 
@@ -370,6 +416,7 @@ def test_feed_con_filtro_tipo_agent(client):
 
 
 # ── fork_knowledge — líneas 566-617 ───────────────────────────────────────────
+
 
 def test_fork_knowledge_ok(client):
     """Líneas 566-617: fork de knowledge pública."""
@@ -404,6 +451,7 @@ def test_fork_knowledge_no_publico(client):
 
 # ── link_knowledge — líneas 620-671 ──────────────────────────────────────────
 
+
 def test_link_knowledge_ok(client):
     """Líneas 620-671: link de knowledge pública."""
     owner = _login(client, _uid("lkw1"))
@@ -436,6 +484,7 @@ def test_link_knowledge_no_publico(client):
 
 
 # ── fork_agent — líneas 674-739 ──────────────────────────────────────────────
+
 
 def test_fork_agent_privado_ok(client):
     """Líneas 674-739: fork de agente privado (is_public en social) → 200."""
@@ -476,6 +525,7 @@ def test_fork_agent_privado_no_publico(client):
 
 # ── fork_skill — líneas 742-804 ──────────────────────────────────────────────
 
+
 def test_fork_skill_ok(client):
     """Líneas 742-804: fork de skill pública → 200."""
     _login(client, _uid("fsk1"))
@@ -502,11 +552,14 @@ def test_fork_skill_no_encontrada(client):
 def test_fork_skill_no_publica(client):
     """Líneas 753-761: skill existe pero no es pública en social → 403."""
     _login(client, _uid("fskpriv"))
-    r = client.post("/api/skills/private", json={
-        "name": f"NotPublicSkillFork {uuid4().hex[:6]}",
-        "description": "desc",
-        "content": "# skill",
-    })
+    r = client.post(
+        "/api/skills/private",
+        json={
+            "name": f"NotPublicSkillFork {uuid4().hex[:6]}",
+            "description": "desc",
+            "content": "# skill",
+        },
+    )
     assert r.status_code == 200
     skill_id = r.json()["id"]
     # NO se llama visibility
@@ -518,6 +571,7 @@ def test_fork_skill_no_publica(client):
 
 
 # ── link_agent — líneas 807-871 ──────────────────────────────────────────────
+
 
 def test_link_agent_ok(client):
     """Líneas 807-871: link de agente público → 200."""
@@ -557,6 +611,7 @@ def test_link_agent_no_publico(client):
 
 # ── link_skill — líneas 874-935 ──────────────────────────────────────────────
 
+
 def test_link_skill_ok(client):
     """Líneas 874-935: link de skill pública → 200."""
     _login(client, _uid("lskillok"))
@@ -583,11 +638,14 @@ def test_link_skill_no_encontrada(client):
 def test_link_skill_no_publica(client):
     """Líneas 885-893: skill existe pero no es pública en social → 403."""
     _login(client, _uid("lskpriv"))
-    r = client.post("/api/skills/private", json={
-        "name": f"NotPublicLinkSkill {uuid4().hex[:6]}",
-        "description": "desc",
-        "content": "# skill",
-    })
+    r = client.post(
+        "/api/skills/private",
+        json={
+            "name": f"NotPublicLinkSkill {uuid4().hex[:6]}",
+            "description": "desc",
+            "content": "# skill",
+        },
+    )
     assert r.status_code == 200
     skill_id = r.json()["id"]
 
@@ -598,6 +656,7 @@ def test_link_skill_no_publica(client):
 
 
 # ── sync_linked_agent — líneas 938-967 ───────────────────────────────────────
+
 
 def test_sync_linked_agent_no_encontrado(client):
     """Líneas 944-946: agente no encontrado o no es del usuario → 404."""
@@ -622,6 +681,7 @@ def test_sync_linked_agent_sin_enlace(client):
 
 # ── sync_linked_skill — líneas 970-999 ───────────────────────────────────────
 
+
 def test_sync_linked_skill_no_encontrada(client):
     """Líneas 977-978: skill no encontrada o no es del usuario → 404."""
     _login(client, _uid("syncsk2"))
@@ -632,11 +692,14 @@ def test_sync_linked_skill_no_encontrada(client):
 def test_sync_linked_skill_sin_enlace(client):
     """Líneas 986-988: skill existe pero sin linked_to_id → 400."""
     user = _login(client, _uid("syncsk"))
-    r = client.post("/api/skills/private", json={
-        "name": f"SyncSkill {uuid4().hex[:6]}",
-        "description": "desc",
-        "content": "# skill",
-    })
+    r = client.post(
+        "/api/skills/private",
+        json={
+            "name": f"SyncSkill {uuid4().hex[:6]}",
+            "description": "desc",
+            "content": "# skill",
+        },
+    )
     assert r.status_code == 200
     skill_id = r.json()["id"]
     _insert_social_row(user, "skill", skill_id, f"SyncSkill {skill_id}", is_public=0)
@@ -646,6 +709,7 @@ def test_sync_linked_skill_sin_enlace(client):
 
 
 # ── convert_agent_link_to_fork — líneas 1105-1149 ────────────────────────────
+
 
 def test_convert_agent_link_to_fork_sin_enlace(client):
     """Líneas 1116-1120: agente sin enlace activo → 404."""
@@ -666,7 +730,10 @@ def test_convert_agent_link_to_fork_ok(client):
     agent_id = r.json()["id"]
     # Insertar en resource_social como linked
     _insert_social_row(
-        user, "agent", agent_id, f"ConvAgent {agent_id}",
+        user,
+        "agent",
+        agent_id,
+        f"ConvAgent {agent_id}",
         is_public=0,
         linked_to_user="originalowner",
         linked_to_id="original-agent-xyz",
@@ -681,14 +748,18 @@ def test_convert_agent_link_to_fork_ok(client):
 
 # ── convert_skill_link_to_fork — líneas 1152-1196 ────────────────────────────
 
+
 def test_convert_skill_link_to_fork_sin_enlace(client):
     """Línea 1164: skill sin enlace activo → 404."""
     _login(client, _uid("convsk2"))
-    r = client.post("/api/skills/private", json={
-        "name": f"NoLinkConvSkill {uuid4().hex[:6]}",
-        "description": "desc",
-        "content": "# skill",
-    })
+    r = client.post(
+        "/api/skills/private",
+        json={
+            "name": f"NoLinkConvSkill {uuid4().hex[:6]}",
+            "description": "desc",
+            "content": "# skill",
+        },
+    )
     assert r.status_code == 200
     skill_id = r.json()["id"]
 
@@ -699,15 +770,21 @@ def test_convert_skill_link_to_fork_sin_enlace(client):
 def test_convert_skill_link_to_fork_ok(client):
     """Líneas 1152-1196: convertir enlace de skill a fork."""
     user = _login(client, _uid("convsk1"))
-    r = client.post("/api/skills/private", json={
-        "name": f"ConvSkill {uuid4().hex[:6]}",
-        "description": "desc",
-        "content": "# skill",
-    })
+    r = client.post(
+        "/api/skills/private",
+        json={
+            "name": f"ConvSkill {uuid4().hex[:6]}",
+            "description": "desc",
+            "content": "# skill",
+        },
+    )
     assert r.status_code == 200
     skill_id = r.json()["id"]
     _insert_social_row(
-        user, "skill", skill_id, f"ConvSkill {skill_id}",
+        user,
+        "skill",
+        skill_id,
+        f"ConvSkill {skill_id}",
         is_public=0,
         linked_to_user="originalowner",
         linked_to_id="original-skill-xyz",

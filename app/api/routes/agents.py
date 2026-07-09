@@ -32,7 +32,7 @@ from app.storage.guest import (
     get_session,
     is_guest,
 )
-from app.storage.knowledge import FolderStorage, KnowledgeStorage
+from app.storage.knowledge import KnowledgeStorage
 from app.storage.storage import (
     AgentStorage,
     ConnectionStorage,
@@ -52,12 +52,7 @@ _shares = WorkspaceShareStorage(DB_FILE)
 _ws = WorkspaceStorage(DB_FILE)
 _chat = ChatStorage(DB_FILE)
 _knowledge = KnowledgeStorage(DB_FILE)
-_folders = FolderStorage(DB_FILE)
 _chat_limiter = RateLimiter(calls=RATE_CHAT_CALLS, window=RATE_CHAT_WINDOW)
-
-
-class _AgentFolderMove(BaseModel):
-    folder_id: Optional[str] = None
 
 
 class _AgentPreferenceBody(BaseModel):
@@ -105,7 +100,10 @@ async def _assert_can_read_agent(
     if user_groups:
         group_ids = [g["id"] for g in user_groups]
         results = await asyncio.gather(
-            *[_shares.get_workspace_shared_resource_ids(gid, "agent") for gid in group_ids]
+            *[
+                _shares.get_workspace_shared_resource_ids(gid, "agent")
+                for gid in group_ids
+            ]
         )
         for shared_ids in results:
             if agent_id in shared_ids:
@@ -199,7 +197,8 @@ async def list_agents(
         # En workspace de equipo (workspace_id != user), owner_id puede ser el UUID del workspace.
         workspace_id = ctx.workspace_id
         own = [
-            a for a in agents
+            a
+            for a in agents
             if a.get("owner_id") == user or a.get("owner_id") == workspace_id
         ]
         own_ids = {a["id"] for a in own}
@@ -209,9 +208,14 @@ async def list_agents(
         if user_groups:
             group_ids = [g["id"] for g in user_groups]
             results = await asyncio.gather(
-                *[_shares.get_workspace_shared_resource_ids(gid, "agent") for gid in group_ids]
+                *[
+                    _shares.get_workspace_shared_resource_ids(gid, "agent")
+                    for gid in group_ids
+                ]
             )
-            shared_map: Dict[str, str] = {}  # resource_id -> group_id (primer grupo que lo comparte)
+            shared_map: Dict[
+                str, str
+            ] = {}  # resource_id -> group_id (primer grupo que lo comparte)
             for gid, rids in zip(group_ids, results):
                 for rid in rids:
                     if rid not in shared_map:
@@ -228,7 +232,9 @@ async def list_agents(
             active_results = await asyncio.gather(
                 *[_ws.owner_is_active(oid) for oid in unique_owners]
             )
-            active_owners = {oid for oid, ok in zip(unique_owners, active_results) if ok}
+            active_owners = {
+                oid for oid, ok in zip(unique_owners, active_results) if ok
+            }
             extra = []
             for a in extra_candidates:
                 if (a.get("owner_id") or "") in active_owners:
@@ -339,31 +345,6 @@ async def delete_agent(
             raise HTTPException(status_code=404, detail="Agente no encontrado")
     except ValueError as e:
         raise HTTPException(status_code=403, detail=str(e))
-    return {"ok": True}
-
-
-@router.patch("/{agent_id}/folder")
-async def move_agent_folder(
-    agent_id: str,
-    body: _AgentFolderMove,
-    ctx: WorkspaceContext = Depends(require_workspace),
-) -> Dict[str, Any]:
-    if is_guest(ctx.user):
-        raise HTTPException(
-            status_code=403, detail="Los invitados no pueden mover agentes"
-        )
-    a = await _agents.get(agent_id)
-    if not a:
-        raise HTTPException(status_code=404, detail="Agente no encontrado")
-    if (
-        await get_user_role(ctx.user) != "admin"
-        and a.get("owner_id") not in (ctx.user, ctx.workspace_id)
-    ):
-        raise HTTPException(
-            status_code=403, detail="Solo el propietario puede mover este agente"
-        )
-    if not await _agents.move_folder(agent_id, body.folder_id):
-        raise HTTPException(status_code=404, detail="Agente no encontrado")
     return {"ok": True}
 
 

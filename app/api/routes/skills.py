@@ -6,14 +6,12 @@ from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from pydantic import BaseModel
 
 from app.api.routes.auth import WorkspaceContext, require_workspace
 from app.auth.auth import get_user_role
 from app.config.data import DB_FILE, SKILLS_DIR
 
 from app.storage.guest import get_session, is_guest
-from app.storage.knowledge import FolderStorage
 from app.storage.storage import SkillStorage
 from app.storage.workspace_shares import WorkspaceShareStorage
 from app.storage.workspaces import WorkspaceStorage
@@ -21,15 +19,10 @@ from app.storage.workspaces import WorkspaceStorage
 router = APIRouter(prefix="/api/skills", tags=["skills"])
 
 _storage = SkillStorage(SKILLS_DIR)
-_folders = FolderStorage(DB_FILE)
 _shares = WorkspaceShareStorage(DB_FILE)
 _ws = WorkspaceStorage(DB_FILE)
 
 _VALID_SCOPES = {"public", "private", "all"}
-
-
-class SkillFolderMove(BaseModel):
-    folder_id: Optional[str] = None
 
 
 def _check_scope(scope: str) -> None:
@@ -72,32 +65,32 @@ async def list_skills(
             sk["_shared"] = True
             sk["_group_id"] = group_id
     elif role != "admin":
-            # Skills propias (personales o del workspace activo) + públicas + legacy sin owner
-            # + shares de todos los grupos del usuario.
-            # En workspace de equipo (workspace_id != user), owner_id puede ser el UUID del workspace.
-            workspace_id = ctx.workspace_id
-            items = [
-                sk
-                for sk in items
-                if sk.get("scope") == "public"
-                or sk.get("owner_id") is None
-                or sk.get("owner_id") == user
-                or sk.get("owner_id") == workspace_id
-            ]
-            own_ids = {sk["id"] for sk in items}
-            user_groups = await _ws.list_for_user(user)
-            shared_map: Dict[str, str] = {}  # resource_id -> group_id
-            for group in user_groups:
-                gid = group["id"]
-                for rid in await _shares.get_workspace_shared_resource_ids(gid, "skill"):
-                    if rid not in shared_map:
-                        shared_map[rid] = gid
-            for sid in set(shared_map.keys()) - own_ids:
-                sk = await _storage.get_any(sid)
-                if sk and await _ws.owner_is_active(sk.get("owner_id") or ""):
-                    sk["_shared"] = True
-                    sk["_group_id"] = shared_map[sid]
-                    items.append(sk)
+        # Skills propias (personales o del workspace activo) + públicas + legacy sin owner
+        # + shares de todos los grupos del usuario.
+        # En workspace de equipo (workspace_id != user), owner_id puede ser el UUID del workspace.
+        workspace_id = ctx.workspace_id
+        items = [
+            sk
+            for sk in items
+            if sk.get("scope") == "public"
+            or sk.get("owner_id") is None
+            or sk.get("owner_id") == user
+            or sk.get("owner_id") == workspace_id
+        ]
+        own_ids = {sk["id"] for sk in items}
+        user_groups = await _ws.list_for_user(user)
+        shared_map: Dict[str, str] = {}  # resource_id -> group_id
+        for group in user_groups:
+            gid = group["id"]
+            for rid in await _shares.get_workspace_shared_resource_ids(gid, "skill"):
+                if rid not in shared_map:
+                    shared_map[rid] = gid
+        for sid in set(shared_map.keys()) - own_ids:
+            sk = await _storage.get_any(sid)
+            if sk and await _ws.owner_is_active(sk.get("owner_id") or ""):
+                sk["_shared"] = True
+                sk["_group_id"] = shared_map[sid]
+                items.append(sk)
     if offset:
         items = items[offset:]
     if limit:
@@ -133,12 +126,16 @@ async def get_skill(
             if user_groups:
                 group_ids = [g["id"] for g in user_groups]
                 for gid in group_ids:
-                    shared = await _shares.get_workspace_shared_resource_ids(gid, "skill")
+                    shared = await _shares.get_workspace_shared_resource_ids(
+                        gid, "skill"
+                    )
                     if skill_id in shared:
                         allowed = True
                         break
             if not allowed:
-                raise HTTPException(status_code=403, detail="No tienes acceso a esta skill")
+                raise HTTPException(
+                    status_code=403, detail="No tienes acceso a esta skill"
+                )
 
     return sk
 
@@ -169,21 +166,6 @@ async def save_skill(
         return await _storage.save(scope, payload, owner_id=workspace_id)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
-
-
-@router.patch("/private/{skill_id}/folder")
-async def move_skill_folder(
-    skill_id: str,
-    body: SkillFolderMove,
-    ctx: WorkspaceContext = Depends(require_workspace),
-) -> Dict[str, Any]:
-    if is_guest(ctx.user):
-        raise HTTPException(
-            status_code=403, detail="Los invitados no pueden mover skills"
-        )
-    if not await _storage.move_folder(skill_id, body.folder_id):
-        raise HTTPException(status_code=404, detail="Skill no encontrada")
-    return {"ok": True}
 
 
 @router.delete("/{scope}/{skill_id}")

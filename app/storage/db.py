@@ -37,7 +37,6 @@ CREATE TABLE IF NOT EXISTS agents (
     data        TEXT NOT NULL,
     tokens_in   INTEGER NOT NULL DEFAULT 0,
     tokens_out  INTEGER NOT NULL DEFAULT 0,
-    folder_id   TEXT,
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL,
     PRIMARY KEY (id, owner_id)
@@ -49,7 +48,6 @@ CREATE TABLE IF NOT EXISTS skills (
     scope       TEXT NOT NULL DEFAULT 'private',
     data        TEXT NOT NULL,
     content     TEXT NOT NULL DEFAULT '',
-    folder_id   TEXT,
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL,
     PRIMARY KEY (id, owner_id)
@@ -59,7 +57,6 @@ CREATE TABLE IF NOT EXISTS memory_files (
     id          TEXT NOT NULL,
     owner_id    TEXT NOT NULL DEFAULT 'admin',
     content     TEXT NOT NULL DEFAULT '',
-    folder_id   TEXT,
     updated_at  TEXT NOT NULL,
     PRIMARY KEY (id, owner_id)
 );
@@ -107,21 +104,11 @@ CREATE TABLE IF NOT EXISTS knowledge_items (
     source     TEXT NOT NULL,
     content    TEXT NOT NULL,
     char_count INTEGER NOT NULL DEFAULT 0,
-    folder_id  TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_knowledge_owner
     ON knowledge_items(owner_id, type, created_at DESC);
-CREATE TABLE IF NOT EXISTS knowledge_folders (
-    id         TEXT PRIMARY KEY,
-    owner_id   TEXT NOT NULL,
-    section    TEXT NOT NULL,
-    name       TEXT NOT NULL,
-    created_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_kf_owner
-    ON knowledge_folders(owner_id, section);
 CREATE TABLE IF NOT EXISTS users (
     username              TEXT PRIMARY KEY,
     email                 TEXT UNIQUE NOT NULL,
@@ -148,11 +135,6 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE INDEX IF NOT EXISTS idx_users_email    ON users (email);
 CREATE INDEX IF NOT EXISTS idx_users_username ON users (username);
 CREATE INDEX IF NOT EXISTS idx_users_stripe_customer ON users (stripe_customer_id);
--- Índices de folder_id para filtrado y cascade delete por carpeta
-CREATE INDEX IF NOT EXISTS idx_agents_folder     ON agents(folder_id);
-CREATE INDEX IF NOT EXISTS idx_skills_folder     ON skills(folder_id);
-CREATE INDEX IF NOT EXISTS idx_knowledge_folder  ON knowledge_items(folder_id);
-CREATE INDEX IF NOT EXISTS idx_memory_folder     ON memory_files(folder_id);
 CREATE TABLE IF NOT EXISTS resource_workspace_shares (
     resource_type TEXT NOT NULL,
     resource_id   TEXT NOT NULL,
@@ -264,7 +246,6 @@ CREATE TABLE IF NOT EXISTS agents (
     data        TEXT NOT NULL,
     tokens_in   INTEGER NOT NULL DEFAULT 0,
     tokens_out  INTEGER NOT NULL DEFAULT 0,
-    folder_id   TEXT,
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL,
     PRIMARY KEY (id, owner_id)
@@ -276,7 +257,6 @@ CREATE TABLE IF NOT EXISTS skills (
     scope       TEXT NOT NULL DEFAULT 'private',
     data        TEXT NOT NULL,
     content     TEXT NOT NULL DEFAULT '',
-    folder_id   TEXT,
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL,
     PRIMARY KEY (id, owner_id)
@@ -286,7 +266,6 @@ CREATE TABLE IF NOT EXISTS memory_files (
     id          TEXT NOT NULL,
     owner_id    TEXT NOT NULL DEFAULT 'admin',
     content     TEXT NOT NULL DEFAULT '',
-    folder_id   TEXT,
     updated_at  TEXT NOT NULL,
     PRIMARY KEY (id, owner_id)
 );
@@ -334,21 +313,11 @@ CREATE TABLE IF NOT EXISTS knowledge_items (
     source     TEXT NOT NULL,
     content    TEXT NOT NULL,
     char_count INTEGER NOT NULL DEFAULT 0,
-    folder_id  TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_knowledge_owner
     ON knowledge_items(owner_id, type, created_at DESC);
-CREATE TABLE IF NOT EXISTS knowledge_folders (
-    id         TEXT PRIMARY KEY,
-    owner_id   TEXT NOT NULL,
-    section    TEXT NOT NULL,
-    name       TEXT NOT NULL,
-    created_at TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_kf_owner
-    ON knowledge_folders(owner_id, section);
 CREATE TABLE IF NOT EXISTS users (
     username           TEXT PRIMARY KEY,
     email              TEXT UNIQUE NOT NULL,
@@ -375,11 +344,6 @@ CREATE TABLE IF NOT EXISTS users (
 CREATE INDEX IF NOT EXISTS idx_users_email    ON users (email);
 CREATE INDEX IF NOT EXISTS idx_users_username ON users (username);
 CREATE INDEX IF NOT EXISTS idx_users_stripe_customer ON users (stripe_customer_id);
--- Índices de folder_id para filtrado y cascade delete por carpeta
-CREATE INDEX IF NOT EXISTS idx_agents_folder     ON agents(folder_id);
-CREATE INDEX IF NOT EXISTS idx_skills_folder     ON skills(folder_id);
-CREATE INDEX IF NOT EXISTS idx_knowledge_folder  ON knowledge_items(folder_id);
-CREATE INDEX IF NOT EXISTS idx_memory_folder     ON memory_files(folder_id);
 CREATE TABLE IF NOT EXISTS resource_workspace_shares (
     resource_type TEXT NOT NULL,
     resource_id   TEXT NOT NULL,
@@ -540,13 +504,6 @@ async def _migrate_sqlite(conn: Any) -> None:
                 SELECT 'admin', provider, data, linked_at FROM _accounts_old;
             DROP TABLE _accounts_old;
         """)
-
-    # 3. Add folder_id to knowledge_items if missing
-    cur = await conn.execute("PRAGMA table_info(knowledge_items)")
-    ki_cols = {row[1] for row in await cur.fetchall()}
-    if "folder_id" not in ki_cols:
-        await conn.execute("ALTER TABLE knowledge_items ADD COLUMN folder_id TEXT")
-        await conn.commit()
 
     # 4. Create team tables if missing
     cur = await conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
@@ -847,7 +804,7 @@ async def _migrate_sqlite(conn: Any) -> None:
                 id TEXT NOT NULL, owner_id TEXT NOT NULL DEFAULT '__public__',
                 scope TEXT NOT NULL DEFAULT 'private', data TEXT NOT NULL,
                 tokens_in INTEGER NOT NULL DEFAULT 0, tokens_out INTEGER NOT NULL DEFAULT 0,
-                folder_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+                created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
                 PRIMARY KEY (id, owner_id)
             );
             CREATE INDEX IF NOT EXISTS idx_agents_owner ON agents(owner_id, scope, updated_at DESC);
@@ -857,7 +814,7 @@ async def _migrate_sqlite(conn: Any) -> None:
             CREATE TABLE IF NOT EXISTS skills (
                 id TEXT NOT NULL, owner_id TEXT NOT NULL DEFAULT '__public__',
                 scope TEXT NOT NULL DEFAULT 'private', data TEXT NOT NULL,
-                content TEXT NOT NULL DEFAULT '', folder_id TEXT,
+                content TEXT NOT NULL DEFAULT '',
                 created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
                 PRIMARY KEY (id, owner_id)
             );
@@ -867,7 +824,7 @@ async def _migrate_sqlite(conn: Any) -> None:
         await conn.executescript("""
             CREATE TABLE IF NOT EXISTS memory_files (
                 id TEXT NOT NULL, owner_id TEXT NOT NULL DEFAULT 'admin',
-                content TEXT NOT NULL DEFAULT '', folder_id TEXT,
+                content TEXT NOT NULL DEFAULT '',
                 updated_at TEXT NOT NULL, PRIMARY KEY (id, owner_id)
             );
             CREATE INDEX IF NOT EXISTS idx_memory_owner ON memory_files(owner_id, updated_at DESC);
@@ -1014,16 +971,6 @@ async def _migrate_users_json_sqlite(conn: Any) -> None:
 
 async def _migrate_pg(conn: Any) -> None:
     """Incremental migrations for pre-existing PostgreSQL databases."""
-    await conn.execute(
-        "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS folder_id TEXT"
-    )
-    # Añadir folder_id a agents, skills y memory_files si no existe (tablas creadas
-    # antes de que se introdujera la columna en el esquema).
-    await conn.execute("ALTER TABLE agents ADD COLUMN IF NOT EXISTS folder_id TEXT")
-    await conn.execute("ALTER TABLE skills ADD COLUMN IF NOT EXISTS folder_id TEXT")
-    await conn.execute(
-        "ALTER TABLE memory_files ADD COLUMN IF NOT EXISTS folder_id TEXT"
-    )
     await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token TEXT")
     await conn.execute(
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token_expires TEXT"
@@ -1037,7 +984,7 @@ async def _migrate_pg(conn: Any) -> None:
         id TEXT NOT NULL, owner_id TEXT NOT NULL DEFAULT '__public__',
         scope TEXT NOT NULL DEFAULT 'private', data TEXT NOT NULL,
         tokens_in INTEGER NOT NULL DEFAULT 0, tokens_out INTEGER NOT NULL DEFAULT 0,
-        folder_id TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+        created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
         PRIMARY KEY (id, owner_id))""")
     await conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_agents_owner ON agents(owner_id, scope, updated_at DESC)"
@@ -1045,7 +992,7 @@ async def _migrate_pg(conn: Any) -> None:
     await conn.execute("""CREATE TABLE IF NOT EXISTS skills (
         id TEXT NOT NULL, owner_id TEXT NOT NULL DEFAULT '__public__',
         scope TEXT NOT NULL DEFAULT 'private', data TEXT NOT NULL,
-        content TEXT NOT NULL DEFAULT '', folder_id TEXT,
+        content TEXT NOT NULL DEFAULT '',
         created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
         PRIMARY KEY (id, owner_id))""")
     await conn.execute(
@@ -1053,7 +1000,7 @@ async def _migrate_pg(conn: Any) -> None:
     )
     await conn.execute("""CREATE TABLE IF NOT EXISTS memory_files (
         id TEXT NOT NULL, owner_id TEXT NOT NULL DEFAULT 'admin',
-        content TEXT NOT NULL DEFAULT '', folder_id TEXT,
+        content TEXT NOT NULL DEFAULT '',
         updated_at TEXT NOT NULL, PRIMARY KEY (id, owner_id))""")
     await conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_memory_owner ON memory_files(owner_id, updated_at DESC)"

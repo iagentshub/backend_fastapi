@@ -43,7 +43,6 @@ class AgentSummary(TypedDict, total=False):
     knowledge: list
     tokens_in: int
     tokens_out: int
-    folder_id: Optional[str]
     scope: str
     created_at: Optional[str]
     updated_at: Optional[str]
@@ -342,17 +341,16 @@ class AgentStorage:
         data_json = json.dumps(data, ensure_ascii=False)
         tokens_in = int(data.get("tokens_in") or 0)
         tokens_out = int(data.get("tokens_out") or 0)
-        folder_id = data.get("folder_id")
         now = _now()
         created_at = str(data.get("created_at") or now)
         updated_at = str(data.get("updated_at") or now)
         if IS_PG:
             await conn.execute(
-                "INSERT INTO agents (id, owner_id, scope, data, tokens_in, tokens_out, folder_id, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "INSERT INTO agents (id, owner_id, scope, data, tokens_in, tokens_out, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT (id, owner_id) DO UPDATE SET scope=EXCLUDED.scope, data=EXCLUDED.data, "
                 "tokens_in=EXCLUDED.tokens_in, tokens_out=EXCLUDED.tokens_out, "
-                "folder_id=EXCLUDED.folder_id, updated_at=EXCLUDED.updated_at",
+                "updated_at=EXCLUDED.updated_at",
                 (
                     agent_id,
                     owner_id,
@@ -360,7 +358,6 @@ class AgentStorage:
                     data_json,
                     tokens_in,
                     tokens_out,
-                    folder_id,
                     created_at,
                     updated_at,
                 ),
@@ -368,8 +365,8 @@ class AgentStorage:
         else:
             await conn.execute(
                 "INSERT OR REPLACE INTO agents "
-                "(id, owner_id, scope, data, tokens_in, tokens_out, folder_id, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "(id, owner_id, scope, data, tokens_in, tokens_out, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     agent_id,
                     owner_id,
@@ -377,7 +374,6 @@ class AgentStorage:
                     data_json,
                     tokens_in,
                     tokens_out,
-                    folder_id,
                     created_at,
                     updated_at,
                 ),
@@ -387,7 +383,6 @@ class AgentStorage:
         d: Dict[str, Any] = json.loads(row["data"])
         d["tokens_in"] = row["tokens_in"]
         d["tokens_out"] = row["tokens_out"]
-        d["folder_id"] = row["folder_id"]
         d["scope"] = row["scope"]
         owner = row["owner_id"]
         d["owner_id"] = None if owner == _PUBLIC_OWNER else owner
@@ -404,24 +399,24 @@ class AgentStorage:
         async with open_db() as conn:
             if scope == "public":
                 rows = await conn.fetchall(
-                    "SELECT id, owner_id, scope, data, tokens_in, tokens_out, folder_id "
+                    "SELECT id, owner_id, scope, data, tokens_in, tokens_out "
                     "FROM agents WHERE scope='public' ORDER BY created_at ASC"
                 )
             elif scope == "private":
                 if owner_id:
                     rows = await conn.fetchall(
-                        "SELECT id, owner_id, scope, data, tokens_in, tokens_out, folder_id "
+                        "SELECT id, owner_id, scope, data, tokens_in, tokens_out "
                         "FROM agents WHERE scope='private' AND owner_id=? ORDER BY created_at ASC",
                         (owner_id,),
                     )
                 else:
                     rows = await conn.fetchall(
-                        "SELECT id, owner_id, scope, data, tokens_in, tokens_out, folder_id "
+                        "SELECT id, owner_id, scope, data, tokens_in, tokens_out "
                         "FROM agents WHERE scope='private' ORDER BY created_at ASC"
                     )
             else:  # all
                 rows = await conn.fetchall(
-                    "SELECT id, owner_id, scope, data, tokens_in, tokens_out, folder_id "
+                    "SELECT id, owner_id, scope, data, tokens_in, tokens_out "
                     "FROM agents ORDER BY created_at ASC"
                 )
         return [self._row_to_dict(r) for r in rows]
@@ -435,20 +430,20 @@ class AgentStorage:
         async with open_db() as conn:
             if scope == "public":
                 row = await conn.fetchone(
-                    "SELECT id, owner_id, scope, data, tokens_in, tokens_out, folder_id "
+                    "SELECT id, owner_id, scope, data, tokens_in, tokens_out "
                     "FROM agents WHERE id=? AND scope='public' LIMIT 1",
                     (agent_id,),
                 )
             elif scope == "private":
                 row = await conn.fetchone(
-                    "SELECT id, owner_id, scope, data, tokens_in, tokens_out, folder_id "
+                    "SELECT id, owner_id, scope, data, tokens_in, tokens_out "
                     "FROM agents WHERE id=? AND scope='private' LIMIT 1",
                     (agent_id,),
                 )
             else:
                 # prefer private, fall back to public
                 row = await conn.fetchone(
-                    "SELECT id, owner_id, scope, data, tokens_in, tokens_out, folder_id "
+                    "SELECT id, owner_id, scope, data, tokens_in, tokens_out "
                     "FROM agents WHERE id=? ORDER BY CASE scope WHEN 'private' THEN 0 ELSE 1 END LIMIT 1",
                     (agent_id,),
                 )
@@ -485,31 +480,6 @@ class AgentStorage:
             await self._upsert(conn, agent_id, actual_owner, scope, data)
             await conn.commit()
         return data
-
-    async def move_folder(
-        self, agent_id: str, folder_id: Optional[str], owner_id: Optional[str] = None
-    ) -> bool:
-        await self._ensure_migrated()
-        from app.storage.db import open_db
-
-        async with open_db() as conn:
-            row = await conn.fetchone(
-                "SELECT data FROM agents WHERE id=? AND scope='private' LIMIT 1",
-                (agent_id,),
-            )
-            if not row:
-                return False
-            data = json.loads(row["data"])
-            if folder_id:
-                data["folder_id"] = folder_id
-            else:
-                data.pop("folder_id", None)
-            await conn.execute(
-                "UPDATE agents SET folder_id=?, data=?, updated_at=? WHERE id=? AND scope='private'",
-                (folder_id, json.dumps(data, ensure_ascii=False), _now(), agent_id),
-            )
-            await conn.commit()
-        return True
 
     async def add_tokens(
         self,
@@ -573,7 +543,6 @@ class AgentStorage:
             "knowledge": a.get("knowledge", []),
             "tokens_in": int(a.get("tokens_in") or 0),
             "tokens_out": int(a.get("tokens_out") or 0),
-            "folder_id": a.get("folder_id"),
             "scope": scope,
             "created_at": a.get("created_at"),
             "updated_at": a.get("updated_at"),
@@ -662,7 +631,6 @@ class SkillStorage:
         from app.storage.db import IS_PG
 
         content = str(data.get("content") or "")
-        folder_id = data.get("folder_id")
         now = _now()
         created_at = str(data.get("created_at") or now)
         updated_at = str(data.get("updated_at") or now)
@@ -670,17 +638,16 @@ class SkillStorage:
         meta_json = json.dumps(meta, ensure_ascii=False)
         if IS_PG:
             await conn.execute(
-                "INSERT INTO skills (id, owner_id, scope, data, content, folder_id, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                "INSERT INTO skills (id, owner_id, scope, data, content, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT (id, owner_id) DO UPDATE SET scope=EXCLUDED.scope, data=EXCLUDED.data, "
-                "content=EXCLUDED.content, folder_id=EXCLUDED.folder_id, updated_at=EXCLUDED.updated_at",
+                "content=EXCLUDED.content, updated_at=EXCLUDED.updated_at",
                 (
                     skill_id,
                     owner_id,
                     scope,
                     meta_json,
                     content,
-                    folder_id,
                     created_at,
                     updated_at,
                 ),
@@ -688,15 +655,14 @@ class SkillStorage:
         else:
             await conn.execute(
                 "INSERT OR REPLACE INTO skills "
-                "(id, owner_id, scope, data, content, folder_id, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "(id, owner_id, scope, data, content, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (
                     skill_id,
                     owner_id,
                     scope,
                     meta_json,
                     content,
-                    folder_id,
                     created_at,
                     updated_at,
                 ),
@@ -707,7 +673,6 @@ class SkillStorage:
         if include_content:
             d["content"] = row["content"]
         d["scope"] = row["scope"]
-        d["folder_id"] = row["folder_id"]
         owner = row["owner_id"]
         d["owner_id"] = None if owner == _PUBLIC_OWNER else owner
         return d
@@ -723,24 +688,24 @@ class SkillStorage:
         async with open_db() as conn:
             if scope == "public":
                 rows = await conn.fetchall(
-                    "SELECT id, owner_id, scope, data, content, folder_id "
+                    "SELECT id, owner_id, scope, data, content "
                     "FROM skills WHERE scope='public' ORDER BY created_at ASC"
                 )
             elif scope == "private":
                 if owner_id:
                     rows = await conn.fetchall(
-                        "SELECT id, owner_id, scope, data, content, folder_id "
+                        "SELECT id, owner_id, scope, data, content "
                         "FROM skills WHERE scope='private' AND owner_id=? ORDER BY created_at ASC",
                         (owner_id,),
                     )
                 else:
                     rows = await conn.fetchall(
-                        "SELECT id, owner_id, scope, data, content, folder_id "
+                        "SELECT id, owner_id, scope, data, content "
                         "FROM skills WHERE scope='private' ORDER BY created_at ASC"
                     )
             else:  # all
                 rows = await conn.fetchall(
-                    "SELECT id, owner_id, scope, data, content, folder_id "
+                    "SELECT id, owner_id, scope, data, content "
                     "FROM skills ORDER BY created_at ASC"
                 )
         return [self._row_to_dict(r, include_content=False) for r in rows]
@@ -753,14 +718,14 @@ class SkillStorage:
 
         async with open_db() as conn:
             row = await conn.fetchone(
-                "SELECT id, owner_id, scope, data, content, folder_id "
+                "SELECT id, owner_id, scope, data, content "
                 "FROM skills WHERE id=? AND scope=? LIMIT 1",
                 (skill_id, scope),
             )
             if not row:
                 # try slug variant
                 row = await conn.fetchone(
-                    "SELECT id, owner_id, scope, data, content, folder_id "
+                    "SELECT id, owner_id, scope, data, content "
                     "FROM skills WHERE id=? AND scope=? LIMIT 1",
                     (_slug(skill_id), scope),
                 )
@@ -808,45 +773,13 @@ class SkillStorage:
             ],
             "scope": scope,
             "owner_id": actual_owner,
-            "folder_id": payload.get("folder_id") or None,
             "created_at": existing.get("created_at", now) if existing else now,
             "updated_at": now,
         }
         async with open_db() as conn:
             await self._upsert(conn, skill_id, actual_owner, scope, data)
             await conn.commit()
-        data.setdefault("folder_id", None)
         return data
-
-    async def move_folder(
-        self, skill_id: str, folder_id: Optional[str], owner_id: Optional[str] = None
-    ) -> bool:
-        await self._ensure_migrated()
-        from app.storage.db import open_db
-
-        async with open_db() as conn:
-            row = await conn.fetchone(
-                "SELECT data FROM skills WHERE id=? AND scope='private' LIMIT 1",
-                (skill_id,),
-            )
-            if not row:
-                row = await conn.fetchone(
-                    "SELECT data FROM skills WHERE id=? AND scope='private' LIMIT 1",
-                    (_slug(skill_id),),
-                )
-            if not row:
-                return False
-            meta = json.loads(row["data"])
-            if folder_id:
-                meta["folder_id"] = folder_id
-            else:
-                meta.pop("folder_id", None)
-            await conn.execute(
-                "UPDATE skills SET folder_id=?, data=?, updated_at=? WHERE id=? AND scope='private'",
-                (folder_id, json.dumps(meta, ensure_ascii=False), _now(), skill_id),
-            )
-            await conn.commit()
-        return True
 
     async def delete(
         self, scope: str, skill_id: str, owner_id: Optional[str] = None
@@ -900,23 +833,15 @@ class MemoryStorage:
                     return
             except Exception:
                 return
-            meta_path = self._root_dir / "_folder_meta.json"
-            folder_meta: Dict[str, Any] = {}
-            if meta_path.exists():
-                try:
-                    folder_meta = json.loads(meta_path.read_text(encoding="utf-8"))
-                except Exception:
-                    pass
             now = _now()
             for p in sorted(self._root_dir.glob("*.md")):
                 try:
                     content = p.read_text(encoding="utf-8")
                     mem_id = p.stem
-                    folder_id = folder_meta.get(p.name)
                     await conn.execute(
-                        "INSERT OR IGNORE INTO memory_files (id, owner_id, content, folder_id, updated_at) "
-                        "VALUES (?, ?, ?, ?, ?)",
-                        (mem_id, "admin", content, folder_id, now),
+                        "INSERT OR IGNORE INTO memory_files (id, owner_id, content, updated_at) "
+                        "VALUES (?, ?, ?, ?)",
+                        (mem_id, "admin", content, now),
                     )
                 except Exception as exc:
                     flog.warning(f"[memory] Migración fallida {p}: {exc}")
@@ -940,7 +865,7 @@ class MemoryStorage:
 
         async with open_db() as conn:
             rows = await conn.fetchall(
-                "SELECT id, content, folder_id, updated_at FROM memory_files "
+                "SELECT id, content, updated_at FROM memory_files "
                 "WHERE owner_id=? ORDER BY updated_at DESC",
                 (owner_id,),
             )
@@ -950,7 +875,6 @@ class MemoryStorage:
                 "filename": f"{r['id']}.md",
                 "size": len(r["content"]),
                 "updated_at": r["updated_at"],
-                "folder_id": r["folder_id"],
             }
             for r in rows
         ]
@@ -993,29 +917,7 @@ class MemoryStorage:
             "filename": f"{mem_id}.md",
             "size": len(content),
             "updated_at": now,
-            "folder_id": None,
         }
-
-    async def move_folder(
-        self, filename: str, folder_id: Optional[str], owner_id: str = "admin"
-    ) -> bool:
-        await self._ensure_migrated()
-        mem_id = _safe_mem_id(filename)
-        from app.storage.db import open_db
-
-        async with open_db() as conn:
-            row = await conn.fetchone(
-                "SELECT id FROM memory_files WHERE id=? AND owner_id=?",
-                (mem_id, owner_id),
-            )
-            if not row:
-                return False
-            await conn.execute(
-                "UPDATE memory_files SET folder_id=?, updated_at=? WHERE id=? AND owner_id=?",
-                (folder_id, _now(), mem_id, owner_id),
-            )
-            await conn.commit()
-        return True
 
     async def delete(self, filename: str, owner_id: str = "admin") -> bool:
         await self._ensure_migrated()
