@@ -1405,11 +1405,23 @@ async def admin_impersonate(
 ) -> Dict[str, Any]:
     if username == admin:
         raise HTTPException(status_code=400, detail="Ya eres este usuario")
-    if not await get_user_by_username(username):
+
+    target_user = await get_user_by_username(username)
+    if not target_user:
         raise HTTPException(status_code=404, detail="Usuario no encontrado")
+
+    # Verificar que la cuenta del usuario objetivo esté activa
+    if not target_user.get("is_active", 1):
+        raise HTTPException(status_code=400, detail="No se puede impersonar una cuenta desactivada")
+
     # N3: registrar la impersonación para auditoría de seguridad
     flog.warning(f"[admin] IMPERSONACIÓN: admin={admin!r} → usuario={username!r}")
+
+    # Crear token para el workspace personal del usuario impersonado
+    # (workspace_id=username por defecto)
     token = create_token(username)
+
+    # Establecer la cookie del nuevo token
     response.set_cookie(
         "ga_token",
         token,
@@ -1418,4 +1430,6 @@ async def admin_impersonate(
         secure=SECURE_COOKIES,
         max_age=43200,
     )
+
+    flog.ok(f"[admin] Token de impersonación creado exitosamente para {username!r}")
     return {"ok": True, "username": username}
