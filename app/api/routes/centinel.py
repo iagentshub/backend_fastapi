@@ -453,6 +453,7 @@ class StressRequest(BaseModel):
     users: int = 10  # usuarios concurrentes
     duration: int = 30  # segundos totales
     ramp_up: int = 0  # segundos de rampa inicial
+    timeout: float = 10.0  # timeout por petición en segundos
     fluctuate_users: bool = False  # variar carga aleatoriamente durante el test
     token: Optional[str] = None  # cookie ga_token si es necesario
 
@@ -611,14 +612,15 @@ async def _execute_stress(run_id: str, cfg: StressRequest) -> None:
             delay = (worker_id / max(cfg.users, 1)) * cfg.ramp_up
             await asyncio.sleep(delay)
 
+        # Cliente propio por worker: evita contención en pool compartido
         async with httpx.AsyncClient(
             base_url=base_url,
             headers=headers,
-            timeout=10.0,
-            limits=httpx.Limits(max_keepalive_connections=5, max_connections=10),
+            timeout=cfg.timeout,
+            limits=httpx.Limits(max_keepalive_connections=2, max_connections=4),
         ) as client:
             while time.monotonic() < deadline and _stress["status"] == "running":
-                # Modo Random: seleccionar endpoint y método al azar
+                # Modo Random: endpoint y método al azar
                 if is_random_endpoint:
                     req_path, req_method = _random.choice(_RANDOM_ENDPOINTS)
                 else:
@@ -657,7 +659,6 @@ async def _execute_stress(run_id: str, cfg: StressRequest) -> None:
                     if is_error:
                         error_count += 1
                         tick_errors += 1
-                        # Guardar detalle del error (max 200)
                         if len(_stress["errors"]) < 200:
                             _stress["errors"].append(
                                 {
@@ -672,7 +673,6 @@ async def _execute_stress(run_id: str, cfg: StressRequest) -> None:
                                 }
                             )
 
-                # Fluctuación: pausa aleatoria entre peticiones (0–200ms)
                 if cfg.fluctuate_users:
                     await asyncio.sleep(_random.uniform(0, 0.2))
 
