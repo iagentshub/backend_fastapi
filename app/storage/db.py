@@ -600,7 +600,10 @@ async def _migrate_sqlite(conn: Any) -> None:
         ("deletion_requested_at", "TEXT"),
         ("deletion_token", "TEXT"),
         ("stripe_customer_id", "TEXT"),
-        ("password_changed_at", "TEXT"),  # A2: para invalidar tokens tras cambio de contraseña
+        (
+            "password_changed_at",
+            "TEXT",
+        ),  # A2: para invalidar tokens tras cambio de contraseña
     ]:
         if col not in user_cols:
             try:
@@ -1013,6 +1016,13 @@ async def _migrate_pg(conn: Any) -> None:
     """Incremental migrations for pre-existing PostgreSQL databases."""
     await conn.execute(
         "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS folder_id TEXT"
+    )
+    # Añadir folder_id a agents, skills y memory_files si no existe (tablas creadas
+    # antes de que se introdujera la columna en el esquema).
+    await conn.execute("ALTER TABLE agents ADD COLUMN IF NOT EXISTS folder_id TEXT")
+    await conn.execute("ALTER TABLE skills ADD COLUMN IF NOT EXISTS folder_id TEXT")
+    await conn.execute(
+        "ALTER TABLE memory_files ADD COLUMN IF NOT EXISTS folder_id TEXT"
     )
     await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token TEXT")
     await conn.execute(

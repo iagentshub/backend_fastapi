@@ -134,7 +134,34 @@ def test_save_agent_public_scope_raises_422(admin_client):
     assert r.json()["scope"] == "public"
 
 
-# ── delete_agent: ValueError → 403 — línea 183 ───────────────────────────────
+def test_save_agent_scan_import_payload(admin_client):
+    """Payload exacto que envía agents-scan.js _importAgent para un agente Claude.
+
+    Cubre el bug donde folder_id faltaba en la migración PG → 500 en producción.
+    """
+    payload = {
+        "name": "Scan Import Agent",
+        "description": "Importado desde carpeta .claude",
+        "agent_type": "claude",
+        "connection_id": None,
+        "system_prompt": "You are a helpful assistant.",
+        "temperature": 0.7,
+        "skills": [],
+        "knowledge": [],
+        "use_memory": False,
+        "routines": [],
+        "scope": "private",
+        "model": "",
+        "extended_thinking": False,
+        "cache_control": False,
+        "thinking_budget_tokens": 10000,
+    }
+    r = admin_client.post("/api/agents", json=payload)
+    assert r.status_code == 200, r.text
+    data = r.json()
+    assert data["name"] == "Scan Import Agent"
+    assert data["agent_type"] == "claude"
+    assert data["scope"] == "private"
 
 
 def test_delete_agent_value_error_returns_403(admin_client):
