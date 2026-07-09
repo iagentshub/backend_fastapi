@@ -11,6 +11,7 @@ Endpoints:
   GET  /api/admin/centinel/history         Últimas 5 ejecuciones
   GET  /api/admin/centinel/stream/{run_id} SSE stream de un run
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -32,28 +33,38 @@ from app.utils import flog
 router = APIRouter(prefix="/api/admin/centinel", tags=["centinel"])
 
 # ── Configuración ────────────────────────────────────────────────────────────
-CENTINEL_ENABLED: bool = os.getenv("CENTINEL_ENABLED", "true").lower() in ("1", "true", "yes")
-_BACKEND_DIR: str = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..", ".."))
+CENTINEL_ENABLED: bool = os.getenv("CENTINEL_ENABLED", "true").lower() in (
+    "1",
+    "true",
+    "yes",
+)
+_BACKEND_DIR: str = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "..", "..")
+)
 
 # ── Estado global ────────────────────────────────────────────────────────────
 _run: Dict[str, Any] = {
     "run_id": None,
     "proc": None,
-    "status": "idle",   # idle | running | done | aborted | error
+    "status": "idle",  # idle | running | done | aborted | error
     "target": None,
     "started_at": None,
     "finished_at": None,
-    "events": [],       # lista de todos los eventos emitidos (para replay)
+    "events": [],  # lista de todos los eventos emitidos (para replay)
     "summary": {},
     "failed_ids": [],
 }
 _subscribers: List[asyncio.Queue] = []
 _history: List[Dict[str, Any]] = []
 
+
 # ── Helpers ──────────────────────────────────────────────────────────────────
 def _guard() -> None:
     if not CENTINEL_ENABLED:
-        raise HTTPException(status_code=403, detail="Centinel no está habilitado (CENTINEL_ENABLED=false)")
+        raise HTTPException(
+            status_code=403,
+            detail="Centinel no está habilitado (CENTINEL_ENABLED=false)",
+        )
 
 
 def _sse(data: dict) -> str:
@@ -118,6 +129,7 @@ def _build_tree(lines: List[str]) -> dict:
 
 # ── Endpoints ────────────────────────────────────────────────────────────────
 
+
 @router.get("/status")
 async def get_status(_: str = Depends(require_admin)) -> dict:
     _guard()
@@ -137,8 +149,13 @@ async def get_tree(_: str = Depends(require_admin)) -> dict:
     _guard()
     try:
         proc = await asyncio.create_subprocess_exec(
-            sys.executable, "-m", "pytest", "tests/",
-            "--collect-only", "-q", "--no-header",
+            sys.executable,
+            "-m",
+            "pytest",
+            "tests/",
+            "--collect-only",
+            "-q",
+            "--no-header",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.DEVNULL,
             cwd=_BACKEND_DIR,
@@ -164,7 +181,9 @@ async def start_run(
 ) -> dict:
     _guard()
     if _run["status"] == "running":
-        raise HTTPException(status_code=409, detail="Ya hay un run en curso. Espera o abórtalo.")
+        raise HTTPException(
+            status_code=409, detail="Ya hay un run en curso. Espera o abórtalo."
+        )
 
     target = body.target.strip()
     # Seguridad: target solo dentro de tests/
@@ -176,17 +195,19 @@ async def start_run(
         target = " ".join(_run["failed_ids"])
 
     run_id = str(uuid.uuid4())
-    _run.update({
-        "run_id": run_id,
-        "proc": None,
-        "status": "running",
-        "target": target,
-        "started_at": time.time(),
-        "finished_at": None,
-        "events": [],
-        "summary": {},
-        "failed_ids": [],
-    })
+    _run.update(
+        {
+            "run_id": run_id,
+            "proc": None,
+            "status": "running",
+            "target": target,
+            "started_at": time.time(),
+            "finished_at": None,
+            "events": [],
+            "summary": {},
+            "failed_ids": [],
+        }
+    )
     background_tasks.add_task(_execute_run, run_id, target)
     flog.info(f"[centinel] run iniciado id={run_id[:8]} target={target!r}")
     return {"run_id": run_id, "status": "running"}
@@ -231,6 +252,7 @@ async def stream_run(run_id: str, _: str = Depends(require_admin)) -> StreamingR
 
 # ── SSE generator ─────────────────────────────────────────────────────────────
 
+
 async def _sse_generator(run_id: str):
     q: asyncio.Queue = asyncio.Queue(maxsize=5000)
     _subscribers.append(q)
@@ -258,19 +280,26 @@ async def _sse_generator(run_id: str):
 # ── Background runner ─────────────────────────────────────────────────────────
 
 _RE_TEST = re.compile(
-    r'^(tests/[^\s:]+)::(\S+)\s+(PASSED|FAILED|ERROR|SKIPPED|XFAILED|XPASSED|WARNING)\s+\[?\s*(\d+)%'
+    r"^(tests/[^\s:]+)::(\S+)\s+(PASSED|FAILED|ERROR|SKIPPED|XFAILED|XPASSED|WARNING)\s+\[?\s*(\d+)%"
 )
-_RE_COLLECTING = re.compile(r'collected (\d+) items?')
-_RE_DURATION = re.compile(r'in ([\d.]+)s')
+_RE_COLLECTING = re.compile(r"collected (\d+) items?")
+_RE_DURATION = re.compile(r"in ([\d.]+)s")
 
 
 async def _execute_run(run_id: str, target: str) -> None:
     """Lanza pytest como subproceso y emite eventos SSE."""
     target_args = target.split() if " " in target else [target]
     cmd = [
-        sys.executable, "-m", "pytest", *target_args,
-        "-v", "--tb=short", "--no-header",
-        "--color=no", "-p", "no:cacheprovider",
+        sys.executable,
+        "-m",
+        "pytest",
+        *target_args,
+        "-v",
+        "--tb=short",
+        "--no-header",
+        "--color=no",
+        "-p",
+        "no:cacheprovider",
     ]
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -308,7 +337,10 @@ async def _execute_run(run_id: str, target: str) -> None:
                     traceback_buf = []
 
                 filepath, name, status_raw, progress = (
-                    m.group(1), m.group(2), m.group(3), int(m.group(4))
+                    m.group(1),
+                    m.group(2),
+                    m.group(3),
+                    int(m.group(4)),
                 )
                 status = status_raw.lower()
                 if status in ("xfailed", "skipped"):
@@ -326,7 +358,9 @@ async def _execute_run(run_id: str, target: str) -> None:
                 continue
 
             # ── summary line
-            if line.startswith("=") and ("passed" in line or "failed" in line or "error" in line):
+            if line.startswith("=") and (
+                "passed" in line or "failed" in line or "error" in line
+            ):
                 if pending_test:
                     if traceback_buf:
                         pending_test["traceback"] = "\n".join(traceback_buf)
@@ -362,12 +396,14 @@ async def _execute_run(run_id: str, target: str) -> None:
         _run["status"] = "done"
         _run["finished_at"] = time.time()
         _push_history()
-        await _broadcast({
-            "type": "done",
-            "exit_code": proc.returncode,
-            "status": "done",
-            "failed_ids": failed_ids,
-        })
+        await _broadcast(
+            {
+                "type": "done",
+                "exit_code": proc.returncode,
+                "status": "done",
+                "failed_ids": failed_ids,
+            }
+        )
         flog.info(f"[centinel] run finalizado id={run_id[:8]} rc={proc.returncode}")
 
     except Exception as exc:
@@ -375,3 +411,365 @@ async def _execute_run(run_id: str, target: str) -> None:
         _run["status"] = "error"
         _run["finished_at"] = time.time()
         await _broadcast({"type": "error", "message": str(exc)})
+
+
+# ════════════════════════════════════════════════════════════════════════════
+#  STRESS / PERFORMANCE TEST
+# ════════════════════════════════════════════════════════════════════════════
+
+import math
+import statistics
+
+_stress: Dict[str, Any] = {
+    "run_id": None,
+    "status": "idle",  # idle | running | done | aborted | error
+    "started_at": None,
+    "finished_at": None,
+    "events": [],  # para replay al reconectar
+    "result": {},
+    "ticks": [],  # historial de ticks (max 600) para el frontend
+    "errors": [],  # últimos 200 errores con detalle
+}
+_stress_subscribers: List[asyncio.Queue] = []
+
+
+def _stress_sse(data: dict) -> str:
+    return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+def _stress_broadcast_sync(event: dict) -> None:
+    _stress["events"].append(event)
+    for q in list(_stress_subscribers):
+        try:
+            q.put_nowait(event)
+        except asyncio.QueueFull:
+            pass
+
+
+class StressRequest(BaseModel):
+    method: str = "GET"  # GET | POST | DELETE | RANDOM
+    path: str = "/api/auth/me"  # ruta relativa o "RANDOM"
+    body: Optional[str] = None  # JSON body para POST
+    users: int = 10  # usuarios concurrentes
+    duration: int = 30  # segundos totales
+    ramp_up: int = 0  # segundos de rampa inicial
+    fluctuate_users: bool = False  # variar carga aleatoriamente durante el test
+    token: Optional[str] = None  # cookie ga_token si es necesario
+
+
+# Endpoints predefinidos para el modo RANDOM
+_RANDOM_ENDPOINTS: List[tuple] = [
+    ("/api/auth/me", "GET"),
+    ("/api/agents", "GET"),
+    ("/api/connections", "GET"),
+    ("/api/skills/private", "GET"),
+    ("/api/knowledge", "GET"),
+]
+
+
+@router.get("/stress/status")
+async def stress_status(_: str = Depends(require_admin)) -> dict:
+    _guard()
+    return {
+        "status": _stress["status"],
+        "run_id": _stress["run_id"],
+        "started_at": _stress["started_at"],
+        "finished_at": _stress["finished_at"],
+        "result": _stress["result"],
+        "ticks": _stress["ticks"],
+        "errors": _stress["errors"],  # detalle de los últimos errores
+    }
+
+
+@router.post("/stress/run")
+async def stress_run(
+    body: StressRequest,
+    background_tasks: BackgroundTasks,
+    _: str = Depends(require_admin),
+) -> dict:
+    _guard()
+    if _stress["status"] == "running":
+        raise HTTPException(
+            status_code=409, detail="Ya hay una prueba de estrés en curso."
+        )
+    run_id = str(uuid.uuid4())
+    _stress.update(
+        {
+            "run_id": run_id,
+            "status": "running",
+            "started_at": time.time(),
+            "finished_at": None,
+            "events": [],
+            "result": {},
+            "ticks": [],
+            "errors": [],
+        }
+    )
+    background_tasks.add_task(_execute_stress, run_id, body)
+    flog.info(
+        f"[centinel-stress] run iniciado id={run_id[:8]} path={body.path} users={body.users} dur={body.duration}s"
+    )
+    return {"run_id": run_id, "status": "running"}
+
+
+@router.delete("/stress/run")
+async def stress_abort(_: str = Depends(require_admin)) -> dict:
+    _guard()
+    if _stress["status"] != "running":
+        raise HTTPException(status_code=409, detail="No hay prueba de estrés en curso.")
+    _stress["status"] = "aborted"
+    _stress["finished_at"] = time.time()
+    _stress_broadcast_sync({"type": "stress_abort"})
+    flog.warning("[centinel-stress] prueba abortada")
+    return {"ok": True}
+
+
+@router.get("/stress/stream/{run_id}")
+async def stress_stream(
+    run_id: str, _: str = Depends(require_admin)
+) -> StreamingResponse:
+    _guard()
+    if _stress["run_id"] != run_id:
+        raise HTTPException(status_code=404, detail="Run no encontrado")
+    return StreamingResponse(
+        _stress_sse_generator(run_id),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
+async def _stress_sse_generator(run_id: str):
+    q: asyncio.Queue = asyncio.Queue(maxsize=2000)
+    _stress_subscribers.append(q)
+    try:
+        for event in list(_stress["events"]):
+            yield _stress_sse(event)
+        if _stress["status"] not in ("running",):
+            return
+        while True:
+            try:
+                event = await asyncio.wait_for(q.get(), timeout=15.0)
+                yield _stress_sse(event)
+                if event.get("type") in ("stress_done", "stress_abort", "stress_error"):
+                    break
+            except asyncio.TimeoutError:
+                yield ": ping\n\n"
+    finally:
+        if q in _stress_subscribers:
+            _stress_subscribers.remove(q)
+
+
+async def _execute_stress(run_id: str, cfg: StressRequest) -> None:
+    """Runner principal del stress test. Lanza N usuarios concurrentes."""
+    import httpx
+
+    # Determinar la URL base (mismo servidor)
+    base_url = f"http://127.0.0.1:{os.getenv('GAIA_PORT', '8765')}"
+    method = cfg.method.upper()
+    headers = {"Content-Type": "application/json"}
+    if cfg.token:
+        headers["Cookie"] = f"ga_token={cfg.token}"
+
+    # Acumuladores thread-safe via asyncio
+    lock = asyncio.Lock()
+    all_samples: List[float] = []  # tiempos de respuesta en ms
+    error_count = 0
+    request_count = 0
+
+    # Muestreo por segundo para la gráfica
+    tick_samples: List[float] = []
+    tick_errors = 0
+    last_tick = time.monotonic()
+    tick_index = 0
+
+    _stress_broadcast_sync(
+        {
+            "type": "stress_started",
+            "run_id": run_id,
+            "config": {
+                "method": method,
+                "path": cfg.path,
+                "users": cfg.users,
+                "duration": cfg.duration,
+                "ramp_up": cfg.ramp_up,
+                "fluctuate_users": cfg.fluctuate_users,
+            },
+        }
+    )
+
+    deadline = time.monotonic() + cfg.duration
+    is_random_endpoint = cfg.path == "RANDOM"
+    is_random_method = method == "RANDOM"
+
+    async def _worker(worker_id: int) -> None:
+        import random as _random
+
+        nonlocal error_count, request_count, tick_errors
+
+        # Ramp-up: cada worker arranca en un momento escalonado
+        if cfg.ramp_up > 0:
+            delay = (worker_id / max(cfg.users, 1)) * cfg.ramp_up
+            await asyncio.sleep(delay)
+
+        async with httpx.AsyncClient(
+            base_url=base_url,
+            headers=headers,
+            timeout=10.0,
+            limits=httpx.Limits(max_keepalive_connections=5, max_connections=10),
+        ) as client:
+            while time.monotonic() < deadline and _stress["status"] == "running":
+                # Modo Random: seleccionar endpoint y método al azar
+                if is_random_endpoint:
+                    req_path, req_method = _random.choice(_RANDOM_ENDPOINTS)
+                else:
+                    req_path = cfg.path
+                    req_method = method
+
+                if is_random_method and not is_random_endpoint:
+                    req_method = _random.choice(["GET", "POST", "DELETE"])
+
+                t0 = time.monotonic()
+                error_detail: Optional[str] = None
+                status_code: Optional[int] = None
+                try:
+                    if req_method == "GET":
+                        r = await client.get(req_path)
+                    elif req_method == "DELETE":
+                        r = await client.delete(req_path)
+                    else:
+                        r = await client.request(
+                            req_method, req_path, content=cfg.body or ""
+                        )
+                    elapsed_ms = (time.monotonic() - t0) * 1000
+                    status_code = r.status_code
+                    is_error = r.status_code >= 500
+                    if is_error:
+                        error_detail = f"HTTP {r.status_code}"
+                except Exception as exc:
+                    elapsed_ms = (time.monotonic() - t0) * 1000
+                    is_error = True
+                    error_detail = type(exc).__name__ + (f": {exc}" if str(exc) else "")
+
+                async with lock:
+                    all_samples.append(elapsed_ms)
+                    tick_samples.append(elapsed_ms)
+                    request_count += 1
+                    if is_error:
+                        error_count += 1
+                        tick_errors += 1
+                        # Guardar detalle del error (max 200)
+                        if len(_stress["errors"]) < 200:
+                            _stress["errors"].append(
+                                {
+                                    "t": round(
+                                        time.monotonic() - (deadline - cfg.duration), 1
+                                    ),
+                                    "method": req_method,
+                                    "path": req_path,
+                                    "status": status_code,
+                                    "msg": error_detail or "Error desconocido",
+                                    "ms": round(elapsed_ms, 1),
+                                }
+                            )
+
+                # Fluctuación: pausa aleatoria entre peticiones (0–200ms)
+                if cfg.fluctuate_users:
+                    await asyncio.sleep(_random.uniform(0, 0.2))
+
+    # Ticker: emite un evento SSE por segundo con stats agregadas
+    async def _ticker() -> None:
+        nonlocal tick_samples, tick_errors, tick_index, last_tick
+
+        while _stress["status"] == "running":
+            await asyncio.sleep(1.0)
+            if _stress["status"] != "running":
+                break
+            tick_index += 1
+            now = time.monotonic()
+            elapsed = now - last_tick
+            last_tick = now
+
+            async with lock:
+                samples = tick_samples[:]
+                errs = tick_errors
+                tick_samples = []
+                tick_errors = 0
+
+            if samples:
+                avg = statistics.mean(samples)
+                p95 = sorted(samples)[int(len(samples) * 0.95)]
+                mx = max(samples)
+                mn = min(samples)
+                rps = len(samples) / max(elapsed, 0.001)
+            else:
+                avg = p95 = mx = mn = rps = 0
+
+            tick_data = {
+                "type": "stress_tick",
+                "tick": tick_index,
+                "count": len(samples),
+                "errors": errs,
+                "avg_ms": round(avg, 1),
+                "p95_ms": round(p95, 1),
+                "min_ms": round(mn, 1),
+                "max_ms": round(mx, 1),
+                "rps": round(rps, 1),
+            }
+            # Guardar tick en el historial (max 600)
+            _stress["ticks"].append(tick_data)
+            if len(_stress["ticks"]) > 600:
+                _stress["ticks"] = _stress["ticks"][-600:]
+            _stress_broadcast_sync(tick_data)
+
+    try:
+        tasks = [asyncio.create_task(_worker(i)) for i in range(cfg.users)]
+        ticker_task = asyncio.create_task(_ticker())
+        await asyncio.gather(*tasks)
+        ticker_task.cancel()
+        try:
+            await ticker_task
+        except asyncio.CancelledError:
+            pass
+
+        if _stress["status"] == "aborted":
+            return
+
+        # Calcular resultado final
+        duration_s = time.monotonic() - (
+            _stress["started_at"] - time.time() + time.monotonic()
+        )
+        actual_duration = time.time() - _stress["started_at"]
+
+        def _pct(samples: List[float], p: float) -> float:
+            if not samples:
+                return 0.0
+            s = sorted(samples)
+            idx = max(0, int(math.ceil(len(s) * p / 100)) - 1)
+            return round(s[idx], 1)
+
+        result = {
+            "total": request_count,
+            "errors": error_count,
+            "duration_s": round(actual_duration, 2),
+            "rps": round(request_count / max(actual_duration, 0.001), 1),
+            "avg_ms": round(statistics.mean(all_samples), 1) if all_samples else 0,
+            "min_ms": round(min(all_samples), 1) if all_samples else 0,
+            "max_ms": round(max(all_samples), 1) if all_samples else 0,
+            "p50_ms": _pct(all_samples, 50),
+            "p90_ms": _pct(all_samples, 90),
+            "p95_ms": _pct(all_samples, 95),
+            "p99_ms": _pct(all_samples, 99),
+        }
+        _stress["result"] = result
+        _stress["status"] = "done"
+        _stress["finished_at"] = time.time()
+        _stress_broadcast_sync({"type": "stress_done", **result})
+        flog.info(
+            f"[centinel-stress] finalizado id={run_id[:8]} total={request_count} err={error_count}"
+        )
+
+    except Exception as exc:
+        flog.error(f"[centinel-stress] error id={run_id[:8]}: {exc}")
+        _stress["status"] = "error"
+        _stress["finished_at"] = time.time()
+        _stress_broadcast_sync({"type": "stress_error", "message": str(exc)})
