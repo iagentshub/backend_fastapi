@@ -460,8 +460,6 @@ class AgentStorage:
         scope: str = "private",
         owner_id: Optional[str] = None,
     ) -> Dict[str, Any]:
-        if scope == "public":
-            raise ValueError("Los agentes públicos son de solo lectura")
         await self._ensure_migrated()
         from app.storage.db import open_db
 

@@ -128,9 +128,10 @@ def test_save_agent_empty_name_returns_422(admin_client):
 
 
 def test_save_agent_public_scope_raises_422(admin_client):
-    """scope='public' pasa la validación HTTP pero el storage lo rechaza → 422."""
+    """scope='public' crea el agente correctamente (ya no es de solo lectura)."""
     r = admin_client.post("/api/agents", json={**_AGENT, "scope": "public"})
-    assert r.status_code == 422
+    assert r.status_code == 200
+    assert r.json()["scope"] == "public"
 
 
 # ── delete_agent: ValueError → 403 — línea 183 ───────────────────────────────
