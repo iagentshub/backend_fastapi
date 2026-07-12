@@ -176,6 +176,7 @@ _PLATFORM_DEFAULTS: dict = {
     "guest_enabled": True,
     "email_verify": False,
     "log_retention_days": 30,
+    "stress_max_concurrency": 0,  # máx peticiones en vuelo simultáneo en Centinel (0=sin límite)
     # Si está activo, "/" muestra una landing de presentación del proyecto en
     # vez de redirigir directo a /login/. Pensado para el despliegue SaaS
     # público; en instalaciones self-hosted lo natural es dejarlo desactivado.
@@ -223,6 +224,7 @@ class PlatformConfigUpdate(BaseModel):
     email_verify: Optional[bool] = None
     log_retention_days: Optional[int] = None
     landing_enabled: Optional[bool] = None
+    stress_max_concurrency: Optional[int] = None
 
 
 @router.get("/platform/public")
@@ -268,6 +270,15 @@ async def update_platform_config(
     ):
         raise HTTPException(
             status_code=422, detail="log_retention_days debe estar entre 1 y 365"
+        )
+    # Solo un default de UI (prefill del slider "Concurrencia máx" en Centinel)
+    # — no limita lo que un test concreto puede pedir, así que no está ligado
+    # al backstop técnico de centinel.py (CENTINEL_THREAD_CEILING).
+    if "stress_max_concurrency" in update and not (
+        0 <= update["stress_max_concurrency"] <= 100_000
+    ):
+        raise HTTPException(
+            status_code=422, detail="stress_max_concurrency debe estar entre 0 y 100000"
         )
 
     cfg.update(update)

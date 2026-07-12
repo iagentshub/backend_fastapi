@@ -15,6 +15,7 @@ AGENTS_DIR    = DATA_DIR / "agents"
 SKILLS_DIR    = DATA_DIR / "skills"
 MEMORY_DIR    = DATA_DIR / "memory"
 SETTINGS_FILE = DATA_DIR / "settings.json"
+CENTINEL_STATE_FILE = DATA_DIR / "centinel_state.json"
 # Legacy paths — referenced only by storage migration helpers
 CONN_FILE     = DATA_DIR / "connections" / "connections.json"
 ACCOUNTS_DIR  = DATA_DIR / "accounts"
