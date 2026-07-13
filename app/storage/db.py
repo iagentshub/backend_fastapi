@@ -236,6 +236,19 @@ CREATE TABLE IF NOT EXISTS user_agent_preferences (
     updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     PRIMARY KEY (username, agent_id)
 );
+CREATE TABLE IF NOT EXISTS personal_access_tokens (
+    id           TEXT PRIMARY KEY,
+    username     TEXT NOT NULL,
+    name         TEXT NOT NULL,
+    token_hash   TEXT NOT NULL UNIQUE,
+    prefix       TEXT NOT NULL,
+    created_at   TEXT NOT NULL,
+    expires_at   TEXT,
+    last_used_at TEXT,
+    revoked_at   TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_pat_hash ON personal_access_tokens(token_hash);
+CREATE INDEX IF NOT EXISTS idx_pat_user ON personal_access_tokens(username, created_at DESC);
 """
 
 _SCHEMA_PG = """
@@ -445,6 +458,19 @@ CREATE TABLE IF NOT EXISTS user_agent_preferences (
     updated_at    TEXT NOT NULL DEFAULT (NOW()::TEXT),
     PRIMARY KEY (username, agent_id)
 );
+CREATE TABLE IF NOT EXISTS personal_access_tokens (
+    id           TEXT PRIMARY KEY,
+    username     TEXT NOT NULL,
+    name         TEXT NOT NULL,
+    token_hash   TEXT NOT NULL UNIQUE,
+    prefix       TEXT NOT NULL,
+    created_at   TEXT NOT NULL,
+    expires_at   TEXT,
+    last_used_at TEXT,
+    revoked_at   TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_pat_hash ON personal_access_tokens(token_hash);
+CREATE INDEX IF NOT EXISTS idx_pat_user ON personal_access_tokens(username, created_at DESC);
 """
 
 # ── SQLite migrations (async) ──────────────────────────────────────────────────
