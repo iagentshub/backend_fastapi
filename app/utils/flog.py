@@ -128,6 +128,10 @@ def _build() -> logging.Logger:
     log = logging.getLogger("flog")
     log.setLevel(logging.DEBUG)
     if not log.handlers:
+        # La consola de Windows es cp1252: un '→' en el mensaje reventaba el
+        # handler y se tragaba el log (y el traceback que iba detrás).
+        if hasattr(sys.stdout, "reconfigure"):
+            sys.stdout.reconfigure(errors="replace")  # type: ignore[union-attr]
         h = logging.StreamHandler(sys.stdout)
         h.setFormatter(_StdoutFmt())
         log.addHandler(h)
