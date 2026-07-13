@@ -249,6 +249,12 @@ CREATE TABLE IF NOT EXISTS personal_access_tokens (
 );
 CREATE INDEX IF NOT EXISTS idx_pat_hash ON personal_access_tokens(token_hash);
 CREATE INDEX IF NOT EXISTS idx_pat_user ON personal_access_tokens(username, created_at DESC);
+CREATE TABLE IF NOT EXISTS vscode_auth_codes (
+    code_hash  TEXT PRIMARY KEY,
+    username   TEXT NOT NULL,
+    state      TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);
 """
 
 _SCHEMA_PG = """
@@ -471,6 +477,12 @@ CREATE TABLE IF NOT EXISTS personal_access_tokens (
 );
 CREATE INDEX IF NOT EXISTS idx_pat_hash ON personal_access_tokens(token_hash);
 CREATE INDEX IF NOT EXISTS idx_pat_user ON personal_access_tokens(username, created_at DESC);
+CREATE TABLE IF NOT EXISTS vscode_auth_codes (
+    code_hash  TEXT PRIMARY KEY,
+    username   TEXT NOT NULL,
+    state      TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);
 """
 
 # ── SQLite migrations (async) ──────────────────────────────────────────────────

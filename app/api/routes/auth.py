@@ -6,6 +6,7 @@ import os
 import re
 import time
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlencode, urlsplit
 
 from fastapi import (
     APIRouter,
@@ -17,6 +18,7 @@ from fastapi import (
     Request,
     Response,
 )
+from fastapi.responses import RedirectResponse
 
 from app.auth.auth import (
     admin_set_password,
@@ -50,6 +52,8 @@ from app.storage.tokens import (
     DEFAULT_EXPIRY_DAYS,
     VALID_EXPIRY_DAYS,
     TokenStorage as _TokenStorage,
+    consume_auth_code as _consume_auth_code,
+    create_auth_code as _create_auth_code,
     parse_ts as _parse_ts,
 )
 from app.utils.net import client_ip as _client_ip
@@ -1534,3 +1538,89 @@ async def revoke_pat(
         raise HTTPException(status_code=404, detail="Token no encontrado")
     flog.info(f"PAT revocado: {token_id}", username=username)
     return {"ok": True}
+
+
+# ── Login de la extensión de VS Code ──────────────────────────────────────────
+# La extensión abre el navegador, que ya sabe quién eres (cookie `ga_token`), y
+# este te devuelve a VS Code con un código de un solo uso. La extensión lo canjea
+# por un PAT. Ni el token en claro ni la cookie salen nunca por la URI vscode://.
+
+# Editores que pueden recibir el callback. Sin lista blanca, /vscode/start sería
+# un redirector abierto: cualquiera podría mandar a un usuario logueado a un
+# esquema arbitrario con sus parámetros.
+_VSCODE_SCHEMES = frozenset(
+    {"vscode", "vscode-insiders", "vscodium", "cursor", "windsurf"}
+)
+_VSCODE_AUTHORITY = "iagentshub.iagentshub"
+
+
+def _check_callback(callback: str) -> None:
+    parsed = urlsplit(callback)
+    if parsed.scheme not in _VSCODE_SCHEMES or parsed.netloc != _VSCODE_AUTHORITY:
+        raise HTTPException(status_code=400, detail="Callback no permitido")
+
+
+@router.get("/vscode/start")
+async def vscode_start(
+    request: Request,
+    state: str = Query(..., min_length=8, max_length=128),
+    callback: str = Query(..., max_length=512),
+) -> RedirectResponse:
+    """Puente extensión → web. Manda al usuario a la pantalla de autorización.
+
+    Existe porque la extensión solo conoce la URL de la API, que en desarrollo no
+    es la misma que la de la web. Aquí el backend, que sí sabe dónde vive el
+    frontend (GAIA_FRONTEND_URL), resuelve esa diferencia.
+    """
+    _check_callback(callback)
+    query = urlencode({"state": state, "callback": callback})
+    return RedirectResponse(
+        f"{_public_base_url(request)}/vscode-auth/?{query}", status_code=302
+    )
+
+
+@router.post("/vscode/authorize")
+async def vscode_authorize(
+    request: Request, username: str = Depends(require_auth)
+) -> Dict[str, Any]:
+    """Emite el código. Exige la sesión del navegador: es el consentimiento."""
+    from app.storage.guest import is_guest as _is_guest
+
+    if _is_guest(username):
+        raise HTTPException(
+            status_code=403,
+            detail="Las sesiones de invitado no pueden conectar VS Code.",
+        )
+
+    body = await request.json()
+    state = str(body.get("state") or "")
+    if not 8 <= len(state) <= 128:
+        raise HTTPException(status_code=400, detail="state inválido")
+
+    return {"code": await _create_auth_code(username, state)}
+
+
+@router.post("/vscode/exchange")
+async def vscode_exchange(request: Request) -> Dict[str, Any]:
+    """Código + state → PAT. Sin cookie: quien llama aquí es la extensión.
+
+    El PAT se crea aquí y no al autorizar, para que el token en claro exista solo
+    en esta respuesta y no tenga que dormir en ninguna tabla esperando el canje.
+    """
+    await _login_limiter(request)
+
+    body = await request.json()
+    code = str(body.get("code") or "")
+    state = str(body.get("state") or "")
+    if not code or not state:
+        raise HTTPException(status_code=400, detail="code y state requeridos")
+
+    username = await _consume_auth_code(code, state)
+    if not username:
+        raise HTTPException(
+            status_code=400, detail="Código inválido, caducado o ya usado"
+        )
+
+    token, meta = await _tokens.create(username, "VS Code", DEFAULT_EXPIRY_DAYS)
+    flog.info(f"PAT creado desde VS Code ({meta['prefix']}…)", username=username)
+    return {"token": token, "token_id": meta["id"], "username": username}

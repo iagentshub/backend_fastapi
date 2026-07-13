@@ -370,3 +370,141 @@ def test_invitado_no_puede_crear_tokens(client):
 
     r = client.post("/api/auth/tokens", json={"name": "de invitado"})
     assert r.status_code == 403
+
+
+# ── Login de VS Code ──────────────────────────────────────────────────────────
+
+_STATE = "estado-de-prueba-123"
+_CALLBACK = "vscode://iagentshub.iagentshub/auth"
+
+
+def _authorize(client: TestClient, state: str = _STATE) -> str:
+    r = client.post("/api/auth/vscode/authorize", json={"state": state})
+    assert r.status_code == 200, r.text
+    return r.json()["code"]
+
+
+def test_vscode_flujo_completo(client):
+    _register(client, "vsc_ok")
+    code = _authorize(client)
+
+    client.cookies.clear()  # la extensión no tiene cookie: solo código + state
+    r = client.post("/api/auth/vscode/exchange", json={"code": code, "state": _STATE})
+    assert r.status_code == 200, r.text
+    data = r.json()
+
+    assert data["token"].startswith("iah_")
+    assert data["username"] == "vsc_ok"
+
+    # El PAT emitido abre las mismas puertas que cualquier otro
+    me = client.get("/api/auth/me", headers=_bearer(data["token"]))
+    assert me.status_code == 200
+    assert me.json()["username"] == "vsc_ok"
+
+    # …y aparece en Perfil → Tokens, revocable como los demás
+    _register(client, "vsc_ok")
+    tokens = client.get("/api/auth/tokens").json()
+    assert [t["name"] for t in tokens] == ["VS Code"]
+    assert tokens[0]["id"] == data["token_id"]
+
+
+def test_vscode_el_codigo_es_de_un_solo_uso(client):
+    """Un código canjeado dos veces sería un token robable con solo repetir la
+    petición que ya viajó por el manejador de URIs del sistema."""
+    _register(client, "vsc_reuse")
+    code = _authorize(client)
+    client.cookies.clear()
+
+    body = {"code": code, "state": _STATE}
+    assert client.post("/api/auth/vscode/exchange", json=body).status_code == 200
+    assert client.post("/api/auth/vscode/exchange", json=body).status_code == 400
+
+
+def test_vscode_state_que_no_casa_no_canjea(client):
+    """El state solo existe en la memoria de la extensión que abrió el navegador:
+    sin él, tener el código no sirve de nada."""
+    _register(client, "vsc_state")
+    code = _authorize(client)
+    client.cookies.clear()
+
+    r = client.post(
+        "/api/auth/vscode/exchange", json={"code": code, "state": "otro-state-distinto"}
+    )
+    assert r.status_code == 400
+
+    # Y el intento fallido quema el código: no hay segunda oportunidad.
+    r = client.post("/api/auth/vscode/exchange", json={"code": code, "state": _STATE})
+    assert r.status_code == 400
+
+
+def test_vscode_codigo_caducado(client):
+    _register(client, "vsc_exp")
+    code = _authorize(client)
+
+    from app.storage.db import open_db
+
+    ayer = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+
+    async def _expire():
+        async with open_db() as conn:
+            async with conn.transaction():
+                await conn.execute(
+                    "UPDATE vscode_auth_codes SET expires_at = ? WHERE username = ?",
+                    (ayer, "vsc_exp"),
+                )
+
+    asyncio.run(_expire())
+
+    client.cookies.clear()
+    r = client.post("/api/auth/vscode/exchange", json={"code": code, "state": _STATE})
+    assert r.status_code == 400
+
+
+def test_vscode_codigo_inexistente(client):
+    client.cookies.clear()
+    r = client.post(
+        "/api/auth/vscode/exchange", json={"code": "no-existe", "state": _STATE}
+    )
+    assert r.status_code == 400
+
+
+def test_vscode_authorize_requiere_sesion(client):
+    client.cookies.clear()
+    r = client.post("/api/auth/vscode/authorize", json={"state": _STATE})
+    assert r.status_code == 401
+
+
+def test_vscode_invitado_no_puede_conectar(client):
+    client.cookies.clear()
+    assert client.post("/api/auth/guest").status_code == 200
+    r = client.post("/api/auth/vscode/authorize", json={"state": _STATE})
+    assert r.status_code == 403
+
+
+def test_vscode_start_redirige_a_la_pantalla_de_autorizacion(client):
+    r = client.get(
+        "/api/auth/vscode/start",
+        params={"state": _STATE, "callback": _CALLBACK},
+        follow_redirects=False,
+    )
+    assert r.status_code == 302
+    location = r.headers["location"]
+    assert "/vscode-auth/" in location
+    assert _STATE in location
+
+
+def test_vscode_start_rechaza_callbacks_ajenos(client):
+    """Sin lista blanca, /vscode/start sería un redirector abierto: bastaría con
+    colar un esquema propio para llevarse al usuario y sus parámetros."""
+    for callback in (
+        "https://malo.example.com/robar",
+        "vscode://otra.extension/auth",
+        "javascript:alert(1)",
+        "vscode-fake://iagentshub.iagentshub/auth",
+    ):
+        r = client.get(
+            "/api/auth/vscode/start",
+            params={"state": _STATE, "callback": callback},
+            follow_redirects=False,
+        )
+        assert r.status_code == 400, callback

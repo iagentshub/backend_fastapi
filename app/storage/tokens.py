@@ -87,6 +87,78 @@ def _public(row: Any) -> Dict[str, Any]:
     }
 
 
+# ── Códigos de autorización de VS Code ────────────────────────────────────────
+# El navegador (que ya tiene sesión) emite un código; la extensión lo canjea por
+# un PAT. El código vive 60 s y solo sirve acompañado del `state` que la
+# extensión generó al abrir el navegador: robar el código de la URI `vscode://`
+# no basta para nada.
+#
+# En BD y no en un dict de proceso a propósito: uvicorn corre con GAIA_WORKERS
+# workers (4 por defecto), así que el authorize y el exchange caen casi siempre
+# en procesos distintos.
+
+_CODE_TTL = timedelta(seconds=60)
+
+
+async def create_auth_code(username: str, state: str) -> str:
+    """Código de un solo uso para el flujo de login de la extensión."""
+    code = secrets.token_urlsafe(32)
+    now = datetime.now(timezone.utc)
+
+    async with open_db() as conn:
+        async with conn.transaction():
+            # Barrido perezoso: los caducados se van solos, sin cron.
+            await conn.execute(
+                "DELETE FROM vscode_auth_codes WHERE expires_at <= ?",
+                (now.isoformat(),),
+            )
+            await conn.execute(
+                "INSERT INTO vscode_auth_codes (code_hash, username, state, expires_at) "
+                "VALUES (?, ?, ?, ?)",
+                (
+                    hash_token(code),
+                    username,
+                    state,
+                    (now + _CODE_TTL).isoformat(),
+                ),
+            )
+    return code
+
+
+async def consume_auth_code(code: str, state: str) -> Optional[str]:
+    """Canjea el código. Devuelve el username, o None si no vale.
+
+    Borra la fila pase lo que pase: un código presentado con el `state` que no
+    toca es un intento de robo, y no merece un segundo intento.
+    """
+    async with open_db() as conn:
+        row = await conn.fetchone(
+            "SELECT * FROM vscode_auth_codes WHERE code_hash = ?",
+            (hash_token(code),),
+        )
+        if row is None:
+            return None
+        data = dict(row)
+
+        # ponytail: SELECT + DELETE en transacción, como revoke(). Dos canjes
+        # simultáneos del mismo código podrían colarse los dos y emitir dos PATs
+        # al mismo usuario — inofensivo. Si hiciera falta atomicidad estricta:
+        # DELETE ... RETURNING (SQLite ≥3.35 y PG lo soportan).
+        async with conn.transaction():
+            await conn.execute(
+                "DELETE FROM vscode_auth_codes WHERE code_hash = ?",
+                (data["code_hash"],),
+            )
+
+        expires_at = parse_ts(data["expires_at"])
+        if expires_at is None or expires_at <= datetime.now(timezone.utc):
+            return None
+        if not secrets.compare_digest(data["state"], state):
+            return None
+
+    return str(data["username"])
+
+
 class TokenStorage:
     async def create(
         self,
