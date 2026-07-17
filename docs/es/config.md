@@ -7,7 +7,7 @@
 
 # Configuración
 
-Toda la configuración se realiza mediante variables de entorno. Estas se establecen desde el orquestador de despliegue ([iAgentsHub](https://github.com/iagentshub/iagentshub)) y no requieren modificar ningún fichero de código.
+Toda la configuración se realiza mediante variables de entorno. Estas se establecen desde el orquestador de despliegue ([iAgentsHub](https://github.com/iagentshub/iAgents)) y no requieren modificar ningún fichero de código.
 
 ---
 

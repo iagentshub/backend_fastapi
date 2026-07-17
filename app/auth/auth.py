@@ -778,7 +778,7 @@ async def ensure_admin_user() -> None:
     1. Si GAIA_ADMIN_EMAIL ya tiene cuenta → promoverla a admin si no lo es.
        Con GAIA_ADMIN_RESET=true también resetea su contraseña.
     2. Si .admin_pass existe pero no coincide con el hash de la DB → resetear
-       automáticamente para que la contraseña mostrada por gaia.sh sea siempre válida.
+       automáticamente para que la contraseña mostrada por gaia.py sea siempre válida.
     3. Si GAIA_ADMIN_EMAIL no tiene cuenta → crearla como admin.
     4. Si no se puede hacer nada con GAIA_ADMIN_EMAIL y ya hay otro admin
        sin reset_mode → no tocar nada.
@@ -786,7 +786,7 @@ async def ensure_admin_user() -> None:
     reset_mode = os.environ.get("GAIA_ADMIN_RESET", "").lower() in ("1", "true", "yes")
     target_email = os.environ.get("GAIA_ADMIN_EMAIL", "admin@localhost")
 
-    # If .admin_pass doesn't exist yet, force a one-time reset so gaia.sh can always display it
+    # If .admin_pass doesn't exist yet, force a one-time reset so gaia.py can always display it
     data_dir = os.environ.get("GAIA_DATA_DIR", "").strip()
     _pass_file = Path(data_dir) / ".admin_pass" if data_dir else None
     if not reset_mode and _pass_file and not _pass_file.exists():
@@ -794,7 +794,7 @@ async def ensure_admin_user() -> None:
 
     # Verify .admin_pass against the DB hash — reset if they don't match.
     # This handles cases where the DB password was changed externally without
-    # updating .admin_pass, which would cause gaia.sh to display a stale password.
+    # updating .admin_pass, which would cause gaia.py to display a stale password.
     if not reset_mode and _pass_file and _pass_file.exists():
         try:
             stored_pass = _pass_file.read_text(encoding="utf-8").strip()
@@ -877,7 +877,7 @@ async def ensure_admin_user() -> None:
     if password is None or action is None:
         return
 
-    # Persist plaintext password so gaia.sh can always display it
+    # Persist plaintext password so gaia.py can always display it
     data_dir = os.environ.get("GAIA_DATA_DIR", "").strip()
     if data_dir:
         try:

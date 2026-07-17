@@ -6,26 +6,28 @@ on:
   workflow_dispatch:
 
 jobs:
-  docker:
+  # Cambios en el backend afectan a ambas variantes de la imagen unificada —
+  # se reconstruyen y publican las dos.
+  docker-react:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout iagentshub (Dockerfile + scripts)
         uses: actions/checkout@v4
         with:
-          repository: iagentshub/iagentshub
+          repository: iagentshub/iAgents
           path: iagentshub
 
       - name: Checkout backend
         uses: actions/checkout@v4
         with:
-          repository: iagentshub/backend
+          repository: iagentshub/backend_fastapi
           path: backend
 
       - name: Checkout frontend
         uses: actions/checkout@v4
         with:
-          repository: iagentshub/frontend
+          repository: iagentshub/frontend_react
           path: frontend
 
       - name: Set up Docker Buildx
@@ -40,11 +42,12 @@ jobs:
       - name: Preparar contexto de build
         run: |
           mkdir -p build-ctx
-          cp -r backend/  build-ctx/backend
+          cp -r backend/ build-ctx/backend
           cp -r frontend/ build-ctx/frontend
-          cp iagentshub/Dockerfile.unified     build-ctx/Dockerfile
-          cp iagentshub/supervisord.conf       build-ctx/supervisord.conf
-          cp iagentshub/entrypoint-unified.sh  build-ctx/entrypoint-unified.sh
+          D=iagentshub/docker
+          cp $D/Dockerfile.unified build-ctx/Dockerfile
+          cp $D/supervisord.conf build-ctx/supervisord.conf
+          cp $D/entrypoint-unified.sh build-ctx/entrypoint-unified.sh
 
       - name: Build y push imagen multi-plataforma
         uses: docker/build-push-action@v5
@@ -53,5 +56,56 @@ jobs:
           platforms: linux/amd64,linux/arm64
           push: true
           tags: iagenthub/iagentshub:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  docker-vanilla:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout iagentshub (Dockerfile + scripts)
+        uses: actions/checkout@v4
+        with:
+          repository: iagentshub/iAgents
+          path: iagentshub
+
+      - name: Checkout backend
+        uses: actions/checkout@v4
+        with:
+          repository: iagentshub/backend_fastapi
+          path: backend
+
+      - name: Checkout frontend
+        uses: actions/checkout@v4
+        with:
+          repository: iagentshub/frontend_vanilla
+          path: frontend
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKERHUB_USERNAME }}
+          password: ${{ secrets.DOCKERHUB_TOKEN }}
+
+      - name: Preparar contexto de build
+        run: |
+          mkdir -p build-ctx
+          cp -r backend/ build-ctx/backend
+          cp -r frontend/ build-ctx/frontend
+          D=iagentshub/docker
+          cp $D/Dockerfile.unified.vanilla build-ctx/Dockerfile
+          cp $D/supervisord.conf build-ctx/supervisord.conf
+          cp $D/entrypoint-unified-vanilla.sh build-ctx/entrypoint-unified.sh
+
+      - name: Build y push imagen multi-plataforma
+        uses: docker/build-push-action@v5
+        with:
+          context: build-ctx
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: iagenthub/iagentshub:vanilla
           cache-from: type=gha
           cache-to: type=gha,mode=max

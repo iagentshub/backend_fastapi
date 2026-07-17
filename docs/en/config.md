@@ -7,7 +7,7 @@
 
 # Configuration
 
-All configuration is done through environment variables. These are set by the deployment orchestrator ([iAgentsHub](https://github.com/iagentshub/iagentshub)) and do not require modifying any code files.
+All configuration is done through environment variables. These are set by the deployment orchestrator ([iAgentsHub](https://github.com/iagentshub/iAgents)) and do not require modifying any code files.
 
 ---
 

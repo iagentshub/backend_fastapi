@@ -32,7 +32,7 @@ GAIA_AGENTS_SECRET=your-secret python3 main.py
 
 API available at `http://localhost:8765`.
 
-> For the full stack (backend + frontend + skills), deploy from [iAgentsHub](https://github.com/iagentshub/iagentshub).
+> For the full stack (backend + frontend + skills), deploy from [iAgentsHub](https://github.com/iagentshub/iAgents).
 
 ---
 
