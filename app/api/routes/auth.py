@@ -6,8 +6,19 @@ import os
 import re
 import time
 from typing import Any, Dict, List, Optional
+from urllib.parse import urlencode, urlsplit
 
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Query, Request, Response
+from fastapi import (
+    APIRouter,
+    Cookie,
+    Depends,
+    Header,
+    HTTPException,
+    Query,
+    Request,
+    Response,
+)
+from fastapi.responses import RedirectResponse
 
 from app.auth.auth import (
     admin_set_password,
@@ -16,7 +27,6 @@ from app.auth.auth import (
     consume_reset_token,
     create_password_reset_token,
     create_token,
-    decode_token_with_iat,
     decode_workspace_token_full,
     delete_user,
     get_owned_workspaces,
@@ -38,6 +48,14 @@ from app.config.data import AGENTS_DIR as _AGENTS_DIR
 from app.config.data import DB_FILE as _DB_FILE
 from app.storage.db import IS_PG, open_db
 from app.storage.storage import AgentStorage as _AgentStorage
+from app.storage.tokens import (
+    DEFAULT_EXPIRY_DAYS,
+    VALID_EXPIRY_DAYS,
+    TokenStorage as _TokenStorage,
+    consume_auth_code as _consume_auth_code,
+    create_auth_code as _create_auth_code,
+    parse_ts as _parse_ts,
+)
 from app.utils.net import client_ip as _client_ip
 from app.utils import flog
 from app.config.session import (
@@ -60,6 +78,7 @@ from app.storage.workspaces import WorkspaceStorage as _WorkspaceStorage
 
 _workspaces = _WorkspaceStorage(_DB_FILE)
 _agents = _AgentStorage(_AGENTS_DIR)
+_tokens = _TokenStorage()
 
 # Regex estricta de email (RFC 5321): bloquea payloads XSS como x'><script>@a.com
 _EMAIL_RE = re.compile(r"^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$")
@@ -155,77 +174,103 @@ class WorkspaceContext:
         self.workspace_id = workspace_id
 
 
-async def require_auth(ga_token: Optional[str] = Cookie(default=None)) -> str:
-    """Dependency: valida el token de sesión y verifica que la cuenta está activa.
+def _bearer(authorization: Optional[str]) -> Optional[str]:
+    """Extrae el token de una cabecera `Authorization: Bearer <token>`."""
+    if not authorization:
+        return None
+    scheme, _, value = authorization.partition(" ")
+    if scheme.lower() != "bearer":
+        return None
+    return value.strip() or None
 
-    A2: también comprueba que el token fue emitido DESPUÉS del último cambio de
-    contraseña, invalidando sesiones robadas si la víctima cambió su contraseña.
+
+async def _identify(
+    ga_token: Optional[str], authorization: Optional[str]
+) -> tuple[str, Optional[float], Optional[str]]:
+    """Resuelve la credencial de la request → (username, issued_at, wid).
+
+    Acepta dos credenciales, con la MISMA autoridad:
+      - Cookie `ga_token` (JWT): la sesión del navegador. `wid` sale del claim.
+      - `Authorization: Bearer iah_...` (PAT): clientes no navegador (extensión
+        de VS Code, scripts). Un PAT no es un JWT y no lleva workspace dentro,
+        así que devuelve wid=None y quien llama lo saca de X-iAgents-Workspace.
+
+    `issued_at` unifica el `iat` del JWT y el `created_at` del PAT: ambos se
+    contrastan igual contra password_changed_at.
+
+    El Bearer tiene prioridad: si un cliente lo envía explícitamente, es la
+    credencial que quiere usar — caer a una cookie de sesión sería sorprendente.
     """
-    if not ga_token:
-        raise HTTPException(status_code=401, detail="No autenticado")
-    username, token_iat = decode_token_with_iat(ga_token)
-    if not username:
-        raise HTTPException(status_code=401, detail="Token inválido o expirado")
+    token = _bearer(authorization)
+    if token:
+        pat = await _tokens.resolve(token)
+        if not pat:
+            raise HTTPException(
+                status_code=401, detail="Token inválido, revocado o caducado"
+            )
+        created = _parse_ts(pat.get("created_at"))
+        return pat["username"], created.timestamp() if created else None, None
+
+    if ga_token:
+        username, wid, token_iat = decode_workspace_token_full(ga_token)
+        if not username:
+            raise HTTPException(status_code=401, detail="Token inválido o expirado")
+        return username, token_iat, wid
+
+    raise HTTPException(status_code=401, detail="No autenticado")
+
+
+async def _assert_account_ok(username: str, issued_at: Optional[float]) -> None:
+    """Cuenta activa + credencial emitida tras el último cambio de contraseña.
+
+    Cambiar la contraseña invalida las sesiones robadas — y también los PATs
+    anteriores, que son credenciales de largo recorrido y por tanto el activo
+    más valioso para un atacante que ya tuvo acceso.
+
+    Los guests salen de _get_user_auth_state como (True, None) → no bloquean.
+    """
     is_active, password_changed_at = await _get_user_auth_state(username)
     if not is_active:
         raise HTTPException(status_code=403, detail="Cuenta desactivada")
-    # Invalidar tokens emitidos antes del último cambio de contraseña
-    if password_changed_at and token_iat is not None:
-        try:
-            from datetime import datetime, timezone as _tz
-            changed_ts = datetime.fromisoformat(password_changed_at).replace(
-                tzinfo=_tz.utc
-            ).timestamp()
-            if token_iat < changed_ts:
-                raise HTTPException(
-                    status_code=401,
-                    detail="Sesión expirada tras cambio de contraseña. Inicia sesión de nuevo.",
-                )
-        except HTTPException:
-            raise
-        except Exception:
-            pass  # fecha malformada en BD → no bloquear
+    if not password_changed_at or issued_at is None:
+        return
+    changed = _parse_ts(password_changed_at)
+    if changed is None:
+        return  # fecha malformada en BD → no bloquear
+    if issued_at < changed.timestamp():
+        raise HTTPException(
+            status_code=401,
+            detail="Credencial expirada tras cambio de contraseña. Vuelve a autenticarte.",
+        )
+
+
+async def require_auth(
+    ga_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+) -> str:
+    """Dependency: valida la credencial (cookie o Bearer) y la cuenta."""
+    username, issued_at, _ = await _identify(ga_token, authorization)
+    await _assert_account_ok(username, issued_at)
     return username
 
 
 async def require_workspace(
     ga_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+    x_iagents_workspace: Optional[str] = Header(default=None),
 ) -> WorkspaceContext:
-    """Dependency: validates session token and returns WorkspaceContext.
+    """Dependency: valida la credencial y resuelve el workspace activo.
 
-    Lee el workspace_id (wid) del JWT. Si el workspace está activo y el
-    usuario es miembro, lo usa como contexto. En caso contrario cae de
-    vuelta al workspace personal (workspace_id = username).
-
-    C1: también valida iat contra password_changed_at para invalidar tokens
-    emitidos antes de un cambio de contraseña (igual que require_auth).
+    El workspace sale del claim `wid` del JWT (navegador) o de la cabecera
+    `X-iAgents-Workspace` (Bearer). En ambos casos se valida igual: si el
+    workspace no existe, está desactivado o el usuario ya no es miembro, se cae
+    al espacio personal (workspace_id = username).
     """
-    if not ga_token:
-        raise HTTPException(status_code=401, detail="No autenticado")
-    username, wid, token_iat = decode_workspace_token_full(ga_token)
-    if not username:
-        raise HTTPException(status_code=401, detail="Token inválido o expirado")
-    from app.storage.guest import is_guest as _is_guest
-    if not _is_guest(username):
-        is_active, password_changed_at = await _get_user_auth_state(username)
-        if not is_active:
-            raise HTTPException(status_code=403, detail="Cuenta desactivada")
-        # C1: invalidar tokens emitidos antes del último cambio de contraseña
-        if password_changed_at and token_iat is not None:
-            try:
-                from datetime import datetime, timezone as _tz
-                changed_ts = datetime.fromisoformat(password_changed_at).replace(
-                    tzinfo=_tz.utc
-                ).timestamp()
-                if token_iat < changed_ts:
-                    raise HTTPException(
-                        status_code=401,
-                        detail="Sesión expirada tras cambio de contraseña. Inicia sesión de nuevo.",
-                    )
-            except HTTPException:
-                raise
-            except Exception:
-                pass  # fecha malformada en BD → no bloquear
+    username, issued_at, wid = await _identify(ga_token, authorization)
+    await _assert_account_ok(username, issued_at)
+
+    if wid is None:
+        wid = x_iagents_workspace
 
     # Si el wid es distinto del username → validar workspace de equipo
     if wid and wid != username:
@@ -1433,3 +1478,149 @@ async def admin_impersonate(
 
     flog.ok(f"[admin] Token de impersonación creado exitosamente para {username!r}")
     return {"ok": True, "username": username}
+
+
+# ── Personal access tokens ────────────────────────────────────────────────────
+# Credencial para clientes que no son un navegador (extensión de VS Code,
+# scripts, CI). Se gestionan desde el perfil, con la sesión web ya iniciada.
+
+
+@router.get("/tokens")
+async def list_tokens(username: str = Depends(require_auth)) -> List[Dict[str, Any]]:
+    """Metadatos de los PATs del usuario. El secreto no se devuelve nunca."""
+    return await _tokens.list_for_user(username)
+
+
+@router.post("/tokens")
+async def create_pat(
+    request: Request, username: str = Depends(require_auth)
+) -> Dict[str, Any]:
+    """Crea un PAT. El token en claro viaja en esta respuesta y en ninguna más."""
+    from app.storage.guest import is_guest as _is_guest
+
+    if _is_guest(username):
+        raise HTTPException(
+            status_code=403,
+            detail="Las sesiones de invitado no pueden crear tokens.",
+        )
+    await _login_limiter(request)
+
+    body = await request.json()
+    name = str(body.get("name") or "").strip()
+    if not name or len(name) > 100:
+        raise HTTPException(
+            status_code=400, detail="Nombre requerido (máximo 100 caracteres)"
+        )
+
+    # Ausente → 90 días. Presente y null → sin caducidad. Son casos distintos.
+    expires = body.get("expires_in_days", DEFAULT_EXPIRY_DAYS)
+    if expires is not None:
+        try:
+            expires = int(expires)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail="expires_in_days inválido")
+    if expires not in VALID_EXPIRY_DAYS:
+        raise HTTPException(
+            status_code=400, detail="expires_in_days debe ser 30, 90, 180 o null"
+        )
+
+    token, meta = await _tokens.create(username, name, expires)
+    flog.info(f"PAT creado: {name!r} ({meta['prefix']}…)", username=username)
+    return {**meta, "token": token}
+
+
+@router.delete("/tokens/{token_id}")
+async def revoke_pat(
+    token_id: str, username: str = Depends(require_auth)
+) -> Dict[str, Any]:
+    """Revoca un PAT. Irreversible: deja de autenticar de inmediato."""
+    if not await _tokens.revoke(token_id, username):
+        raise HTTPException(status_code=404, detail="Token no encontrado")
+    flog.info(f"PAT revocado: {token_id}", username=username)
+    return {"ok": True}
+
+
+# ── Login de la extensión de VS Code ──────────────────────────────────────────
+# La extensión abre el navegador, que ya sabe quién eres (cookie `ga_token`), y
+# este te devuelve a VS Code con un código de un solo uso. La extensión lo canjea
+# por un PAT. Ni el token en claro ni la cookie salen nunca por la URI vscode://.
+
+# Editores que pueden recibir el callback. Sin lista blanca, /vscode/start sería
+# un redirector abierto: cualquiera podría mandar a un usuario logueado a un
+# esquema arbitrario con sus parámetros.
+_VSCODE_SCHEMES = frozenset(
+    {"vscode", "vscode-insiders", "vscodium", "cursor", "windsurf"}
+)
+_VSCODE_AUTHORITY = "iagentshub.iagentshub"
+
+
+def _check_callback(callback: str) -> None:
+    parsed = urlsplit(callback)
+    if parsed.scheme not in _VSCODE_SCHEMES or parsed.netloc != _VSCODE_AUTHORITY:
+        raise HTTPException(status_code=400, detail="Callback no permitido")
+
+
+@router.get("/vscode/start")
+async def vscode_start(
+    request: Request,
+    state: str = Query(..., min_length=8, max_length=128),
+    callback: str = Query(..., max_length=512),
+) -> RedirectResponse:
+    """Puente extensión → web. Manda al usuario a la pantalla de autorización.
+
+    Existe porque la extensión solo conoce la URL de la API, que en desarrollo no
+    es la misma que la de la web. Aquí el backend, que sí sabe dónde vive el
+    frontend (GAIA_FRONTEND_URL), resuelve esa diferencia.
+    """
+    _check_callback(callback)
+    query = urlencode({"state": state, "callback": callback})
+    return RedirectResponse(
+        f"{_public_base_url(request)}/vscode-auth/?{query}", status_code=302
+    )
+
+
+@router.post("/vscode/authorize")
+async def vscode_authorize(
+    request: Request, username: str = Depends(require_auth)
+) -> Dict[str, Any]:
+    """Emite el código. Exige la sesión del navegador: es el consentimiento."""
+    from app.storage.guest import is_guest as _is_guest
+
+    if _is_guest(username):
+        raise HTTPException(
+            status_code=403,
+            detail="Las sesiones de invitado no pueden conectar VS Code.",
+        )
+
+    body = await request.json()
+    state = str(body.get("state") or "")
+    if not 8 <= len(state) <= 128:
+        raise HTTPException(status_code=400, detail="state inválido")
+
+    return {"code": await _create_auth_code(username, state)}
+
+
+@router.post("/vscode/exchange")
+async def vscode_exchange(request: Request) -> Dict[str, Any]:
+    """Código + state → PAT. Sin cookie: quien llama aquí es la extensión.
+
+    El PAT se crea aquí y no al autorizar, para que el token en claro exista solo
+    en esta respuesta y no tenga que dormir en ninguna tabla esperando el canje.
+    """
+    await _login_limiter(request)
+
+    body = await request.json()
+    code = str(body.get("code") or "")
+    state = str(body.get("state") or "")
+    if not code or not state:
+        raise HTTPException(status_code=400, detail="code y state requeridos")
+
+    username = await _consume_auth_code(code, state)
+    if not username:
+        raise HTTPException(
+            status_code=400, detail="Código inválido, caducado o ya usado"
+        )
+
+    token, meta = await _tokens.create(username, "VS Code", DEFAULT_EXPIRY_DAYS)
+    flog.info(f"PAT creado desde VS Code ({meta['prefix']}…)", username=username)
+    return {"token": token, "token_id": meta["id"], "username": username}

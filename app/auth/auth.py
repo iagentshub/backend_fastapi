@@ -14,7 +14,7 @@ import bcrypt as _bcrypt
 from app.utils import flog
 from jose import JWTError, jwt
 
-from app.config.data import AGENTS_DIR, SETTINGS_FILE, SKILLS_DIR
+from app.config.data import AGENTS_DIR, DATA_DIR, SETTINGS_FILE, SKILLS_DIR
 from app.config.session import (
     EMAIL_VERIFY_ENABLED,
     JWT_ALGORITHM,
@@ -787,15 +787,16 @@ async def ensure_admin_user() -> None:
     target_email = os.environ.get("GAIA_ADMIN_EMAIL", "admin@localhost")
 
     # If .admin_pass doesn't exist yet, force a one-time reset so gaia.py can always display it
-    data_dir = os.environ.get("GAIA_DATA_DIR", "").strip()
-    _pass_file = Path(data_dir) / ".admin_pass" if data_dir else None
-    if not reset_mode and _pass_file and not _pass_file.exists():
+    # DATA_DIR, no GAIA_DATA_DIR: sin la env var la contraseña se generaba y se
+    # perdía, dejando la cuenta admin inaccesible sin avisar.
+    _pass_file = DATA_DIR / ".admin_pass"
+    if not reset_mode and not _pass_file.exists():
         reset_mode = True
 
     # Verify .admin_pass against the DB hash — reset if they don't match.
     # This handles cases where the DB password was changed externally without
     # updating .admin_pass, which would cause gaia.py to display a stale password.
-    if not reset_mode and _pass_file and _pass_file.exists():
+    if not reset_mode and _pass_file.exists():
         try:
             stored_pass = _pass_file.read_text(encoding="utf-8").strip()
             if stored_pass:
@@ -878,21 +879,23 @@ async def ensure_admin_user() -> None:
         return
 
     # Persist plaintext password so gaia.py can always display it
-    data_dir = os.environ.get("GAIA_DATA_DIR", "").strip()
-    if data_dir:
-        try:
-            p = Path(data_dir) / ".admin_pass"
-            p.write_text(password, encoding="utf-8")
-            p.chmod(0o600)
-        except OSError:
-            pass
+    saved = False
+    try:
+        DATA_DIR.mkdir(parents=True, exist_ok=True)
+        _pass_file.write_text(password, encoding="utf-8")
+        _pass_file.chmod(0o600)
+        saved = True
+    except OSError:
+        pass
 
     sep = "=" * 60
     flog.warning(sep)
     flog.warning(f" iAgents Hub — Administrador ({action})")
     flog.warning(f" Email:      {target_email}")
     flog.warning(
-        f" Contraseña: [ver {data_dir}/.admin_pass — borrar tras primer login]"
+        f" Contraseña: [ver {_pass_file} — borrar tras primer login]"
+        if saved
+        else f" Contraseña: {password}  [no se pudo escribir {_pass_file}: apúntala AHORA]"
     )
     flog.warning(" Accede a /login/ y cambia la contraseña desde /profile/")
     flog.warning(sep)
