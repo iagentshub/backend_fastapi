@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 import urllib.error
 import urllib.request
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from app.config.providers import PROVIDER_BASE_URLS, PROVIDER_DEFAULT_MODELS
 from .base import BaseProvider, FieldDef, TestResult, register
@@ -26,13 +26,41 @@ class NvidiaProvider(BaseProvider):
 
     @classmethod
     def test(cls, config: Dict[str, Any]) -> TestResult:
+        """Valida la conexión en dos pasos rápidos, sin generar con el modelo.
+
+        Generar con el modelo configurado no sirve como test: un modelo de
+        razonamiento puede tardar minutos hasta el primer token (NVIDIA no
+        envía el 200 hasta entonces) y el test fallaría por timeout aunque la
+        conexión sea perfecta. En cambio, un error de credencial o de modelo
+        llega en las cabeceras al instante. Así que:
+          1. La API key se valida con un modelo LIGERO (~1 s).
+          2. El modelo configurado se comprueba en el catálogo /models (instantáneo).
+        """
         api_key = (config.get("api_key") or "").strip()
         if not api_key:
             return TestResult(False, "Falta la API Key")
-        model = (config.get("model") or "").strip() or _TEST_MODEL
+
+        auth = cls._probe_auth(api_key)
+        if not auth.ok:
+            return auth
+
+        model = (config.get("model") or "").strip()
+        if model and model != _TEST_MODEL:
+            available = cls._model_available(api_key, model)
+            if available is False:
+                return TestResult(
+                    False,
+                    "Modelo no disponible",
+                    f"'{model}' no está en el catálogo de NVIDIA NIM.",
+                )
+        return TestResult(True, "OK")
+
+    @classmethod
+    def _probe_auth(cls, api_key: str) -> TestResult:
+        """Comprueba la credencial con una generación mínima y un modelo ligero."""
         try:
             payload = json.dumps({
-                "model": model,
+                "model": _TEST_MODEL,
                 "messages": [{"role": "user", "content": "hi"}],
                 "max_tokens": 1,
             }).encode()
@@ -45,7 +73,7 @@ class NvidiaProvider(BaseProvider):
                 },
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=15) as r:
+            with urllib.request.urlopen(req, timeout=20) as r:
                 r.read()
             return TestResult(True, "OK")
         except urllib.error.HTTPError as e:
@@ -57,3 +85,22 @@ class NvidiaProvider(BaseProvider):
             return TestResult(False, f"HTTP {e.code}", msg)  # nvidia usa "detail", no "error.message"
         except Exception as e:
             return TestResult(False, "Error de conexión", str(e))
+
+    @classmethod
+    def _model_available(cls, api_key: str, model: str) -> Optional[bool]:
+        """True/False si el modelo está en el catálogo; None si no se pudo comprobar.
+
+        None (no penaliza): si /models no responde no marcamos la conexión como
+        rota — la credencial ya se validó en el paso anterior.
+        """
+        try:
+            req = urllib.request.Request(
+                f"{_BASE_URL}/models",
+                headers={"Authorization": f"Bearer {api_key}"},
+            )
+            with urllib.request.urlopen(req, timeout=10) as r:
+                data = json.loads(r.read())
+            ids = {m.get("id") for m in (data.get("data") or [])}
+            return model in ids
+        except Exception:
+            return None
