@@ -1500,20 +1500,18 @@ class AsyncConn:
 # ── Lifecycle ──────────────────────────────────────────────────────────────────
 
 
-async def init_db(sqlite_path: Optional[Path] = None) -> None:
-    """Initialize DB connections and run schema migrations. Call once at startup."""
-    global _pg_pool, _sqlite_path
-
+async def migrate_schema(sqlite_path: Optional[Path] = None) -> None:
+    """Crea/actualiza el esquema (tablas, índices, migraciones). Debe correr
+    una sola vez por despliegue — con GAIA_WORKERS>1, main.py la llama en el
+    proceso maestro antes de lanzar los workers (cada uno es un proceso propio
+    que si no se le avisa via GAIA_SCHEMA_MIGRATED, re-ejecutaría esto y
+    competiría por crear los mismos índices contra la misma DB recién creada:
+    'malformed database schema ... already exists')."""
     if IS_PG:
         import asyncpg  # type: ignore[import]
 
-        _pg_pool = await asyncpg.create_pool(
-            DATABASE_URL,
-            min_size=2,
-            max_size=20,
-            command_timeout=30,
-        )
-        async with _pg_pool.acquire() as conn:
+        conn = await asyncpg.connect(DATABASE_URL)
+        try:
             async with conn.transaction():
                 for stmt in _SCHEMA_PG.split(";"):
                     s = stmt.strip()
@@ -1521,19 +1519,20 @@ async def init_db(sqlite_path: Optional[Path] = None) -> None:
                         await conn.execute(s)
                 await _migrate_pg(conn)
                 await _migrate_users_json_pg(conn)
-        flog.ok("[db] asyncpg pool iniciado")
+        finally:
+            await conn.close()
+        flog.ok("[db] esquema PostgreSQL migrado")
     else:
         import aiosqlite  # type: ignore[import]
         import sqlite3
 
-        if sqlite_path:
-            _sqlite_path = sqlite_path
-        if _sqlite_path is None:
+        path = sqlite_path or _sqlite_path
+        if path is None:
             raise RuntimeError(
-                "init_db() requires sqlite_path when not using PostgreSQL"
+                "migrate_schema() requires sqlite_path when not using PostgreSQL"
             )
-        _sqlite_path.parent.mkdir(parents=True, exist_ok=True)
-        async with aiosqlite.connect(str(_sqlite_path)) as conn:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        async with aiosqlite.connect(str(path)) as conn:
             conn.row_factory = sqlite3.Row
             await conn.execute("PRAGMA journal_mode=WAL")
             await conn.execute("PRAGMA foreign_keys=ON")
@@ -1550,6 +1549,40 @@ async def init_db(sqlite_path: Optional[Path] = None) -> None:
                 "CREATE INDEX IF NOT EXISTS idx_connections_owner ON connections(owner_id)"
             )
             await conn.commit()
+        flog.ok("[db] esquema SQLite migrado")
+
+
+async def init_db(sqlite_path: Optional[Path] = None) -> None:
+    """Initialize this process's DB connection/pool. Call once per worker.
+
+    Runs migrate_schema() too, salvo que GAIA_SCHEMA_MIGRATED=1 (puesto por
+    main.py tras migrar una sola vez en el proceso maestro antes de lanzar
+    los workers) — ver migrate_schema() para el porqué.
+    """
+    global _pg_pool, _sqlite_path
+    already_migrated = os.environ.get("GAIA_SCHEMA_MIGRATED") == "1"
+
+    if IS_PG:
+        import asyncpg  # type: ignore[import]
+
+        if not already_migrated:
+            await migrate_schema()
+        _pg_pool = await asyncpg.create_pool(
+            DATABASE_URL,
+            min_size=2,
+            max_size=20,
+            command_timeout=30,
+        )
+        flog.ok("[db] asyncpg pool iniciado")
+    else:
+        if sqlite_path:
+            _sqlite_path = sqlite_path
+        if _sqlite_path is None:
+            raise RuntimeError(
+                "init_db() requires sqlite_path when not using PostgreSQL"
+            )
+        if not already_migrated:
+            await migrate_schema(_sqlite_path)
         flog.ok("[db] aiosqlite inicializado")
 
 

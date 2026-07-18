@@ -22,7 +22,7 @@ from app.config.session import (
     JWT_SECRET_ENV,
     JWT_UNSAFE_SECRETS,
 )
-from app.storage.db import open_db
+from app.storage.db import IS_PG, open_db
 
 # ── Settings ───────────────────────────────────────────────────────────────────
 
@@ -771,6 +771,17 @@ def decode_workspace_token_full(
 # ── First-boot admin bootstrap ────────────────────────────────────────────────
 
 
+def _unique_violation_errors() -> tuple[type[Exception], ...]:
+    """Excepción de violación de restricción UNIQUE según el backend activo."""
+    if IS_PG:
+        import asyncpg  # type: ignore[import]
+
+        return (asyncpg.UniqueViolationError,)
+    import sqlite3
+
+    return (sqlite3.IntegrityError,)
+
+
 async def ensure_admin_user() -> None:
     """Garantiza que existe al menos un admin con el email de GAIA_ADMIN_EMAIL.
 
@@ -858,22 +869,32 @@ async def ensure_admin_user() -> None:
 
             password = secrets.token_urlsafe(12)
             now = datetime.now(timezone.utc).isoformat()
-            await conn.execute(
-                "INSERT INTO users "
-                "(username, email, password_hash, role, is_active, is_verified, created_at) "
-                "VALUES (?,?,?,?,?,?,?)",
-                (
-                    target_email,
-                    target_email,
-                    hash_password(password),
-                    "admin",
-                    1,
-                    1,
-                    now,
-                ),
-            )
-            await conn.commit()
-            action = "cuenta creada"
+            try:
+                await conn.execute(
+                    "INSERT INTO users "
+                    "(username, email, password_hash, role, is_active, is_verified, created_at) "
+                    "VALUES (?,?,?,?,?,?,?)",
+                    (
+                        target_email,
+                        target_email,
+                        hash_password(password),
+                        "admin",
+                        1,
+                        1,
+                        now,
+                    ),
+                )
+                await conn.commit()
+                action = "cuenta creada"
+            except _unique_violation_errors():
+                # Con GAIA_WORKERS > 1, varios procesos arrancan a la vez contra
+                # una DB recién creada: el SELECT de "existing" de arriba puede
+                # pasar en todos antes de que ninguno haga commit del INSERT.
+                # Otro worker ya ganó la carrera y creó el admin — no hay nada
+                # que hacer aquí (password/action se descartan para no
+                # sobrescribir .admin_pass con una contraseña que no coincide
+                # con la que realmente quedó en la DB).
+                return
 
     if password is None or action is None:
         return
