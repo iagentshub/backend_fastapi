@@ -590,8 +590,10 @@ async def chat(
     # Ollama virtual connections: "base_id::model_name"
     raw_conn_id = a.get("connection_id") or ""
 
-    # Override connection for non-owners based on their saved preferences
-    if not is_guest(user) and a.get("owner_id") != user:
+    # Preferencia por usuario/agente: también debe aplicarse al propietario.
+    # La extensión usa esto para cambiar de modelo sin modificar el agente ni
+    # la conexión predeterminada para los demás usuarios.
+    if not is_guest(user):
         async with open_db() as _pref_conn:
             _pref_row = await _pref_conn.fetchone(
                 f"SELECT connection_id FROM user_agent_preferences "
