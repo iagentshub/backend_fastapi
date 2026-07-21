@@ -10,6 +10,7 @@ from typing import (
     TYPE_CHECKING,
     Any,
     AsyncGenerator,
+    Callable,
     Dict,
     List,
     Optional,
@@ -84,7 +85,11 @@ def _truncate_history(
 
 
 def _do_openai_stream(
-    url: str, headers: Dict[str, str], payload: Dict[str, Any], timeout: Optional[int]
+    url: str,
+    headers: Dict[str, str],
+    payload: Dict[str, Any],
+    timeout: Optional[int],
+    on_token: Optional[Callable[[str], None]] = None,
 ) -> "tuple[str, int, int]":
     """Llama al endpoint OpenAI-compatible y devuelve (reply, tok_in, tok_out)."""
     data = json.dumps(payload).encode()
@@ -105,7 +110,10 @@ def _do_openai_stream(
                 continue
             choices = obj.get("choices") or []
             if choices:
-                full_reply += choices[0].get("delta", {}).get("content") or ""
+                token = choices[0].get("delta", {}).get("content") or ""
+                full_reply += token
+                if token and on_token is not None:
+                    on_token(token)
             usage = obj.get("usage") or {}
             if usage:
                 tok_in = usage.get("prompt_tokens", tok_in)
@@ -259,9 +267,35 @@ async def stream_chat(
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {api_key}",
             }
-            reply, tok_in, tok_out = await asyncio.to_thread(
-                _do_openai_stream, url, headers, payload, timeout
+            # urllib lee el proveedor en un hilo. Reenviar cada delta mediante
+            # una cola evita acumular la respuesta completa: con modelos lentos
+            # el cliente recibe actividad y el proxy no corta por inactividad.
+            token_queue: asyncio.Queue[str] = asyncio.Queue()
+            loop = asyncio.get_running_loop()
+
+            def _on_token(token: str) -> None:
+                loop.call_soon_threadsafe(token_queue.put_nowait, token)
+
+            provider_task = asyncio.create_task(
+                asyncio.to_thread(
+                    _do_openai_stream, url, headers, payload, timeout, _on_token
+                )
             )
+            last_heartbeat = loop.time()
+            while not provider_task.done() or not token_queue.empty():
+                try:
+                    token = await asyncio.wait_for(token_queue.get(), timeout=0.1)
+                except asyncio.TimeoutError:
+                    # Algunos modelos de razonamiento tardan más de un minuto
+                    # en producir el primer token. Mantener el SSE activo evita
+                    # que nginx o el cliente confundan esa espera con un cuelgue.
+                    if loop.time() - last_heartbeat >= 10:
+                        yield ": keep-alive\n\n"
+                        last_heartbeat = loop.time()
+                    continue
+                yield _sse({"type": "token", "token": token})
+                last_heartbeat = loop.time()
+            reply, tok_in, tok_out = await provider_task
 
         elif conn_type == "claude":
             url = (
@@ -317,6 +351,26 @@ async def stream_chat(
             {"type": "done", "reply": reply, "tokens": {"in": tok_in, "out": tok_out}}
         )
 
+    except urllib.error.HTTPError as exc:
+        body = exc.read().decode("utf-8", errors="replace")
+        detail = body[:500]
+        try:
+            parsed = json.loads(body)
+            error = parsed.get("error") or {}
+            detail = (
+                parsed.get("detail")
+                or parsed.get("message")
+                or (error.get("message") if isinstance(error, dict) else error)
+                or detail
+            )
+        except Exception:
+            pass
+        yield _sse(
+            {
+                "type": "error",
+                "message": f"El proveedor respondió HTTP {exc.code}: {detail}",
+            }
+        )
     except urllib.error.URLError as exc:
         yield _sse({"type": "error", "message": f"Error de conexión: {exc}"})
     except Exception as exc:
