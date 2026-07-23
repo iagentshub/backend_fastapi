@@ -15,11 +15,36 @@ from app.storage.workspaces import WorkspaceStorage
 router = APIRouter(prefix="/api/workspaces", tags=["workspaces"])
 
 _ws = WorkspaceStorage(DB_FILE)
+_PERMISSION_ACTIONS = {
+    "agents": {"use"},
+    "connections": {"direct", "via_agent"},
+    "knowledge": {"view"},
+}
 
 
 def _assert_not_guest(user: str) -> None:
     if is_guest(user):
         raise HTTPException(status_code=403, detail="Los invitados no pueden gestionar workspaces")
+
+
+def _validate_permissions(permissions: Dict[str, Any]) -> None:
+    for section, config in permissions.items():
+        allowed_actions = _PERMISSION_ACTIONS.get(section)
+        if allowed_actions is None or not isinstance(config, dict):
+            raise HTTPException(status_code=422, detail="Permisos inválidos")
+        if "default" in config and not isinstance(config["default"], bool):
+            raise HTTPException(status_code=422, detail="Permisos inválidos")
+        items = config.get("items", {})
+        if not isinstance(items, dict):
+            raise HTTPException(status_code=422, detail="Permisos inválidos")
+        for resource_id, actions in items.items():
+            if not resource_id or not isinstance(actions, dict):
+                raise HTTPException(status_code=422, detail="Permisos inválidos")
+            if any(
+                action not in allowed_actions or not isinstance(value, bool)
+                for action, value in actions.items()
+            ):
+                raise HTTPException(status_code=422, detail="Permisos inválidos")
 
 
 # ── Listar workspaces del usuario ──────────────────────────────────────────────
@@ -190,14 +215,32 @@ async def update_member_role(
     ctx: WorkspaceContext = Depends(require_workspace),
 ) -> Dict[str, Any]:
     _assert_not_guest(ctx.user)
+    has_role = "role" in body
     role = str(body.get("role") or "").strip()
-    if role not in ("owner", "admin", "member"):
+    permissions = body.get("permissions")
+    if not has_role and permissions is None:
+        raise HTTPException(status_code=422, detail="Rol o permisos obligatorios")
+    if has_role and role not in ("owner", "admin", "member"):
         raise HTTPException(status_code=400, detail="Rol inválido")
+    if permissions is not None and not isinstance(permissions, dict):
+        raise HTTPException(status_code=422, detail="Permisos inválidos")
+    if permissions is not None:
+        _validate_permissions(permissions)
     if not await _ws.can_manage(workspace_id, ctx.user) and await get_user_role(ctx.user) != "admin":
         raise HTTPException(status_code=403, detail="Sin permisos para cambiar roles")
-    if not await _ws.update_member_role(workspace_id, username, role):
+    if has_role and not await _ws.update_member_role(workspace_id, username, role):
         raise HTTPException(status_code=404, detail="Miembro no encontrado")
-    return {"ok": True, "workspace_id": workspace_id, "username": username, "role": role}
+    if permissions is not None and not await _ws.update_member_permissions(
+        workspace_id, username, permissions
+    ):
+        raise HTTPException(status_code=404, detail="Miembro no encontrado")
+    return {
+        "ok": True,
+        "workspace_id": workspace_id,
+        "username": username,
+        **({"role": role} if has_role else {}),
+        **({"permissions": permissions} if permissions is not None else {}),
+    }
 
 
 # ── Invitaciones ───────────────────────────────────────────────────────────────

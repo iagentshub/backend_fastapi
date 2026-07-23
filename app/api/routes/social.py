@@ -291,11 +291,16 @@ async def set_knowledge_visibility(
 
     async with open_db() as conn:
         row = await conn.fetchone(
-            "SELECT name FROM knowledge_folders WHERE id=? AND owner_id=?",
+            "SELECT name, section FROM resource_folders WHERE id=? AND owner_id=?",
             (folder_id, username),
         )
         if not row:
             raise HTTPException(status_code=404, detail="Carpeta no encontrada")
+        if row["section"] == "agents":
+            raise HTTPException(
+                status_code=422,
+                detail="Las carpetas de agentes no se publican como conocimiento",
+            )
         folder_name = row["name"]
         if body.is_public:
             await _upsert_social(
@@ -317,8 +322,12 @@ async def set_knowledge_visibility(
                 "WHERE resource_type=? AND resource_id=? AND owner=?",
                 ("knowledge", folder_id, username),
             )
+        await conn.execute(
+            "UPDATE resource_folders SET is_public=? WHERE id=? AND owner_id=?",
+            (body.is_public, folder_id, username),
+        )
         await conn.commit()
-    return {"ok": True}
+    return {"ok": True, "is_public": body.is_public}
 
 
 @router.get("/api/explore")
@@ -443,6 +452,23 @@ async def explore_preview(
             base["type"] = item.get("type", "")
             base["source"] = item.get("source", "")
             base["char_count"] = item.get("char_count", 0)
+        else:
+            async with open_db() as conn:
+                folder = await conn.fetchone(
+                    "SELECT id, name, section FROM resource_folders "
+                    "WHERE id=? AND is_public=?",
+                    (resource_id, _PUBLIC_VAL),
+                )
+                rows = await conn.fetchall(
+                    "SELECT resource_type, resource_id "
+                    "FROM resource_folder_items WHERE folder_id=?",
+                    (resource_id,),
+                )
+            if folder:
+                base["type"] = "folder"
+                base["section"] = folder["section"]
+                base["items"] = [dict(row) for row in rows]
+                base["item_count"] = len(rows)
 
     return base
 

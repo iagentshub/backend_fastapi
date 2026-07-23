@@ -298,6 +298,8 @@ async def stream_chat(
             }
             if max_tokens:
                 payload["max_tokens"] = int(max_tokens)
+            if agent.effort_level:
+                payload["reasoning_effort"] = agent.effort_level
             headers = {
                 "Content-Type": "application/json",
                 "Authorization": f"Bearer {api_key}",

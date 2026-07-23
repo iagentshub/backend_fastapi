@@ -6,6 +6,7 @@ Solo los workspaces de equipo tienen filas en las tablas workspaces / workspace_
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
@@ -206,13 +207,21 @@ class WorkspaceStorage:
     async def list_members(self, workspace_id: str) -> List[Dict[str, Any]]:
         async with open_db() as conn:
             rows = await conn.fetchall(
-                "SELECT wm.username, wm.role, wm.joined_at, u.display_name, u.email "
+                "SELECT wm.username, wm.role, wm.permissions, wm.joined_at, u.display_name, u.email "
                 "FROM workspace_members wm "
                 "LEFT JOIN users u ON u.username = wm.username "
                 "WHERE wm.workspace_id = ? ORDER BY wm.joined_at ASC",
                 (workspace_id,),
             )
-            return [dict(r) for r in rows]
+            result = []
+            for row in rows:
+                item = dict(row)
+                try:
+                    item["permissions"] = json.loads(item.get("permissions") or "{}")
+                except (TypeError, ValueError):
+                    item["permissions"] = {}
+                result.append(item)
+            return result
 
     async def get_member(
         self, workspace_id: str, username: str
@@ -243,8 +252,10 @@ class WorkspaceStorage:
                 )
             else:
                 await conn.execute(
-                    "INSERT OR REPLACE INTO workspace_members "
-                    "(workspace_id, username, role, joined_at) VALUES (?, ?, ?, ?)",
+                    "INSERT INTO workspace_members "
+                    "(workspace_id, username, role, joined_at) VALUES (?, ?, ?, ?) "
+                    "ON CONFLICT(workspace_id, username) "
+                    "DO UPDATE SET role=excluded.role",
                     (workspace_id, username, role, now),
                 )
             await conn.commit()
@@ -274,6 +285,18 @@ class WorkspaceStorage:
             await conn.commit()
             return row is not None
 
+    async def update_member_permissions(
+        self, workspace_id: str, username: str, permissions: Dict[str, Any]
+    ) -> bool:
+        async with open_db() as conn:
+            row = await conn.fetchone(
+                "UPDATE workspace_members SET permissions = ? "
+                "WHERE workspace_id = ? AND username = ? RETURNING workspace_id",
+                (json.dumps(permissions, ensure_ascii=False), workspace_id, username),
+            )
+            await conn.commit()
+            return row is not None
+
     # ── Authorization helpers ──────────────────────────────────────────────────
 
     async def can_access(self, workspace_id: str, username: str) -> bool:
@@ -292,6 +315,32 @@ class WorkspaceStorage:
             return True
         member = await self.get_member(workspace_id, username)
         return member is not None and member.get("role") in ("owner", "admin")
+
+    async def has_resource_permission(
+        self,
+        workspace_id: str,
+        username: str,
+        section: str,
+        resource_id: str,
+        action: str,
+    ) -> bool:
+        """Resolve granular member permissions; missing/empty config is allow-all."""
+        if workspace_id == username:
+            return True
+        member = await self.get_member(workspace_id, username)
+        if not member:
+            return False
+        if member.get("role") in ("owner", "admin"):
+            return True
+        try:
+            permissions = json.loads(member.get("permissions") or "{}")
+        except (TypeError, ValueError):
+            permissions = {}
+        config = permissions.get(section) or {}
+        item = (config.get("items") or {}).get(resource_id)
+        if isinstance(item, dict) and action in item:
+            return bool(item[action])
+        return bool(config.get("default", True))
 
     # ── Invitaciones ───────────────────────────────────────────────────────────
 

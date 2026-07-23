@@ -14,6 +14,7 @@ from app.auth.auth import get_user_role
 from app.config.data import AGENTS_DIR, DB_FILE
 
 from app.storage.guest import get_session, is_guest
+from app.storage.folders import FolderStorage, VALID_SECTIONS
 from app.storage.knowledge import (
     KnowledgeStorage,
     extract_document_text,
@@ -29,6 +30,7 @@ _storage = KnowledgeStorage(DB_FILE)
 _agents = AgentStorage(AGENTS_DIR)
 _shares = WorkspaceShareStorage(DB_FILE)
 _ws = WorkspaceStorage(DB_FILE)
+_folders = FolderStorage()
 
 _ALLOWED_EXTS = {".txt", ".md", ".pdf"}
 
@@ -120,11 +122,18 @@ async def list_items(
                         k["_group_id"] = gid
                         extra.append(k)
             items = items + extra
+    if ctx.workspace_id != user and role != "admin":
+        items = [
+            item for item in items
+            if await _ws.has_resource_permission(
+                ctx.workspace_id, user, "knowledge", item["id"], "view"
+            )
+        ]
     if offset:
         items = items[offset:]
     if limit:
         items = items[:limit]
-    return items
+    return await _folders.enrich_items(items, default_owner=workspace_id)
 
 
 @router.post("/text")
@@ -230,6 +239,95 @@ async def upload_document(
     )
 
 
+# ── Folders ────────────────────────────────────────────────────────────────
+
+
+@router.get("/folders")
+async def list_folders(
+    section: str = Query(...),
+    ctx: WorkspaceContext = Depends(require_workspace),
+) -> List[Dict[str, Any]]:
+    if section not in VALID_SECTIONS:
+        raise HTTPException(status_code=422, detail="Sección de carpeta no válida")
+    if is_guest(ctx.user):
+        return []
+    return await _folders.list(ctx.workspace_id, section)
+
+
+@router.post("/folders")
+async def create_folder(
+    request: Request,
+    ctx: WorkspaceContext = Depends(require_workspace),
+) -> Dict[str, Any]:
+    if is_guest(ctx.user):
+        raise HTTPException(status_code=403, detail="Los invitados no pueden crear carpetas")
+    body = await request.json()
+    section = str(body.get("section") or "").strip()
+    name = str(body.get("name") or "").strip()
+    if section not in VALID_SECTIONS or not name:
+        raise HTTPException(status_code=422, detail="Sección y nombre son obligatorios")
+    try:
+        return await _folders.create(ctx.workspace_id, section, name[:80])
+    except Exception as exc:
+        if "unique" in str(exc).lower():
+            raise HTTPException(status_code=409, detail="Ya existe una carpeta con ese nombre") from exc
+        raise
+
+
+@router.patch("/folders/{folder_id}")
+async def update_folder(
+    folder_id: str,
+    request: Request,
+    ctx: WorkspaceContext = Depends(require_workspace),
+) -> Dict[str, Any]:
+    body = await request.json()
+    name = body.get("name")
+    if name is not None:
+        name = str(name).strip()[:80]
+        if not name:
+            raise HTTPException(status_code=422, detail="Nombre obligatorio")
+    folder = await _folders.update(folder_id, ctx.workspace_id, name=name)
+    if not folder:
+        raise HTTPException(status_code=404, detail="Carpeta no encontrada")
+    return folder
+
+
+@router.delete("/folders/{folder_id}")
+async def delete_folder(
+    folder_id: str,
+    cascade: bool = Query(False),
+    ctx: WorkspaceContext = Depends(require_workspace),
+) -> Dict[str, bool]:
+    if not await _folders.delete(folder_id, ctx.workspace_id, cascade):
+        raise HTTPException(status_code=404, detail="Carpeta no encontrada")
+    return {"ok": True}
+
+
+@router.patch("/{item_id}")
+async def update_item_folder(
+    item_id: str,
+    request: Request,
+    ctx: WorkspaceContext = Depends(require_workspace),
+) -> Dict[str, Any]:
+    item = await _storage.get(item_id, await _owner(ctx.user, ctx.workspace_id))
+    if not item:
+        raise HTTPException(status_code=404, detail="Item no encontrado")
+    body = await request.json()
+    try:
+        await _folders.assign(
+            ctx.workspace_id, str(item.get("type") or "document"), item_id,
+            str(body["folder_id"]) if body.get("folder_id") else None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {
+        **item,
+        "folder_id": await _folders.folder_for(
+            ctx.workspace_id, str(item.get("type") or "document"), item_id
+        ),
+    }
+
+
 @router.delete("/{item_id}")
 async def delete_item(
     item_id: str,
@@ -243,6 +341,13 @@ async def delete_item(
         if len(s.knowledge) == before:
             raise HTTPException(status_code=404, detail="Item no encontrado")
         return {"ok": True}
-    if not await _storage.delete(item_id, await _owner(user, workspace_id)):
+    owner = await _owner(user, workspace_id)
+    item = await _storage.get(item_id, owner)
+    if not item or not await _storage.delete(item_id, owner):
         raise HTTPException(status_code=404, detail="Item no encontrado")
+    await _folders.remove_resource(
+        str(item.get("owner_id") or workspace_id),
+        str(item.get("type") or "document"),
+        item_id,
+    )
     return {"ok": True}

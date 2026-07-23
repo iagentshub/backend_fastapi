@@ -378,3 +378,175 @@ def test_update_member_invalid_role(client):
     client.post(f"/api/workspaces/{ws['id']}/members", json={"username": "ws_badrole_bob", "role": "member"})
     r = client.patch(f"/api/workspaces/{ws['id']}/members/ws_badrole_bob", json={"role": "superuser"})
     assert r.status_code == 400
+
+
+def test_update_and_list_granular_member_permissions(client):
+    _auth(client, "ws_perm_member")
+    _auth(client, "ws_perm_owner")
+    ws = client.post("/api/workspaces", json={"name": "Equipo Permisos"}).json()
+    client.post(
+        f"/api/workspaces/{ws['id']}/members",
+        json={"username": "ws_perm_member", "role": "member"},
+    )
+    permissions = {
+        "agents": {
+            "default": True,
+            "items": {"agent-private": {"use": False}},
+        },
+        "connections": {
+            "default": False,
+            "items": {"conn-ok": {"direct": True, "via_agent": False}},
+        },
+        "knowledge": {"default": True, "items": {}},
+    }
+    updated = client.patch(
+        f"/api/workspaces/{ws['id']}/members/ws_perm_member",
+        json={"permissions": permissions},
+    )
+    assert updated.status_code == 200
+    assert updated.json()["permissions"] == permissions
+
+    members = client.get(f"/api/workspaces/{ws['id']}/members")
+    assert members.status_code == 200
+    member = next(
+        row for row in members.json() if row["username"] == "ws_perm_member"
+    )
+    assert member["permissions"] == permissions
+
+    from app.config.data import DB_FILE
+    from app.storage.workspaces import WorkspaceStorage
+    import asyncio
+
+    storage = WorkspaceStorage(DB_FILE)
+    assert asyncio.run(
+        storage.has_resource_permission(
+            ws["id"], "ws_perm_member", "agents", "agent-private", "use"
+        )
+    ) is False
+    assert asyncio.run(
+        storage.has_resource_permission(
+            ws["id"], "ws_perm_member", "connections", "conn-ok", "direct"
+        )
+    ) is True
+    assert asyncio.run(
+        storage.has_resource_permission(
+            ws["id"], "ws_perm_member", "connections", "conn-ok", "via_agent"
+        )
+    ) is False
+    assert asyncio.run(
+        storage.has_resource_permission(
+            ws["id"], "ws_perm_member", "connections", "conn-other", "direct"
+        )
+    ) is False
+
+
+def test_existing_member_permissions_default_to_allow(client):
+    _auth(client, "ws_default_perm_member")
+    _auth(client, "ws_default_perm_owner")
+    ws = client.post("/api/workspaces", json={"name": "Equipo Compatible"}).json()
+    client.post(
+        f"/api/workspaces/{ws['id']}/members",
+        json={"username": "ws_default_perm_member", "role": "member"},
+    )
+    _switch(client, ws["id"], "ws_default_perm_member")
+
+    from app.storage.workspaces import WorkspaceStorage
+
+    from app.config.data import DB_FILE
+
+    storage = WorkspaceStorage(DB_FILE)
+    import asyncio
+
+    assert asyncio.run(
+        storage.has_resource_permission(
+            ws["id"], "ws_default_perm_member", "agents", "any-agent", "use"
+        )
+    ) is True
+
+
+def test_rejects_invalid_granular_permissions(client):
+    _auth(client, "ws_invalid_perm_member")
+    _auth(client, "ws_invalid_perm_owner")
+    ws = client.post("/api/workspaces", json={"name": "Permisos inválidos"}).json()
+    client.post(
+        f"/api/workspaces/{ws['id']}/members",
+        json={"username": "ws_invalid_perm_member", "role": "member"},
+    )
+
+    response = client.patch(
+        f"/api/workspaces/{ws['id']}/members/ws_invalid_perm_member",
+        json={
+            "permissions": {
+                "connections": {
+                    "default": "false",
+                    "items": {"connection-id": {"direct": True}},
+                }
+            }
+        },
+    )
+
+    assert response.status_code == 422
+
+
+def test_member_permissions_filter_workspace_resources(client):
+    member = "ws_filtered_member"
+    owner = "ws_filtered_owner"
+    _auth(client, member)
+    _auth(client, owner)
+    workspace = client.post(
+        "/api/workspaces", json={"name": "Recursos filtrados"}
+    ).json()
+    client.post(
+        f"/api/workspaces/{workspace['id']}/members",
+        json={"username": member, "role": "member"},
+    )
+    _switch(client, workspace["id"], owner)
+
+    agent = client.post(
+        "/api/agents",
+        json={"name": "Agente restringido", "system_prompt": "Prueba"},
+    ).json()
+    connection = client.post(
+        "/api/connections",
+        json={
+            "type": "openai",
+            "label": "Conexión restringida",
+            "api_key": "secret",
+        },
+    ).json()
+    knowledge = client.post(
+        "/api/knowledge/text",
+        json={"title": "Nota restringida", "content": "Contenido"},
+    ).json()
+
+    permissions = {
+        "agents": {
+            "default": True,
+            "items": {agent["id"]: {"use": False}},
+        },
+        "connections": {
+            "default": True,
+            "items": {connection["id"]: {"direct": False, "via_agent": False}},
+        },
+        "knowledge": {
+            "default": True,
+            "items": {knowledge["id"]: {"view": False}},
+        },
+    }
+    updated = client.patch(
+        f"/api/workspaces/{workspace['id']}/members/{member}",
+        json={"permissions": permissions},
+    )
+    assert updated.status_code == 200
+
+    _switch(client, workspace["id"], member)
+    assert all(row["id"] != agent["id"] for row in client.get("/api/agents").json())
+    assert client.get(f"/api/agents/{agent['id']}").status_code == 403
+    assert all(
+        row["id"] != connection["id"]
+        for row in client.get("/api/connections").json()
+    )
+    assert all(
+        row["id"] != knowledge["id"]
+        for row in client.get("/api/knowledge").json()
+    )

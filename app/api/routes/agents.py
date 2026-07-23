@@ -33,6 +33,7 @@ from app.storage.guest import (
     is_guest,
 )
 from app.storage.knowledge import KnowledgeStorage
+from app.storage.folders import FolderStorage
 from app.storage.storage import (
     AgentStorage,
     ConnectionStorage,
@@ -52,6 +53,7 @@ _shares = WorkspaceShareStorage(DB_FILE)
 _ws = WorkspaceStorage(DB_FILE)
 _chat = ChatStorage(DB_FILE)
 _knowledge = KnowledgeStorage(DB_FILE)
+_folders = FolderStorage()
 _chat_limiter = RateLimiter(calls=RATE_CHAT_CALLS, window=RATE_CHAT_WINDOW)
 
 
@@ -247,10 +249,20 @@ async def list_agents(
         agents = own + extra
     if label:
         agents = [a for a in agents if label in (a.get("labels") or [])]
+    if ctx.workspace_id != user and role != "admin":
+        agents = [
+            agent for agent in agents
+            if await _ws.has_resource_permission(
+                ctx.workspace_id, user, "agents", agent["id"], "use"
+            )
+        ]
     if offset:
         agents = agents[offset:]
     if limit:
         agents = agents[:limit]
+    agents = await _folders.enrich_items(
+        agents, default_owner=ctx.workspace_id, resource_type="agents"
+    )
     enriched: List[Dict[str, Any]] = []
     for a in agents:
         a = _apply_locale(a, locale)
@@ -294,7 +306,15 @@ async def save_agent(
                     detail="Solo el propietario puede editar este agente",
                 )
     try:
-        return await _agents.save(payload, scope, owner_id=workspace_id)
+        folder_id = payload.pop("folder_id", None)
+        saved = await _agents.save(payload, scope, owner_id=workspace_id)
+        if folder_id is not None:
+            try:
+                await _folders.assign(workspace_id, "agents", saved["id"], folder_id or None)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+        saved["folder_id"] = await _folders.folder_for(workspace_id, "agents", saved["id"])
+        return saved
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
@@ -318,9 +338,35 @@ async def get_agent(
     if not a:
         raise HTTPException(status_code=404, detail="Agente no encontrado")
     await _assert_can_read_agent(agent_id, a, ctx)
+    if not await _ws.has_resource_permission(
+        ctx.workspace_id, user, "agents", agent_id, "use"
+    ):
+        raise HTTPException(status_code=403, detail="Sin permiso para usar este agente")
     a = _apply_locale(a, get_locale())
     a["origin_type"] = _compute_origin(a, user)
+    owner = str(a.get("owner_id") or ctx.workspace_id)
+    a["folder_id"] = await _folders.folder_for(owner, "agents", agent_id)
     return a
+
+
+@router.patch("/{agent_id}/folder")
+async def move_agent_to_folder(
+    agent_id: str, request: Request, ctx: WorkspaceContext = Depends(require_workspace)
+) -> Dict[str, Any]:
+    agent = await _agents.get(agent_id)
+    if not agent:
+        raise HTTPException(status_code=404, detail="Agente no encontrado")
+    if await get_user_role(ctx.user) != "admin" and agent.get("owner_id") != ctx.workspace_id:
+        raise HTTPException(status_code=403, detail="Solo el propietario puede mover el agente")
+    body = await request.json()
+    try:
+        await _folders.assign(
+            ctx.workspace_id, "agents", agent_id,
+            str(body["folder_id"]) if body.get("folder_id") else None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {**agent, "folder_id": body.get("folder_id")}
 
 
 @router.delete("/{agent_id}")
@@ -345,6 +391,10 @@ async def delete_agent(
             raise HTTPException(status_code=404, detail="Agente no encontrado")
     except ValueError as e:
         raise HTTPException(status_code=403, detail=str(e))
+    if a:
+        await _folders.remove_resource(
+            str(a.get("owner_id") or workspace_id), "agents", agent_id
+        )
     return {"ok": True}
 
 
@@ -607,6 +657,38 @@ async def chat(
         base_conn_id, ollama_model = raw_conn_id.split("::", 1)
     else:
         base_conn_id, ollama_model = raw_conn_id, None
+
+    if (
+        not is_guest(user)
+        and workspace_id != user
+        and role != "admin"
+        and base_conn_id
+        and not await _ws.has_resource_permission(
+            workspace_id, user, "connections", base_conn_id, "via_agent"
+        )
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail="No tienes permiso para usar esta conexión mediante agentes",
+        )
+
+    if not is_guest(user) and workspace_id != user and role != "admin":
+        for operation_connection_id in a.get("op_connections") or []:
+            operation_connection_id = str(operation_connection_id).split("::", 1)[0]
+            if operation_connection_id and not await _ws.has_resource_permission(
+                workspace_id,
+                user,
+                "connections",
+                operation_connection_id,
+                "via_agent",
+            ):
+                raise HTTPException(
+                    status_code=403,
+                    detail=(
+                        "No tienes permiso para usar una de las conexiones "
+                        "operativas del agente"
+                    ),
+                )
 
     if is_guest(user):
         s = get_session(user)

@@ -96,6 +96,7 @@ class Agent:
 
     # ── LLM — portable across platforms ───────────────────────────────────────
     connection_id: Optional[str] = None
+    op_connections: List[str] = field(default_factory=list)
     model: str = ""
     system_prompt: str = (
         ""  # maps to: Claude→system, OpenAI→instructions, GitHub→MD body
@@ -103,6 +104,7 @@ class Agent:
     temperature: float = 0.7
     max_tokens: Optional[int] = None
     timeout: Optional[int] = None  # None = usar preferencia global; 0 = indefinido
+    effort_level: Optional[str] = None
 
     # ── Composition ───────────────────────────────────────────────────────────
     skills: List[str] = field(default_factory=list)
@@ -150,6 +152,7 @@ class Agent:
             tags=[str(t) for t in (data.get("tags") or []) if t],
             language=str(data.get("language") or "").strip(),
             connection_id=str(data.get("connection_id") or "").strip() or None,
+            op_connections=[str(c) for c in (data.get("op_connections") or []) if c],
             model=str(data.get("model") or "").strip(),
             system_prompt=str(data.get("system_prompt") or "").strip(),
             temperature=float(data["temperature"])
@@ -157,6 +160,7 @@ class Agent:
             else 0.7,
             max_tokens=int(data["max_tokens"]) if data.get("max_tokens") else None,
             timeout=int(data["timeout"]) if data.get("timeout") is not None else None,
+            effort_level=str(data.get("effort_level") or "").strip() or None,
             skills=[str(s) for s in (data.get("skills") or []) if s],
             knowledge=[str(k) for k in (data.get("knowledge") or []) if k],
             use_memory=bool(data.get("use_memory", False)),
@@ -188,11 +192,13 @@ class Agent:
             "labels": self.labels,
             "language": self.language,
             "connection_id": self.connection_id,
+            "op_connections": self.op_connections,
             "model": self.model,
             "system_prompt": self.system_prompt,
             "temperature": self.temperature,
             "max_tokens": self.max_tokens,
             "timeout": self.timeout,
+            "effort_level": self.effort_level,
             "skills": self.skills,
             "knowledge": self.knowledge,
             "use_memory": self.use_memory,

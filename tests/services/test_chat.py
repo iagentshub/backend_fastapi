@@ -191,6 +191,27 @@ async def test_system_prompt_included_in_messages():
 # ─── Tests de auto_update_memory ──────────────────────────────────────────────
 
 
+async def test_effort_level_is_sent_to_openai_compatible_provider():
+    agent = _make_agent("openai")
+    agent["effort_level"] = "high"
+    conn = _make_conn("openai")
+    sent_payloads = []
+
+    def fake_urlopen(req, timeout):
+        sent_payloads.append(json.loads(req.data.decode()))
+        return _sse_done_response()
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        [
+            event
+            async for event in stream_chat(
+                agent, conn, [{"role": "user", "content": "Hi"}], _skill_storage()
+            )
+        ]
+
+    assert sent_payloads[0]["reasoning_effort"] == "high"
+
+
 def _make_memory_storage(existing: str = "") -> MagicMock:
     storage = MagicMock()
     storage.get = AsyncMock(return_value=existing or None)
