@@ -7,10 +7,11 @@ import json
 from app.utils import flog
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 from app.api.routes.auth import require_auth, require_admin
+from app.errors import APIError
 from app.storage.db import open_db
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
@@ -89,12 +90,20 @@ async def update_settings(
     prefs = await _get_prefs(username)
     if body.theme is not None:
         if body.theme not in VALID_THEMES:
-            raise HTTPException(status_code=422, detail=f"Tema no válido: {body.theme}")
+            raise APIError(
+                422,
+                "invalid_field",
+                f"Tema no válido: {body.theme}",
+                extra={"field": "theme"},
+            )
         prefs["theme"] = body.theme
     if body.language is not None:
         if body.language not in VALID_LANGUAGES:
-            raise HTTPException(
-                status_code=422, detail=f"Idioma no válido: {body.language}"
+            raise APIError(
+                422,
+                "invalid_field",
+                f"Idioma no válido: {body.language}",
+                extra={"field": "language"},
             )
         prefs["language"] = body.language
     await _save_prefs(username, prefs)
@@ -114,7 +123,12 @@ async def update_dashboard_layout(
 ) -> dict:
     unknown = [w for w in body.layout if w not in _KNOWN_WIDGETS]
     if unknown:
-        raise HTTPException(status_code=422, detail=f"Widgets desconocidos: {unknown}")
+        raise APIError(
+            422,
+            "invalid_field",
+            f"Widgets desconocidos: {unknown}",
+            extra={"field": "widgets"},
+        )
     prefs = await _get_prefs(username)
     prefs["dashboard_layout"] = body.layout
     await _save_prefs(username, prefs)
@@ -158,8 +172,11 @@ async def update_admin_settings(
     prefs = await _get_prefs(username)
     if body.log_retention_days is not None:
         if not (1 <= body.log_retention_days <= 365):
-            raise HTTPException(
-                status_code=422, detail="log_retention_days debe estar entre 1 y 365"
+            raise APIError(
+                422,
+                "invalid_field",
+                "log_retention_days debe estar entre 1 y 365",
+                extra={"field": "log_retention_days"},
             )
         prefs["log_retention_days"] = body.log_retention_days
     await _save_prefs(username, prefs)
@@ -256,20 +273,34 @@ async def update_platform_config(
     update = body.model_dump(exclude_none=True)
 
     if "registration" in update and update["registration"] not in _VALID_REGISTRATION:
-        raise HTTPException(
-            status_code=422, detail="registration debe ser 'open' o 'closed'"
+        raise APIError(
+            422,
+            "invalid_field",
+            "registration debe ser 'open' o 'closed'",
+            extra={"field": "registration"},
         )
     if "max_users" in update and update["max_users"] < 0:
-        raise HTTPException(status_code=422, detail="max_users debe ser >= 0")
+        raise APIError(
+            422,
+            "invalid_field",
+            "max_users debe ser >= 0",
+            extra={"field": "max_users"},
+        )
     if "max_concurrent_sessions" in update and update["max_concurrent_sessions"] < 0:
-        raise HTTPException(
-            status_code=422, detail="max_concurrent_sessions debe ser >= 0"
+        raise APIError(
+            422,
+            "invalid_field",
+            "max_concurrent_sessions debe ser >= 0",
+            extra={"field": "max_concurrent_sessions"},
         )
     if "log_retention_days" in update and not (
         1 <= update["log_retention_days"] <= 365
     ):
-        raise HTTPException(
-            status_code=422, detail="log_retention_days debe estar entre 1 y 365"
+        raise APIError(
+            422,
+            "invalid_field",
+            "log_retention_days debe estar entre 1 y 365",
+            extra={"field": "log_retention_days"},
         )
     # Solo un default de UI (prefill del slider "Concurrencia máx" en Centinel)
     # — no limita lo que un test concreto puede pedir, así que no está ligado
@@ -277,8 +308,11 @@ async def update_platform_config(
     if "stress_max_concurrency" in update and not (
         0 <= update["stress_max_concurrency"] <= 100_000
     ):
-        raise HTTPException(
-            status_code=422, detail="stress_max_concurrency debe estar entre 0 y 100000"
+        raise APIError(
+            422,
+            "invalid_field",
+            "stress_max_concurrency debe estar entre 0 y 100000",
+            extra={"field": "stress_max_concurrency"},
         )
 
     cfg.update(update)

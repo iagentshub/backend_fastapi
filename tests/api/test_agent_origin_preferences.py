@@ -183,7 +183,7 @@ def test_agent_edit_forbidden_for_non_owner(client):
         json={**_AGENT_PAYLOAD, "id": agent["id"], "name": "Hacked Name"},
     )
     assert r_edit.status_code == 403
-    assert "propietario" in r_edit.json()["detail"].lower()
+    assert "propietario" in r_edit.json()["detail"]["message"].lower()
 
 
 def test_agent_edit_allowed_for_owner(client):

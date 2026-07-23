@@ -11,7 +11,7 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
+from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
@@ -19,6 +19,7 @@ from app.api.routes.auth import WorkspaceContext, require_auth, require_workspac
 from app.auth.auth import get_user_role
 from app.config.data import AGENTS_DIR, DB_FILE, MEMORY_DIR, SKILLS_DIR
 from app.config.session import RATE_CHAT_CALLS, RATE_CHAT_WINDOW
+from app.errors import APIError
 from app.middleware.locale import get_locale
 from app.middleware.ratelimit import RateLimiter
 from app.models.agent import Agent
@@ -110,7 +111,7 @@ async def _assert_can_read_agent(
         for shared_ids in results:
             if agent_id in shared_ids:
                 return
-    raise HTTPException(status_code=403, detail="No tienes acceso a este agente")
+    raise APIError(403, "forbidden", "No tienes acceso a este agente")
 
 
 async def _conn_owner(user: str) -> str | None:
@@ -128,7 +129,7 @@ def _name_slug(name: str) -> str:
 
 def _check_scope(scope: str) -> None:
     if scope not in _VALID_SCOPES:
-        raise HTTPException(status_code=400, detail="Scope no válido")
+        raise APIError(400, "invalid_field", "Scope no válido", extra={"field": "scope"})
 
 
 def _apply_locale(agent: Dict[str, Any], locale: str) -> Dict[str, Any]:
@@ -186,7 +187,7 @@ async def list_agents(
     if group_id is not None:
         # Filtro por grupo: se aplica siempre, incluido admin
         if role != "admin" and not await _ws.can_access(group_id, user):
-            raise HTTPException(status_code=403, detail="Sin acceso a este grupo")
+            raise APIError(403, "forbidden", "Sin acceso a este grupo")
         shared_ids = set(
             await _shares.get_workspace_shared_resource_ids(group_id, "agent")
         )
@@ -279,7 +280,7 @@ async def save_agent(
     payload = await request.json()
     scope = str(payload.pop("scope", "private") or "private")
     if scope not in ("public", "private"):
-        raise HTTPException(status_code=400, detail="Scope no válido")
+        raise APIError(400, "invalid_field", "Scope no válido", extra={"field": "scope"})
     if is_guest(user):
         s = get_session(user)
         agent: Dict[str, Any] = {
@@ -301,9 +302,10 @@ async def save_agent(
         ):
             role = await get_user_role(user)
             if role != "admin":
-                raise HTTPException(
-                    status_code=403,
-                    detail="Solo el propietario puede editar este agente",
+                raise APIError(
+                    403,
+                    "forbidden",
+                    "Solo el propietario puede editar este agente",
                 )
     try:
         folder_id = payload.pop("folder_id", None)
@@ -312,11 +314,11 @@ async def save_agent(
             try:
                 await _folders.assign(workspace_id, "agents", saved["id"], folder_id or None)
             except ValueError as exc:
-                raise HTTPException(status_code=422, detail=str(exc)) from exc
+                raise APIError(422, "folder_resource_mismatch", str(exc)) from exc
         saved["folder_id"] = await _folders.folder_for(workspace_id, "agents", saved["id"])
         return saved
     except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise APIError(422, "agent_invalid_payload", str(e))
 
 
 @router.get("/{agent_id}")
@@ -330,18 +332,18 @@ async def get_agent(
             (a for a in s.agents if a.get("id") == agent_id), None
         ) or await _agents.get(agent_id, scope="public")
         if not a:
-            raise HTTPException(status_code=404, detail="Agente no encontrado")
+            raise APIError(404, "not_found", "Agente no encontrado", extra={"resource": "agent"})
         a = _apply_locale(a, get_locale())
         a["origin_type"] = _compute_origin(a, user)
         return a
     a = await _agents.get(agent_id)
     if not a:
-        raise HTTPException(status_code=404, detail="Agente no encontrado")
+        raise APIError(404, "not_found", "Agente no encontrado", extra={"resource": "agent"})
     await _assert_can_read_agent(agent_id, a, ctx)
     if not await _ws.has_resource_permission(
         ctx.workspace_id, user, "agents", agent_id, "use"
     ):
-        raise HTTPException(status_code=403, detail="Sin permiso para usar este agente")
+        raise APIError(403, "forbidden", "Sin permiso para usar este agente")
     a = _apply_locale(a, get_locale())
     a["origin_type"] = _compute_origin(a, user)
     owner = str(a.get("owner_id") or ctx.workspace_id)
@@ -355,9 +357,9 @@ async def move_agent_to_folder(
 ) -> Dict[str, Any]:
     agent = await _agents.get(agent_id)
     if not agent:
-        raise HTTPException(status_code=404, detail="Agente no encontrado")
+        raise APIError(404, "not_found", "Agente no encontrado", extra={"resource": "agent"})
     if await get_user_role(ctx.user) != "admin" and agent.get("owner_id") != ctx.workspace_id:
-        raise HTTPException(status_code=403, detail="Solo el propietario puede mover el agente")
+        raise APIError(403, "forbidden", "Solo el propietario puede mover el agente")
     body = await request.json()
     try:
         await _folders.assign(
@@ -365,7 +367,7 @@ async def move_agent_to_folder(
             str(body["folder_id"]) if body.get("folder_id") else None,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise APIError(422, "folder_resource_mismatch", str(exc)) from exc
     return {**agent, "folder_id": body.get("folder_id")}
 
 
@@ -379,18 +381,16 @@ async def delete_agent(
         before = len(s.agents)
         s.agents = [a for a in s.agents if a.get("id") != agent_id]
         if len(s.agents) == before:
-            raise HTTPException(status_code=404, detail="Agente no encontrado")
+            raise APIError(404, "not_found", "Agente no encontrado", extra={"resource": "agent"})
         return {"ok": True}
     a = await _agents.get(agent_id)
     if a and await get_user_role(user) != "admin" and a.get("owner_id") != workspace_id:
-        raise HTTPException(
-            status_code=403, detail="No tienes permiso para eliminar este agente"
-        )
+        raise APIError(403, "forbidden", "No tienes permiso para eliminar este agente")
     try:
         if not await _agents.delete(agent_id):
-            raise HTTPException(status_code=404, detail="Agente no encontrado")
+            raise APIError(404, "not_found", "Agente no encontrado", extra={"resource": "agent"})
     except ValueError as e:
-        raise HTTPException(status_code=403, detail=str(e))
+        raise APIError(403, "agent_delete_forbidden", str(e))
     if a:
         await _folders.remove_resource(
             str(a.get("owner_id") or workspace_id), "agents", agent_id
@@ -458,7 +458,7 @@ async def export_agent(
         memory_store = _memory
         knowledge_store = _knowledge
     if not a:
-        raise HTTPException(status_code=404, detail="Agente no encontrado")
+        raise APIError(404, "not_found", "Agente no encontrado", extra={"resource": "agent"})
     if not is_guest(user):
         await _assert_can_read_agent(agent_id, a, ctx)
     a = _apply_locale(a, get_locale())
@@ -511,9 +511,11 @@ async def export_agent(
     try:
         content, media, filename = agent_obj.export(fmt)
     except NotImplementedError:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Formato '{fmt}' no soportado para tipo '{agent_obj.agent_type}'",
+        raise APIError(
+            400,
+            "export_format_unsupported",
+            f"Formato '{fmt}' no soportado para tipo '{agent_obj.agent_type}'",
+            extra={"format": fmt, "agent_type": agent_obj.agent_type},
         )
 
     slug = _name_slug(agent_obj.name)
@@ -627,7 +629,7 @@ async def chat(
     else:
         a = await _agents.get(agent_id)
     if not a:
-        raise HTTPException(status_code=404, detail="Agente no encontrado")
+        raise APIError(404, "not_found", "Agente no encontrado", extra={"resource": "agent"})
     role = await get_user_role(user)
     if not is_guest(user):
         await _assert_can_read_agent(agent_id, a, ctx)
@@ -667,9 +669,10 @@ async def chat(
             workspace_id, user, "connections", base_conn_id, "via_agent"
         )
     ):
-        raise HTTPException(
-            status_code=403,
-            detail="No tienes permiso para usar esta conexión mediante agentes",
+        raise APIError(
+            403,
+            "forbidden",
+            "No tienes permiso para usar esta conexión mediante agentes",
         )
 
     if not is_guest(user) and workspace_id != user and role != "admin":
@@ -682,9 +685,10 @@ async def chat(
                 operation_connection_id,
                 "via_agent",
             ):
-                raise HTTPException(
-                    status_code=403,
-                    detail=(
+                raise APIError(
+                    403,
+                    "forbidden",
+                    (
                         "No tienes permiso para usar una de las conexiones "
                         "operativas del agente"
                     ),
@@ -710,8 +714,8 @@ async def chat(
         conn = {**conn, "model": ollama_model}
 
     if not conn:
-        raise HTTPException(
-            status_code=422, detail="El agente no tiene conexión configurada"
+        raise APIError(
+            422, "agent_no_connection", "El agente no tiene conexión configurada"
         )
 
     from starlette.background import BackgroundTask

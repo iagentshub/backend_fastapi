@@ -7,11 +7,12 @@ from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Query, Request, UploadFile
 
 from app.api.routes.auth import WorkspaceContext, require_workspace
 from app.auth.auth import get_user_role
 from app.config.data import AGENTS_DIR, DB_FILE
+from app.errors import APIError
 
 from app.storage.guest import get_session, is_guest
 from app.storage.folders import FolderStorage, VALID_SECTIONS
@@ -80,7 +81,7 @@ async def list_items(
     if group_id is not None:
         # Filtro por grupo: se aplica siempre, incluido admin
         if role != "admin" and not await _ws.can_access(group_id, user):
-            raise HTTPException(status_code=403, detail="Sin acceso a este grupo")
+            raise APIError(403, "forbidden", "Sin acceso a este grupo")
         shared_ids = set(
             await _shares.get_workspace_shared_resource_ids(group_id, "knowledge")
         )
@@ -147,9 +148,9 @@ async def add_text(
     content = str(body.get("content") or "").strip()
     source = str(body.get("source") or title).strip()
     if not title:
-        raise HTTPException(status_code=422, detail="Título requerido")
+        raise APIError(422, "invalid_field", "Título requerido", extra={"field": "title"})
     if not content:
-        raise HTTPException(status_code=422, detail="Contenido requerido")
+        raise APIError(422, "invalid_field", "Contenido requerido", extra={"field": "content"})
     if is_guest(user):
         item = _guest_item(type="text", title=title, source=source, content=content)
         get_session(user).knowledge.append(item)
@@ -170,16 +171,16 @@ async def add_url(
     url = str(body.get("url") or "").strip()
     title = str(body.get("title") or "").strip() or url
     if not url:
-        raise HTTPException(status_code=422, detail="URL requerida")
+        raise APIError(422, "invalid_field", "URL requerida", extra={"field": "url"})
     try:
         content = await asyncio.to_thread(fetch_url_text, url)
     except Exception as exc:
-        raise HTTPException(
-            status_code=422, detail=f"No se pudo obtener la URL: {exc}"
+        raise APIError(
+            422, "url_fetch_failed", f"No se pudo obtener la URL: {exc}"
         ) from exc
     if not content.strip():
-        raise HTTPException(
-            status_code=422, detail="No se pudo extraer texto de la URL"
+        raise APIError(
+            422, "url_text_extraction_failed", "No se pudo extraer texto de la URL"
         )
     if is_guest(user):
         item = _guest_item(type="url", title=title, source=url, content=content)
@@ -200,14 +201,17 @@ async def upload_document(
     filename = file.filename or "documento"
     ext = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     if ext not in _ALLOWED_EXTS:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Formato no soportado. Formatos permitidos: {', '.join(_ALLOWED_EXTS)}",
+        raise APIError(
+            422,
+            "unsupported_document_format",
+            f"Formato no soportado. Formatos permitidos: {', '.join(_ALLOWED_EXTS)}",
+            extra={"allowed_extensions": sorted(_ALLOWED_EXTS)},
         )
     content_bytes = await file.read()
     if len(content_bytes) > 10 * 1024 * 1024:
-        raise HTTPException(
-            status_code=413, detail="El fichero supera el límite de 10 MB"
+        raise APIError(
+            413, "file_too_large", "El fichero supera el límite de 10 MB",
+            extra={"max_mb": 10},
         )
     try:
         # extract_document_text usa pypdf (síncrono/bloqueante en PDFs grandes)
@@ -218,10 +222,10 @@ async def upload_document(
             extract_document_text, content_bytes, filename, file.content_type or ""
         )
     except Exception as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise APIError(422, "document_extraction_failed", str(exc)) from exc
     if not content.strip():
-        raise HTTPException(
-            status_code=422, detail="No se pudo extraer texto del documento"
+        raise APIError(
+            422, "document_text_extraction_failed", "No se pudo extraer texto del documento"
         )
     if is_guest(user):
         item = _guest_item(
@@ -248,7 +252,7 @@ async def list_folders(
     ctx: WorkspaceContext = Depends(require_workspace),
 ) -> List[Dict[str, Any]]:
     if section not in VALID_SECTIONS:
-        raise HTTPException(status_code=422, detail="Sección de carpeta no válida")
+        raise APIError(422, "invalid_field", "Sección de carpeta no válida", extra={"field": "section"})
     if is_guest(ctx.user):
         return []
     return await _folders.list(ctx.workspace_id, section)
@@ -260,17 +264,20 @@ async def create_folder(
     ctx: WorkspaceContext = Depends(require_workspace),
 ) -> Dict[str, Any]:
     if is_guest(ctx.user):
-        raise HTTPException(status_code=403, detail="Los invitados no pueden crear carpetas")
+        raise APIError(403, "forbidden", "Los invitados no pueden crear carpetas")
     body = await request.json()
     section = str(body.get("section") or "").strip()
     name = str(body.get("name") or "").strip()
     if section not in VALID_SECTIONS or not name:
-        raise HTTPException(status_code=422, detail="Sección y nombre son obligatorios")
+        raise APIError(422, "folder_fields_required", "Sección y nombre son obligatorios")
     try:
         return await _folders.create(ctx.workspace_id, section, name[:80])
     except Exception as exc:
         if "unique" in str(exc).lower():
-            raise HTTPException(status_code=409, detail="Ya existe una carpeta con ese nombre") from exc
+            raise APIError(
+                409, "already_exists", "Ya existe una carpeta con ese nombre",
+                extra={"resource": "folder"},
+            ) from exc
         raise
 
 
@@ -285,10 +292,10 @@ async def update_folder(
     if name is not None:
         name = str(name).strip()[:80]
         if not name:
-            raise HTTPException(status_code=422, detail="Nombre obligatorio")
+            raise APIError(422, "invalid_field", "Nombre obligatorio", extra={"field": "name"})
     folder = await _folders.update(folder_id, ctx.workspace_id, name=name)
     if not folder:
-        raise HTTPException(status_code=404, detail="Carpeta no encontrada")
+        raise APIError(404, "not_found", "Carpeta no encontrada", extra={"resource": "folder"})
     return folder
 
 
@@ -299,7 +306,7 @@ async def delete_folder(
     ctx: WorkspaceContext = Depends(require_workspace),
 ) -> Dict[str, bool]:
     if not await _folders.delete(folder_id, ctx.workspace_id, cascade):
-        raise HTTPException(status_code=404, detail="Carpeta no encontrada")
+        raise APIError(404, "not_found", "Carpeta no encontrada", extra={"resource": "folder"})
     return {"ok": True}
 
 
@@ -311,7 +318,7 @@ async def update_item_folder(
 ) -> Dict[str, Any]:
     item = await _storage.get(item_id, await _owner(ctx.user, ctx.workspace_id))
     if not item:
-        raise HTTPException(status_code=404, detail="Item no encontrado")
+        raise APIError(404, "not_found", "Item no encontrado", extra={"resource": "item"})
     body = await request.json()
     try:
         await _folders.assign(
@@ -319,7 +326,7 @@ async def update_item_folder(
             str(body["folder_id"]) if body.get("folder_id") else None,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise APIError(422, "folder_resource_mismatch", str(exc)) from exc
     return {
         **item,
         "folder_id": await _folders.folder_for(
@@ -339,12 +346,12 @@ async def delete_item(
         before = len(s.knowledge)
         s.knowledge = [i for i in s.knowledge if i["id"] != item_id]
         if len(s.knowledge) == before:
-            raise HTTPException(status_code=404, detail="Item no encontrado")
+            raise APIError(404, "not_found", "Item no encontrado", extra={"resource": "item"})
         return {"ok": True}
     owner = await _owner(user, workspace_id)
     item = await _storage.get(item_id, owner)
     if not item or not await _storage.delete(item_id, owner):
-        raise HTTPException(status_code=404, detail="Item no encontrado")
+        raise APIError(404, "not_found", "Item no encontrado", extra={"resource": "item"})
     await _folders.remove_resource(
         str(item.get("owner_id") or workspace_id),
         str(item.get("type") or "document"),

@@ -5,13 +5,14 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.api.routes.auth import WorkspaceContext, require_workspace
 from app.auth.auth import get_user_role
 from app.config.data import DB_FILE
+from app.errors import APIError
 from app.models.agent import Agent
 from app.services.agent_builder import (
     BuilderMode,
@@ -71,9 +72,8 @@ async def builder_chat(
                 workspace_id, user, "connections", conn_id, "direct"
             )
         ):
-            raise HTTPException(
-                status_code=403,
-                detail="No tienes permiso para usar esta conexión directamente",
+            raise APIError(
+                403, "forbidden", "No tienes permiso para usar esta conexión directamente"
             )
     if not is_guest(user) and role == "admin":
         conn = await _conns.get(conn_id, None)
@@ -84,9 +84,11 @@ async def builder_chat(
     if conn and ollama_model:
         conn = {**conn, "model": ollama_model}
     if not conn:
-        raise HTTPException(
-            status_code=404,
-            detail="La conexión seleccionada no existe o no está disponible",
+        raise APIError(
+            404,
+            "not_found",
+            "La conexión seleccionada no existe o no está disponible",
+            extra={"resource": "connection"},
         )
 
     # Una especificación extensa ya contiene suficiente contexto. Para entradas

@@ -21,7 +21,7 @@ def test_require_auth_invalid_token(client):
     client.cookies.set("ga_token", "invalid.token.here")
     r = client.get("/api/auth/me/deletion-status")
     assert r.status_code == 401
-    assert "Token" in r.json()["detail"]
+    assert r.json()["detail"]["code"] == "invalid_token"
 
 
 # ── require_workspace — token inválido (línea 87) ────────────────────────────
@@ -39,7 +39,7 @@ def test_register_mode_closed(client, reset_rate_limiter):
     with patch("app.api.routes.auth.REGISTRATION_MODE", "closed"):
         r = client.post("/api/auth/register", json={"email": "closed@test.com", "password": "pass1234"})
     assert r.status_code == 403
-    assert "desactivado" in r.json()["detail"]
+    assert r.json()["detail"]["code"] == "registration_disabled"
 
 
 # ── register — REGISTRATION_MODE invite (línea 106) ──────────────────────────
@@ -48,7 +48,7 @@ def test_register_mode_invite(client, reset_rate_limiter):
     with patch("app.api.routes.auth.REGISTRATION_MODE", "invite"):
         r = client.post("/api/auth/register", json={"email": "invite@test.com", "password": "pass1234"})
     assert r.status_code == 403
-    assert "invitación" in r.json()["detail"]
+    assert r.json()["detail"]["code"] == "registration_invite_only"
 
 
 # ── register — EMAIL_VERIFY_ENABLED (líneas 134-136) ─────────────────────────
@@ -87,7 +87,7 @@ def test_login_inactive_account(client):
     asyncio.run(_setup())
     r = client.post("/api/auth/login", json={"email": "inactive@test.com", "password": "pass1234"})
     assert r.status_code == 403
-    assert "desactivada" in r.json()["detail"]
+    assert r.json()["detail"]["code"] == "account_disabled"
 
 
 # ── login — cuenta sin verificar con EMAIL_VERIFY_ENABLED (línea 158) ────────
@@ -111,7 +111,7 @@ def test_login_unverified_account(client):
             "email": "unverified@test.com", "password": "pass1234"
         })
     assert r.status_code == 403
-    assert "verificación" in r.json()["detail"]
+    assert r.json()["detail"]["code"] == "email_not_verified"
 
 
 # ── logout (líneas 185-186) ───────────────────────────────────────────────────
@@ -156,7 +156,7 @@ def test_change_password_empty_fields(client, reset_rate_limiter):
     client.post("/api/auth/register", json={"email": "emptypw@test.com", "password": "pass1234"})
     r = client.post("/api/auth/change-password", json={"current_password": "", "new_password": ""})
     assert r.status_code == 400
-    assert "campos" in r.json()["detail"]
+    assert r.json()["detail"]["code"] == "all_fields_required"
 
 
 # ── admin list users — filtro por query (líneas 605-606) ─────────────────────
@@ -232,7 +232,7 @@ def test_admin_list_users_filter_verified_false(admin_client):
 def test_admin_patch_user_self_rejected(admin_client):
     r = admin_client.patch("/api/admin/users/testadmin", json={"is_active": 0})
     assert r.status_code == 400
-    assert "propia cuenta" in r.json()["detail"]
+    assert r.json()["detail"]["code"] == "cannot_modify_own_account"
 
 
 # ── admin_patch_user — cambiar is_active (líneas 629, 644-648) ───────────────
@@ -253,7 +253,9 @@ def test_admin_patch_user_invalid_role(admin_client):
     _direct_register("patch_role_tgt")
     r = admin_client.patch("/api/admin/users/patch_role_tgt", json={"role": "superuser"})
     assert r.status_code == 400
-    assert "Rol inválido" in r.json()["detail"]
+    detail = r.json()["detail"]
+    assert detail["code"] == "invalid_field"
+    assert detail["field"] == "role"
 
 
 # ── admin_patch_user — rol válido (línea 633) ────────────────────────────────
@@ -285,7 +287,7 @@ def test_admin_update_agent_empty_name(admin_client):
     created = admin_client.post("/api/agents", json={"name": "AgentToUpdate"}).json()
     r = admin_client.put(f"/api/admin/agents/{created['id']}", json={"name": ""})
     assert r.status_code == 400
-    assert "nombre" in r.json()["detail"]
+    assert r.json()["detail"]["code"] == "agent_name_required"
 
 
 # ── admin_update_agent — renombrar (líneas 749-752) ──────────────────────────
@@ -302,7 +304,9 @@ def test_admin_update_agent_rename(admin_client):
 def test_admin_delete_agent_invalid_scope(admin_client):
     r = admin_client.delete("/api/admin/agents/some-agent?scope=all")
     assert r.status_code == 400
-    assert "scope" in r.json()["detail"]
+    detail = r.json()["detail"]
+    assert detail["code"] == "invalid_field"
+    assert detail["field"] == "scope"
 
 
 # ── admin_list_knowledge — con ítems (líneas 779-780) ────────────────────────
@@ -381,7 +385,7 @@ def test_admin_delete_workspace_ok(admin_client):
 def test_admin_impersonate_self_rejected(admin_client):
     r = admin_client.post("/api/admin/impersonate/testadmin")
     assert r.status_code == 400
-    assert "Ya eres este usuario" in r.json()["detail"]
+    assert r.json()["detail"]["code"] == "already_own_user"
 
 
 # ── admin_impersonate — usuario no encontrado (línea 932) ────────────────────

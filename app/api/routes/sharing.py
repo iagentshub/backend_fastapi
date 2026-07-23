@@ -8,12 +8,13 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Request
 
 import app.config.data as _cfg
 from app.api.routes.auth import WorkspaceContext, require_workspace
 from app.auth.auth import get_user_role
 from app.config.data import DB_FILE
+from app.errors import APIError
 from app.storage.db import open_db
 from app.storage.knowledge import KnowledgeStorage
 from app.storage.storage import AgentStorage, SkillStorage
@@ -30,7 +31,12 @@ _VALID_TYPES = {"agent", "connection", "knowledge", "skill"}
 
 def _assert_valid_type(resource_type: str) -> None:
     if resource_type not in _VALID_TYPES:
-        raise HTTPException(status_code=422, detail=f"Tipo no valido: {resource_type}")
+        raise APIError(
+            422,
+            "invalid_resource_type",
+            f"Tipo no valido: {resource_type}",
+            extra={"type": resource_type},
+        )
 
 
 async def _resource_owner(resource_type: str, resource_id: str) -> Optional[str]:
@@ -60,12 +66,12 @@ async def _assert_can_share_resource(resource_type: str, resource_id: str, ctx: 
         return  # los admins pueden compartir cualquier recurso
     owner = await _resource_owner(resource_type, resource_id)
     if owner is None:
-        raise HTTPException(status_code=404, detail="Recurso no encontrado")
+        raise APIError(404, "not_found", "Recurso no encontrado", extra={"resource": "resource"})
     if owner == ctx.user:
         return
     if await _ws.can_manage(owner, ctx.user):
         return
-    raise HTTPException(status_code=403, detail="No tienes permisos sobre este recurso")
+    raise APIError(403, "forbidden", "No tienes permisos sobre este recurso")
 
 
 # ── Endpoints ──────────────────────────────────────────────────────────────────
@@ -85,9 +91,9 @@ async def list_resource_groups(
     if role != "admin":
         owner = await _resource_owner(resource_type, resource_id)
         if owner is None:
-            raise HTTPException(status_code=404, detail="Recurso no encontrado")
+            raise APIError(404, "not_found", "Recurso no encontrado", extra={"resource": "resource"})
         if owner != ctx.user and not await _ws.can_manage(owner, ctx.user):
-            raise HTTPException(status_code=403, detail="No tienes permisos sobre este recurso")
+            raise APIError(403, "forbidden", "No tienes permisos sobre este recurso")
     async with open_db() as conn:
         rows = await conn.fetchall(
             "SELECT workspace_id FROM resource_workspace_shares "
@@ -167,10 +173,10 @@ async def share_resource_with_workspace(
         if ctx.workspace_id and ctx.workspace_id != ctx.user:
             group_id = ctx.workspace_id
     if not group_id:
-        raise HTTPException(status_code=400, detail="group_id es obligatorio")
+        raise APIError(400, "missing_group_id", "group_id es obligatorio")
     role = await get_user_role(ctx.user)
     if role != "admin" and not await _ws.can_access(group_id, ctx.user):
-        raise HTTPException(status_code=403, detail="No tienes acceso a este grupo")
+        raise APIError(403, "forbidden", "No tienes acceso a este grupo")
     await _assert_can_share_resource(resource_type, resource_id, ctx)
     await _shares.share_with_workspace(resource_type, resource_id, group_id, ctx.user)
 
@@ -207,19 +213,20 @@ async def unshare_resource_from_workspace(
         if ctx.workspace_id and ctx.workspace_id != ctx.user:
             group_id = ctx.workspace_id
     if not group_id:
-        raise HTTPException(status_code=400, detail="group_id es obligatorio")
+        raise APIError(400, "missing_group_id", "group_id es obligatorio")
 
     role = await get_user_role(ctx.user)
     if role != "admin":
         owner = await _resource_owner(resource_type, resource_id)
         if owner is None:
-            raise HTTPException(status_code=404, detail="Recurso no encontrado")
+            raise APIError(404, "not_found", "Recurso no encontrado", extra={"resource": "resource"})
         is_resource_owner = (owner == ctx.user)
         is_group_owner = await _ws.can_manage(group_id, ctx.user)
         if not is_resource_owner and not is_group_owner:
-            raise HTTPException(
-                status_code=403,
-                detail="Solo el propietario del recurso o del grupo puede descompartirlo",
+            raise APIError(
+                403,
+                "forbidden",
+                "Solo el propietario del recurso o del grupo puede descompartirlo",
             )
 
     await _shares.unshare_from_workspace(resource_type, resource_id, group_id)

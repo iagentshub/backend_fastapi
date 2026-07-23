@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 import app.config.data as _cfg
 from app.api.routes.auth import WorkspaceContext, require_auth, require_workspace
+from app.errors import APIError
 from app.middleware.ratelimit import RateLimiter
 from app.services.chat import stream_chat
 from app.storage.db import IS_PG, open_db
@@ -34,7 +35,7 @@ async def _assert_public(resource_type: str, source_id: str) -> None:
             (resource_type, source_id, _PUBLIC_VAL),
         )
     if not row:
-        raise HTTPException(status_code=403, detail="No tienes acceso a este recurso")
+        raise APIError(403, "forbidden", "No tienes acceso a este recurso")
 
 
 _inherit_skills_store = SkillStorage(_cfg.SKILLS_DIR)
@@ -111,9 +112,11 @@ _PUBLIC_VAL = True if IS_PG else 1
 
 def _check_category(cat: str) -> None:
     if cat not in CATEGORIES:
-        raise HTTPException(
-            status_code=422,
-            detail=f"Categoría inválida. Opciones: {CATEGORIES}",
+        raise APIError(
+            422,
+            "invalid_field",
+            f"Categoría inválida. Opciones: {CATEGORIES}",
+            extra={"field": "category"},
         )
 
 
@@ -206,13 +209,16 @@ async def set_agent_visibility(
 ) -> Dict[str, Any]:
     _check_category(body.category)
     if body.trial_missing_deps not in ("warn", "silent"):
-        raise HTTPException(
-            status_code=422, detail="trial_missing_deps debe ser 'warn' o 'silent'"
+        raise APIError(
+            422,
+            "invalid_field",
+            "trial_missing_deps debe ser 'warn' o 'silent'",
+            extra={"field": "trial_missing_deps"},
         )
     agents = AgentStorage(_cfg.AGENTS_DIR)
     agent = await agents.get(agent_id, scope)
     if not agent:
-        raise HTTPException(status_code=404, detail="Agente no encontrado")
+        raise APIError(404, "not_found", "Agente no encontrado", extra={"resource": "agent"})
     resource_labels = agent.get("labels") or ["private"]
     is_public_val = 1 if "public" in resource_labels else 0
 
@@ -252,7 +258,7 @@ async def set_skill_visibility(
     skills = SkillStorage(_cfg.SKILLS_DIR)
     skill = await skills.get(scope, skill_id)
     if not skill:
-        raise HTTPException(status_code=404, detail="Skill no encontrada")
+        raise APIError(404, "not_found", "Skill no encontrada", extra={"resource": "skill"})
     resource_labels = skill.get("labels") or ["private"]
     is_public_val = 1 if "public" in resource_labels else 0
 
@@ -295,11 +301,12 @@ async def set_knowledge_visibility(
             (folder_id, username),
         )
         if not row:
-            raise HTTPException(status_code=404, detail="Carpeta no encontrada")
+            raise APIError(404, "not_found", "Carpeta no encontrada", extra={"resource": "folder"})
         if row["section"] == "agents":
-            raise HTTPException(
-                status_code=422,
-                detail="Las carpetas de agentes no se publican como conocimiento",
+            raise APIError(
+                422,
+                "agent_folder_not_publishable",
+                "Las carpetas de agentes no se publican como conocimiento",
             )
         folder_name = row["name"]
         if body.is_public:
@@ -403,7 +410,12 @@ async def explore_preview(
         )
 
     if not row:
-        raise HTTPException(status_code=404, detail="Resource not found or not public")
+        raise APIError(
+            404,
+            "not_found",
+            "Recurso no encontrado o no es público",
+            extra={"resource": resource_type},
+        )
 
     base: Dict[str, Any] = dict(row)
     try:
@@ -573,12 +585,12 @@ async def follow_user(
     _rl: None = Depends(_social_limiter),
 ) -> Dict[str, Any]:
     if target == username:
-        raise HTTPException(status_code=400, detail="No puedes seguirte a ti mismo")
+        raise APIError(400, "cannot_follow_self", "No puedes seguirte a ti mismo")
 
     async with open_db() as conn:
         row = await conn.fetchone("SELECT 1 FROM users WHERE username = ?", (target,))
         if not row:
-            raise HTTPException(status_code=404, detail="Usuario no encontrado")
+            raise APIError(404, "not_found", "Usuario no encontrado", extra={"resource": "user"})
         if IS_PG:
             await conn.execute(
                 "INSERT INTO user_follows (follower, following) VALUES (?, ?) "
@@ -691,7 +703,12 @@ async def star_resource(
 ) -> Dict[str, Any]:
     # A4: validar resource_type para evitar contaminación de la tabla resource_stars
     if resource_type not in _VALID_SOCIAL_RESOURCE_TYPES:
-        raise HTTPException(status_code=422, detail=f"Tipo de recurso no válido: {resource_type!r}")
+        raise APIError(
+            422,
+            "invalid_field",
+            f"Tipo de recurso no válido: {resource_type!r}",
+            extra={"field": "resource_type"},
+        )
 
     async with open_db() as conn:
         if IS_PG:
@@ -730,7 +747,7 @@ async def fork_knowledge(
     knowledge = KnowledgeStorage(_cfg.DB_FILE)
     source = await knowledge.get(source_id)
     if not source:
-        raise HTTPException(status_code=404, detail="Knowledge no encontrado")
+        raise APIError(404, "not_found", "Knowledge no encontrado", extra={"resource": "knowledge"})
 
     source_owner = source.get("owner_id") or ""
     await _assert_public("knowledge", source_id)
@@ -791,7 +808,7 @@ async def link_knowledge(
     knowledge = KnowledgeStorage(_cfg.DB_FILE)
     source = await knowledge.get(source_id)
     if not source:
-        raise HTTPException(status_code=404, detail="Knowledge no encontrado")
+        raise APIError(404, "not_found", "Knowledge no encontrado", extra={"resource": "knowledge"})
 
     source_owner = source.get("owner_id") or ""
     await _assert_public("knowledge", source_id)
@@ -853,7 +870,7 @@ async def fork_agent(
     agents = AgentStorage(_cfg.AGENTS_DIR)
     source = await agents.get(source_id, scope)
     if not source:
-        raise HTTPException(status_code=404, detail="Agente no encontrado")
+        raise APIError(404, "not_found", "Agente no encontrado", extra={"resource": "agent"})
 
     source_owner = source.get("owner_id") or ""
     if scope != "public":
@@ -881,7 +898,7 @@ async def fork_agent(
     try:
         result = await agents.save(fork_payload, "private", owner_id=username)
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+        raise APIError(422, "agent_save_invalid", str(exc)) from exc
 
     if username != source_owner:
         await _inherit_agent_memory(source, source_owner, result["id"], username)
@@ -948,7 +965,7 @@ async def fork_skill(
     skills = SkillStorage(_cfg.SKILLS_DIR)
     source = await skills.get(scope, source_id)
     if not source:
-        raise HTTPException(status_code=404, detail="Skill no encontrada")
+        raise APIError(404, "not_found", "Skill no encontrada", extra={"resource": "skill"})
 
     source_owner = source.get("owner_id") or ""
     if scope != "public":
@@ -963,7 +980,7 @@ async def fork_skill(
     try:
         result = await skills.save("private", fork_payload, owner_id=username)
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+        raise APIError(422, "skill_save_invalid", str(exc)) from exc
 
     fork_labels = list(result.get("labels") or ["private"])
     for ol in ("fork", "linked"):
@@ -1027,7 +1044,7 @@ async def link_agent(
     agents = AgentStorage(_cfg.AGENTS_DIR)
     source = await agents.get(source_id, scope)
     if not source:
-        raise HTTPException(status_code=404, detail="Agente no encontrado")
+        raise APIError(404, "not_found", "Agente no encontrado", extra={"resource": "agent"})
 
     source_owner = source.get("owner_id") or ""
     if scope != "public":
@@ -1059,7 +1076,7 @@ async def link_agent(
     try:
         result = await agents.save(link_payload, "private", owner_id=username)
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+        raise APIError(422, "agent_save_invalid", str(exc)) from exc
 
     if username != source_owner:
         await _inherit_agent_memory(source, source_owner, result["id"], username)
@@ -1117,7 +1134,7 @@ async def link_skill(
     skills = SkillStorage(_cfg.SKILLS_DIR)
     source = await skills.get(scope, source_id)
     if not source:
-        raise HTTPException(status_code=404, detail="Skill no encontrada")
+        raise APIError(404, "not_found", "Skill no encontrada", extra={"resource": "skill"})
 
     source_owner = source.get("owner_id") or ""
     if scope != "public":
@@ -1138,7 +1155,7 @@ async def link_skill(
     try:
         result = await skills.save("private", link_payload, owner_id=username)
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc))
+        raise APIError(422, "skill_save_invalid", str(exc)) from exc
 
     new_id = result["id"]
     link_name = result["name"]
@@ -1192,7 +1209,7 @@ async def sync_linked_agent(
     agents = AgentStorage(_cfg.AGENTS_DIR)
     local = await agents.get(agent_id, "private")
     if not local or local.get("owner_id") != username:
-        raise HTTPException(status_code=404, detail="Agente no encontrado")
+        raise APIError(404, "not_found", "Agente no encontrado", extra={"resource": "agent"})
 
     async with open_db() as conn:
         row = await conn.fetchone(
@@ -1202,23 +1219,19 @@ async def sync_linked_agent(
         )
 
     if not row or not row[0]:
-        raise HTTPException(
-            status_code=400, detail="El agente no tiene enlace a un original"
-        )
+        raise APIError(400, "agent_not_linked", "El agente no tiene enlace a un original")
 
     original_id = row[0]
     original = await agents.get(original_id)
     if not original:
-        raise HTTPException(
-            status_code=404, detail="El agente original ya no existe",
+        raise APIError(
+            404, "not_found", "El agente original ya no existe", extra={"resource": "agent"}
         )
     try:
         if original.get("scope") != "public":
             await _assert_public("agent", original_id)
     except HTTPException:
-        raise HTTPException(
-            status_code=403, detail="El agente original ya no es accesible",
-        )
+        raise APIError(403, "forbidden", "El agente original ya no es accesible")
 
     sync_fields = {
         k: v
@@ -1239,7 +1252,7 @@ async def sync_linked_skill(
     skills = SkillStorage(_cfg.SKILLS_DIR)
     local = await skills.get("private", skill_id)
     if not local or local.get("owner_id") != username:
-        raise HTTPException(status_code=404, detail="Skill no encontrada")
+        raise APIError(404, "not_found", "Skill no encontrada", extra={"resource": "skill"})
 
     async with open_db() as conn:
         row = await conn.fetchone(
@@ -1249,23 +1262,19 @@ async def sync_linked_skill(
         )
 
     if not row or not row[0]:
-        raise HTTPException(
-            status_code=400, detail="La skill no tiene enlace a un original"
-        )
+        raise APIError(400, "skill_not_linked", "La skill no tiene enlace a un original")
 
     original_id = row[0]
     original = await skills.get_any(original_id)
     if not original:
-        raise HTTPException(
-            status_code=404, detail="La skill original ya no existe",
+        raise APIError(
+            404, "not_found", "La skill original ya no existe", extra={"resource": "skill"}
         )
     try:
         if original.get("scope") != "public":
             await _assert_public("skill", original_id)
     except HTTPException:
-        raise HTTPException(
-            status_code=403, detail="La skill original ya no es accesible",
-        )
+        raise APIError(403, "forbidden", "La skill original ya no es accesible")
 
     sync_fields = {
         k: v
@@ -1295,8 +1304,8 @@ async def try_agent(
             ("agent", agent_id, _PUBLIC_VAL),
         )
     if not row:
-        raise HTTPException(
-            status_code=404, detail="Agente no encontrado o no es público"
+        raise APIError(
+            404, "not_found", "Agente no encontrado o no es público", extra={"resource": "agent"}
         )
 
     trial_missing_deps: str = row["trial_missing_deps"] or "warn"
@@ -1305,7 +1314,7 @@ async def try_agent(
     agents = AgentStorage(_cfg.AGENTS_DIR)
     agent_data = await agents.get(agent_id, scope)
     if not agent_data:
-        raise HTTPException(status_code=404, detail="Agente no encontrado")
+        raise APIError(404, "not_found", "Agente no encontrado", extra={"resource": "agent"})
 
     # Step 3: Resolve caller's connection (workspace first, then personal fallback)
     conn_storage = ConnectionStorage(_cfg.DB_FILE)
@@ -1313,7 +1322,7 @@ async def try_agent(
     if conn_data is None and ctx.workspace_id != ctx.user:
         conn_data = await conn_storage.get(body.connection_id, ctx.user)
     if conn_data is None:
-        raise HTTPException(status_code=400, detail="Connection no encontrada")
+        raise APIError(400, "not_found", "Connection no encontrada", extra={"resource": "connection"})
 
     # Step 4: Filter skills based on trial_missing_deps policy
     skills_storage = SkillStorage(_cfg.SKILLS_DIR)
@@ -1363,7 +1372,12 @@ async def unstar_resource(
 ) -> Dict[str, Any]:
     # A4: validar resource_type
     if resource_type not in _VALID_SOCIAL_RESOURCE_TYPES:
-        raise HTTPException(status_code=422, detail=f"Tipo de recurso no válido: {resource_type!r}")
+        raise APIError(
+            422,
+            "invalid_field",
+            f"Tipo de recurso no válido: {resource_type!r}",
+            extra={"field": "resource_type"},
+        )
 
     async with open_db() as conn:
         await conn.execute(
@@ -1399,9 +1413,11 @@ async def convert_agent_link_to_fork(
             ("agent", agent_id, username),
         )
     if not row:
-        raise HTTPException(
-            status_code=404,
-            detail="Agente no encontrado o no tiene enlace activo",
+        raise APIError(
+            404,
+            "not_found",
+            "Agente no encontrado o no tiene enlace activo",
+            extra={"resource": "agent"},
         )
 
     prev_linked_to_user = row[0]
@@ -1446,9 +1462,11 @@ async def convert_skill_link_to_fork(
             ("skill", skill_id, username),
         )
     if not row:
-        raise HTTPException(
-            status_code=404,
-            detail="Skill no encontrada o no tiene enlace activo",
+        raise APIError(
+            404,
+            "not_found",
+            "Skill no encontrada o no tiene enlace activo",
+            extra={"resource": "skill"},
         )
 
     prev_linked_to_user = row[0]

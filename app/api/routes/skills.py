@@ -5,11 +5,12 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Query, Request
 
 from app.api.routes.auth import WorkspaceContext, require_workspace
 from app.auth.auth import get_user_role
 from app.config.data import DB_FILE, SKILLS_DIR
+from app.errors import APIError
 
 from app.storage.guest import get_session, is_guest
 from app.storage.folders import FolderStorage
@@ -29,7 +30,7 @@ _VALID_SCOPES = {"public", "private", "all"}
 
 def _check_scope(scope: str) -> None:
     if scope not in _VALID_SCOPES:
-        raise HTTPException(status_code=400, detail="Scope no válido")
+        raise APIError(400, "invalid_field", "Scope no válido", extra={"field": "scope"})
 
 
 @router.get("")
@@ -58,7 +59,7 @@ async def list_skills(
     if group_id is not None:
         # Filtro por grupo: se aplica siempre, incluido admin
         if role != "admin" and not await _ws.can_access(group_id, user):
-            raise HTTPException(status_code=403, detail="Sin acceso a este grupo")
+            raise APIError(403, "forbidden", "Sin acceso a este grupo")
         shared_ids = set(
             await _shares.get_workspace_shared_resource_ids(group_id, "skill")
         )
@@ -121,11 +122,11 @@ async def get_skill(
             (s for s in get_session(user).skills if s.get("id") == skill_id), None
         )
         if not sk:
-            raise HTTPException(status_code=404, detail="Skill no encontrada")
+            raise APIError(404, "not_found", "Skill no encontrada", extra={"resource": "skill"})
         return sk
     sk = await _storage.get(scope, skill_id)
     if not sk:
-        raise HTTPException(status_code=404, detail="Skill no encontrada")
+        raise APIError(404, "not_found", "Skill no encontrada", extra={"resource": "skill"})
 
     # Control de acceso: skills privadas solo para su propietario, admin o
     # miembros de un workspace al que la skill está compartida.
@@ -145,9 +146,7 @@ async def get_skill(
                         allowed = True
                         break
             if not allowed:
-                raise HTTPException(
-                    status_code=403, detail="No tienes acceso a esta skill"
-                )
+                raise APIError(403, "forbidden", "No tienes acceso a esta skill")
 
     return sk
 
@@ -161,9 +160,10 @@ async def save_skill(
     payload = await request.json()
     if is_guest(user):
         if scope == "public":
-            raise HTTPException(
-                status_code=403,
-                detail="Los invitados no pueden modificar skills públicas",
+            raise APIError(
+                403,
+                "guest_public_skill_edit_forbidden",
+                "Los invitados no pueden modificar skills públicas",
             )
         s = get_session(user)
         skill: Dict[str, Any] = {
@@ -181,11 +181,11 @@ async def save_skill(
             try:
                 await _folders.assign(workspace_id, "skill", saved["id"], folder_id or None)
             except ValueError as exc:
-                raise HTTPException(status_code=422, detail=str(exc)) from exc
+                raise APIError(422, "incompatible_folder", str(exc)) from exc
         saved["folder_id"] = await _folders.folder_for(workspace_id, "skill", saved["id"])
         return saved
     except ValueError as e:
-        raise HTTPException(status_code=422, detail=str(e))
+        raise APIError(422, "invalid_skill_data", str(e))
 
 
 @router.delete("/{scope}/{skill_id}")
@@ -196,15 +196,16 @@ async def delete_skill(
     _check_scope(scope)
     if is_guest(user):
         if scope == "public":
-            raise HTTPException(
-                status_code=403,
-                detail="Los invitados no pueden eliminar skills públicas",
+            raise APIError(
+                403,
+                "guest_public_skill_delete_forbidden",
+                "Los invitados no pueden eliminar skills públicas",
             )
         s = get_session(user)
         before = len(s.skills)
         s.skills = [sk for sk in s.skills if sk.get("id") != skill_id]
         if len(s.skills) == before:
-            raise HTTPException(status_code=404, detail="Skill no encontrada")
+            raise APIError(404, "not_found", "Skill no encontrada", extra={"resource": "skill"})
         return {"ok": True}
     # Ownership check before delete
     sk = await _storage.get_any(skill_id)
@@ -213,14 +214,12 @@ async def delete_skill(
         and await get_user_role(user) != "admin"
         and sk.get("owner_id") not in (workspace_id, None)
     ):
-        raise HTTPException(
-            status_code=403, detail="No tienes permiso para eliminar esta skill"
-        )
+        raise APIError(403, "forbidden", "No tienes permiso para eliminar esta skill")
     try:
         if not await _storage.delete(scope, skill_id):
-            raise HTTPException(status_code=404, detail="Skill no encontrada")
+            raise APIError(404, "not_found", "Skill no encontrada", extra={"resource": "skill"})
     except ValueError as e:
-        raise HTTPException(status_code=403, detail=str(e))
+        raise APIError(403, "public_skill_readonly", str(e))
     if sk:
         await _folders.remove_resource(
             str(sk.get("owner_id") or workspace_id), "skill", skill_id
@@ -234,9 +233,9 @@ async def move_skill_to_folder(
 ) -> Dict[str, Any]:
     skill = await _storage.get("private", skill_id)
     if not skill:
-        raise HTTPException(status_code=404, detail="Skill no encontrada")
+        raise APIError(404, "not_found", "Skill no encontrada", extra={"resource": "skill"})
     if await get_user_role(ctx.user) != "admin" and skill.get("owner_id") != ctx.workspace_id:
-        raise HTTPException(status_code=403, detail="Solo el propietario puede mover la skill")
+        raise APIError(403, "forbidden", "Solo el propietario puede mover la skill")
     body = await request.json()
     try:
         await _folders.assign(
@@ -244,5 +243,5 @@ async def move_skill_to_folder(
             str(body["folder_id"]) if body.get("folder_id") else None,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise APIError(422, "incompatible_folder", str(exc)) from exc
     return {**skill, "folder_id": body.get("folder_id")}

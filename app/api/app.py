@@ -72,7 +72,13 @@ class _BodySizeLimitMiddleware:
             try:
                 if int(cl_raw) > _BODY_MAX_BYTES:
                     response = JSONResponse(
-                        {"detail": "Payload demasiado grande (máx. 2 MB)"}, status_code=413
+                        {
+                            "detail": {
+                                "code": "payload_too_large",
+                                "message": "Payload demasiado grande (máx. 2 MB)",
+                            }
+                        },
+                        status_code=413,
                     )
                     await response(scope, receive, send)
                     return

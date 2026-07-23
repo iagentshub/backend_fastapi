@@ -20,6 +20,7 @@ from fastapi import (
 )
 from fastapi.responses import RedirectResponse
 
+from app.errors import APIError
 from app.auth.auth import (
     admin_set_password,
     admin_update_user,
@@ -205,19 +206,17 @@ async def _identify(
     if token:
         pat = await _tokens.resolve(token)
         if not pat:
-            raise HTTPException(
-                status_code=401, detail="Token inválido, revocado o caducado"
-            )
+            raise APIError(401, "invalid_pat", "Token inválido, revocado o caducado")
         created = _parse_ts(pat.get("created_at"))
         return pat["username"], created.timestamp() if created else None, None
 
     if ga_token:
         username, wid, token_iat = decode_workspace_token_full(ga_token)
         if not username:
-            raise HTTPException(status_code=401, detail="Token inválido o expirado")
+            raise APIError(401, "invalid_token", "Token inválido o expirado")
         return username, token_iat, wid
 
-    raise HTTPException(status_code=401, detail="No autenticado")
+    raise APIError(401, "not_authenticated", "No autenticado")
 
 
 async def _assert_account_ok(username: str, issued_at: Optional[float]) -> None:
@@ -231,16 +230,17 @@ async def _assert_account_ok(username: str, issued_at: Optional[float]) -> None:
     """
     is_active, password_changed_at = await _get_user_auth_state(username)
     if not is_active:
-        raise HTTPException(status_code=403, detail="Cuenta desactivada")
+        raise APIError(403, "account_disabled", "Cuenta desactivada")
     if not password_changed_at or issued_at is None:
         return
     changed = _parse_ts(password_changed_at)
     if changed is None:
         return  # fecha malformada en BD → no bloquear
     if issued_at < changed.timestamp():
-        raise HTTPException(
-            status_code=401,
-            detail="Credencial expirada tras cambio de contraseña. Vuelve a autenticarte.",
+        raise APIError(
+            401,
+            "credential_expired_password_change",
+            "Credencial expirada tras cambio de contraseña. Vuelve a autenticarte.",
         )
 
 
@@ -284,18 +284,19 @@ async def require_workspace(
 
 async def require_admin(username: str = Depends(require_auth)) -> str:
     if await get_user_role(username) != "admin":
-        raise HTTPException(status_code=403, detail="Acceso restringido")
+        raise APIError(403, "forbidden", "Acceso restringido")
     return username
 
 
 @router.post("/register")
 async def register(request: Request, response: Response) -> Dict[str, Any]:
     if REGISTRATION_MODE == "closed":
-        raise HTTPException(status_code=403, detail="El registro está desactivado.")
+        raise APIError(403, "registration_disabled", "El registro está desactivado.")
     if REGISTRATION_MODE == "invite":
-        raise HTTPException(
-            status_code=403,
-            detail="El registro requiere invitación de un administrador.",
+        raise APIError(
+            403,
+            "registration_invite_only",
+            "El registro requiere invitación de un administrador.",
         )
     await _register_limiter(request)
     body = await request.json()
@@ -307,10 +308,10 @@ async def register(request: Request, response: Response) -> Dict[str, Any]:
     phone = str(body.get("phone") or "").strip() or None
 
     if not email or not _EMAIL_RE.match(email):
-        raise HTTPException(status_code=400, detail="Email inválido")
+        raise APIError(400, "invalid_field", "Email inválido", extra={"field": "email"})
     if len(password) < 8:
-        raise HTTPException(
-            status_code=400, detail="La contraseña debe tener al menos 8 caracteres"
+        raise APIError(
+            400, "password_too_short", "La contraseña debe tener al menos 8 caracteres"
         )
 
     try:
@@ -323,7 +324,9 @@ async def register(request: Request, response: Response) -> Dict[str, Any]:
             phone=phone,
         )
     except ValueError as exc:
-        raise HTTPException(status_code=409, detail=str(exc))
+        raise APIError(
+            409, "already_exists", str(exc), extra={"resource": "email"}
+        ) from exc
 
     if EMAIL_VERIFY_ENABLED and verify_token:
         base_url = _public_base_url(request)
@@ -359,23 +362,24 @@ async def login(
         flog.warning(
             f"[login] FAIL email={email or '(vacío)'} razón=campos_vacíos", ip=_ip
         )
-        raise HTTPException(status_code=400, detail="Email y contraseña requeridos")
+        raise APIError(400, "missing_credentials", "Email y contraseña requeridos")
 
     user = await get_user_by_email(email)
     if not user or not user.get("password_hash"):
         flog.warning(f"[login] FAIL email={email} razón=usuario_no_encontrado", ip=_ip)
-        raise HTTPException(status_code=401, detail="Credenciales incorrectas")
+        raise APIError(401, "invalid_credentials", "Credenciales incorrectas")
     if not await verify_password_async(password, user["password_hash"]):
         flog.warning(f"[login] FAIL email={email} razón=contraseña_incorrecta", ip=_ip)
-        raise HTTPException(status_code=401, detail="Credenciales incorrectas")
+        raise APIError(401, "invalid_credentials", "Credenciales incorrectas")
     if not user.get("is_active", 1):
         flog.warning(f"[login] FAIL email={email} razón=cuenta_desactivada", ip=_ip)
-        raise HTTPException(status_code=403, detail="Cuenta desactivada")
+        raise APIError(403, "account_disabled", "Cuenta desactivada")
     if EMAIL_VERIFY_ENABLED and not user.get("is_verified", 1):
         flog.warning(f"[login] FAIL email={email} razón=pendiente_verificación", ip=_ip)
-        raise HTTPException(
-            status_code=403,
-            detail="Cuenta pendiente de verificación. Revisa tu correo.",
+        raise APIError(
+            403,
+            "email_not_verified",
+            "Cuenta pendiente de verificación. Revisa tu correo.",
         )
 
     token = create_token(user["username"])
@@ -399,8 +403,8 @@ async def login(
 async def verify_email(token: str, response: Response) -> Dict[str, Any]:
     username = await verify_email_token(token)
     if not username:
-        raise HTTPException(
-            status_code=400, detail="Enlace de verificación inválido o expirado"
+        raise APIError(
+            400, "invalid_verification_link", "Enlace de verificación inválido o expirado"
         )
     auth_token = create_token(username)
     response.set_cookie(
@@ -484,7 +488,7 @@ async def forgot_password(
     body = await request.json()
     email = str(body.get("email") or "").strip().lower()
     if not email or not _EMAIL_RE.match(email):
-        raise HTTPException(status_code=400, detail="Email inválido")
+        raise APIError(400, "invalid_field", "Email inválido", extra={"field": "email"})
     token = await create_password_reset_token(email)
     if token:
         base_url = _public_base_url(request)
@@ -502,13 +506,13 @@ async def reset_password(
     token = str(body.get("token") or "").strip()
     new_password = str(body.get("password") or "").strip()
     if not token or not new_password:
-        raise HTTPException(status_code=400, detail="Token y contraseña requeridos")
+        raise APIError(400, "token_and_password_required", "Token y contraseña requeridos")
     if len(new_password) < 8:
-        raise HTTPException(
-            status_code=400, detail="La contraseña debe tener al menos 8 caracteres"
+        raise APIError(
+            400, "password_too_short", "La contraseña debe tener al menos 8 caracteres"
         )
     if not await consume_reset_token(token, new_password):
-        raise HTTPException(status_code=400, detail="Enlace inválido o expirado")
+        raise APIError(400, "invalid_reset_link", "Enlace inválido o expirado")
     return {"ok": True}
 
 
@@ -520,15 +524,15 @@ async def change_password(
     current = str(body.get("current_password") or "")
     new_pw = str(body.get("new_password") or "").strip()
     if not current or not new_pw:
-        raise HTTPException(status_code=400, detail="Completa todos los campos")
+        raise APIError(400, "all_fields_required", "Completa todos los campos")
     if len(new_pw) < 8:  # N4: mínimo coherente con el registro (8 caracteres)
-        raise HTTPException(status_code=400, detail="La nueva contraseña debe tener al menos 8 caracteres")
+        raise APIError(400, "password_too_short", "La nueva contraseña debe tener al menos 8 caracteres")
 
     user = await get_user_by_username(username)
     if not user:
-        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+        raise APIError(404, "not_found", "Usuario no encontrado", extra={"resource": "user"})
     if not await verify_password_async(current, user.get("password_hash", "")):
-        raise HTTPException(status_code=401, detail="Contraseña actual incorrecta")
+        raise APIError(401, "current_password_incorrect", "Contraseña actual incorrecta")
     await set_own_password(username, new_pw)
 
     # ALTO-8: al cambiar la contraseña del admin, borrar .admin_pass del disco
@@ -552,7 +556,7 @@ async def change_password(
 async def get_deletion_status(username: str = Depends(require_auth)) -> Dict[str, Any]:
     user = await get_user_by_username(username)
     if not user:
-        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+        raise APIError(404, "not_found", "Usuario no encontrado", extra={"resource": "user"})
     return {
         "scheduled": user.get("deletion_requested_at") is not None,
         "deletion_date": user.get("deletion_requested_at"),
@@ -565,12 +569,11 @@ async def request_account_deletion(
 ) -> Dict[str, Any]:
     owned = await get_owned_workspaces(username)
     if owned:
-        raise HTTPException(
-            status_code=409,
-            detail={
-                "message": "Transfiere o elimina tus workspaces antes de borrar la cuenta",
-                "workspaces": owned,
-            },
+        raise APIError(
+            409,
+            "owned_workspaces_exist",
+            "Transfiere o elimina tus workspaces antes de borrar la cuenta",
+            extra={"workspaces": owned},
         )
     await schedule_user_deletion(username)
     return {"ok": True, "message": "Cuenta programada para eliminación en 30 días"}
@@ -581,7 +584,7 @@ async def cancel_account_deletion(request: Request) -> Dict[str, Any]:
     body = await request.json()
     token = str(body.get("token", "")).strip()
     if not token or not await cancel_user_deletion(token):
-        raise HTTPException(status_code=400, detail="Token inválido o expirado")
+        raise APIError(400, "invalid_deletion_token", "Token inválido o expirado")
     return {"ok": True}
 
 
@@ -666,7 +669,10 @@ async def update_profile(
     # N3: solo permitir URLs https:// para el campo github (bloquear javascript: y otros)
     _github_raw = str(body.get("github") or "").strip()[:100]
     if _github_raw and not _github_raw.startswith("https://"):
-        raise HTTPException(status_code=422, detail="El campo github debe ser una URL https://")
+        raise APIError(
+            422, "invalid_field", "El campo github debe ser una URL https://",
+            extra={"field": "github"},
+        )
     github = _github_raw or None
     cv = str(body.get("cv") or "").strip()[:20000] or None
 
@@ -692,17 +698,17 @@ async def upload_avatar(
     form: FormData = await request.form()
     file: UploadFile = form.get("avatar")  # type: ignore[assignment]
     if not file:
-        raise HTTPException(status_code=400, detail="Campo 'avatar' requerido")
+        raise APIError(400, "avatar_field_required", "Campo 'avatar' requerido")
 
     ext = _Path(file.filename or "").suffix.lower()
     if ext not in _ALLOWED_AVATAR_EXT:
-        raise HTTPException(
-            status_code=400, detail="Formato no permitido. Usa jpg, png o webp."
+        raise APIError(
+            400, "avatar_format_not_allowed", "Formato no permitido. Usa jpg, png o webp."
         )
 
     data = await file.read()
     if len(data) > _MAX_AVATAR_BYTES:
-        raise HTTPException(status_code=400, detail="El avatar no puede superar 2 MB.")
+        raise APIError(400, "avatar_too_large", "El avatar no puede superar 2 MB.")
 
     encoded = base64.b64encode(data).decode("ascii")
     async with open_db() as conn:
@@ -788,7 +794,7 @@ async def get_public_profile(
 ) -> Dict[str, Any]:
     user = await get_user_by_username(username)
     if not user:
-        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+        raise APIError(404, "not_found", "Usuario no encontrado", extra={"resource": "user"})
     fields = await _get_social_fields(username)
     return {"username": username, **fields}
 
@@ -878,7 +884,7 @@ async def admin_metadata_table_data(
             )
         }
         if table_name not in valid:
-            raise HTTPException(status_code=404, detail="Tabla no encontrada")
+            raise APIError(404, "not_found", "Tabla no encontrada", extra={"resource": "table"})
 
         if IS_PG:
             col_rows = await conn.fetchall(
@@ -892,7 +898,7 @@ async def admin_metadata_table_data(
             col_names = [r[1] for r in col_rows]
 
         if not col_names:
-            raise HTTPException(status_code=404, detail="Sin columnas")
+            raise APIError(404, "table_no_columns", "Sin columnas")
 
         if q:
             cast = "::text" if IS_PG else ""
@@ -1064,28 +1070,26 @@ async def admin_patch_user(
     admin: str = Depends(require_admin),
 ) -> Dict[str, Any]:
     if username == admin:
-        raise HTTPException(
-            status_code=400, detail="No puedes modificar tu propia cuenta"
-        )
+        raise APIError(400, "cannot_modify_own_account", "No puedes modificar tu propia cuenta")
     body = await request.json()
     updates: Dict[str, Any] = {}
     if "is_active" in body:
         updates["is_active"] = 1 if body["is_active"] else 0
     if "role" in body:
         if body["role"] not in ("admin", "gestor", "standard"):
-            raise HTTPException(status_code=400, detail="Rol inválido")
+            raise APIError(400, "invalid_field", "Rol inválido", extra={"field": "role"})
         updates["role"] = body["role"]
     new_pw = str(body.get("password") or "").strip()
     if new_pw and len(new_pw) < 8:  # N4: mínimo coherente con el registro
-        raise HTTPException(
-            status_code=400, detail="La contraseña debe tener al menos 8 caracteres"
+        raise APIError(
+            400, "password_too_short", "La contraseña debe tener al menos 8 caracteres"
         )
     if not updates and not new_pw:
-        raise HTTPException(status_code=400, detail="Sin cambios")
+        raise APIError(400, "no_changes", "Sin cambios")
     if updates and not await admin_update_user(username, **updates):
-        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+        raise APIError(404, "not_found", "Usuario no encontrado", extra={"resource": "user"})
     if new_pw and not await admin_set_password(username, new_pw):
-        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+        raise APIError(404, "not_found", "Usuario no encontrado", extra={"resource": "user"})
     if "is_active" in updates:
         user = await get_user_by_username(username)
         email = user.get("email") if user else None
@@ -1113,15 +1117,18 @@ async def admin_create_user(
     display_name = str(body.get("display_name") or "").strip()
 
     if not email:
-        raise HTTPException(status_code=400, detail="El email es obligatorio")
+        raise APIError(400, "email_required", "El email es obligatorio")
     if not _EMAIL_RE.match(email):  # N1: misma regex estricta que en /register
-        raise HTTPException(status_code=400, detail="Email no válido")
+        raise APIError(400, "invalid_field", "Email no válido", extra={"field": "email"})
     if not password:
-        raise HTTPException(status_code=400, detail="La contraseña es obligatoria")
+        raise APIError(400, "password_required", "La contraseña es obligatoria")
     if len(password) < 8:  # N4: mínimo coherente con el registro
-        raise HTTPException(status_code=400, detail="La contraseña debe tener al menos 8 caracteres")
+        raise APIError(400, "password_too_short", "La contraseña debe tener al menos 8 caracteres")
     if role not in ("standard", "admin"):
-        raise HTTPException(status_code=422, detail="role debe ser 'standard' o 'admin'")
+        raise APIError(
+            422, "invalid_field", "role debe ser 'standard' o 'admin'",
+            extra={"field": "role"},
+        )
 
     username = email  # username = email (igual que en el registro normal)
     now = datetime.now(_tz.utc).isoformat()
@@ -1129,9 +1136,15 @@ async def admin_create_user(
         async with open_db() as conn:
             async with conn.transaction():
                 if await conn.fetchone("SELECT 1 FROM users WHERE email = ?", (email,)):
-                    raise HTTPException(status_code=409, detail="El email ya está registrado")
+                    raise APIError(
+                        409, "already_exists", "El email ya está registrado",
+                        extra={"resource": "email"},
+                    )
                 if await conn.fetchone("SELECT 1 FROM users WHERE username = ?", (username,)):
-                    raise HTTPException(status_code=409, detail="El usuario ya existe")
+                    raise APIError(
+                        409, "already_exists", "El usuario ya existe",
+                        extra={"resource": "user"},
+                    )
                 await conn.execute(
                     "INSERT INTO users "
                     "(username, email, password_hash, display_name, role, "
@@ -1151,7 +1164,7 @@ async def admin_create_user(
     except HTTPException:
         raise
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc)) from exc
+        raise APIError(500, "internal_error", "Error interno del servidor.") from exc
 
     flog.ok(f"Admin creó usuario: {email} (rol={role})")
     return {"ok": True, "username": username, "email": email, "role": role}
@@ -1162,11 +1175,9 @@ async def admin_delete_user(
     username: str, admin: str = Depends(require_admin)
 ) -> Dict[str, Any]:
     if username == admin:
-        raise HTTPException(
-            status_code=400, detail="No puedes eliminar tu propia cuenta"
-        )
+        raise APIError(400, "cannot_delete_own_account", "No puedes eliminar tu propia cuenta")
     if not await delete_user(username):
-        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+        raise APIError(404, "not_found", "Usuario no encontrado", extra={"resource": "user"})
     return {"ok": True}
 
 
@@ -1224,7 +1235,7 @@ async def admin_delete_connection(
     from app.storage.storage import ConnectionStorage
 
     if not await ConnectionStorage(DB_FILE).delete(conn_id, owner_id=None):
-        raise HTTPException(status_code=404, detail="Conexión no encontrada")
+        raise APIError(404, "not_found", "Conexión no encontrada", extra={"resource": "connection"})
     return {"ok": True}
 
 
@@ -1265,13 +1276,13 @@ async def admin_update_agent(
 ) -> Dict[str, Any]:
     agent = await _agents.get(agent_id, scope="private")
     if not agent:
-        raise HTTPException(status_code=404, detail="Agente no encontrado")
+        raise APIError(404, "not_found", "Agente no encontrado", extra={"resource": "agent"})
     payload = await request.json()
     protected = {"id", "owner_id", "created_at", "scope"}
     updated = {**agent, **{k: v for k, v in payload.items() if k not in protected}}
     new_name = str(updated.get("name") or "").strip()
     if not new_name:
-        raise HTTPException(status_code=400, detail="El nombre es obligatorio")
+        raise APIError(400, "agent_name_required", "El nombre es obligatorio")
     new_id = re.sub(r"[^a-z0-9_\-]", "-", new_name.lower()).strip("-")
     if new_id != agent_id:
         await _agents.delete(agent_id, scope="private")
@@ -1285,12 +1296,13 @@ async def admin_delete_agent(
     _: str = Depends(require_admin),
 ) -> Dict[str, Any]:
     if scope not in ("public", "private"):
-        raise HTTPException(
-            status_code=400, detail="scope debe ser 'public' o 'private'"
+        raise APIError(
+            400, "invalid_field", "scope debe ser 'public' o 'private'",
+            extra={"field": "scope"},
         )
     deleted = await _agents.delete(agent_id, scope=scope)
     if not deleted:
-        raise HTTPException(status_code=404, detail="Agente no encontrado")
+        raise APIError(404, "not_found", "Agente no encontrado", extra={"resource": "agent"})
     return {"ok": True}
 
 
@@ -1319,7 +1331,7 @@ async def admin_delete_knowledge(
     from app.storage.knowledge import KnowledgeStorage
 
     if not await KnowledgeStorage(DB_FILE).delete(item_id, owner_id=None):
-        raise HTTPException(status_code=404, detail="Elemento no encontrado")
+        raise APIError(404, "not_found", "Elemento no encontrado", extra={"resource": "item"})
     return {"ok": True}
 
 
@@ -1389,7 +1401,7 @@ async def admin_delete_workspace(
     workspace_id: str, _: str = Depends(require_admin)
 ) -> Dict[str, Any]:
     if not await _workspaces.get(workspace_id):
-        raise HTTPException(status_code=404, detail="Workspace no encontrado")
+        raise APIError(404, "not_found", "Workspace no encontrado", extra={"resource": "workspace"})
     await _workspaces.delete(workspace_id)
     return {"ok": True}
 
@@ -1401,9 +1413,12 @@ async def admin_set_workspace_status(
     body = await request.json()
     status = str(body.get("status") or "").strip()
     if status not in ("active", "disabled"):
-        raise HTTPException(status_code=422, detail="status debe ser 'active' o 'disabled'")
+        raise APIError(
+            422, "invalid_field", "status debe ser 'active' o 'disabled'",
+            extra={"field": "status"},
+        )
     if not await _workspaces.get(workspace_id):
-        raise HTTPException(status_code=404, detail="Workspace no encontrado")
+        raise APIError(404, "not_found", "Workspace no encontrado", extra={"resource": "workspace"})
     await _workspaces.set_status(workspace_id, status)
     return {"ok": True, "status": status}
 
@@ -1417,9 +1432,11 @@ async def admin_verify_resource(
 ) -> Dict[str, Any]:
     _valid_types = ("agent", "skill", "knowledge")
     if resource_type not in _valid_types:
-        raise HTTPException(
-            status_code=422,
-            detail=f"resource_type debe ser uno de {_valid_types}",
+        raise APIError(
+            422,
+            "invalid_field",
+            f"resource_type debe ser uno de {_valid_types}",
+            extra={"field": "resource_type"},
         )
     body = await request.json()
     verified_val = bool(body.get("verified", False))
@@ -1431,8 +1448,9 @@ async def admin_verify_resource(
             (resource_type, resource_id),
         )
         if not row:
-            raise HTTPException(
-                status_code=404, detail="Recurso no encontrado en el catálogo social"
+            raise APIError(
+                404, "not_found", "Recurso no encontrado en el catálogo social",
+                extra={"resource": "resource"},
             )
         await conn.execute(
             "UPDATE resource_social SET verified=? WHERE resource_type=? AND resource_id=?",
@@ -1449,15 +1467,17 @@ async def admin_impersonate(
     admin: str = Depends(require_admin),
 ) -> Dict[str, Any]:
     if username == admin:
-        raise HTTPException(status_code=400, detail="Ya eres este usuario")
+        raise APIError(400, "already_own_user", "Ya eres este usuario")
 
     target_user = await get_user_by_username(username)
     if not target_user:
-        raise HTTPException(status_code=404, detail="Usuario no encontrado")
+        raise APIError(404, "not_found", "Usuario no encontrado", extra={"resource": "user"})
 
     # Verificar que la cuenta del usuario objetivo esté activa
     if not target_user.get("is_active", 1):
-        raise HTTPException(status_code=400, detail="No se puede impersonar una cuenta desactivada")
+        raise APIError(
+            400, "cannot_impersonate_disabled", "No se puede impersonar una cuenta desactivada"
+        )
 
     # N3: registrar la impersonación para auditoría de seguridad
     flog.warning(f"[admin] IMPERSONACIÓN: admin={admin!r} → usuario={username!r}")
@@ -1499,17 +1519,18 @@ async def create_pat(
     from app.storage.guest import is_guest as _is_guest
 
     if _is_guest(username):
-        raise HTTPException(
-            status_code=403,
-            detail="Las sesiones de invitado no pueden crear tokens.",
+        raise APIError(
+            403,
+            "guest_cannot_create_tokens",
+            "Las sesiones de invitado no pueden crear tokens.",
         )
     await _login_limiter(request)
 
     body = await request.json()
     name = str(body.get("name") or "").strip()
     if not name or len(name) > 100:
-        raise HTTPException(
-            status_code=400, detail="Nombre requerido (máximo 100 caracteres)"
+        raise APIError(
+            400, "token_name_required", "Nombre requerido (máximo 100 caracteres)"
         )
 
     # Ausente → 90 días. Presente y null → sin caducidad. Son casos distintos.
@@ -1518,10 +1539,14 @@ async def create_pat(
         try:
             expires = int(expires)
         except (TypeError, ValueError):
-            raise HTTPException(status_code=400, detail="expires_in_days inválido")
+            raise APIError(
+                400, "invalid_field", "expires_in_days inválido",
+                extra={"field": "expires_in_days"},
+            )
     if expires not in VALID_EXPIRY_DAYS:
-        raise HTTPException(
-            status_code=400, detail="expires_in_days debe ser 30, 90, 180 o null"
+        raise APIError(
+            400, "invalid_field", "expires_in_days debe ser 30, 90, 180 o null",
+            extra={"field": "expires_in_days"},
         )
 
     token, meta = await _tokens.create(username, name, expires)
@@ -1535,7 +1560,7 @@ async def revoke_pat(
 ) -> Dict[str, Any]:
     """Revoca un PAT. Irreversible: deja de autenticar de inmediato."""
     if not await _tokens.revoke(token_id, username):
-        raise HTTPException(status_code=404, detail="Token no encontrado")
+        raise APIError(404, "not_found", "Token no encontrado", extra={"resource": "token"})
     flog.info(f"PAT revocado: {token_id}", username=username)
     return {"ok": True}
 
@@ -1557,7 +1582,7 @@ _VSCODE_AUTHORITY = "iagentshub.iagentshub"
 def _check_callback(callback: str) -> None:
     parsed = urlsplit(callback)
     if parsed.scheme not in _VSCODE_SCHEMES or parsed.netloc != _VSCODE_AUTHORITY:
-        raise HTTPException(status_code=400, detail="Callback no permitido")
+        raise APIError(400, "callback_not_allowed", "Callback no permitido")
 
 
 @router.get("/vscode/start")
@@ -1587,15 +1612,16 @@ async def vscode_authorize(
     from app.storage.guest import is_guest as _is_guest
 
     if _is_guest(username):
-        raise HTTPException(
-            status_code=403,
-            detail="Las sesiones de invitado no pueden conectar VS Code.",
+        raise APIError(
+            403,
+            "guest_cannot_connect_vscode",
+            "Las sesiones de invitado no pueden conectar VS Code.",
         )
 
     body = await request.json()
     state = str(body.get("state") or "")
     if not 8 <= len(state) <= 128:
-        raise HTTPException(status_code=400, detail="state inválido")
+        raise APIError(400, "invalid_field", "state inválido", extra={"field": "state"})
 
     return {"code": await _create_auth_code(username, state)}
 
@@ -1613,12 +1639,12 @@ async def vscode_exchange(request: Request) -> Dict[str, Any]:
     code = str(body.get("code") or "")
     state = str(body.get("state") or "")
     if not code or not state:
-        raise HTTPException(status_code=400, detail="code y state requeridos")
+        raise APIError(400, "code_and_state_required", "code y state requeridos")
 
     username = await _consume_auth_code(code, state)
     if not username:
-        raise HTTPException(
-            status_code=400, detail="Código inválido, caducado o ya usado"
+        raise APIError(
+            400, "invalid_auth_code", "Código inválido, caducado o ya usado"
         )
 
     token, meta = await _tokens.create(username, "VS Code", DEFAULT_EXPIRY_DAYS)

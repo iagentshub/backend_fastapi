@@ -3,10 +3,11 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Request
 
 from app.api.routes.auth import require_auth
 from app.config.data import DB_FILE
+from app.errors import APIError
 from app.storage.chat import ChatStorage
 from app.storage.guest import is_guest
 
@@ -28,7 +29,7 @@ async def new_conversation(
     agent_id: str, request: Request, user: str = Depends(require_auth)
 ) -> Dict[str, Any]:
     if is_guest(user):
-        raise HTTPException(status_code=403, detail="Los invitados no pueden guardar conversaciones")
+        raise APIError(403, "forbidden", "Los invitados no pueden guardar conversaciones")
     body = await request.json()
     title = str(body.get("title") or "")
     return await _chat.new_conversation(user, agent_id, title)
@@ -42,7 +43,7 @@ async def get_messages(
         return []
     conv = await _chat.get_conversation(conv_id, user)
     if not conv:
-        raise HTTPException(status_code=404, detail="Conversación no encontrada")
+        raise APIError(404, "not_found", "Conversación no encontrada", extra={"resource": "conversation"})
     return await _chat.get_messages(conv_id, user)
 
 
@@ -51,7 +52,7 @@ async def delete_conversation(
     agent_id: str, conv_id: str, user: str = Depends(require_auth)
 ) -> Dict[str, Any]:
     if is_guest(user):
-        raise HTTPException(status_code=403, detail="Los invitados no pueden borrar conversaciones")
+        raise APIError(403, "forbidden", "Los invitados no pueden borrar conversaciones")
     if not await _chat.delete_conversation(conv_id, user):
-        raise HTTPException(status_code=404, detail="Conversación no encontrada")
+        raise APIError(404, "not_found", "Conversación no encontrada", extra={"resource": "conversation"})
     return {"ok": True}

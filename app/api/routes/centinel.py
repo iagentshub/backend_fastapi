@@ -23,11 +23,12 @@ import time
 import uuid
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException
+from fastapi import APIRouter, BackgroundTasks, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.api.routes.auth import require_admin
+from app.errors import APIError
 from app.utils import flog
 
 router = APIRouter(prefix="/api/admin/centinel", tags=["centinel"])
@@ -61,9 +62,10 @@ _history: List[Dict[str, Any]] = []
 # ── Helpers ──────────────────────────────────────────────────────────────────
 def _guard() -> None:
     if not CENTINEL_ENABLED:
-        raise HTTPException(
-            status_code=403,
-            detail="Centinel no está habilitado (CENTINEL_ENABLED=false)",
+        raise APIError(
+            403,
+            "centinel_disabled",
+            "Centinel no está habilitado (CENTINEL_ENABLED=false)",
         )
 
 
@@ -163,9 +165,9 @@ async def get_tree(_: str = Depends(require_admin)) -> dict:
         stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
         return _build_tree(stdout.decode().splitlines())
     except asyncio.TimeoutError:
-        raise HTTPException(status_code=504, detail="Timeout descubriendo tests")
+        raise APIError(504, "upstream_error", "Timeout descubriendo tests")
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        raise APIError(500, "internal_error", str(exc))
 
 
 class RunRequest(BaseModel):
@@ -181,14 +183,17 @@ async def start_run(
 ) -> dict:
     _guard()
     if _run["status"] == "running":
-        raise HTTPException(
-            status_code=409, detail="Ya hay un run en curso. Espera o abórtalo."
+        raise APIError(
+            409,
+            "already_exists",
+            "Ya hay un run en curso. Espera o abórtalo.",
+            extra={"resource": "run"},
         )
 
     target = body.target.strip()
     # Seguridad: target solo dentro de tests/
     if not target.startswith("tests") or ".." in target or target.startswith("/"):
-        raise HTTPException(status_code=422, detail="Target no válido")
+        raise APIError(422, "invalid_field", "Target no válido", extra={"field": "target"})
 
     # Re-run solo los fallidos
     if body.rerun_failed and _run["failed_ids"]:
@@ -217,7 +222,7 @@ async def start_run(
 async def abort_run(_: str = Depends(require_admin)) -> dict:
     _guard()
     if _run["status"] != "running":
-        raise HTTPException(status_code=409, detail="No hay run en curso")
+        raise APIError(409, "no_run_in_progress", "No hay run en curso")
     proc = _run.get("proc")
     if proc and proc.returncode is None:
         try:
@@ -242,7 +247,7 @@ async def get_history(_: str = Depends(require_admin)) -> list:
 async def stream_run(run_id: str, _: str = Depends(require_admin)) -> StreamingResponse:
     _guard()
     if _run["run_id"] != run_id:
-        raise HTTPException(status_code=404, detail="Run no encontrado")
+        raise APIError(404, "not_found", "Run no encontrado", extra={"resource": "run"})
     return StreamingResponse(
         _sse_generator(run_id),
         media_type="text/event-stream",
@@ -632,8 +637,11 @@ async def stress_run(
     _guard()
     persisted = _heal_if_stale(_read_centinel_state(), "stress").get("stress", {})
     if _stress["status"] == "running" or persisted.get("status") == "running":
-        raise HTTPException(
-            status_code=409, detail="Ya hay una prueba de estrés en curso."
+        raise APIError(
+            409,
+            "already_exists",
+            "Ya hay una prueba de estrés en curso.",
+            extra={"resource": "stress_test"},
         )
     run_id = str(uuid.uuid4())
     _stress.update(
@@ -667,7 +675,9 @@ async def stress_abort(_: str = Depends(require_admin)) -> dict:
         "run_id"
     )
     if not is_local and persisted.get("status") != "running":
-        raise HTTPException(status_code=409, detail="No hay prueba de estrés en curso.")
+        raise APIError(
+            409, "no_stress_test_in_progress", "No hay prueba de estrés en curso."
+        )
 
     if is_local:
         # Camino rápido: este mismo proceso está ejecutando el test.
@@ -697,7 +707,7 @@ async def stress_stream(
 ) -> StreamingResponse:
     _guard()
     if _stress["run_id"] != run_id:
-        raise HTTPException(status_code=404, detail="Run no encontrado")
+        raise APIError(404, "not_found", "Run no encontrado", extra={"resource": "run"})
     return StreamingResponse(
         _stress_sse_generator(run_id),
         media_type="text/event-stream",
@@ -1023,7 +1033,9 @@ async def probe_status(_: str = Depends(require_admin)) -> dict:
 async def probe_start(body: ProbeRequest, _: str = Depends(require_admin)) -> dict:
     persisted = _heal_if_stale(_read_centinel_state(), "probe").get("probe", {})
     if _probe["status"] == "running" or persisted.get("status") == "running":
-        raise HTTPException(status_code=409, detail="Probe ya en ejecución")
+        raise APIError(
+            409, "already_exists", "Probe ya en ejecución", extra={"resource": "probe"}
+        )
     run_id = str(int(time.time() * 1000))
     _probe.update(
         {

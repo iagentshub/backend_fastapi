@@ -53,6 +53,11 @@ class LicenseGateMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         return JSONResponse(
-            {"detail": "license_required"},
+            {
+                "detail": {
+                    "code": "license_required",
+                    "message": "Se requiere una licencia activa para usar esta función",
+                }
+            },
             status_code=403,
         )

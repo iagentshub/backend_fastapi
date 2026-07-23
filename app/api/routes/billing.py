@@ -8,6 +8,7 @@ import stripe
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.api.routes.auth import require_auth
+from app.errors import APIError
 from app.auth.auth import (
     get_stripe_customer_id,
     get_user_by_username,
@@ -75,14 +76,22 @@ def _row_to_state(row: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _license_error(exc: ValueError) -> HTTPException:
-    detail = str(exc)
+    code = str(exc)
+    messages = {
+        "subscription_not_active": "No tienes una suscripción activa",
+        "user_not_found": "Usuario no encontrado",
+        "license_already_assigned": "La licencia ya está asignada a este usuario",
+        "no_seats_available": "No hay asientos disponibles en tu plan",
+    }
     status = {
         "subscription_not_active": 404,
         "user_not_found": 404,
         "license_already_assigned": 409,
         "no_seats_available": 409,
-    }.get(detail, 400)
-    return HTTPException(status_code=status, detail=detail)
+    }.get(code, 400)
+    if code in messages:
+        return APIError(status, code, messages[code])
+    return APIError(status, "invalid_license_operation", code)
 
 
 def _parse_body_plan(body: Dict[str, Any]) -> tuple[str, int, str, bool]:
@@ -92,7 +101,7 @@ def _parse_body_plan(body: Dict[str, Any]) -> tuple[str, int, str, bool]:
     try:
         seats = int(body.get("seats", 0))
     except (TypeError, ValueError):
-        raise HTTPException(status_code=400, detail="seats inválido")
+        raise APIError(400, "invalid_field", "Valor inválido: seats", extra={"field": "seats"})
     return tier, seats, interval, self_hosted
 
 
@@ -103,7 +112,7 @@ async def quote(request: Request) -> Dict[str, Any]:
     try:
         return compute_total_cents(tier, seats, interval, self_hosted)
     except InvalidPlanError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise APIError(400, "invalid_field", str(exc), extra={"field": "plan"})
 
 
 @router.post("/subscribe")
@@ -117,10 +126,10 @@ async def subscribe(
     try:
         totals = compute_total_cents(tier, seats, interval, self_hosted)
     except InvalidPlanError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise APIError(400, "invalid_field", str(exc), extra={"field": "plan"})
 
     if await _billing.get_active_by_username(user):
-        raise HTTPException(status_code=409, detail="Ya tienes una suscripción activa")
+        raise APIError(409, "subscription_already_active", "Ya tienes una suscripción activa")
 
     customer_id = await get_stripe_customer_id(user)
     try:
@@ -147,7 +156,9 @@ async def subscribe(
         if self_hosted:
             sh_price_id = _SELF_HOSTED_PRICE_IDS.get(interval)
             if not sh_price_id:
-                raise HTTPException(status_code=400, detail="Add-on self-hosted no configurado")
+                raise APIError(
+                    400, "self_hosted_addon_not_configured", "Add-on self-hosted no configurado"
+                )
             items.append({"price": sh_price_id, "quantity": 1})
 
         subscription = stripe.Subscription.create(
@@ -165,9 +176,9 @@ async def subscribe(
             },
         )
     except stripe.error.CardError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise APIError(400, "upstream_error", str(exc))
     except stripe.error.StripeError as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
+        raise APIError(502, "upstream_error", str(exc))
 
     current_period_end = _extract_period_end(subscription)
     saved = await _billing.upsert(
@@ -210,20 +221,25 @@ async def confirm(request: Request, user: str = Depends(require_auth)) -> Dict[s
     body = await request.json()
     subscription_id = str(body.get("subscription_id") or "")
     if not subscription_id:
-        raise HTTPException(status_code=400, detail="subscription_id requerido")
+        raise APIError(
+            400,
+            "invalid_field",
+            "Valor inválido: subscription_id",
+            extra={"field": "subscription_id"},
+        )
 
     customer_id = await get_stripe_customer_id(user)
     try:
         subscription = stripe.Subscription.retrieve(subscription_id)
     except stripe.error.StripeError as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
+        raise APIError(502, "upstream_error", str(exc))
 
     if not customer_id or subscription.customer != customer_id:
-        raise HTTPException(status_code=403, detail="No autorizado")
+        raise APIError(403, "forbidden", "No autorizado")
 
     row = await _billing.get_by_stripe_subscription_id(subscription_id)
     if not row:
-        raise HTTPException(status_code=404, detail="Suscripción no encontrada")
+        raise APIError(404, "not_found", "Suscripción no encontrada", extra={"resource": "subscription"})
 
     saved = await _billing.upsert(
         username=user,
@@ -262,10 +278,13 @@ async def assign_license(
 ) -> Dict[str, Any]:
     row = await _billing.get_active_by_username(user)
     if not row:
-        raise HTTPException(status_code=404, detail="No tienes una suscripción activa")
+        raise APIError(404, "no_active_subscription", "No tienes una suscripción activa")
     if row["tier"] != "business":
-        raise HTTPException(
-            status_code=400, detail="Solo el plan Business permite asignar licencias"
+        raise APIError(
+            400,
+            "business_tier_required",
+            "Solo el plan Business permite asignar licencias",
+            extra={"action": "assign_licenses"},
         )
     try:
         await _billing.assign_license(
@@ -282,15 +301,18 @@ async def revoke_license(
 ) -> Dict[str, Any]:
     row = await _billing.get_active_by_username(user)
     if not row:
-        raise HTTPException(status_code=404, detail="No tienes una suscripción activa")
+        raise APIError(404, "no_active_subscription", "No tienes una suscripción activa")
     if row["tier"] != "business":
-        raise HTTPException(
-            status_code=400, detail="Solo el plan Business permite quitar licencias"
+        raise APIError(
+            400,
+            "business_tier_required",
+            "Solo el plan Business permite quitar licencias",
+            extra={"action": "revoke_licenses"},
         )
     if username == user:
-        raise HTTPException(status_code=400, detail="No puedes quitar tu propia licencia")
+        raise APIError(400, "cannot_revoke_own_license", "No puedes quitar tu propia licencia")
     if not await _billing.revoke_license(subscription_id=row["id"], target_username=username):
-        raise HTTPException(status_code=404, detail="Licencia no encontrada")
+        raise APIError(404, "not_found", "Licencia no encontrada", extra={"resource": "license"})
     return await _billing.license_summary_for_owner(user)
 
 
@@ -300,25 +322,32 @@ async def change_seats(request: Request, user: str = Depends(require_auth)) -> D
     try:
         seats = int(body.get("seats", 0))
     except (TypeError, ValueError):
-        raise HTTPException(status_code=400, detail="seats inválido")
+        raise APIError(400, "invalid_field", "Valor inválido: seats", extra={"field": "seats"})
 
     row = await _billing.get_active_by_username(user)
     if not row:
-        raise HTTPException(status_code=404, detail="No tienes una suscripción activa")
+        raise APIError(404, "no_active_subscription", "No tienes una suscripción activa")
     if row["tier"] != "business":
-        raise HTTPException(status_code=400, detail="Solo el plan Business admite cambiar asientos")
+        raise APIError(
+            400,
+            "business_tier_required",
+            "Solo el plan Business admite cambiar asientos",
+            extra={"action": "change_seats"},
+        )
 
     used = await _billing.assigned_count(row["id"])
     if seats < used:
-        raise HTTPException(
-            status_code=409,
-            detail=f"No puedes bajar a {seats} licencias: ya hay {used} asignadas",
+        raise APIError(
+            409,
+            "seats_below_assigned",
+            f"No puedes bajar a {seats} licencias: ya hay {used} asignadas",
+            extra={"seats": seats, "used": used},
         )
 
     try:
         totals = compute_total_cents("business", seats, row["interval"], bool(row["self_hosted"]))
     except InvalidPlanError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        raise APIError(400, "invalid_field", str(exc), extra={"field": "plan"})
 
     try:
         subscription = stripe.Subscription.retrieve(row["stripe_subscription_id"])
@@ -335,7 +364,7 @@ async def change_seats(request: Request, user: str = Depends(require_auth)) -> D
             proration_behavior="create_prorations",
         )
     except stripe.error.StripeError as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
+        raise APIError(502, "upstream_error", str(exc))
 
     updated = await _billing.upsert(
         username=user,
@@ -360,7 +389,7 @@ async def cancel(request: Request, user: str = Depends(require_auth)) -> Dict[st
 
     row = await _billing.get_active_by_username(user)
     if not row:
-        raise HTTPException(status_code=404, detail="No tienes una suscripción activa")
+        raise APIError(404, "no_active_subscription", "No tienes una suscripción activa")
 
     try:
         if immediate:
@@ -368,7 +397,7 @@ async def cancel(request: Request, user: str = Depends(require_auth)) -> Dict[st
         else:
             stripe.Subscription.modify(row["stripe_subscription_id"], cancel_at_period_end=True)
     except stripe.error.StripeError as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
+        raise APIError(502, "upstream_error", str(exc))
 
     updated = await _billing.upsert(
         username=user,
@@ -390,19 +419,22 @@ async def cancel(request: Request, user: str = Depends(require_auth)) -> Dict[st
 async def reactivate(user: str = Depends(require_auth)) -> Dict[str, Any]:
     row = await _billing.get_by_username(user)
     if not row:
-        raise HTTPException(status_code=404, detail="No tienes una suscripción")
+        raise APIError(404, "no_subscription", "No tienes una suscripción")
     if row["status"] == "canceled":
-        raise HTTPException(
-            status_code=400,
-            detail="La suscripción ya está cancelada, debes suscribirte de nuevo",
+        raise APIError(
+            400,
+            "subscription_already_canceled",
+            "La suscripción ya está cancelada, debes suscribirte de nuevo",
         )
     if not row["cancel_at_period_end"]:
-        raise HTTPException(status_code=400, detail="La suscripción no tiene cancelación pendiente")
+        raise APIError(
+            400, "no_pending_cancellation", "La suscripción no tiene cancelación pendiente"
+        )
 
     try:
         stripe.Subscription.modify(row["stripe_subscription_id"], cancel_at_period_end=False)
     except stripe.error.StripeError as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
+        raise APIError(502, "upstream_error", str(exc))
 
     await _billing.set_cancel_at_period_end(row["stripe_subscription_id"], False)
     updated = await _billing.get_by_stripe_subscription_id(row["stripe_subscription_id"])
@@ -417,7 +449,7 @@ async def invoices(user: str = Depends(require_auth)) -> Dict[str, Any]:
     try:
         result = stripe.Invoice.list(customer=customer_id, limit=12)
     except stripe.error.StripeError as exc:
-        raise HTTPException(status_code=502, detail=str(exc))
+        raise APIError(502, "upstream_error", str(exc))
     return {
         "invoices": [
             {
@@ -448,7 +480,7 @@ async def webhook(request: Request) -> Dict[str, Any]:
     try:
         event = stripe.Webhook.construct_event(payload, sig_header, STRIPE_WEBHOOK_SECRET)
     except (ValueError, stripe.error.SignatureVerificationError):
-        raise HTTPException(status_code=400, detail="Firma inválida")
+        raise APIError(400, "invalid_webhook_signature", "Firma inválida")
 
     event_id = event["id"]
     if await _billing.has_processed_event(event_id):

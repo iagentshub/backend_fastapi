@@ -676,7 +676,7 @@ def test_sync_linked_agent_sin_enlace(client):
 
     r2 = client.post(f"/api/agents/private/{agent_id}/sync")
     assert r2.status_code == 400
-    assert "enlace" in r2.json()["detail"].lower()
+    assert "enlace" in r2.json()["detail"]["message"].lower()
 
 
 # ── sync_linked_skill — líneas 970-999 ───────────────────────────────────────

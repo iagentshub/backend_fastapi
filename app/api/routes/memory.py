@@ -4,10 +4,11 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Request
 
 from app.api.routes.auth import require_auth
 from app.config.data import MEMORY_DIR
+from app.errors import APIError
 from app.storage.guest import get_session, is_guest
 from app.storage.folders import FolderStorage
 from app.storage.storage import MemoryStorage
@@ -36,13 +37,17 @@ async def get_memory(
     if is_guest(user):
         content = get_session(user).memory.get(filename)
         if content is None:
-            raise HTTPException(
-                status_code=404, detail="Archivo de memoria no encontrado"
+            raise APIError(
+                404, "not_found", "Archivo de memoria no encontrado",
+                extra={"resource": "memory_file"},
             )
         return {"filename": filename, "content": content}
     content = await _storage.get(filename, owner_id=user)
     if content is None:
-        raise HTTPException(status_code=404, detail="Archivo de memoria no encontrado")
+        raise APIError(
+            404, "not_found", "Archivo de memoria no encontrado",
+            extra={"resource": "memory_file"},
+        )
     return {"filename": filename, "content": content}
 
 
@@ -70,7 +75,7 @@ async def patch_memory(
                 str(body["folder_id"]) if body.get("folder_id") else None,
             )
         except ValueError as exc:
-            raise HTTPException(status_code=422, detail=str(exc)) from exc
+            raise APIError(422, "folder_resource_mismatch", str(exc)) from exc
     return {"ok": True, "folder_id": body.get("folder_id")}
 
 
@@ -81,12 +86,16 @@ async def delete_memory(
     if is_guest(user):
         s = get_session(user)
         if filename not in s.memory:
-            raise HTTPException(
-                status_code=404, detail="Archivo de memoria no encontrado"
+            raise APIError(
+                404, "not_found", "Archivo de memoria no encontrado",
+                extra={"resource": "memory_file"},
             )
         del s.memory[filename]
         return {"ok": True}
     if not await _storage.delete(filename, owner_id=user):
-        raise HTTPException(status_code=404, detail="Archivo de memoria no encontrado")
+        raise APIError(
+            404, "not_found", "Archivo de memoria no encontrado",
+            extra={"resource": "memory_file"},
+        )
     await _folders.remove_resource(user, "memory", filename)
     return {"ok": True}

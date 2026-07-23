@@ -5,11 +5,12 @@ from __future__ import annotations
 from typing import Any, Dict, List
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, Request
 
 from app.api.routes.auth import require_auth
 from app.auth.auth import get_user_role
 from app.config.data import AGENTS_DIR, DB_FILE, SKILLS_DIR
+from app.errors import APIError
 from app.storage.accounts import AccountStorage, _mask
 from app.utils import now_iso as _now
 
@@ -116,17 +117,19 @@ async def _fetch_models(provider: str, api_key: str, host: str = "") -> List[str
             return [m["name"].split("/")[-1] for m in data.get("models", [])]
 
     except httpx.HTTPStatusError as exc:
-        raise HTTPException(
-            status_code=exc.response.status_code, detail=str(exc)
+        raise APIError(
+            exc.response.status_code, "upstream_error", str(exc)
         ) from exc
     except httpx.ConnectError:
         label = _PROVIDER_LABELS.get(provider, provider)
-        raise HTTPException(
-            status_code=502,
-            detail=f"No se puede conectar con {label}. Comprueba que el servicio está activo y la URL es correcta.",
+        raise APIError(
+            502,
+            "upstream_error",
+            f"No se puede conectar con {label}. Comprueba que el servicio está activo y la URL es correcta.",
+            extra={"provider": provider},
         ) from None
     except Exception as exc:
-        raise HTTPException(status_code=502, detail=str(exc)) from exc
+        raise APIError(502, "upstream_error", str(exc)) from exc
 
     return []
 
@@ -148,14 +151,17 @@ async def link_account(
     provider: str, request: Request, user: str = Depends(require_auth)
 ) -> Dict[str, Any]:
     if provider not in _PROVIDERS:
-        raise HTTPException(
-            status_code=400, detail=f"Proveedor no soportado: {provider}"
+        raise APIError(
+            400,
+            "unsupported_provider",
+            f"Proveedor no soportado: {provider}",
+            extra={"provider": provider},
         )
     body = await request.json()
     api_key = str(body.get("api_key") or "").strip()
     host = str(body.get("host") or "").strip()
     if not api_key and provider != "ollama":
-        raise HTTPException(status_code=422, detail="api_key requerida")
+        raise APIError(422, "invalid_field", "api_key requerida", extra={"field": "api_key"})
     data: Dict[str, Any] = {"api_key": api_key}
     if host:
         data["host"] = host
@@ -171,7 +177,7 @@ async def unlink_account(
     provider: str, user: str = Depends(require_auth)
 ) -> Dict[str, Any]:
     if not await _storage.delete(provider, await _owner(user)):
-        raise HTTPException(status_code=404, detail="Cuenta no vinculada")
+        raise APIError(404, "not_found", "Cuenta no vinculada", extra={"resource": "account"})
     return {"ok": True}
 
 
@@ -181,8 +187,11 @@ async def test_account(
 ) -> Dict[str, Any]:
     """Prueba las credenciales sin guardarlas."""
     if provider not in _PROVIDERS:
-        raise HTTPException(
-            status_code=400, detail=f"Proveedor no soportado: {provider}"
+        raise APIError(
+            400,
+            "unsupported_provider",
+            f"Proveedor no soportado: {provider}",
+            extra={"provider": provider},
         )
     body = await request.json()
     api_key = str(body.get("api_key") or "").strip()
@@ -196,13 +205,16 @@ async def sync_account(
     provider: str, user: str = Depends(require_auth)
 ) -> Dict[str, Any]:
     if provider not in _PROVIDERS:
-        raise HTTPException(
-            status_code=400, detail=f"Proveedor no soportado: {provider}"
+        raise APIError(
+            400,
+            "unsupported_provider",
+            f"Proveedor no soportado: {provider}",
+            extra={"provider": provider},
         )
 
     account = await _storage.get(provider, await _owner(user))
     if not account:
-        raise HTTPException(status_code=404, detail="Cuenta no vinculada")
+        raise APIError(404, "not_found", "Cuenta no vinculada", extra={"resource": "account"})
 
     api_key = account.get("api_key", "")
     host = account.get("host", "")

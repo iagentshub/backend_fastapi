@@ -7,13 +7,14 @@ from typing import Any, Dict, List, Optional, Set
 from uuid import uuid4
 
 import httpx
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, Query, Request
 
 from app.api.routes.auth import WorkspaceContext, require_auth, require_workspace
 from app.auth.auth import get_user_role
 from app.connections import all_providers, get_provider
 from app.config.data import AGENTS_DIR, DB_FILE, SKILLS_DIR
 from app.config.security import assert_safe_url
+from app.errors import APIError
 from app.storage.knowledge import KnowledgeStorage
 from app.config.session import (
     RATE_TEST_CALLS,
@@ -293,7 +294,7 @@ async def list_connections(
     if group_id is not None and not is_guest(user):
         role = await get_user_role(user)
         if role != "admin" and not await _ws.can_access(group_id, user):
-            raise HTTPException(status_code=403, detail="Sin acceso a este grupo")
+            raise APIError(403, "forbidden", "Sin acceso a este grupo")
         # Devuelve solo las conexiones compartidas con este grupo específico
         shared_ids = set(
             await _shares.get_workspace_shared_resource_ids(group_id, "connection")
@@ -374,7 +375,12 @@ async def save_connection(
     payload = await request.json()
     scope = payload.pop("scope", "workspace")
     if not get_provider(payload.get("type") or ""):
-        raise HTTPException(status_code=422, detail="Tipo de conexión no válido")
+        raise APIError(
+            422,
+            "invalid_field",
+            "Tipo de conexión no válido",
+            extra={"field": "connection_type"},
+        )
 
     # Las conexiones son siempre privadas — se pueden compartir con un workspace completo
     labels = [lbl for lbl in (payload.get("labels") or []) if lbl != "public"]
@@ -456,7 +462,7 @@ async def get_connection(
         else:
             conn = await _get_conn_any(conn_id, user, workspace_id)
     if not conn:
-        raise HTTPException(status_code=404, detail="Conexión no encontrada")
+        raise APIError(404, "not_found", "Conexión no encontrada", extra={"resource": "connection"})
     if (
         workspace_id != user
         and not is_guest(user)
@@ -465,7 +471,7 @@ async def get_connection(
             workspace_id, user, "connections", conn_id, "direct"
         )
     ):
-        raise HTTPException(status_code=403, detail="Sin permiso para usar esta conexión")
+        raise APIError(403, "forbidden", "Sin permiso para usar esta conexión")
     return {k: v for k, v in conn.items() if k != "api_key"}
 
 
@@ -479,14 +485,14 @@ async def delete_connection(
         before = len(s.connections)
         s.connections = [c for c in s.connections if c.get("id") != conn_id]
         if len(s.connections) == before:
-            raise HTTPException(status_code=404, detail="Conexión no encontrada")
+            raise APIError(404, "not_found", "Conexión no encontrada", extra={"resource": "connection"})
         return {"ok": True}
     owner_id = await _owner(user, workspace_id)
     deleted = await _storage.delete(conn_id, owner_id)
     if not deleted and workspace_id != user:
         deleted = await _storage.delete(conn_id, user)
     if not deleted:
-        raise HTTPException(status_code=404, detail="Conexión no encontrada")
+        raise APIError(404, "not_found", "Conexión no encontrada", extra={"resource": "connection"})
     return {"ok": True}
 
 
@@ -504,11 +510,12 @@ async def hub_sync(
     else:
         conn = await _get_conn_any(conn_id, user, workspace_id)
     if not conn:
-        raise HTTPException(status_code=404, detail="Conexión no encontrada")
+        raise APIError(404, "not_found", "Conexión no encontrada", extra={"resource": "connection"})
     if conn.get("type") != "iagentshub":
-        raise HTTPException(
-            status_code=400,
-            detail="Solo disponible para conexiones de tipo iAgents Hub",
+        raise APIError(
+            400,
+            "hub_sync_invalid_type",
+            "Solo disponible para conexiones de tipo iAgents Hub",
         )
 
     url = (conn.get("url") or "").rstrip("/")
@@ -522,14 +529,16 @@ async def hub_sync(
     try:
         _assert_safe_hub_url(url)
     except ValueError as _ssrf_err:
-        raise HTTPException(status_code=400, detail=str(_ssrf_err))
+        raise APIError(400, "unsafe_url", str(_ssrf_err))
 
     from app.connections.iagentshub import _login
 
     try:
         token = _login(url, username, password)
     except Exception as e:
-        raise HTTPException(status_code=502, detail=f"Error de autenticación: {e}")
+        raise APIError(
+            502, "hub_auth_error", f"Error de autenticación: {e}", extra={"reason": str(e)}
+        )
 
     headers = {"Cookie": f"ga_token={token}"}
     result: Dict[str, Any] = {
@@ -721,7 +730,7 @@ async def import_models(
     else:
         conn = await _get_conn_any(conn_id, user, workspace_id)
     if not conn:
-        raise HTTPException(status_code=404, detail="Conexión no encontrada")
+        raise APIError(404, "not_found", "Conexión no encontrada", extra={"resource": "connection"})
 
     conn_type = conn.get("type", "")
 
@@ -738,16 +747,19 @@ async def import_models(
     }
     account_key = _PROVIDER_TYPE_TO_ACCOUNT.get(conn_type)
     if not account_key:
-        raise HTTPException(
-            status_code=400, detail=f"Import de modelos no soportado para '{conn_type}'"
+        raise APIError(
+            400,
+            "import_models_unsupported",
+            f"Import de modelos no soportado para '{conn_type}'",
+            extra={"type": conn_type},
         )
 
     api_key = conn.get("api_key", "")
     host = conn.get("host", "") or conn.get("url", "")
     models = await _fetch_models(account_key, api_key, host)
     if not models:
-        raise HTTPException(
-            status_code=502, detail="No se encontraron modelos en este proveedor"
+        raise APIError(
+            502, "no_models_found", "No se encontraron modelos en este proveedor"
         )
 
     owner_id = await _owner(user, workspace_id)
@@ -801,7 +813,7 @@ async def test_connection(
         else:
             conn = await _get_conn_any(conn_id, user, workspace_id)
     if not conn:
-        raise HTTPException(status_code=404, detail="Conexión no encontrada")
+        raise APIError(404, "not_found", "Conexión no encontrada", extra={"resource": "connection"})
     provider = get_provider(conn.get("type") or "")
     if not provider:
         return {

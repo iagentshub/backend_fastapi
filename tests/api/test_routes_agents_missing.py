@@ -63,7 +63,7 @@ def test_list_agents_invalid_scope_returns_400(admin_client):
     """Scope inválido en GET /api/agents devuelve 400."""
     r = admin_client.get("/api/agents", params={"scope": "badscope"})
     assert r.status_code == 400
-    assert "Scope" in r.json()["detail"]
+    assert "Scope" in r.json()["detail"]["message"]
 
 
 # ── list_agents con offset y limit — líneas 120, 122 ─────────────────────────
@@ -115,7 +115,7 @@ def test_save_agent_invalid_scope_returns_400(admin_client):
     """Scope distinto de public/private en POST devuelve 400 (línea 134)."""
     r = admin_client.post("/api/agents", json={**_AGENT, "scope": "invalid"})
     assert r.status_code == 400
-    assert "Scope" in r.json()["detail"]
+    assert "Scope" in r.json()["detail"]["message"]
 
 
 # ── save_agent: ValueError → 422 — líneas 143-144 ───────────────────────────
@@ -176,7 +176,7 @@ def test_delete_agent_value_error_returns_403(admin_client):
         r = admin_client.delete(f"/api/agents/{agent['id']}")
 
     assert r.status_code == 403
-    assert "solo lectura" in r.json()["detail"]
+    assert "solo lectura" in r.json()["detail"]["message"]
 
 
 # ── _apply_locale — líneas 65-78 ─────────────────────────────────────────────
@@ -444,7 +444,7 @@ def test_chat_agent_no_connection_returns_422(client):
     agent = _create_agent(client, {"name": "No Conn Chat Agent"})
     r = client.post(f"/api/agents/{agent['id']}/chat", json={"messages": []})
     assert r.status_code == 422
-    assert "conexión" in r.json()["detail"].lower()
+    assert r.json()["detail"]["code"] == "agent_no_connection"
 
 
 def test_chat_streams_sse_response(admin_client):
