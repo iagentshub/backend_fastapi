@@ -22,7 +22,7 @@ from app.config.session import RATE_CHAT_CALLS, RATE_CHAT_WINDOW
 from app.middleware.locale import get_locale
 from app.middleware.ratelimit import RateLimiter
 from app.models.agent import Agent
-from app.services.chat import auto_update_memory, stream_chat
+from app.services.chat import stream_chat
 from app.storage.chat import ChatStorage
 
 from app.storage.db import IS_PG, PH, open_db
@@ -718,9 +718,19 @@ async def chat(
 
     done_event: List[dict] = []
 
+    history_user_id = None if is_guest(user) else user
+
     async def _gen():
         async for chunk in stream_chat(
-            a, conn, history, _skills, memory_store, knowledge_store
+            a,
+            conn,
+            history,
+            _skills,
+            memory_store,
+            knowledge_store,
+            _chat,
+            history_user_id,
+            conversation_id or None,
         ):
             yield chunk
             if chunk.startswith("data: "):
@@ -756,10 +766,6 @@ async def chat(
                     await _chat.add_message(conversation_id, "assistant", reply)
                     title = str(user_msg.get("content") or "")[:80] if user_msg else ""
                     await _chat.touch_conversation(conversation_id, title)
-        if a.get("use_memory"):
-            await auto_update_memory(
-                a, conn, history, ev.get("reply", ""), memory_store
-            )
 
     return StreamingResponse(
         _gen(),

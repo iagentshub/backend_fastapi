@@ -51,6 +51,16 @@ class _MemoryStorage(Protocol):
     def save(self, filename: str, content: str) -> None: ...
 
 
+@runtime_checkable
+class _ChatStorage(Protocol):
+    async def list_conversations(
+        self, user_id: str, agent_id: str, limit: int = 50
+    ) -> List[Dict[str, Any]]: ...
+    async def get_messages(
+        self, conversation_id: str, user_id: str, limit: int = 200
+    ) -> List[Dict[str, Any]]: ...
+
+
 def _sse(data: Dict[str, Any]) -> str:
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
@@ -58,6 +68,9 @@ def _sse(data: Dict[str, Any]) -> str:
 def _estimate_tokens(text: str) -> int:
     """Estimación rápida: ~4 chars por token (conservador)."""
     return max(1, len(text) // 4)
+
+
+_HISTORY_TOKEN_BUDGET = 20_000
 
 
 def _truncate_history(
@@ -232,6 +245,9 @@ async def stream_chat(
     skill_storage: Optional[_SkillStorage],
     memory_storage: Optional[_MemoryStorage] = None,
     knowledge_storage: Optional[_KnowledgeStorage] = None,
+    chat_storage: Optional[_ChatStorage] = None,
+    user_id: Optional[str] = None,
+    conversation_id: Optional[str] = None,
 ) -> AsyncGenerator[str, None]:
     import asyncio
     from app.models.agent import Agent
@@ -277,6 +293,33 @@ async def stream_chat(
         mem_content = await memory_storage.get(mem_file)
         if mem_content and mem_content.strip():
             system += f"\n\n## Memoria del agente\n{mem_content}"
+
+    # Recuerdo de conversaciones anteriores del mismo usuario con este agente
+    if agent.use_memory and chat_storage is not None and user_id:
+        try:
+            convs = await chat_storage.list_conversations(user_id, agent.id)
+        except Exception:
+            convs = []
+        past_lines: List[str] = []
+        past_tokens = 0
+        for c in convs:
+            if c.get("id") == conversation_id:
+                continue
+            try:
+                msgs = await chat_storage.get_messages(c["id"], user_id)
+            except Exception:
+                continue
+            for m in msgs:
+                label = "Usuario" if m.get("role") == "user" else "Agente"
+                line = f"**{label}:** {m.get('content', '')}"
+                past_tokens += _estimate_tokens(line)
+                if past_tokens > _HISTORY_TOKEN_BUDGET:
+                    break
+                past_lines.append(line)
+            if past_tokens > _HISTORY_TOKEN_BUDGET:
+                break
+        if past_lines:
+            system += "\n\n## Conversaciones anteriores\n" + "\n\n".join(past_lines)
 
     # Truncar history si el contexto es demasiado largo
     _sys_tokens = _estimate_tokens(system)
@@ -417,69 +460,3 @@ async def stream_chat(
         yield _sse({"type": "error", "message": f"Error de conexión: {exc}"})
     except Exception as exc:
         yield _sse({"type": "error", "message": str(exc)})
-
-
-async def auto_update_memory(
-    agent: "Dict[str, Any] | Agent",
-    conn: Dict[str, Any],
-    history: List[Dict[str, Any]],
-    reply: str,
-    memory_storage: Any,
-) -> None:
-    """Tras cada turno de chat, pide al LLM que actualice el fichero de memoria del agente."""
-    from app.models.agent import Agent
-
-    if not isinstance(agent, Agent):
-        agent = Agent.from_dict(agent)
-    mem_file = agent.memory_file or f"{agent.id}.md"
-    existing = await memory_storage.get(mem_file) or ""
-
-    conv_lines: List[str] = []
-    for m in history:
-        label = "Usuario" if m.get("role") == "user" else "Agente"
-        conv_lines.append(f"**{label}:** {m.get('content', '')}")
-    conv_lines.append(f"**Agente:** {reply}")
-    conv_text = "\n\n".join(conv_lines)
-
-    mem_system = (
-        "Eres un sistema de memoria para un agente de IA. "
-        "Actualiza el fichero de memoria con los hechos importantes de esta conversación.\n"
-        "Reglas:\n"
-        "- Incluye solo hechos concretos y útiles: preferencias del usuario, datos personales "
-        "relevantes, tareas pendientes, contexto del proyecto, decisiones tomadas.\n"
-        "- Elimina información obsoleta o redundante de la memoria anterior.\n"
-        "- Formato: lista de puntos en Markdown (- hecho).\n"
-        "- Responde ÚNICAMENTE con el contenido del fichero de memoria actualizado, sin explicaciones."
-    )
-
-    user_content = ""
-    if existing.strip():
-        user_content += f"## Memoria actual\n{existing.strip()}\n\n"
-    user_content += f"## Conversación\n{conv_text}"
-
-    mem_agent: Dict[str, Any] = {
-        "id": "_memory_updater",
-        "system_prompt": mem_system,
-        "temperature": 0.3,
-        "max_tokens": 1500,
-        "skills": [],
-        "use_memory": False,
-        "timeout": 60,
-    }
-
-    try:
-        updated = ""
-        async for chunk in stream_chat(
-            mem_agent, conn, [{"role": "user", "content": user_content}], None, None
-        ):
-            if chunk.startswith("data: "):
-                try:
-                    ev = json.loads(chunk[6:].strip())
-                    if ev.get("type") == "done":
-                        updated = ev.get("reply", "")
-                except Exception:
-                    pass
-        if updated.strip():
-            await memory_storage.save(mem_file, updated.strip())
-    except Exception:
-        pass  # Los errores de memoria no deben afectar al usuario

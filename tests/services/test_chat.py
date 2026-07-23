@@ -5,13 +5,12 @@ from __future__ import annotations
 import json
 import socket
 import urllib.error
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
 from app.services.chat import (
     _do_openai_stream_with_dns_retry,
-    auto_update_memory,
     stream_chat,
 )
 
@@ -188,7 +187,139 @@ async def test_system_prompt_included_in_messages():
     assert "Eres un chef." in messages[0]["content"]
 
 
-# ─── Tests de auto_update_memory ──────────────────────────────────────────────
+# ─── Tests de recuerdo de conversaciones anteriores ────────────────────────────
+
+
+def _chat_storage_mock(convs: list, messages_by_conv: dict) -> MagicMock:
+    storage = MagicMock()
+
+    async def _list_conversations(user_id, agent_id, limit=50):
+        return convs
+
+    async def _get_messages(conv_id, user_id, limit=200):
+        return messages_by_conv.get(conv_id, [])
+
+    storage.list_conversations = _list_conversations
+    storage.get_messages = _get_messages
+    return storage
+
+
+async def _sent_system_message(agent, conn, history, chat_storage, user_id, conversation_id):
+    sent_payloads = []
+
+    def fake_urlopen(req, timeout):
+        sent_payloads.append(json.loads(req.data.decode()))
+        return _sse_done_response()
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        [
+            e
+            async for e in stream_chat(
+                agent,
+                conn,
+                history,
+                _skill_storage(),
+                None,
+                None,
+                chat_storage,
+                user_id,
+                conversation_id,
+            )
+        ]
+    return sent_payloads[0]["messages"][0]["content"]
+
+
+async def test_history_injected_from_past_conversations():
+    agent = _make_agent("openai")
+    agent["use_memory"] = True
+    conn = _make_conn("openai")
+    convs = [{"id": "conv-old"}]
+    messages = {
+        "conv-old": [
+            {"role": "user", "content": "Me llamo Ana."},
+            {"role": "assistant", "content": "Encantado, Ana."},
+        ]
+    }
+    chat_storage = _chat_storage_mock(convs, messages)
+
+    system_message = await _sent_system_message(
+        agent,
+        conn,
+        [{"role": "user", "content": "¿Cómo me llamo?"}],
+        chat_storage,
+        "user-1",
+        "conv-current",
+    )
+
+    assert "Ana" in system_message
+
+
+async def test_history_excludes_current_conversation():
+    agent = _make_agent("openai")
+    agent["use_memory"] = True
+    conn = _make_conn("openai")
+    convs = [{"id": "conv-current"}]
+    messages = {"conv-current": [{"role": "user", "content": "No debería aparecer"}]}
+    chat_storage = _chat_storage_mock(convs, messages)
+
+    system_message = await _sent_system_message(
+        agent,
+        conn,
+        [{"role": "user", "content": "Hola"}],
+        chat_storage,
+        "user-1",
+        "conv-current",
+    )
+
+    assert "No debería aparecer" not in system_message
+
+
+async def test_history_not_injected_when_use_memory_disabled():
+    agent = _make_agent("openai")
+    agent["use_memory"] = False
+    conn = _make_conn("openai")
+    convs = [{"id": "conv-old"}]
+    messages = {"conv-old": [{"role": "user", "content": "Dato pasado"}]}
+    chat_storage = _chat_storage_mock(convs, messages)
+
+    system_message = await _sent_system_message(
+        agent,
+        conn,
+        [{"role": "user", "content": "Hola"}],
+        chat_storage,
+        "user-1",
+        "conv-current",
+    )
+
+    assert "Dato pasado" not in system_message
+
+
+async def test_history_not_queried_without_user_id():
+    """Sin user_id (p.ej. invitados) no debe consultarse el historial."""
+    agent = _make_agent("openai")
+    agent["use_memory"] = True
+    conn = _make_conn("openai")
+
+    chat_storage = MagicMock()
+    chat_storage.list_conversations = MagicMock(
+        side_effect=AssertionError("no debería llamarse sin user_id")
+    )
+
+    with patch("urllib.request.urlopen", return_value=_sse_done_response()):
+        [
+            e
+            async for e in stream_chat(
+                agent,
+                conn,
+                [{"role": "user", "content": "Hola"}],
+                _skill_storage(),
+                None,
+                None,
+                chat_storage,
+                None,
+                None,
+            )
+        ]
 
 
 async def test_effort_level_is_sent_to_openai_compatible_provider():
@@ -210,77 +341,6 @@ async def test_effort_level_is_sent_to_openai_compatible_provider():
         ]
 
     assert sent_payloads[0]["reasoning_effort"] == "high"
-
-
-def _make_memory_storage(existing: str = "") -> MagicMock:
-    storage = MagicMock()
-    storage.get = AsyncMock(return_value=existing or None)
-    storage.save = AsyncMock()
-    return storage
-
-
-async def test_auto_update_memory_saves_to_storage():
-    """auto_update_memory debe guardar el contenido devuelto por el LLM en el storage."""
-    agent = _make_agent("openai")
-    agent["id"] = "mi-agente"
-    conn = _make_conn("openai")
-    history = [{"role": "user", "content": "Me llamo Ana."}]
-    reply = "Encantado, Ana."
-    mem_storage = _make_memory_storage()
-
-    mock_resp = _sse_done_response("- El usuario se llama Ana.")
-
-    with patch("urllib.request.urlopen", return_value=mock_resp):
-        await auto_update_memory(agent, conn, history, reply, mem_storage)
-
-    mem_storage.save.assert_called_once()
-    filename, content = mem_storage.save.call_args[0]
-    assert filename == "mi-agente.md"
-    assert "Ana" in content
-
-
-async def test_auto_update_memory_uses_custom_memory_file():
-    """Si el agente tiene memory_file configurado, se usa ese nombre."""
-    agent = _make_agent("openai")
-    agent["id"] = "mi-agente"
-    agent["memory_file"] = "proyecto-x.md"
-    conn = _make_conn("openai")
-    mem_storage = _make_memory_storage()
-
-    mock_resp = _sse_done_response("- Proyecto X en marcha.")
-
-    with patch("urllib.request.urlopen", return_value=mock_resp):
-        await auto_update_memory(agent, conn, [], "ok", mem_storage)
-
-    filename, _ = mem_storage.save.call_args[0]
-    assert filename == "proyecto-x.md"
-
-
-async def test_auto_update_memory_does_not_raise_on_llm_error():
-    """Si el LLM falla, auto_update_memory no debe propagar la excepción."""
-    agent = _make_agent("openai")
-    conn = _make_conn("openai")
-    mem_storage = _make_memory_storage()
-
-    with patch("urllib.request.urlopen", side_effect=Exception("network error")):
-        # No debe lanzar excepción
-        await auto_update_memory(agent, conn, [], "respuesta", mem_storage)
-
-    mem_storage.save.assert_not_called()
-
-
-async def test_auto_update_memory_does_not_save_empty_content():
-    """Si el LLM devuelve contenido vacío, no se debe guardar nada."""
-    agent = _make_agent("openai")
-    conn = _make_conn("openai")
-    mem_storage = _make_memory_storage()
-
-    mock_resp = _sse_done_response("")  # reply vacío
-
-    with patch("urllib.request.urlopen", return_value=mock_resp):
-        await auto_update_memory(agent, conn, [], "ok", mem_storage)
-
-    mem_storage.save.assert_not_called()
 
 
 # ─── Tests de token tracking ───────────────────────────────────────────────────
