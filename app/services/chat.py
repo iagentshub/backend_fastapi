@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import socket
+import time
 import urllib.error
 import urllib.request
 from typing import (
@@ -119,6 +121,39 @@ def _do_openai_stream(
                 tok_in = usage.get("prompt_tokens", tok_in)
                 tok_out = usage.get("completion_tokens", tok_out)
     return full_reply, tok_in, tok_out
+
+
+def _do_openai_stream_with_dns_retry(
+    url: str,
+    headers: Dict[str, str],
+    payload: Dict[str, Any],
+    timeout: Optional[int],
+    on_token: Optional[Callable[[str], None]] = None,
+) -> "tuple[str, int, int]":
+    """Retry transient DNS failures before the provider has emitted any token."""
+    for attempt in range(3):
+        emitted = False
+
+        def _on_token(token: str) -> None:
+            nonlocal emitted
+            emitted = emitted or bool(token)
+            if on_token is not None:
+                on_token(token)
+
+        try:
+            return _do_openai_stream(url, headers, payload, timeout, _on_token)
+        except urllib.error.URLError as exc:
+            reason = exc.reason
+            errno = getattr(reason, "errno", None)
+            dns_failure = isinstance(reason, socket.gaierror) or errno in (
+                -5,
+                -2,
+                11001,
+            )
+            if emitted or not dns_failure or attempt == 2:
+                raise
+            time.sleep(attempt + 1)
+    raise RuntimeError("No se pudo contactar con el proveedor")
 
 
 def _do_claude_stream(
@@ -278,7 +313,12 @@ async def stream_chat(
 
             provider_task = asyncio.create_task(
                 asyncio.to_thread(
-                    _do_openai_stream, url, headers, payload, timeout, _on_token
+                    _do_openai_stream_with_dns_retry,
+                    url,
+                    headers,
+                    payload,
+                    timeout,
+                    _on_token,
                 )
             )
             last_heartbeat = loop.time()

@@ -3,11 +3,17 @@
 from __future__ import annotations
 
 import json
+import socket
+import urllib.error
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
-from app.services.chat import auto_update_memory, stream_chat
+from app.services.chat import (
+    _do_openai_stream_with_dns_retry,
+    auto_update_memory,
+    stream_chat,
+)
 
 
 def _make_agent(conn_type: str, model: str = "gpt-4o") -> dict:
@@ -46,6 +52,28 @@ def _sse_done_response(reply: str = "Hola") -> MagicMock:
     mock_resp.__exit__ = MagicMock(return_value=False)
     mock_resp.__iter__ = MagicMock(return_value=iter([line_chunk, line_done]))
     return mock_resp
+
+
+def test_openai_stream_retries_transient_dns_failure():
+    dns_error = urllib.error.URLError(
+        socket.gaierror(-5, "No address associated with hostname")
+    )
+    response = _sse_done_response("OK")
+
+    with (
+        patch("urllib.request.urlopen", side_effect=[dns_error, response]) as urlopen,
+        patch("app.services.chat.time.sleep") as sleep,
+    ):
+        reply, _, _ = _do_openai_stream_with_dns_retry(
+            "https://example.com/v1/chat/completions",
+            {"Authorization": "Bearer test"},
+            {"model": "test", "messages": [], "stream": True},
+            30,
+        )
+
+    assert reply == "OK"
+    assert urlopen.call_count == 2
+    sleep.assert_called_once_with(1)
 
 
 @pytest.mark.parametrize(

@@ -1,0 +1,218 @@
+from __future__ import annotations
+
+import json
+
+
+def _events(response_text: str) -> list[dict]:
+    return [
+        json.loads(line[6:])
+        for line in response_text.splitlines()
+        if line.startswith("data: ")
+    ]
+
+
+def test_builder_requires_auth(client):
+    response = client.post(
+        "/api/agent-builder/chat",
+        json={
+            "connection_id": "missing",
+            "messages": [{"role": "user", "content": "Crea un agente"}],
+        },
+    )
+
+    assert response.status_code == 401
+
+
+def test_builder_rejects_unavailable_connection(admin_client):
+    response = admin_client.post(
+        "/api/agent-builder/chat",
+        json={
+            "connection_id": "missing",
+            "messages": [{"role": "user", "content": "Crea un agente"}],
+        },
+    )
+
+    assert response.status_code == 404
+
+
+def test_builder_returns_validated_draft(admin_client, monkeypatch):
+    connection = admin_client.post(
+        "/api/connections",
+        json={
+            "name": "NIM test",
+            "type": "nvidia",
+            "api_key": "nvapi-test",
+            "model": "meta/llama-3.1-8b-instruct",
+        },
+    ).json()
+
+    captured = {}
+
+    async def fake_stream_chat(agent, *args, **kwargs):
+        captured["timeout"] = agent.timeout
+        captured["system_prompt"] = agent.system_prompt
+        reply = json.dumps(
+            {
+                "assistant_message": "He preparado el borrador.",
+                "status": "ready",
+                "draft": {
+                    "name": "Agente de pruebas",
+                    "description": "Creado mediante conversación",
+                    "system_prompt": (
+                        "Eres un agente de pruebas. Verifica cada resultado y explica "
+                        "claramente cualquier limitación."
+                    ),
+                    "temperature": 0.3,
+                    "skills": [],
+                    "knowledge": [],
+                    "use_memory": False,
+                },
+            },
+            ensure_ascii=False,
+        )
+        yield f"data: {json.dumps({'type': 'token', 'token': '{'})}\n\n"
+        yield f"data: {json.dumps({'type': 'done', 'reply': reply})}\n\n"
+
+    monkeypatch.setattr(
+        "app.api.routes.agent_builder.stream_chat",
+        fake_stream_chat,
+    )
+
+    response = admin_client.post(
+        "/api/agent-builder/chat",
+        json={
+            "connection_id": connection["id"],
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Crea un agente que compruebe resultados de pruebas",
+                }
+            ],
+            "resources": {"skills": [], "knowledge": []},
+        },
+    )
+
+    assert response.status_code == 200
+    events = _events(response.text)
+    assert any(event["type"] == "progress" for event in events)
+    done = next(event for event in events if event["type"] == "builder_done")
+    assert done["status"] == "ready"
+    assert done["draft"]["name"] == "Agente de pruebas"
+    assert captured["timeout"] == 180
+
+
+def test_expert_mode_never_returns_another_question(admin_client, monkeypatch):
+    connection = admin_client.post(
+        "/api/connections",
+        json={
+            "name": "NIM expert",
+            "type": "nvidia",
+            "api_key": "nvapi-test",
+            "model": "meta/llama-3.2-3b-instruct",
+        },
+    ).json()
+    specification = (
+        "Eres un agente senior especializado en Python y FastAPI. "
+        "Revisa seguridad, rendimiento, pruebas y compatibilidad. "
+    )
+
+    async def fake_stream_chat(*args, **kwargs):
+        reply = json.dumps(
+            {
+                "assistant_message": "¿Cuál es el proyecto específico?",
+                "status": "collecting",
+                "draft": None,
+            }
+        )
+        yield f"data: {json.dumps({'type': 'done', 'reply': reply})}\n\n"
+
+    monkeypatch.setattr("app.api.routes.agent_builder.stream_chat", fake_stream_chat)
+
+    response = admin_client.post(
+        "/api/agent-builder/chat",
+        json={
+            "connection_id": connection["id"],
+            "mode": "expert",
+            "messages": [{"role": "user", "content": specification}],
+        },
+    )
+
+    done = next(
+        event for event in _events(response.text) if event["type"] == "builder_done"
+    )
+    assert done["status"] == "ready"
+    assert done["draft"]["system_prompt"] == specification.strip()
+
+
+def test_guided_mode_recovers_from_invalid_model_json(admin_client, monkeypatch):
+    connection = admin_client.post(
+        "/api/connections",
+        json={
+            "name": "NIM guided",
+            "type": "nvidia",
+            "api_key": "nvapi-test",
+            "model": "meta/llama-3.2-3b-instruct",
+        },
+    ).json()
+
+    async def fake_stream_chat(*args, **kwargs):
+        yield 'data: {"type":"done","reply":"respuesta sin JSON"}\n\n'
+
+    monkeypatch.setattr("app.api.routes.agent_builder.stream_chat", fake_stream_chat)
+
+    response = admin_client.post(
+        "/api/agent-builder/chat",
+        json={
+            "connection_id": connection["id"],
+            "mode": "guided",
+            "messages": [
+                {"role": "user", "content": "Quiero ayudar a mis clientes"}
+            ],
+        },
+    )
+
+    done = next(
+        event for event in _events(response.text) if event["type"] == "builder_done"
+    )
+    assert done["status"] == "collecting"
+    assert "¿Quién usará" in done["assistant_message"]
+
+
+def test_complete_expert_specification_skips_provider(admin_client, monkeypatch):
+    connection = admin_client.post(
+        "/api/connections",
+        json={
+            "name": "NIM fast path",
+            "type": "nvidia",
+            "api_key": "nvapi-test",
+            "model": "meta/llama-3.2-3b-instruct",
+        },
+    ).json()
+    specification = (
+        "Eres un agente senior especializado en Python y FastAPI. "
+        "Conserva todos los requisitos técnicos, valida seguridad y añade pruebas. "
+    ) * 5
+
+    async def must_not_call_provider(*args, **kwargs):
+        raise AssertionError("La especificación completa no debe llamar al proveedor")
+        yield  # pragma: no cover
+
+    monkeypatch.setattr(
+        "app.api.routes.agent_builder.stream_chat", must_not_call_provider
+    )
+
+    response = admin_client.post(
+        "/api/agent-builder/chat",
+        json={
+            "connection_id": connection["id"],
+            "mode": "expert",
+            "messages": [{"role": "user", "content": specification}],
+        },
+    )
+
+    done = next(
+        event for event in _events(response.text) if event["type"] == "builder_done"
+    )
+    assert done["status"] == "ready"
+    assert done["draft"]["name"] == "Especialista Python y FastAPI"
+    assert done["draft"]["system_prompt"] == specification.strip()
