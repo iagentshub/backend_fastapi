@@ -190,14 +190,30 @@ async def update_member_role(
     ctx: WorkspaceContext = Depends(require_workspace),
 ) -> Dict[str, Any]:
     _assert_not_guest(ctx.user)
+    has_role = "role" in body
     role = str(body.get("role") or "").strip()
-    if role not in ("owner", "admin", "member"):
+    permissions = body.get("permissions")
+    if not has_role and permissions is None:
+        raise HTTPException(status_code=422, detail="Rol o permisos obligatorios")
+    if has_role and role not in ("owner", "admin", "member"):
         raise HTTPException(status_code=400, detail="Rol inválido")
+    if permissions is not None and not isinstance(permissions, dict):
+        raise HTTPException(status_code=422, detail="Permisos inválidos")
     if not await _ws.can_manage(workspace_id, ctx.user) and await get_user_role(ctx.user) != "admin":
         raise HTTPException(status_code=403, detail="Sin permisos para cambiar roles")
-    if not await _ws.update_member_role(workspace_id, username, role):
+    if has_role and not await _ws.update_member_role(workspace_id, username, role):
         raise HTTPException(status_code=404, detail="Miembro no encontrado")
-    return {"ok": True, "workspace_id": workspace_id, "username": username, "role": role}
+    if permissions is not None and not await _ws.update_member_permissions(
+        workspace_id, username, permissions
+    ):
+        raise HTTPException(status_code=404, detail="Miembro no encontrado")
+    return {
+        "ok": True,
+        "workspace_id": workspace_id,
+        "username": username,
+        **({"role": role} if has_role else {}),
+        **({"permissions": permissions} if permissions is not None else {}),
+    }
 
 
 # ── Invitaciones ───────────────────────────────────────────────────────────────

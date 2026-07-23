@@ -9,11 +9,13 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from app.api.routes.auth import require_auth
 from app.config.data import MEMORY_DIR
 from app.storage.guest import get_session, is_guest
+from app.storage.folders import FolderStorage
 from app.storage.storage import MemoryStorage
 
 router = APIRouter(prefix="/api/memory", tags=["memory"])
 
 _storage = MemoryStorage(MEMORY_DIR)
+_folders = FolderStorage()
 
 
 @router.get("")
@@ -24,7 +26,7 @@ async def list_memory(user: str = Depends(require_auth)) -> List[Dict[str, Any]]
             {"filename": k, "size": len(v), "updated_at": None}
             for k, v in s.memory.items()
         ]
-    return await _storage.list(owner_id=user)
+    return await _folders.enrich(await _storage.list(owner_id=user), user, "memory")
 
 
 @router.get("/{filename}")
@@ -60,7 +62,16 @@ async def save_memory(
 async def patch_memory(
     filename: str, request: Request, user: str = Depends(require_auth)
 ) -> Dict[str, Any]:
-    return {"ok": True}
+    body = await request.json()
+    if "folder_id" in body and not is_guest(user):
+        try:
+            await _folders.assign(
+                user, "memory", filename,
+                str(body["folder_id"]) if body.get("folder_id") else None,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {"ok": True, "folder_id": body.get("folder_id")}
 
 
 @router.delete("/{filename}")

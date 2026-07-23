@@ -12,6 +12,7 @@ from app.auth.auth import get_user_role
 from app.config.data import DB_FILE, SKILLS_DIR
 
 from app.storage.guest import get_session, is_guest
+from app.storage.folders import FolderStorage
 from app.storage.storage import SkillStorage
 from app.storage.workspace_shares import WorkspaceShareStorage
 from app.storage.workspaces import WorkspaceStorage
@@ -21,6 +22,7 @@ router = APIRouter(prefix="/api/skills", tags=["skills"])
 _storage = SkillStorage(SKILLS_DIR)
 _shares = WorkspaceShareStorage(DB_FILE)
 _ws = WorkspaceStorage(DB_FILE)
+_folders = FolderStorage()
 
 _VALID_SCOPES = {"public", "private", "all"}
 
@@ -95,6 +97,10 @@ async def list_skills(
         items = items[offset:]
     if limit:
         items = items[:limit]
+    for skill in items:
+        owner = str(skill.get("owner_id") or ctx.workspace_id)
+        if skill.get("scope") != "public":
+            skill["folder_id"] = await _folders.folder_for(owner, "skill", skill["id"])
     return items
 
 
@@ -163,7 +169,15 @@ async def save_skill(
         s.skills.append(skill)
         return skill
     try:
-        return await _storage.save(scope, payload, owner_id=workspace_id)
+        folder_id = payload.pop("folder_id", None)
+        saved = await _storage.save(scope, payload, owner_id=workspace_id)
+        if scope == "private" and folder_id is not None:
+            try:
+                await _folders.assign(workspace_id, "skill", saved["id"], folder_id or None)
+            except ValueError as exc:
+                raise HTTPException(status_code=422, detail=str(exc)) from exc
+        saved["folder_id"] = await _folders.folder_for(workspace_id, "skill", saved["id"])
+        return saved
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
 
@@ -202,3 +216,23 @@ async def delete_skill(
     except ValueError as e:
         raise HTTPException(status_code=403, detail=str(e))
     return {"ok": True}
+
+
+@router.patch("/private/{skill_id}/folder")
+async def move_skill_to_folder(
+    skill_id: str, request: Request, ctx: WorkspaceContext = Depends(require_workspace)
+) -> Dict[str, Any]:
+    skill = await _storage.get("private", skill_id)
+    if not skill:
+        raise HTTPException(status_code=404, detail="Skill no encontrada")
+    if await get_user_role(ctx.user) != "admin" and skill.get("owner_id") != ctx.workspace_id:
+        raise HTTPException(status_code=403, detail="Solo el propietario puede mover la skill")
+    body = await request.json()
+    try:
+        await _folders.assign(
+            ctx.workspace_id, "skill", skill_id,
+            str(body["folder_id"]) if body.get("folder_id") else None,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {**skill, "folder_id": body.get("folder_id")}

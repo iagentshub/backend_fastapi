@@ -156,10 +156,32 @@ CREATE TABLE IF NOT EXISTS workspace_members (
     workspace_id TEXT NOT NULL,
     username     TEXT NOT NULL,
     role         TEXT NOT NULL DEFAULT 'member',
+    permissions  TEXT NOT NULL DEFAULT '{}',
     joined_at    TEXT NOT NULL,
     PRIMARY KEY (workspace_id, username)
 );
 CREATE INDEX IF NOT EXISTS idx_ws_members_user ON workspace_members(username);
+CREATE TABLE IF NOT EXISTS resource_folders (
+    id          TEXT PRIMARY KEY,
+    owner_id    TEXT NOT NULL,
+    section     TEXT NOT NULL,
+    name        TEXT NOT NULL,
+    is_public   INTEGER NOT NULL DEFAULT 0,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    UNIQUE(owner_id, section, name)
+);
+CREATE INDEX IF NOT EXISTS idx_resource_folders_owner
+    ON resource_folders(owner_id, section, name);
+CREATE TABLE IF NOT EXISTS resource_folder_items (
+    owner_id      TEXT NOT NULL,
+    resource_type TEXT NOT NULL,
+    resource_id   TEXT NOT NULL,
+    folder_id     TEXT,
+    PRIMARY KEY (owner_id, resource_type, resource_id)
+);
+CREATE INDEX IF NOT EXISTS idx_resource_folder_items_folder
+    ON resource_folder_items(folder_id, resource_type);
 CREATE TABLE IF NOT EXISTS token_daily (
     day      TEXT NOT NULL,
     owner_id TEXT NOT NULL,
@@ -384,10 +406,32 @@ CREATE TABLE IF NOT EXISTS workspace_members (
     workspace_id TEXT NOT NULL,
     username     TEXT NOT NULL,
     role         TEXT NOT NULL DEFAULT 'member',
+    permissions  TEXT NOT NULL DEFAULT '{}',
     joined_at    TEXT NOT NULL,
     PRIMARY KEY (workspace_id, username)
 );
 CREATE INDEX IF NOT EXISTS idx_ws_members_user ON workspace_members(username);
+CREATE TABLE IF NOT EXISTS resource_folders (
+    id          TEXT PRIMARY KEY,
+    owner_id    TEXT NOT NULL,
+    section     TEXT NOT NULL,
+    name        TEXT NOT NULL,
+    is_public   BOOLEAN NOT NULL DEFAULT FALSE,
+    created_at  TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+    UNIQUE(owner_id, section, name)
+);
+CREATE INDEX IF NOT EXISTS idx_resource_folders_owner
+    ON resource_folders(owner_id, section, name);
+CREATE TABLE IF NOT EXISTS resource_folder_items (
+    owner_id      TEXT NOT NULL,
+    resource_type TEXT NOT NULL,
+    resource_id   TEXT NOT NULL,
+    folder_id     TEXT,
+    PRIMARY KEY (owner_id, resource_type, resource_id)
+);
+CREATE INDEX IF NOT EXISTS idx_resource_folder_items_folder
+    ON resource_folder_items(folder_id, resource_type);
 CREATE TABLE IF NOT EXISTS token_daily (
     day      TEXT NOT NULL,
     owner_id TEXT NOT NULL,
@@ -522,6 +566,15 @@ async def _migrate_sqlite(conn: Any) -> None:
     if "owner_id" not in existing_cols:
         await conn.execute(
             "ALTER TABLE connections ADD COLUMN owner_id TEXT NOT NULL DEFAULT 'admin'"
+        )
+        await conn.commit()
+
+    # Workspace granular permissions (empty object keeps legacy allow-all semantics).
+    cur = await conn.execute("PRAGMA table_info(workspace_members)")
+    ws_member_cols = {row[1] for row in await cur.fetchall()}
+    if ws_member_cols and "permissions" not in ws_member_cols:
+        await conn.execute(
+            "ALTER TABLE workspace_members ADD COLUMN permissions TEXT NOT NULL DEFAULT '{}'"
         )
         await conn.commit()
 
@@ -1120,6 +1173,36 @@ async def _migrate_pg(conn: Any) -> None:
     """)
     await conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_ws_members_user ON workspace_members(username)"
+    )
+    await conn.execute(
+        "ALTER TABLE workspace_members ADD COLUMN IF NOT EXISTS permissions TEXT NOT NULL DEFAULT '{}'"
+    )
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS resource_folders (
+            id          TEXT PRIMARY KEY,
+            owner_id    TEXT NOT NULL,
+            section     TEXT NOT NULL,
+            name        TEXT NOT NULL,
+            is_public   BOOLEAN NOT NULL DEFAULT FALSE,
+            created_at  TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+            updated_at  TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
+            UNIQUE(owner_id, section, name)
+        )
+    """)
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_resource_folders_owner ON resource_folders(owner_id, section, name)"
+    )
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS resource_folder_items (
+            owner_id      TEXT NOT NULL,
+            resource_type TEXT NOT NULL,
+            resource_id   TEXT NOT NULL,
+            folder_id     TEXT,
+            PRIMARY KEY (owner_id, resource_type, resource_id)
+        )
+    """)
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_resource_folder_items_folder ON resource_folder_items(folder_id, resource_type)"
     )
     await conn.execute("""
         CREATE TABLE IF NOT EXISTS token_daily (

@@ -208,3 +208,91 @@ def test_upload_document_requires_auth(client):
         files={"file": ("nota.txt", b"contenido", "text/plain")},
     )
     assert r.status_code == 401
+
+
+def test_folder_crud_assignment_and_detach(alice):
+    created = alice.post(
+        "/api/knowledge/folders",
+        json={"section": "url", "name": "Fuentes"},
+    )
+    assert created.status_code == 200
+    folder = created.json()
+
+    with patch("app.api.routes.knowledge.fetch_url_text", return_value="contenido"):
+        item = alice.post(
+            "/api/knowledge/url",
+            json={"url": "https://example.com/folder", "title": "Fuente"},
+        ).json()
+
+    moved = alice.patch(
+        f"/api/knowledge/{item['id']}",
+        json={"folder_id": folder["id"]},
+    )
+    assert moved.status_code == 200
+    assert moved.json()["folder_id"] == folder["id"]
+
+    listed = alice.get("/api/knowledge/folders", params={"section": "url"})
+    assert listed.status_code == 200
+    assert [row["id"] for row in listed.json()] == [folder["id"]]
+
+    renamed = alice.patch(
+        f"/api/knowledge/folders/{folder['id']}",
+        json={"name": "Referencias"},
+    )
+    assert renamed.status_code == 200
+    assert renamed.json()["name"] == "Referencias"
+
+    visibility = alice.put(
+        f"/api/knowledge/folders/{folder['id']}/visibility",
+        json={"visibility": "private"},
+    )
+    assert visibility.status_code == 200
+    assert visibility.json()["visibility"] == "private"
+
+    deleted = alice.delete(
+        f"/api/knowledge/folders/{folder['id']}",
+        params={"cascade": False},
+    )
+    assert deleted.status_code == 200
+    refreshed = alice.get("/api/knowledge").json()
+    assert next(row for row in refreshed if row["id"] == item["id"])["folder_id"] is None
+
+
+def test_folders_are_isolated_by_owner(alice, client):
+    folder = alice.post(
+        "/api/knowledge/folders",
+        json={"section": "document", "name": "Privada"},
+    ).json()
+    _setup_user("folder_bob")
+    _auth_client(client, "folder_bob")
+
+    assert client.get(
+        "/api/knowledge/folders", params={"section": "document"}
+    ).json() == []
+    assert client.patch(
+        f"/api/knowledge/folders/{folder['id']}",
+        json={"name": "Intrusión"},
+    ).status_code == 404
+
+
+def test_folder_cascade_deletes_its_content(alice):
+    folder = alice.post(
+        "/api/knowledge/folders",
+        json={"section": "url", "name": "Temporal"},
+    ).json()
+    with patch("app.api.routes.knowledge.fetch_url_text", return_value="contenido"):
+        item = alice.post(
+            "/api/knowledge/url",
+            json={"url": "https://example.com/delete", "title": "Eliminar"},
+        ).json()
+    alice.patch(
+        f"/api/knowledge/{item['id']}",
+        json={"folder_id": folder["id"]},
+    )
+
+    deleted = alice.delete(
+        f"/api/knowledge/folders/{folder['id']}",
+        params={"cascade": True},
+    )
+    assert deleted.status_code == 200
+    assert all(row["id"] != item["id"] for row in alice.get("/api/knowledge").json())

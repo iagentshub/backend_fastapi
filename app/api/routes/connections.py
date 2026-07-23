@@ -338,6 +338,19 @@ async def list_connections(
 
     non_ollama = [c for c in raw if c.get("type") != "ollama"]
     ollama_raw = [c for c in raw if c.get("type") == "ollama"]
+    if workspace_id != user and not is_guest(user) and await get_user_role(user) != "admin":
+        non_ollama = [
+            connection for connection in non_ollama
+            if await _ws.has_resource_permission(
+                workspace_id, user, "connections", connection["id"], "direct"
+            )
+        ]
+        ollama_raw = [
+            connection for connection in ollama_raw
+            if await _ws.has_resource_permission(
+                workspace_id, user, "connections", connection["id"], "direct"
+            )
+        ]
 
     result: List[Dict[str, Any]] = [
         {k: v for k, v in c.items() if k != "api_key"} for c in non_ollama
@@ -444,6 +457,15 @@ async def get_connection(
             conn = await _get_conn_any(conn_id, user, workspace_id)
     if not conn:
         raise HTTPException(status_code=404, detail="Conexión no encontrada")
+    if (
+        workspace_id != user
+        and not is_guest(user)
+        and await get_user_role(user) != "admin"
+        and not await _ws.has_resource_permission(
+            workspace_id, user, "connections", conn_id, "direct"
+        )
+    ):
+        raise HTTPException(status_code=403, detail="Sin permiso para usar esta conexión")
     return {k: v for k, v in conn.items() if k != "api_key"}
 
 
