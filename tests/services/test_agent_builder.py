@@ -9,7 +9,6 @@ from app.services.agent_builder import (
     build_fallback_ready,
     build_system_prompt,
     can_build_without_model,
-    guided_recovery_question,
     parse_builder_reply,
     should_force_ready,
 )
@@ -79,7 +78,7 @@ def test_system_prompt_contains_only_supplied_catalogue():
 def test_force_ready_prompt_forbids_more_questions():
     prompt = build_system_prompt(BuilderResources(), force_ready=True)
 
-    assert "PROHIBIDO hacer otra pregunta" in prompt
+    assert "No converses, no hagas preguntas" in prompt
     assert 'status="ready"' in prompt
 
 
@@ -112,22 +111,32 @@ def test_complete_expert_specification_does_not_need_model():
     assert can_build_without_model(messages, "guided") is False
 
 
+def test_clear_guided_request_forces_ready_model_response():
+    messages = [
+        BuilderMessage(
+            role="user",
+            content="Crea un agente especializado en ciberseguridad",
+        )
+    ]
+
+    assert should_force_ready(messages, "guided") is True
+    assert can_build_without_model(messages, "guided") is False
+
+
 def test_guided_mode_allows_two_short_clarifications():
-    one_turn = [BuilderMessage(role="user", content="Quiero ayudar a mis clientes")]
+    vague_turn = [BuilderMessage(role="user", content="Ayúdame")]
+    actionable_turn = [
+        BuilderMessage(role="user", content="Quiero ayudar a mis clientes")
+    ]
     two_turns = [
-        *one_turn,
+        *vague_turn,
         BuilderMessage(role="assistant", content="¿Qué resultado necesitan?"),
         BuilderMessage(role="user", content="Respuestas claras a sus dudas"),
     ]
-    three_turns = [
-        *two_turns,
-        BuilderMessage(role="assistant", content="¿Qué debe evitar?"),
-        BuilderMessage(role="user", content="No debe inventar información"),
-    ]
 
-    assert should_force_ready(one_turn, "guided") is False
-    assert should_force_ready(two_turns, "guided") is False
-    assert should_force_ready(three_turns, "guided") is True
+    assert should_force_ready(vague_turn, "guided") is False
+    assert should_force_ready(actionable_turn, "guided") is True
+    assert should_force_ready(two_turns, "guided") is True
 
 
 def test_guided_prompt_uses_plain_language_and_avoids_technical_questions():
@@ -172,27 +181,3 @@ def test_guided_fallback_turns_answers_into_actionable_prompt():
     assert "Quiero responder dudas de clientes" in envelope.draft.system_prompt
     assert "No inventar datos" in envelope.draft.system_prompt
     assert "No inventes datos" in envelope.draft.system_prompt
-
-
-def test_guided_recovery_question_is_short_and_concrete():
-    envelope = guided_recovery_question(
-        [BuilderMessage(role="user", content="Quiero un asistente")]
-    )
-
-    assert envelope.status == "collecting"
-    assert envelope.draft is None
-    assert "¿Quién usará" in envelope.assistant_message
-
-
-def test_guided_question_uses_the_goal_already_provided():
-    envelope = guided_recovery_question(
-        [
-            BuilderMessage(
-                role="user",
-                content="Quiero un agente que ayude a mis clientes a elegir el producto adecuado",
-            )
-        ]
-    )
-
-    assert "¿Qué debería preguntar" in envelope.assistant_message
-    assert envelope.assistant_message.count("?") == 1

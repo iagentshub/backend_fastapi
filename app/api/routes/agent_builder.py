@@ -12,6 +12,7 @@ from pydantic import BaseModel, Field
 from app.api.routes.auth import WorkspaceContext, require_workspace
 from app.auth.auth import get_user_role
 from app.config.data import DB_FILE
+from app.config.providers import PROVIDER_DEFAULT_MODELS
 from app.errors import APIError
 from app.models.agent import Agent
 from app.services.agent_builder import (
@@ -21,7 +22,6 @@ from app.services.agent_builder import (
     build_fallback_ready,
     build_system_prompt,
     can_build_without_model,
-    guided_recovery_question,
     parse_builder_reply,
     should_force_ready,
 )
@@ -110,10 +110,17 @@ async def builder_chat(
             media_type="text/event-stream",
         )
 
+    builder_conn = conn
+    if str(conn.get("type") or "").lower() == "nvidia":
+        builder_conn = {
+            **conn,
+            "model": PROVIDER_DEFAULT_MODELS["nvidia"],
+        }
+
     builder_agent = Agent(
         id="_agent_builder",
         name="Constructor de agentes",
-        model=str(conn.get("model") or ""),
+        model=str(builder_conn.get("model") or ""),
         system_prompt=build_system_prompt(
             body.resources,
             force_ready=force_ready,
@@ -122,60 +129,120 @@ async def builder_chat(
         temperature=0.2,
         # Un borrador completo cabe holgadamente aquí. Evita que un modelo
         # pequeño divague durante miles de tokens antes de cerrar el JSON.
-        max_tokens=1_200,
+        max_tokens=450,
         # La conexión del asistente debe usar un modelo rápido. Tres minutos
         # cubren colas/cold starts de NIM sin dejar la interfaz bloqueada.
-        timeout=180,
+        timeout=90,
     )
     history = [message.model_dump() for message in body.messages]
 
     async def generate():
-        reply = ""
-        async for chunk in stream_chat(builder_agent, conn, history, None):
-            if chunk.startswith(":"):
-                yield chunk
-                continue
-            if not chunk.startswith("data: "):
-                continue
-            try:
-                event = json.loads(chunk[6:].strip())
-            except json.JSONDecodeError:
-                continue
-            if event.get("type") == "token":
-                # Keep the browser request active without exposing partial JSON.
-                yield _sse({"type": "progress"})
-            elif event.get("type") == "error":
-                yield _sse(event)
-                return
-            elif event.get("type") == "done":
-                reply = str(event.get("reply") or "")
-        if not reply:
-            yield _sse({"type": "error", "message": "El proveedor no devolvió respuesta"})
-            return
-        try:
-            envelope = parse_builder_reply(reply, body.resources)
-        except ValueError as exc:
-            if force_ready:
-                envelope = build_fallback_ready(
-                    body.messages, body.resources, body.mode
+        attempt_history = history
+        last_issue = "El proveedor no devolvió respuesta"
+        for attempt in range(2):
+            reply = ""
+            partial_reply = ""
+            provider_error = ""
+            async for chunk in stream_chat(
+                builder_agent, builder_conn, attempt_history, None
+            ):
+                if chunk.startswith(":"):
+                    yield chunk
+                    continue
+                if not chunk.startswith("data: "):
+                    continue
+                try:
+                    event = json.loads(chunk[6:].strip())
+                except json.JSONDecodeError:
+                    continue
+                if event.get("type") == "token":
+                    partial_reply += str(event.get("token") or "")
+                    yield _sse({"type": "progress"})
+                elif event.get("type") == "error":
+                    provider_error = str(event.get("message") or "")
+                    break
+                elif event.get("type") == "done":
+                    reply = str(event.get("reply") or "")
+
+            if provider_error:
+                last_issue = provider_error
+                if partial_reply:
+                    try:
+                        envelope = parse_builder_reply(
+                            partial_reply, body.resources
+                        )
+                    except ValueError:
+                        pass
+                    else:
+                        if not force_ready or envelope.status == "ready":
+                            yield _sse(
+                                {
+                                    "type": "builder_done",
+                                    **envelope.model_dump(mode="json"),
+                                }
+                            )
+                            return
+                is_timeout = (
+                    "timed out" in provider_error.lower()
+                    or "timeout" in provider_error.lower()
                 )
-            elif body.mode == "guided":
-                envelope = guided_recovery_question(body.messages)
-            else:
-                yield _sse({"type": "error", "message": str(exc)})
+                if attempt == 0 and is_timeout:
+                    yield _sse({"type": "progress"})
+                    continue
+                message = (
+                    "El modelo seleccionado tardó demasiado en responder incluso "
+                    "después de reintentarlo. Elige un modelo rápido para el "
+                    "asistente, como Llama 3B u 8B."
+                    if is_timeout
+                    else provider_error
+                )
+                yield _sse({"type": "error", "message": message})
                 return
-        if body.mode == "guided" and envelope.status == "collecting":
-            # Los modelos pequeños tienden a agrupar varias preguntas. La ruta
-            # guiada garantiza una sola pregunta breve y predecible por turno.
-            envelope = guided_recovery_question(body.messages)
-        if force_ready and envelope.status != "ready":
-            envelope = build_fallback_ready(
-                body.messages, body.resources, body.mode
-            )
+
+            if reply:
+                try:
+                    envelope = parse_builder_reply(reply, body.resources)
+                except ValueError as exc:
+                    last_issue = str(exc)
+                else:
+                    if not force_ready or envelope.status == "ready":
+                        yield _sse(
+                            {
+                                "type": "builder_done",
+                                **envelope.model_dump(mode="json"),
+                            }
+                        )
+                        return
+                    last_issue = (
+                        "El modelo hizo otra pregunta cuando ya debía crear el borrador"
+                    )
+
+            if attempt == 0:
+                attempt_history = [
+                    *history,
+                    *(
+                        [{"role": "assistant", "content": reply}]
+                        if reply
+                        else []
+                    ),
+                    {
+                        "role": "user",
+                        "content": (
+                            "Corrige tu respuesta anterior. No hagas más preguntas. "
+                            "Diseña el agente solicitado y devuelve únicamente el "
+                            "objeto JSON completo con status=\"ready\" y draft."
+                        ),
+                    },
+                ]
+                yield _sse({"type": "progress"})
+
         yield _sse(
             {
-                "type": "builder_done",
-                **envelope.model_dump(mode="json"),
+                "type": "error",
+                "message": (
+                    "El modelo no pudo producir un borrador válido. "
+                    f"Detalle: {last_issue}"
+                ),
             }
         )
 

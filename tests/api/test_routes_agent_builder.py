@@ -51,6 +51,7 @@ def test_builder_returns_validated_draft(admin_client, monkeypatch):
     async def fake_stream_chat(agent, *args, **kwargs):
         captured["timeout"] = agent.timeout
         captured["system_prompt"] = agent.system_prompt
+        captured["connection_model"] = args[0]["model"]
         reply = json.dumps(
             {
                 "assistant_message": "He preparado el borrador.",
@@ -98,7 +99,8 @@ def test_builder_returns_validated_draft(admin_client, monkeypatch):
     done = next(event for event in events if event["type"] == "builder_done")
     assert done["status"] == "ready"
     assert done["draft"]["name"] == "Agente de pruebas"
-    assert captured["timeout"] == 180
+    assert captured["timeout"] == 90
+    assert captured["connection_model"] == "meta/llama-3.1-8b-instruct"
 
 
 def test_expert_mode_never_returns_another_question(admin_client, monkeypatch):
@@ -155,8 +157,33 @@ def test_guided_mode_recovers_from_invalid_model_json(admin_client, monkeypatch)
         },
     ).json()
 
+    calls = 0
+
     async def fake_stream_chat(*args, **kwargs):
-        yield 'data: {"type":"done","reply":"respuesta sin JSON"}\n\n'
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            yield 'data: {"type":"done","reply":"respuesta sin JSON"}\n\n'
+            return
+        reply = json.dumps(
+            {
+                "assistant_message": "He creado el agente.",
+                "status": "ready",
+                "draft": {
+                    "name": "Especialista en soporte",
+                    "description": "Ayuda a clientes",
+                    "system_prompt": (
+                        "Eres especialista en soporte. Responde con precisión, "
+                        "empatía y sin inventar información."
+                    ),
+                    "temperature": 0.3,
+                    "skills": [],
+                    "knowledge": [],
+                    "use_memory": False,
+                },
+            }
+        )
+        yield f"data: {json.dumps({'type': 'done', 'reply': reply})}\n\n"
 
     monkeypatch.setattr("app.api.routes.agent_builder.stream_chat", fake_stream_chat)
 
@@ -174,8 +201,8 @@ def test_guided_mode_recovers_from_invalid_model_json(admin_client, monkeypatch)
     done = next(
         event for event in _events(response.text) if event["type"] == "builder_done"
     )
-    assert done["status"] == "collecting"
-    assert "¿Quién usará" in done["assistant_message"]
+    assert done["status"] == "ready"
+    assert calls == 2
 
 
 def test_complete_expert_specification_skips_provider(admin_client, monkeypatch):
@@ -216,3 +243,128 @@ def test_complete_expert_specification_skips_provider(admin_client, monkeypatch)
     assert done["status"] == "ready"
     assert done["draft"]["name"] == "Especialista Python y FastAPI"
     assert done["draft"]["system_prompt"] == specification.strip()
+
+
+def test_clear_guided_request_uses_provider(admin_client, monkeypatch):
+    connection = admin_client.post(
+        "/api/connections",
+        json={
+            "name": "NIM guided fast path",
+            "type": "nvidia",
+            "api_key": "nvapi-test",
+            "model": "meta/llama-3.2-3b-instruct",
+        },
+    ).json()
+
+    calls = 0
+
+    async def fake_stream_chat(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        reply = json.dumps(
+            {
+                "assistant_message": "Agente diseñado por el modelo.",
+                "status": "ready",
+                "draft": {
+                    "name": "Especialista Java",
+                    "description": "Programa Java con buenas prácticas",
+                    "system_prompt": (
+                        "Eres un especialista senior en Java. Aplica buenas prácticas, "
+                        "seguridad, diseño mantenible y pruebas automatizadas."
+                    ),
+                    "temperature": 0.2,
+                    "skills": [],
+                    "knowledge": [],
+                    "use_memory": False,
+                },
+            }
+        )
+        yield f"data: {json.dumps({'type': 'done', 'reply': reply})}\n\n"
+
+    monkeypatch.setattr(
+        "app.api.routes.agent_builder.stream_chat", fake_stream_chat
+    )
+
+    response = admin_client.post(
+        "/api/agent-builder/chat",
+        json={
+            "connection_id": connection["id"],
+            "mode": "guided",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": (
+                        "Créame un agente que sepa programar en Java "
+                        "con buenas prácticas"
+                    ),
+                }
+            ],
+        },
+    )
+
+    done = next(
+        event for event in _events(response.text) if event["type"] == "builder_done"
+    )
+    assert done["status"] == "ready"
+    assert done["draft"]["name"] == "Especialista Java"
+    assert calls == 1
+
+
+def test_builder_recovers_complete_json_before_provider_timeout(
+    admin_client, monkeypatch
+):
+    connection = admin_client.post(
+        "/api/connections",
+        json={
+            "name": "NIM partial response",
+            "type": "nvidia",
+            "api_key": "nvapi-test",
+            "model": "meta/llama-3.2-3b-instruct",
+        },
+    ).json()
+    reply = json.dumps(
+        {
+            "assistant_message": "Borrador listo.",
+            "status": "ready",
+            "draft": {
+                "name": "Especialista en ciberseguridad",
+                "description": "Analiza riesgos y recomienda controles",
+                "system_prompt": (
+                    "Eres especialista en ciberseguridad. Analiza riesgos, "
+                    "protege datos y no facilites acciones maliciosas."
+                ),
+                "temperature": 0.2,
+                "skills": [],
+                "knowledge": [],
+                "use_memory": False,
+            },
+        }
+    )
+
+    async def timeout_after_reply(*args, **kwargs):
+        yield f"data: {json.dumps({'type': 'token', 'token': reply})}\n\n"
+        yield 'data: {"type":"error","message":"The read operation timed out"}\n\n'
+
+    monkeypatch.setattr(
+        "app.api.routes.agent_builder.stream_chat", timeout_after_reply
+    )
+
+    response = admin_client.post(
+        "/api/agent-builder/chat",
+        json={
+            "connection_id": connection["id"],
+            "mode": "guided",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Crea un agente especializado en ciberseguridad",
+                }
+            ],
+        },
+    )
+
+    done = next(
+        event for event in _events(response.text) if event["type"] == "builder_done"
+    )
+    assert done["status"] == "ready"
+    assert done["draft"]["name"] == "Especialista en ciberseguridad"
