@@ -14,6 +14,7 @@ from app.errors import APIError
 
 from app.storage.guest import get_session, is_guest
 from app.storage.folders import FolderStorage
+from app.storage.resource_versions import ResourceVersionStorage
 from app.storage.storage import SkillStorage
 from app.storage.workspace_shares import WorkspaceShareStorage
 from app.storage.workspaces import WorkspaceStorage
@@ -24,6 +25,7 @@ _storage = SkillStorage(SKILLS_DIR)
 _shares = WorkspaceShareStorage(DB_FILE)
 _ws = WorkspaceStorage(DB_FILE)
 _folders = FolderStorage()
+_versions = ResourceVersionStorage()
 
 _VALID_SCOPES = {"public", "private", "all"}
 
@@ -183,6 +185,9 @@ async def save_skill(
             except ValueError as exc:
                 raise APIError(422, "incompatible_folder", str(exc)) from exc
         saved["folder_id"] = await _folders.folder_for(workspace_id, "skill", saved["id"])
+        await _versions.create(
+            "skill", saved["id"], workspace_id, saved, user, reason="save"
+        )
         return saved
     except ValueError as e:
         raise APIError(422, "invalid_skill_data", str(e))

@@ -205,6 +205,52 @@ def test_guided_mode_recovers_from_invalid_model_json(admin_client, monkeypatch)
     assert calls == 2
 
 
+def test_guided_mode_falls_back_after_two_invalid_model_replies(
+    admin_client, monkeypatch
+):
+    connection = admin_client.post(
+        "/api/connections",
+        json={
+            "name": "NIM invalid output",
+            "type": "nvidia",
+            "api_key": "nvapi-test",
+            "model": "meta/llama-3.2-3b-instruct",
+        },
+    ).json()
+
+    calls = 0
+
+    async def fake_stream_chat(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        yield 'data: {"type":"done","reply":"respuesta sin JSON"}\n\n'
+
+    monkeypatch.setattr("app.api.routes.agent_builder.stream_chat", fake_stream_chat)
+
+    response = admin_client.post(
+        "/api/agent-builder/chat",
+        json={
+            "connection_id": connection["id"],
+            "mode": "guided",
+            "messages": [
+                {
+                    "role": "user",
+                    "content": (
+                        "Créame un agente que programe en Java con buenas prácticas"
+                    ),
+                }
+            ],
+        },
+    )
+
+    events = _events(response.text)
+    done = next(event for event in events if event["type"] == "builder_done")
+    assert done["status"] == "ready"
+    assert "Java" in done["draft"]["system_prompt"]
+    assert not any(event["type"] == "error" for event in events)
+    assert calls == 2
+
+
 def test_complete_expert_specification_skips_provider(admin_client, monkeypatch):
     connection = admin_client.post(
         "/api/connections",

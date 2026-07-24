@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends
@@ -31,6 +32,7 @@ from app.storage.storage import ConnectionStorage
 from app.storage.workspaces import WorkspaceStorage
 
 router = APIRouter(prefix="/api/agent-builder", tags=["agent-builder"])
+logger = logging.getLogger(__name__)
 _conns = ConnectionStorage(DB_FILE)
 _workspaces = WorkspaceStorage(DB_FILE)
 
@@ -129,7 +131,7 @@ async def builder_chat(
         temperature=0.2,
         # Un borrador completo cabe holgadamente aquí. Evita que un modelo
         # pequeño divague durante miles de tokens antes de cerrar el JSON.
-        max_tokens=450,
+        max_tokens=700,
         # La conexión del asistente debe usar un modelo rápido. Tres minutos
         # cubren colas/cold starts de NIM sin dejar la interfaz bloqueada.
         timeout=90,
@@ -164,46 +166,18 @@ async def builder_chat(
                 elif event.get("type") == "done":
                     reply = str(event.get("reply") or "")
 
-            if provider_error:
-                last_issue = provider_error
-                if partial_reply:
-                    try:
-                        envelope = parse_builder_reply(
-                            partial_reply, body.resources
-                        )
-                    except ValueError:
-                        pass
-                    else:
-                        if not force_ready or envelope.status == "ready":
-                            yield _sse(
-                                {
-                                    "type": "builder_done",
-                                    **envelope.model_dump(mode="json"),
-                                }
-                            )
-                            return
-                is_timeout = (
-                    "timed out" in provider_error.lower()
-                    or "timeout" in provider_error.lower()
-                )
-                if attempt == 0 and is_timeout:
-                    yield _sse({"type": "progress"})
-                    continue
-                message = (
-                    "El modelo seleccionado tardó demasiado en responder incluso "
-                    "después de reintentarlo. Elige un modelo rápido para el "
-                    "asistente, como Llama 3B u 8B."
-                    if is_timeout
-                    else provider_error
-                )
-                yield _sse({"type": "error", "message": message})
-                return
-
-            if reply:
+            candidate = reply or partial_reply
+            if candidate:
                 try:
-                    envelope = parse_builder_reply(reply, body.resources)
+                    envelope = parse_builder_reply(candidate, body.resources)
                 except ValueError as exc:
                     last_issue = str(exc)
+                    logger.warning(
+                        "Agent builder returned invalid structured output "
+                        "(%s chars): %s",
+                        len(candidate),
+                        exc,
+                    )
                 else:
                     if not force_ready or envelope.status == "ready":
                         yield _sse(
@@ -216,6 +190,36 @@ async def builder_chat(
                     last_issue = (
                         "El modelo hizo otra pregunta cuando ya debía crear el borrador"
                     )
+
+            if provider_error:
+                last_issue = provider_error
+                is_timeout = (
+                    "timed out" in provider_error.lower()
+                    or "timeout" in provider_error.lower()
+                )
+                if attempt == 0 and is_timeout:
+                    yield _sse({"type": "progress"})
+                    continue
+                if force_ready:
+                    fallback = build_fallback_ready(
+                        body.messages, body.resources, body.mode
+                    )
+                    yield _sse(
+                        {
+                            "type": "builder_done",
+                            **fallback.model_dump(mode="json"),
+                        }
+                    )
+                    return
+                message = (
+                    "El modelo seleccionado tardó demasiado en responder incluso "
+                    "después de reintentarlo. Elige un modelo rápido para el "
+                    "asistente, como Llama 3B u 8B."
+                    if is_timeout
+                    else provider_error
+                )
+                yield _sse({"type": "error", "message": message})
+                return
 
             if attempt == 0:
                 attempt_history = [
@@ -236,6 +240,17 @@ async def builder_chat(
                 ]
                 yield _sse({"type": "progress"})
 
+        if force_ready:
+            fallback = build_fallback_ready(
+                body.messages, body.resources, body.mode
+            )
+            yield _sse(
+                {
+                    "type": "builder_done",
+                    **fallback.model_dump(mode="json"),
+                }
+            )
+            return
         yield _sse(
             {
                 "type": "error",

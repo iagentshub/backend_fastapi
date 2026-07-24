@@ -131,7 +131,7 @@ Devuelve ÚNICAMENTE un objeto JSON válido con esta forma exacta:
   }}
 }}
 
-status debe ser siempre "ready" y draft nunca puede ser null."""
+status="ready" es obligatorio y draft nunca puede ser null."""
 
     if mode == "guided":
         interview_rule = """

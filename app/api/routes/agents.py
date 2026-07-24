@@ -34,6 +34,7 @@ from app.storage.guest import (
     is_guest,
 )
 from app.storage.knowledge import KnowledgeStorage
+from app.storage.resource_versions import ResourceVersionStorage
 from app.storage.folders import FolderStorage
 from app.storage.storage import (
     AgentStorage,
@@ -55,6 +56,7 @@ _ws = WorkspaceStorage(DB_FILE)
 _chat = ChatStorage(DB_FILE)
 _knowledge = KnowledgeStorage(DB_FILE)
 _folders = FolderStorage()
+_versions = ResourceVersionStorage()
 _chat_limiter = RateLimiter(calls=RATE_CHAT_CALLS, window=RATE_CHAT_WINDOW)
 
 
@@ -316,6 +318,9 @@ async def save_agent(
             except ValueError as exc:
                 raise APIError(422, "folder_resource_mismatch", str(exc)) from exc
         saved["folder_id"] = await _folders.folder_for(workspace_id, "agents", saved["id"])
+        await _versions.create(
+            "agent", saved["id"], workspace_id, saved, user, reason="save"
+        )
         return saved
     except ValueError as e:
         raise APIError(422, "agent_invalid_payload", str(e))

@@ -277,6 +277,32 @@ CREATE TABLE IF NOT EXISTS vscode_auth_codes (
     state      TEXT NOT NULL,
     expires_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS resource_versions (
+    id            TEXT PRIMARY KEY,
+    resource_type TEXT NOT NULL,
+    resource_id   TEXT NOT NULL,
+    owner_id      TEXT NOT NULL,
+    version       INTEGER NOT NULL,
+    snapshot      TEXT NOT NULL,
+    created_by    TEXT NOT NULL,
+    reason        TEXT NOT NULL DEFAULT 'save',
+    created_at    TEXT NOT NULL,
+    UNIQUE(resource_type, resource_id, owner_id, version)
+);
+CREATE INDEX IF NOT EXISTS idx_resource_versions_lookup
+    ON resource_versions(resource_type, resource_id, owner_id, version DESC);
+CREATE TABLE IF NOT EXISTS agent_workflows (
+    id          TEXT NOT NULL,
+    owner_id    TEXT NOT NULL,
+    name        TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    definition  TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    PRIMARY KEY(id, owner_id)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_workflows_owner
+    ON agent_workflows(owner_id, updated_at DESC);
 """
 
 _SCHEMA_PG = """
@@ -527,6 +553,32 @@ CREATE TABLE IF NOT EXISTS vscode_auth_codes (
     state      TEXT NOT NULL,
     expires_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS resource_versions (
+    id            TEXT PRIMARY KEY,
+    resource_type TEXT NOT NULL,
+    resource_id   TEXT NOT NULL,
+    owner_id      TEXT NOT NULL,
+    version       INTEGER NOT NULL,
+    snapshot      TEXT NOT NULL,
+    created_by    TEXT NOT NULL,
+    reason        TEXT NOT NULL DEFAULT 'save',
+    created_at    TEXT NOT NULL,
+    UNIQUE(resource_type, resource_id, owner_id, version)
+);
+CREATE INDEX IF NOT EXISTS idx_resource_versions_lookup
+    ON resource_versions(resource_type, resource_id, owner_id, version DESC);
+CREATE TABLE IF NOT EXISTS agent_workflows (
+    id          TEXT NOT NULL,
+    owner_id    TEXT NOT NULL,
+    name        TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    definition  TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    PRIMARY KEY(id, owner_id)
+);
+CREATE INDEX IF NOT EXISTS idx_agent_workflows_owner
+    ON agent_workflows(owner_id, updated_at DESC);
 """
 
 # ── SQLite migrations (async) ──────────────────────────────────────────────────
