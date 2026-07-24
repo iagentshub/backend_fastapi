@@ -37,6 +37,7 @@ from app.api.routes import (
     billing,
     centinel,
     agent_builder,
+    skill_builder,
 )
 from app.api.routes.auth import admin_router, users_router
 from app.api.routes.social import router as social_router
@@ -217,6 +218,7 @@ def create_app() -> FastAPI:
     app.include_router(billing.router)
     app.include_router(centinel.router)
     app.include_router(agent_builder.router)
+    app.include_router(skill_builder.router)
     app.include_router(social_router)
 
     @app.get("/api/health", tags=["health"])
