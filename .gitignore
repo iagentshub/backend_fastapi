@@ -17,7 +17,7 @@ env/
 .env
 .envrc
 
-# Datos — gestionados desde iagentshub
+# Datos — gestionados desde iAgents/data (ver app/config/data.py)
 data/
 
 # -- Otros

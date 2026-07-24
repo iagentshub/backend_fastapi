@@ -4,9 +4,23 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 import shutil
 import tempfile
 from pathlib import Path
+
+# Red de seguridad: algunos módulos de test importan app.auth.auth / app.config.data
+# a nivel de módulo (ej. "from app.auth.auth import create_token"), lo que dispara la
+# primera importación de app.config.data durante la FASE DE COLECCIÓN de pytest —
+# antes de que corra ningún fixture. Si GAIA_DATA_DIR no está ya fijado en ese momento,
+# DATA_DIR (y cualquier nombre importado por valor, ej. auth.py:DATA_DIR) queda
+# "congelado" apuntando al path por defecto real (hermano del repo, o el que indique
+# GAIA_DATA_DIR en el entorno/.env del desarrollador), y ningún monkeypatch posterior
+# lo corrige. Se sobrescribe SIEMPRE (no setdefault): los tests nunca deben depender
+# del entorno ambiente del desarrollador, ni siquiera si algún día se configura
+# GAIA_DATA_DIR ahí para conveniencia del servidor de desarrollo.
+os.environ["GAIA_DATA_DIR"] = tempfile.mkdtemp(prefix="gaia_test_collection_")
+os.environ["DATABASE_URL"] = ""
 
 import pytest
 from fastapi.testclient import TestClient
@@ -75,6 +89,11 @@ def patch_data_dir(tmp_data_dir, tmp_path, monkeypatch):
     # Patch auth module paths
     import app.auth.auth as auth_mod
 
+    # auth.py importa DATA_DIR por valor ("from app.config.data import ... DATA_DIR ..."),
+    # así que parchear solo cfg.DATA_DIR no basta — auth_mod.DATA_DIR es el binding real
+    # que usa _pass_file = DATA_DIR / ".admin_pass" (sin esto, .admin_pass se escribía
+    # en el path real por defecto en cada test, ver conftest.py:12-21).
+    monkeypatch.setattr(auth_mod, "DATA_DIR", tmp_data_dir)
     monkeypatch.setattr(auth_mod, "SETTINGS_FILE", tmp_data_dir / "settings.json")
 
     # Patch MemoryStorage live instances

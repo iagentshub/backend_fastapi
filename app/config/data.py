@@ -6,9 +6,13 @@ from pathlib import Path
 
 BASE_DIR = Path(__file__).parents[2]
 
-# En Docker: GAIA_DATA_DIR=/data (montado desde iagentshub/data).
-# En local sin variable: sube al directorio padre para apuntar a iagentshub/data.
-_default_data = BASE_DIR.parent / "iagentshub" / "data"
+# En Docker: GAIA_DATA_DIR=/data (montado desde el host).
+# En local sin variable: sube al directorio padre para reutilizar iAgents/data —
+# el repo que centraliza los despliegues del proyecto — en vez de crear una carpeta
+# de datos nueva y separada. Los tests SIEMPRE sobrescriben GAIA_DATA_DIR con un
+# directorio temporal aislado (ver tests/conftest.py), así que esto nunca afecta
+# a los tests, solo al servidor de desarrollo arrancado a mano.
+_default_data = BASE_DIR.parent / "iAgents" / "data"
 DATA_DIR      = Path(os.getenv("GAIA_DATA_DIR", str(_default_data)))
 DB_FILE       = DATA_DIR / "hub.db"
 AGENTS_DIR    = DATA_DIR / "agents"
