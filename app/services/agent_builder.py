@@ -57,7 +57,11 @@ def should_force_ready(
     if mode == "expert":
         return True
     if mode == "guided":
-        return detailed or len(user_messages) >= 3
+        actionable = any(
+            len(re.findall(r"\w+", message, flags=re.UNICODE)) >= 4
+            for message in user_messages
+        )
+        return detailed or actionable or len(user_messages) >= 2
     return detailed or len(user_messages) >= 2
 
 
@@ -85,16 +89,65 @@ def build_system_prompt(
             return "(ninguno disponible)"
         return "\n".join(f"- {item.name} [id: {item.id}]" for item in values)
 
+    if force_ready:
+        return f"""Eres un generador de agentes de iAgentsHub.
+
+La petición del usuario ya es suficiente. Tu única tarea es diseñar AHORA un
+agente completo y específico para la especialidad u objetivo solicitado.
+
+REGLAS OBLIGATORIAS:
+- No converses, no hagas preguntas y no pidas más contexto.
+- Usa tu conocimiento del dominio para inferir capacidades, buenas prácticas,
+  proceso de trabajo, seguridad, límites y formato de respuesta.
+- El system_prompt debe ser operativo y detallado, no una descripción comercial.
+- Incluye qué debe hacer el agente, cómo debe trabajar, qué debe comprobar, qué
+  no debe hacer y cómo debe presentar sus resultados.
+- No inventes requisitos del usuario, pero sí completa prácticas profesionales
+  razonables y editables propias de la especialidad.
+- Escribe todo en el idioma del usuario.
+
+Skills disponibles:
+{catalogue(resources.skills)}
+
+Conocimiento disponible:
+{catalogue(resources.knowledge)}
+
+Solo puedes usar IDs presentes en esos catálogos. Si no hay un recurso claramente
+relevante, deja su lista vacía.
+
+Devuelve ÚNICAMENTE un objeto JSON válido con esta forma exacta:
+{{
+  "assistant_message": "He preparado el borrador para que puedas revisarlo.",
+  "status": "ready",
+  "draft": {{
+    "name": "nombre específico y breve",
+    "description": "qué consigue el agente",
+    "system_prompt": "instrucciones profesionales completas",
+    "model": "",
+    "temperature": 0.4,
+    "skills": [],
+    "knowledge": [],
+    "use_memory": false
+  }}
+}}
+
+status debe ser siempre "ready" y draft nunca puede ser null."""
+
     if mode == "guided":
         interview_rule = """
 MODO GUIADO PARA PERSONAS NO TÉCNICAS:
 - Habla con palabras cotidianas, frases cortas y tono cercano.
 - Haz UNA sola pregunta cada vez y que pueda responderse en una frase.
 - No preguntes por modelos, prompts, APIs, herramientas ni arquitectura.
-- Como máximo puedes hacer DOS preguntas en toda la conversación.
-- Pregunta primero qué resultado quiere conseguir y para quién.
-- Si todavía hace falta, pregunta qué información recibirá, qué debe entregar
-  o qué comportamiento debe evitar. Ofrece 2 o 3 ejemplos breves.
+- Una petición que identifica una especialidad, profesión, tema u objetivo ya
+  es suficiente para crear el agente.
+- En ese caso, infiere las capacidades, buenas prácticas, límites, proceso de
+  trabajo y formato de respuesta propios de esa especialidad.
+- No preguntes por proyecto, público, presupuesto, preferencias ni datos de
+  pedido salvo que sean imprescindibles para el objetivo concreto.
+- Solo usa status=collecting si el mensaje no permite saber qué debe hacer el
+  agente. Como máximo haz UNA pregunta en toda la conversación.
+- Nunca uses ejemplos de compras, pedidos o ventas para un agente de otra área.
 - Completa los detalles técnicos con decisiones sensatas y editables."""
     elif mode == "expert":
         interview_rule = """
@@ -110,16 +163,6 @@ MODO AUTOMÁTICO:
 - Una especificación detallada debe generar un borrador directamente.
 - Para una petición breve puedes hacer como máximo UNA pregunta corta."""
 
-    readiness_rule = (
-        """
-DECISIÓN OBLIGATORIA PARA ESTE TURNO:
-La información ya es suficiente. Está PROHIBIDO hacer otra pregunta.
-Devuelve status="ready" y construye ahora el mejor borrador posible usando
-lo aportado por el usuario. No pidas proyecto, caso de uso ni más contexto."""
-        if force_ready
-        else ""
-    )
-
     return f"""Eres el Constructor de Agentes de iAgentsHub.
 
 Tu trabajo es conversar brevemente con el usuario y preparar un agente útil,
@@ -128,7 +171,6 @@ resultado. Debes conocer como mínimo el objetivo, las tareas principales y los
 límites. Si el primer mensaje ya contiene suficiente información, puedes crear
 el borrador sin hacer preguntas innecesarias.
 {interview_rule}
-{readiness_rule}
 
 Un buen system_prompt debe incluir: identidad y objetivo, flujo de trabajo,
 preguntas que debe hacer cuando falte contexto, reglas y límites, y formato de
@@ -216,7 +258,9 @@ def build_fallback_ready(
     ]
     combined = "\n\n".join(answers)
     longest = max(answers, key=len, default="")
-    if mode == "expert" or len(longest) >= 500:
+    if mode == "expert" and len(longest) >= 20:
+        system_prompt = longest
+    elif len(longest) >= 500:
         system_prompt = longest
     else:
         system_prompt = (
@@ -247,36 +291,6 @@ def build_fallback_ready(
             knowledge=[],
             use_memory=False,
         ),
-    )
-
-
-def guided_recovery_question(messages: List[BuilderMessage]) -> BuilderEnvelope:
-    """Return one predictable, plain-language question for guided creation."""
-    answers = [
-        message.content.strip()
-        for message in messages
-        if message.role == "user" and message.content.strip()
-    ]
-    user_turns = len(answers)
-    if user_turns <= 1 and (not answers or len(answers[0]) < 45):
-        question = (
-            "¿Quién usará el agente y qué resultado quieres que entregue? "
-            "Por ejemplo: clientes reciben respuestas, o yo recibo un informe."
-        )
-    elif user_turns <= 1:
-        question = (
-            "¿Qué debería preguntar el agente antes de ayudar? "
-            "Por ejemplo: presupuesto, preferencias o datos del pedido."
-        )
-    else:
-        question = (
-            "¿Hay algo que el agente nunca deba hacer? "
-            "Por ejemplo: inventar datos, responder sin revisar o compartir información privada."
-        )
-    return BuilderEnvelope(
-        assistant_message=question,
-        status="collecting",
-        draft=None,
     )
 
 
