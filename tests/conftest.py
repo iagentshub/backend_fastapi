@@ -100,8 +100,8 @@ def patch_data_dir(tmp_data_dir, tmp_path, monkeypatch):
     from app.storage.storage import MemoryStorage
 
     isolated_memory = MemoryStorage(memory_dir)
-    import app.api.routes.memory as memory_routes
     import app.api.routes.agents as agents_routes
+    import app.api.routes.memory as memory_routes
 
     monkeypatch.setattr(memory_routes, "_storage", isolated_memory)
     monkeypatch.setattr(agents_routes, "_memory", isolated_memory)
