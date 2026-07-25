@@ -332,3 +332,47 @@ def test_admin_settings_persistence(admin_client):
     r = admin_client.get("/api/settings/admin")
     assert r.status_code == 200
     assert r.json()["log_retention_days"] == 14
+
+
+# ---------------------------------------------------------------------------
+# Configuración de plataforma — /api/settings/platform(/public)
+# ---------------------------------------------------------------------------
+
+
+def test_get_platform_config_unauthenticated(client):
+    r = client.get("/api/settings/platform")
+    assert r.status_code == 401
+
+
+def test_get_platform_config_forbidden_for_standard(client, reset_rate_limiter):
+    client.post("/api/auth/register", json={"email": "platformcfg@example.com", "password": "pass1234"})
+    r = client.get("/api/settings/platform")
+    assert r.status_code == 403
+
+
+def test_get_platform_public_oauth_toggles_default_true(client):
+    """Sin ninguna config previa, los 3 toggles OAuth son visibles por defecto."""
+    r = client.get("/api/settings/platform/public")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["oauth_google_enabled"] is True
+    assert data["oauth_apple_enabled"] is True
+    assert data["oauth_microsoft_enabled"] is True
+
+
+def test_put_platform_config_oauth_toggles(admin_client):
+    r = admin_client.put(
+        "/api/settings/platform",
+        json={"oauth_google_enabled": False, "oauth_apple_enabled": False},
+    )
+    assert r.status_code == 200
+    data = r.json()
+    assert data["oauth_google_enabled"] is False
+    assert data["oauth_apple_enabled"] is False
+    assert data["oauth_microsoft_enabled"] is True  # no tocado, sigue en su default
+
+
+def test_platform_public_reflects_admin_oauth_toggle(admin_client, client):
+    admin_client.put("/api/settings/platform", json={"oauth_microsoft_enabled": False})
+    r = client.get("/api/settings/platform/public")
+    assert r.json()["oauth_microsoft_enabled"] is False

@@ -8,6 +8,7 @@ import time
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlencode, urlsplit
 
+import httpx
 from fastapi import (
     APIRouter,
     Cookie,
@@ -19,6 +20,7 @@ from fastapi import (
     Response,
 )
 from fastapi.responses import RedirectResponse
+from pydantic import BaseModel
 
 from app.errors import APIError
 from app.auth.auth import (
@@ -802,6 +804,120 @@ async def get_public_profile(
 # ── Admin ─────────────────────────────────────────────────────────────────────
 
 admin_router = APIRouter(prefix="/api/admin", tags=["admin"])
+
+
+_VERSION_RE = re.compile(r"^\d{14}$")
+
+
+async def _latest_docker_hub_version(repo: str) -> Optional[str]:
+    """Versión (tag YYYYMMDDHHMMSS) más reciente publicada en Docker Hub para `repo`.
+
+    Usa la API pública de Docker Hub (hub.docker.com/v2), no el registry — sin
+    autenticación y sin el rate-limit estricto de docker.io/pulls. None si el
+    repo no tiene ningún tag con ese formato todavía.
+    """
+    versions: list[str] = []
+    url = f"https://hub.docker.com/v2/repositories/{repo}/tags?page_size=100"
+    async with httpx.AsyncClient(timeout=10) as client:
+        for _ in range(10):  # límite de páginas por seguridad, no debería hacer falta
+            resp = await client.get(url)
+            resp.raise_for_status()
+            data = resp.json()
+            versions.extend(
+                t["name"] for t in data.get("results", []) if _VERSION_RE.match(t.get("name", ""))
+            )
+            url = data.get("next")
+            if not url:
+                break
+    return max(versions) if versions else None
+
+
+@admin_router.get("/check-update")
+async def admin_check_update(_: str = Depends(require_admin)) -> dict:
+    """Compara la versión de la imagen en ejecución (GAIA_VERSION) contra la
+    más reciente publicada en Docker Hub. Solo informa — no aplica el update
+    (eso lo hace Watchtower, o `docker compose pull && up -d` manual)."""
+    current_version = os.environ.get("GAIA_VERSION", "dev")
+    if current_version == "dev":
+        return {
+            "checked": False,
+            "reason": "no_version",
+            "current_version": current_version,
+        }
+
+    hub_user = os.environ.get("DOCKER_HUB_USER", "iagenthub")
+    repo = f"{hub_user}/app"
+    try:
+        latest_version = await _latest_docker_hub_version(repo)
+    except httpx.HTTPError as exc:
+        raise APIError(
+            502, "check_update_failed", "No se pudo consultar Docker Hub"
+        ) from exc
+
+    if latest_version is None:
+        return {
+            "checked": False,
+            "reason": "no_remote_versions",
+            "current_version": current_version,
+        }
+
+    return {
+        "checked": True,
+        "current_version": current_version,
+        "latest_version": latest_version,
+        "update_available": latest_version > current_version,
+    }
+
+
+class AutoUpdateUpdate(BaseModel):
+    enabled: bool
+
+
+@admin_router.put("/auto-update")
+async def admin_set_auto_update(
+    body: AutoUpdateUpdate, _: str = Depends(require_admin)
+) -> dict:
+    """Arranca/para el contenedor "watchtower" a través de docker-proxy (ver
+    docker-compose.hub.yml) y solo si la operación se aplica de verdad
+    persiste la preferencia — así el valor guardado nunca miente sobre el
+    estado real del contenedor."""
+    proxy_url = os.environ.get("DOCKER_PROXY_URL", "")
+    if not proxy_url:
+        raise APIError(
+            409,
+            "auto_update_proxy_unavailable",
+            "Esta instalación no tiene el proxy de Docker configurado. "
+            "Actualiza docker-compose.hub.yml (docker compose pull && "
+            "docker compose up -d) para poder controlar la "
+            "auto-actualización desde aquí.",
+        )
+    container = os.environ.get("WATCHTOWER_CONTAINER_NAME", "watchtower")
+    action = "start" if body.enabled else "stop"
+
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.post(f"{proxy_url}/containers/{container}/{action}")
+    except httpx.HTTPError as exc:
+        raise APIError(
+            502,
+            "auto_update_apply_failed",
+            "No se pudo contactar con el proxy de Docker",
+        ) from exc
+
+    # 204 = aplicado; 304 = ya estaba en ese estado (idempotente, también ok).
+    if resp.status_code not in (204, 304):
+        raise APIError(
+            502,
+            "auto_update_apply_failed",
+            f"Docker rechazó la operación (HTTP {resp.status_code})",
+        )
+
+    from app.api.routes.settings import _read_platform_cfg, _write_platform_cfg
+
+    cfg = _read_platform_cfg()
+    cfg["auto_update_enabled"] = body.enabled
+    _write_platform_cfg(cfg)
+    return {"auto_update_enabled": body.enabled}
 
 
 @admin_router.get("/metadata/tables")

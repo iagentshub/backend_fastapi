@@ -232,6 +232,6 @@ def create_app() -> FastAPI:
         except Exception:
             db_ok = False
         status = "ok" if db_ok else "degraded"
-        return {"status": status, "db": db_ok}
+        return {"status": status, "db": db_ok, "version": os.environ.get("GAIA_VERSION", "dev")}
 
     return app

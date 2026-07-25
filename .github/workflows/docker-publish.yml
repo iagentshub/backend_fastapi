@@ -19,6 +19,9 @@ jobs:
         with:
           username: ${{ secrets.DOCKERHUB_USERNAME }}
           password: ${{ secrets.DOCKERHUB_TOKEN }}
+      - name: Generar versión de build
+        id: version
+        run: echo "value=$(date -u +%Y%m%d%H%M%S)" >> "$GITHUB_OUTPUT"
       - id: meta
         uses: docker/metadata-action@v5
         with:
@@ -26,11 +29,14 @@ jobs:
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=raw,value=fastapi,enable={{is_default_branch}}
+            type=raw,value=${{ steps.version.outputs.value }}
       - uses: docker/build-push-action@v6
         with:
           context: .
           platforms: linux/amd64,linux/arm64
           push: true
+          build-args: |
+            GAIA_VERSION=${{ steps.version.outputs.value }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
@@ -79,13 +85,21 @@ jobs:
           cp $D/supervisord.conf build-ctx/supervisord.conf
           cp $D/entrypoint-unified.sh build-ctx/entrypoint-unified.sh
 
+      - name: Generar versión de build
+        id: version
+        run: echo "value=$(date -u +%Y%m%d%H%M%S)" >> "$GITHUB_OUTPUT"
+
       - name: Build y push imagen multi-plataforma
         uses: docker/build-push-action@v5
         with:
           context: build-ctx
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: iagenthub/app:latest
+          build-args: |
+            GAIA_VERSION=${{ steps.version.outputs.value }}
+          tags: |
+            iagenthub/app:latest
+            iagenthub/app:${{ steps.version.outputs.value }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
@@ -130,12 +144,20 @@ jobs:
           cp $D/supervisord.conf build-ctx/supervisord.conf
           cp $D/entrypoint-unified-vanilla.sh build-ctx/entrypoint-unified.sh
 
+      - name: Generar versión de build
+        id: version
+        run: echo "value=$(date -u +%Y%m%d%H%M%S)" >> "$GITHUB_OUTPUT"
+
       - name: Build y push imagen multi-plataforma
         uses: docker/build-push-action@v5
         with:
           context: build-ctx
           platforms: linux/amd64,linux/arm64
           push: true
-          tags: iagenthub/app:vanilla
+          build-args: |
+            GAIA_VERSION=${{ steps.version.outputs.value }}
+          tags: |
+            iagenthub/app:vanilla
+            iagenthub/app:${{ steps.version.outputs.value }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

@@ -198,6 +198,20 @@ _PLATFORM_DEFAULTS: dict = {
     # vez de redirigir directo a /login/. Pensado para el despliegue SaaS
     # público; en instalaciones self-hosted lo natural es dejarlo desactivado.
     "landing_enabled": False,
+    # Controla solo la VISIBILIDAD de los botones de login social en /login/
+    # — hoy son placeholders deshabilitados ("Próximamente"), no hay
+    # integración OAuth real todavía. Default True: preserva el comportamiento
+    # visual actual (los 3 botones ya se muestran) en instalaciones existentes.
+    "oauth_google_enabled": True,
+    "oauth_apple_enabled": True,
+    "oauth_microsoft_enabled": True,
+    # Solo lectura desde aquí — refleja si Watchtower está corriendo o no.
+    # Se escribe EXCLUSIVAMENTE desde PUT /api/admin/auto-update (auth.py),
+    # nunca desde PUT /api/settings/platform (por eso no está en
+    # PlatformConfigUpdate más abajo): así el valor persistido nunca puede
+    # desincronizarse de si el contenedor "watchtower" realmente arrancó o
+    # paró — solo se guarda tras confirmar la operación contra Docker.
+    "auto_update_enabled": True,
 }
 
 _VALID_REGISTRATION = {"open", "closed"}
@@ -242,6 +256,9 @@ class PlatformConfigUpdate(BaseModel):
     log_retention_days: Optional[int] = None
     landing_enabled: Optional[bool] = None
     stress_max_concurrency: Optional[int] = None
+    oauth_google_enabled: Optional[bool] = None
+    oauth_apple_enabled: Optional[bool] = None
+    oauth_microsoft_enabled: Optional[bool] = None
 
 
 @router.get("/platform/public")
@@ -254,6 +271,9 @@ async def get_platform_config_public() -> dict:
         "guest_enabled": cfg.get("guest_enabled", True),
         "registration": cfg.get("registration", "open"),
         "landing_enabled": cfg.get("landing_enabled", False),
+        "oauth_google_enabled": cfg.get("oauth_google_enabled", True),
+        "oauth_apple_enabled": cfg.get("oauth_apple_enabled", True),
+        "oauth_microsoft_enabled": cfg.get("oauth_microsoft_enabled", True),
     }
 
 
