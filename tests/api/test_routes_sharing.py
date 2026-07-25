@@ -186,3 +186,50 @@ def test_share_knowledge_with_group(client):
     _set_cookie(client, "sh_member_i")
     items = client.get("/api/knowledge").json()
     assert any(k["id"] == know["id"] and k.get("_shared") for k in items)
+
+
+def test_share_workflow_with_group(client):
+    _register("sh_workflow_owner")
+    _register("sh_workflow_member")
+
+    _set_cookie(client, "sh_workflow_owner")
+    agent = client.post(
+        "/api/agents",
+        json={
+            "name": "Agente del flujo compartido",
+            "system_prompt": "Procesa la entrada",
+            "model": "gpt-4o",
+        },
+    ).json()
+    workflow = client.post(
+        "/api/workflows",
+        json={
+            "name": "Flujo compartido",
+            "definition": {
+                "nodes": [{"id": "step-one", "agent_id": agent["id"]}],
+                "edges": [],
+            },
+        },
+    ).json()
+    workspace = client.post(
+        "/api/workspaces", json={"name": "Grupo de orquestación"}
+    ).json()
+    client.post(
+        f"/api/workspaces/{workspace['id']}/members",
+        json={"username": "sh_workflow_member", "role": "member"},
+    )
+
+    shared = client.post(
+        f"/api/sharing/workflow/{workflow['id']}",
+        json={"group_id": workspace["id"]},
+    )
+    assert shared.status_code == 200
+    assert agent["id"] in shared.json()["cascaded"]
+
+    _set_cookie(client, "sh_workflow_member")
+    workflows = client.get("/api/workflows").json()
+    visible = next(item for item in workflows if item["id"] == workflow["id"])
+    assert visible["_shared"] is True
+
+    forbidden = client.post("/api/workflows", json=visible)
+    assert forbidden.status_code == 403

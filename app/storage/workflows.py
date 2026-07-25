@@ -31,6 +31,26 @@ class WorkflowStorage:
             )
         return self._decode(row) if row else None
 
+    async def get_any(self, workflow_id: str) -> Optional[Dict[str, Any]]:
+        async with open_db() as conn:
+            row = await conn.fetchone(
+                "SELECT * FROM agent_workflows WHERE id=? ORDER BY updated_at DESC LIMIT 1",
+                (workflow_id,),
+            )
+        return self._decode(row) if row else None
+
+    async def list_by_ids(self, workflow_ids: List[str]) -> List[Dict[str, Any]]:
+        if not workflow_ids:
+            return []
+        placeholders = ",".join("?" for _ in workflow_ids)
+        async with open_db() as conn:
+            rows = await conn.fetchall(
+                f"SELECT * FROM agent_workflows WHERE id IN ({placeholders}) "
+                "ORDER BY updated_at DESC",
+                tuple(workflow_ids),
+            )
+        return [self._decode(row) for row in rows]
+
     async def save(
         self, owner_id: str, payload: Dict[str, Any]
     ) -> Dict[str, Any]:
@@ -78,6 +98,11 @@ class WorkflowStorage:
             await conn.execute(
                 "DELETE FROM agent_workflows WHERE id=? AND owner_id=?",
                 (workflow_id, owner_id),
+            )
+            await conn.execute(
+                "DELETE FROM resource_workspace_shares "
+                "WHERE resource_type='workflow' AND resource_id=?",
+                (workflow_id,),
             )
             await conn.commit()
         return True

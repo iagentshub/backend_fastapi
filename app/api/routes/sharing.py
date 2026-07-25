@@ -18,6 +18,7 @@ from app.errors import APIError
 from app.storage.db import open_db
 from app.storage.knowledge import KnowledgeStorage
 from app.storage.storage import AgentStorage, SkillStorage
+from app.storage.workflows import WorkflowStorage
 from app.storage.workspace_shares import WorkspaceShareStorage
 from app.storage.workspaces import WorkspaceStorage
 
@@ -26,7 +27,7 @@ router = APIRouter(prefix="/api/sharing", tags=["sharing"])
 _shares = WorkspaceShareStorage(DB_FILE)
 _ws = WorkspaceStorage(DB_FILE)
 
-_VALID_TYPES = {"agent", "connection", "knowledge", "skill"}
+_VALID_TYPES = {"agent", "connection", "knowledge", "skill", "workflow"}
 
 
 def _assert_valid_type(resource_type: str) -> None:
@@ -49,6 +50,9 @@ async def _resource_owner(resource_type: str, resource_id: str) -> Optional[str]
         return item.get("owner_id") if item else None
     if resource_type == "knowledge":
         item = await KnowledgeStorage(_cfg.DB_FILE).get(resource_id)
+        return item.get("owner_id") if item else None
+    if resource_type == "workflow":
+        item = await WorkflowStorage().get_any(resource_id)
         return item.get("owner_id") if item else None
     # connection — ConnectionStorage.get() no incluye owner_id en el dict devuelto,
     # así que se resuelve con una consulta directa a la tabla.
@@ -150,6 +154,39 @@ async def _cascade_share_agent(
     return cascaded
 
 
+async def _cascade_share_workflow(
+    workflow_id: str,
+    group_id: str,
+    shared_by: str,
+    shared_by_workspace: str,
+) -> List[str]:
+    """Comparte los agentes propios usados por una orquestación y sus dependencias."""
+    workflow = await WorkflowStorage().get_any(workflow_id)
+    if not workflow:
+        return []
+    allowed_owners = {
+        str(workflow.get("owner_id") or ""),
+        shared_by,
+        shared_by_workspace,
+    } - {""}
+    cascaded: List[str] = []
+    for node in workflow.get("definition", {}).get("nodes", []):
+        agent_id = str(node.get("agent_id") or "")
+        if not agent_id or agent_id in cascaded:
+            continue
+        agent = await AgentStorage(_cfg.AGENTS_DIR).get(agent_id)
+        if not agent or str(agent.get("owner_id") or "") not in allowed_owners:
+            continue
+        await _shares.share_with_workspace("agent", agent_id, group_id, shared_by)
+        cascaded.append(agent_id)
+        cascaded.extend(
+            await _cascade_share_agent(
+                agent_id, group_id, shared_by, shared_by_workspace
+            )
+        )
+    return cascaded
+
+
 @router.post("/{resource_type}/{resource_id}")
 async def share_resource_with_workspace(
     resource_type: str,
@@ -184,6 +221,10 @@ async def share_resource_with_workspace(
     cascaded: List[str] = []
     if resource_type == "agent":
         cascaded = await _cascade_share_agent(resource_id, group_id, ctx.user, ctx.workspace_id)
+    elif resource_type == "workflow":
+        cascaded = await _cascade_share_workflow(
+            resource_id, group_id, ctx.user, ctx.workspace_id
+        )
 
     return {"ok": True, "cascaded": cascaded}
 

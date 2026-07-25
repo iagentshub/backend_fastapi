@@ -16,6 +16,8 @@ from app.services.workflow_validator import validate_workflow
 from app.services.workflow_runner import run_workflow
 from app.storage.resource_versions import ResourceVersionStorage
 from app.storage.storage import AgentStorage, SkillStorage
+from app.storage.workspace_shares import WorkspaceShareStorage
+from app.storage.workspaces import WorkspaceStorage
 from app.storage.workflows import WorkflowStorage
 
 router = APIRouter(prefix="/api", tags=["resource-management"])
@@ -23,6 +25,8 @@ _agents = AgentStorage(AGENTS_DIR)
 _skills = SkillStorage(DB_FILE)
 _versions = ResourceVersionStorage()
 _workflows = WorkflowStorage()
+_shares = WorkspaceShareStorage(DB_FILE)
+_workspace_storage = WorkspaceStorage(DB_FILE)
 
 
 class WorkflowBody(BaseModel):
@@ -117,7 +121,54 @@ async def restore_version(
 async def list_workflows(
     ctx: WorkspaceContext = Depends(require_workspace),
 ) -> list[Dict[str, Any]]:
-    return await _workflows.list(ctx.workspace_id)
+    owner_ids = {ctx.user, ctx.workspace_id}
+    own: list[Dict[str, Any]] = []
+    for owner_id in owner_ids:
+        own.extend(await _workflows.list(owner_id))
+    own_keys = {(item["id"], item["owner_id"]) for item in own}
+
+    shared_map: dict[str, list[str]] = {}
+    for workspace in await _workspace_storage.list_for_user(ctx.user):
+        group_id = str(workspace["id"])
+        for resource_id in await _shares.get_workspace_shared_resource_ids(
+            group_id, "workflow"
+        ):
+            shared_map.setdefault(resource_id, []).append(group_id)
+
+    for item in own:
+        if item["id"] in shared_map:
+            item["_group_ids"] = shared_map[item["id"]]
+
+    shared: list[Dict[str, Any]] = []
+    for item in await _workflows.list_by_ids(list(shared_map)):
+        if (item["id"], item["owner_id"]) in own_keys:
+            continue
+        if not await _workspace_storage.owner_is_active(item["owner_id"]):
+            continue
+        item["_shared"] = True
+        item["_group_ids"] = shared_map[item["id"]]
+        item["_group_id"] = shared_map[item["id"]][0]
+        shared.append(item)
+    return sorted(own + shared, key=lambda item: item["updated_at"], reverse=True)
+
+
+async def _accessible_workflow(
+    workflow_id: str, ctx: WorkspaceContext
+) -> Dict[str, Any] | None:
+    item = await _workflows.get_any(workflow_id)
+    if not item:
+        return None
+    if item["owner_id"] in {ctx.user, ctx.workspace_id}:
+        return item
+    for workspace in await _workspace_storage.list_for_user(ctx.user):
+        shared_ids = await _shares.get_workspace_shared_resource_ids(
+            str(workspace["id"]), "workflow"
+        )
+        if workflow_id in shared_ids:
+            item["_shared"] = True
+            item["_group_id"] = str(workspace["id"])
+            return item
+    return None
 
 
 @router.get("/workflows/{workflow_id}")
@@ -125,7 +176,7 @@ async def get_workflow(
     workflow_id: str,
     ctx: WorkspaceContext = Depends(require_workspace),
 ) -> Dict[str, Any]:
-    item = await _workflows.get(workflow_id, ctx.workspace_id)
+    item = await _accessible_workflow(workflow_id, ctx)
     if not item:
         raise HTTPException(status_code=404, detail="Orquestación no encontrada")
     return item
@@ -136,6 +187,13 @@ async def save_workflow(
     body: WorkflowBody,
     ctx: WorkspaceContext = Depends(require_workspace),
 ) -> Dict[str, Any]:
+    if body.id:
+        existing = await _workflows.get_any(body.id)
+        if existing and existing["owner_id"] != ctx.workspace_id:
+            raise HTTPException(
+                status_code=403,
+                detail="Las orquestaciones compartidas son de solo lectura",
+            )
     try:
         definition = validate_workflow(body.definition)
     except ValueError as exc:
@@ -167,7 +225,7 @@ async def run_saved_workflow(
     body: WorkflowRunBody,
     ctx: WorkspaceContext = Depends(require_workspace),
 ) -> StreamingResponse:
-    workflow = await _workflows.get(workflow_id, ctx.workspace_id)
+    workflow = await _accessible_workflow(workflow_id, ctx)
     if not workflow:
         raise HTTPException(status_code=404, detail="Orquestación no encontrada")
     try:
@@ -180,8 +238,19 @@ async def run_saved_workflow(
 
     async def resolve(agent_id: str):
         agent = await _agents.get(agent_id)
-        if not agent or agent.get("owner_id") != ctx.workspace_id:
-            raise RuntimeError(f"El agente {agent_id} no pertenece al workspace")
+        if not agent:
+            raise RuntimeError(f"El agente {agent_id} no está disponible")
+        if agent.get("owner_id") not in {ctx.user, ctx.workspace_id}:
+            shared_agent = False
+            for workspace in await _workspace_storage.list_for_user(ctx.user):
+                shared_ids = await _shares.get_workspace_shared_resource_ids(
+                    str(workspace["id"]), "agent"
+                )
+                if agent_id in shared_ids:
+                    shared_agent = True
+                    break
+            if not shared_agent:
+                raise RuntimeError(f"El agente {agent_id} no está disponible para tu grupo")
         connection_id = str(agent.get("connection_id") or "")
         if not connection_id:
             raise RuntimeError(f"El agente {agent.get('name')} no tiene conexión")

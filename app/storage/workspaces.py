@@ -110,12 +110,20 @@ class WorkspaceStorage:
                         "SELECT id FROM connections WHERE owner_id = ?", (workspace_id,)
                     )
                 ]
+                workflow_ids = [
+                    r[0]
+                    for r in await conn.fetchall(
+                        "SELECT id FROM agent_workflows WHERE owner_id = ?",
+                        (workspace_id,),
+                    )
+                ]
 
                 for resource_type, ids in (
                     ("agent", agent_ids),
                     ("skill", skill_ids),
                     ("knowledge", knowledge_ids),
                     ("connection", connection_ids),
+                    ("workflow", workflow_ids),
                 ):
                     for rid in ids:
                         await conn.execute(
@@ -138,6 +146,9 @@ class WorkspaceStorage:
                 )
                 await conn.execute(
                     "DELETE FROM connections WHERE owner_id = ?", (workspace_id,)
+                )
+                await conn.execute(
+                    "DELETE FROM agent_workflows WHERE owner_id = ?", (workspace_id,)
                 )
                 await conn.execute(
                     "DELETE FROM resource_workspace_shares WHERE workspace_id = ?",
