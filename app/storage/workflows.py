@@ -39,6 +39,13 @@ class WorkflowStorage:
             )
         return self._decode(row) if row else None
 
+    async def list_all(self) -> List[Dict[str, Any]]:
+        async with open_db() as conn:
+            rows = await conn.fetchall(
+                "SELECT * FROM agent_workflows ORDER BY updated_at DESC"
+            )
+        return [self._decode(row) for row in rows]
+
     async def list_by_ids(self, workflow_ids: List[str]) -> List[Dict[str, Any]]:
         if not workflow_ids:
             return []
@@ -98,6 +105,24 @@ class WorkflowStorage:
             await conn.execute(
                 "DELETE FROM agent_workflows WHERE id=? AND owner_id=?",
                 (workflow_id, owner_id),
+            )
+            await conn.execute(
+                "DELETE FROM resource_workspace_shares "
+                "WHERE resource_type='workflow' AND resource_id=?",
+                (workflow_id,),
+            )
+            await conn.commit()
+        return True
+
+    async def delete_any(self, workflow_id: str) -> bool:
+        async with open_db() as conn:
+            existing = await conn.fetchval(
+                "SELECT 1 FROM agent_workflows WHERE id=?", (workflow_id,)
+            )
+            if not existing:
+                return False
+            await conn.execute(
+                "DELETE FROM agent_workflows WHERE id=?", (workflow_id,)
             )
             await conn.execute(
                 "DELETE FROM resource_workspace_shares "

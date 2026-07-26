@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import re
 import time
-from typing import Any, Dict, List, Optional
+from typing import Any
 from urllib.parse import urlencode, urlsplit
 
 import httpx
@@ -22,7 +22,6 @@ from fastapi import (
 from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
-from app.errors import APIError
 from app.auth.auth import (
     admin_set_password,
     admin_update_user,
@@ -49,18 +48,6 @@ from app.auth.auth import (
 )
 from app.config.data import AGENTS_DIR as _AGENTS_DIR
 from app.config.data import DB_FILE as _DB_FILE
-from app.storage.db import IS_PG, open_db
-from app.storage.storage import AgentStorage as _AgentStorage
-from app.storage.tokens import (
-    DEFAULT_EXPIRY_DAYS,
-    VALID_EXPIRY_DAYS,
-    TokenStorage as _TokenStorage,
-    consume_auth_code as _consume_auth_code,
-    create_auth_code as _create_auth_code,
-    parse_ts as _parse_ts,
-)
-from app.utils.net import client_ip as _client_ip
-from app.utils import flog
 from app.config.session import (
     EMAIL_VERIFY_ENABLED,
     LOGIN_MAX_FAILS,
@@ -76,12 +63,35 @@ from app.config.session import (
     REGISTRATION_MODE,
     SECURE_COOKIES,
 )
+from app.errors import APIError
 from app.middleware.ratelimit import RateLimiter
+from app.storage.db import IS_PG, open_db
+from app.storage.storage import AgentStorage as _AgentStorage
+from app.storage.tokens import (
+    DEFAULT_EXPIRY_DAYS,
+    VALID_EXPIRY_DAYS,
+)
+from app.storage.tokens import (
+    TokenStorage as _TokenStorage,
+)
+from app.storage.tokens import (
+    consume_auth_code as _consume_auth_code,
+)
+from app.storage.tokens import (
+    create_auth_code as _create_auth_code,
+)
+from app.storage.tokens import (
+    parse_ts as _parse_ts,
+)
+from app.storage.workflows import WorkflowStorage as _WorkflowStorage
 from app.storage.workspaces import WorkspaceStorage as _WorkspaceStorage
+from app.utils import flog
+from app.utils.net import client_ip as _client_ip
 
 _workspaces = _WorkspaceStorage(_DB_FILE)
 _agents = _AgentStorage(_AGENTS_DIR)
 _tokens = _TokenStorage()
+_workflows = _WorkflowStorage()
 
 # Regex estricta de email (RFC 5321): bloquea payloads XSS como x'><script>@a.com
 _EMAIL_RE = re.compile(r"^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$")
@@ -124,10 +134,10 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 _ACTIVE_CACHE_TTL = 60       # segundos
 _ACTIVE_CACHE_MAX = 5_000    # entradas máximas antes de eviction
 # {username: (is_active, password_changed_at, expires_at)}
-_active_cache: dict[str, tuple[bool, Optional[str], float]] = {}
+_active_cache: dict[str, tuple[bool, str | None, float]] = {}
 
 
-async def _get_user_auth_state(username: str) -> tuple[bool, Optional[str]]:
+async def _get_user_auth_state(username: str) -> tuple[bool, str | None]:
     """Devuelve (is_active, password_changed_at). Usa caché con TTL de 60 s.
 
     Los usuarios guest son siempre activos y no tienen password_changed_at.
@@ -177,7 +187,7 @@ class WorkspaceContext:
         self.workspace_id = workspace_id
 
 
-def _bearer(authorization: Optional[str]) -> Optional[str]:
+def _bearer(authorization: str | None) -> str | None:
     """Extrae el token de una cabecera `Authorization: Bearer <token>`."""
     if not authorization:
         return None
@@ -188,8 +198,8 @@ def _bearer(authorization: Optional[str]) -> Optional[str]:
 
 
 async def _identify(
-    ga_token: Optional[str], authorization: Optional[str]
-) -> tuple[str, Optional[float], Optional[str]]:
+    ga_token: str | None, authorization: str | None
+) -> tuple[str, float | None, str | None]:
     """Resuelve la credencial de la request → (username, issued_at, wid).
 
     Acepta dos credenciales, con la MISMA autoridad:
@@ -221,7 +231,7 @@ async def _identify(
     raise APIError(401, "not_authenticated", "No autenticado")
 
 
-async def _assert_account_ok(username: str, issued_at: Optional[float]) -> None:
+async def _assert_account_ok(username: str, issued_at: float | None) -> None:
     """Cuenta activa + credencial emitida tras el último cambio de contraseña.
 
     Cambiar la contraseña invalida las sesiones robadas — y también los PATs
@@ -247,8 +257,8 @@ async def _assert_account_ok(username: str, issued_at: Optional[float]) -> None:
 
 
 async def require_auth(
-    ga_token: Optional[str] = Cookie(default=None),
-    authorization: Optional[str] = Header(default=None),
+    ga_token: str | None = Cookie(default=None),
+    authorization: str | None = Header(default=None),
 ) -> str:
     """Dependency: valida la credencial (cookie o Bearer) y la cuenta."""
     username, issued_at, _ = await _identify(ga_token, authorization)
@@ -257,9 +267,9 @@ async def require_auth(
 
 
 async def require_workspace(
-    ga_token: Optional[str] = Cookie(default=None),
-    authorization: Optional[str] = Header(default=None),
-    x_iagents_workspace: Optional[str] = Header(default=None),
+    ga_token: str | None = Cookie(default=None),
+    authorization: str | None = Header(default=None),
+    x_iagents_workspace: str | None = Header(default=None),
 ) -> WorkspaceContext:
     """Dependency: valida la credencial y resuelve el workspace activo.
 
@@ -277,9 +287,12 @@ async def require_workspace(
     # Si el wid es distinto del username → validar workspace de equipo
     if wid and wid != username:
         ws = await _workspaces.get(wid)
-        if ws and ws.get("status", "active") == "active":
-            if await _workspaces.is_member(wid, username):
-                return WorkspaceContext(user=username, workspace_id=wid)
+        if (
+            ws
+            and ws.get("status", "active") == "active"
+            and await _workspaces.is_member(wid, username)
+        ):
+            return WorkspaceContext(user=username, workspace_id=wid)
         # Workspace desactivado, eliminado o no miembro → espacio personal
     return WorkspaceContext(user=username, workspace_id=username)
 
@@ -291,7 +304,7 @@ async def require_admin(username: str = Depends(require_auth)) -> str:
 
 
 @router.post("/register")
-async def register(request: Request, response: Response) -> Dict[str, Any]:
+async def register(request: Request, response: Response) -> dict[str, Any]:
     if REGISTRATION_MODE == "closed":
         raise APIError(403, "registration_disabled", "El registro está desactivado.")
     if REGISTRATION_MODE == "invite":
@@ -352,7 +365,7 @@ async def login(
     request: Request,
     response: Response,
     _rl: None = Depends(_login_limiter),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     body = await request.json()
     email = str(body.get("email") or "").strip().lower()
     password = str(body.get("password") or "")
@@ -402,7 +415,7 @@ async def login(
 
 
 @router.get("/verify")
-async def verify_email(token: str, response: Response) -> Dict[str, Any]:
+async def verify_email(token: str, response: Response) -> dict[str, Any]:
     username = await verify_email_token(token)
     if not username:
         raise APIError(
@@ -424,7 +437,7 @@ async def verify_email(token: str, response: Response) -> Dict[str, Any]:
 async def guest_login(
     response: Response,
     _rl: None = Depends(_guest_limiter),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     from app.storage.guest import new_guest_id
 
     guest_id = new_guest_id()
@@ -441,24 +454,26 @@ async def guest_login(
 
 
 @router.post("/logout")
-async def logout(response: Response) -> Dict[str, Any]:
+async def logout(response: Response) -> dict[str, Any]:
     response.delete_cookie("ga_token")
     return {"ok": True}
 
 
 @router.get("/me")
-async def me(ctx: WorkspaceContext = Depends(require_workspace)) -> Dict[str, Any]:
-    from app.storage.guest import is_guest
+async def me(
+    ctx: WorkspaceContext = Depends(require_workspace),  # noqa: B008
+) -> dict[str, Any]:
     from app.config.session import WEBMAIL_URL
+    from app.storage.guest import is_guest
 
     username = ctx.user
     workspace_id = ctx.workspace_id
 
     role = await get_user_role(username)
-    ws_name: Optional[str] = None
+    ws_name: str | None = None
     if is_guest(username):
         auth_method = "guest"
-        user_row: Dict[str, Any] = {}
+        user_row: dict[str, Any] = {}
     else:
         user_row = await get_user_by_username(username) or {}
         auth_method = user_row.get("provider") or "internal"
@@ -468,7 +483,7 @@ async def me(ctx: WorkspaceContext = Depends(require_workspace)) -> Dict[str, An
         else:
             ws_name = user_row.get("display_name") or username
 
-    payload: Dict[str, Any] = {
+    payload: dict[str, Any] = {
         "username": username,
         "role": role,
         "auth_method": auth_method,
@@ -486,7 +501,7 @@ async def me(ctx: WorkspaceContext = Depends(require_workspace)) -> Dict[str, An
 async def forgot_password(
     request: Request,
     _rl: None = Depends(_forgot_limiter),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     body = await request.json()
     email = str(body.get("email") or "").strip().lower()
     if not email or not _EMAIL_RE.match(email):
@@ -503,7 +518,7 @@ async def forgot_password(
 async def reset_password(
     request: Request,
     _rl: None = Depends(_reset_limiter),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     body = await request.json()
     token = str(body.get("token") or "").strip()
     new_password = str(body.get("password") or "").strip()
@@ -521,7 +536,7 @@ async def reset_password(
 @router.post("/change-password")
 async def change_password(
     request: Request, username: str = Depends(require_auth)
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     body = await request.json()
     current = str(body.get("current_password") or "")
     new_pw = str(body.get("new_password") or "").strip()
@@ -540,13 +555,13 @@ async def change_password(
     # ALTO-8: al cambiar la contraseña del admin, borrar .admin_pass del disco
     # para que la contraseña temporal no persista indefinidamente.
     if user.get("role") == "admin":
+        import contextlib
         import pathlib
+
         _data_dir = os.getenv("GAIA_DATA_DIR", "").strip()
         if _data_dir:
-            try:
+            with contextlib.suppress(OSError):
                 pathlib.Path(_data_dir, ".admin_pass").unlink(missing_ok=True)
-            except OSError:
-                pass
 
     return {"ok": True}
 
@@ -555,7 +570,7 @@ async def change_password(
 
 
 @router.get("/me/deletion-status")
-async def get_deletion_status(username: str = Depends(require_auth)) -> Dict[str, Any]:
+async def get_deletion_status(username: str = Depends(require_auth)) -> dict[str, Any]:
     user = await get_user_by_username(username)
     if not user:
         raise APIError(404, "not_found", "Usuario no encontrado", extra={"resource": "user"})
@@ -568,7 +583,7 @@ async def get_deletion_status(username: str = Depends(require_auth)) -> Dict[str
 @router.post("/me/request-deletion")
 async def request_account_deletion(
     username: str = Depends(require_auth),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     owned = await get_owned_workspaces(username)
     if owned:
         raise APIError(
@@ -582,7 +597,7 @@ async def request_account_deletion(
 
 
 @router.post("/me/cancel-deletion")
-async def cancel_account_deletion(request: Request) -> Dict[str, Any]:
+async def cancel_account_deletion(request: Request) -> dict[str, Any]:
     body = await request.json()
     token = str(body.get("token", "")).strip()
     if not token or not await cancel_user_deletion(token):
@@ -593,7 +608,9 @@ async def cancel_account_deletion(request: Request) -> Dict[str, Any]:
 @router.get("/me/export")
 async def export_my_data(username: str = Depends(require_auth)):
     from datetime import datetime, timezone
+
     from fastapi.responses import StreamingResponse
+
     from app.services.gdpr import export_user_data
 
     buf = await export_user_data(username)
@@ -614,7 +631,7 @@ _MAX_AVATAR_BYTES = 2 * 1024 * 1024  # 2 MB
 _ALLOWED_AVATAR_EXT = {".jpg", ".jpeg", ".png", ".webp"}
 
 
-async def _get_social_fields(username: str) -> Dict[str, Any]:
+async def _get_social_fields(username: str) -> dict[str, Any]:
     import json
 
     async with open_db() as conn:
@@ -641,7 +658,7 @@ async def _get_social_fields(username: str) -> Dict[str, Any]:
         )
     try:
         langs = json.loads(row[2] or "[]")
-    except Exception:
+    except (json.JSONDecodeError, TypeError):
         langs = []
     return {
         "avatar_url": f"/api/users/{username}/avatar" if row[0] else None,
@@ -660,7 +677,7 @@ async def _get_social_fields(username: str) -> Dict[str, Any]:
 async def update_profile(
     request: Request,
     username: str = Depends(require_auth),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     import json
 
     body = await request.json()
@@ -691,9 +708,10 @@ async def update_profile(
 async def upload_avatar(
     request: Request,
     username: str = Depends(require_auth),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     import base64
     from pathlib import Path as _Path
+
     from fastapi import UploadFile
     from fastapi.datastructures import FormData
 
@@ -727,11 +745,11 @@ users_router = APIRouter(prefix="/api/users", tags=["users"])
 
 @users_router.get("")
 async def search_users(
-    q: Optional[str] = None,
+    q: str | None = None,
     limit: int = 20,
     offset: int = 0,
     username: str = Depends(require_auth),
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     limit = min(limit, 50)
     async with open_db() as conn:
         if q:
@@ -769,6 +787,8 @@ async def search_users(
 @users_router.get("/{username}/avatar")
 async def get_avatar(username: str, _: str = Depends(require_auth)):
     import base64
+    import binascii
+
     from fastapi.responses import Response
 
     async with open_db() as conn:
@@ -781,7 +801,7 @@ async def get_avatar(username: str, _: str = Depends(require_auth)):
 
     try:
         data = base64.b64decode(row[0])
-    except Exception:
+    except (binascii.Error, TypeError):
         return Response(status_code=204)
 
     # Canvas always exports PNG; detect jpeg by magic bytes as fallback
@@ -793,7 +813,7 @@ async def get_avatar(username: str, _: str = Depends(require_auth)):
 async def get_public_profile(
     username: str,
     _: str = Depends(require_auth),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     user = await get_user_by_username(username)
     if not user:
         raise APIError(404, "not_found", "Usuario no encontrado", extra={"resource": "user"})
@@ -809,7 +829,7 @@ admin_router = APIRouter(prefix="/api/admin", tags=["admin"])
 _VERSION_RE = re.compile(r"^\d{14}$")
 
 
-async def _latest_docker_hub_version(repo: str) -> Optional[str]:
+async def _latest_docker_hub_version(repo: str) -> str | None:
     """Versión (tag YYYYMMDDHHMMSS) más reciente publicada en Docker Hub para `repo`.
 
     Usa la API pública de Docker Hub (hub.docker.com/v2), no el registry — sin
@@ -955,7 +975,7 @@ async def admin_metadata_tables(_: str = Depends(require_admin)) -> list:
                     sz = await conn.fetchval(
                         "SELECT SUM(payload) FROM dbstat WHERE name=?", (name,)
                     )
-                except Exception:
+                except Exception:  # noqa: BLE001 — dbstat puede no estar compilado
                     sz = None
                 result.append(
                     {
@@ -984,7 +1004,7 @@ _HIDDEN_COLS = frozenset(
 @admin_router.get("/metadata/tables/{table_name}/data")
 async def admin_metadata_table_data(
     table_name: str,
-    q: Optional[str] = Query(None),
+    q: str | None = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(50, ge=1, le=200),
     _: str = Depends(require_admin),
@@ -1056,7 +1076,7 @@ async def admin_metadata_table_data(
 
 
 @admin_router.get("/stats")
-async def admin_stats(_: str = Depends(require_admin)) -> Dict[str, Any]:
+async def admin_stats(_: str = Depends(require_admin)) -> dict[str, Any]:
     import datetime as _dt
 
     async with open_db() as conn:
@@ -1078,8 +1098,9 @@ async def admin_stats(_: str = Depends(require_admin)) -> Dict[str, Any]:
             await conn.fetchval("SELECT COUNT(*) FROM conversations")
         ) or 0
 
-        cutoff = (_dt.date.today() - _dt.timedelta(days=13)).isoformat()
-        today = _dt.date.today().isoformat()
+        _today_utc = _dt.datetime.now(_dt.timezone.utc).date()
+        cutoff = (_today_utc - _dt.timedelta(days=13)).isoformat()
+        today = _today_utc.isoformat()
         try:
             daily_rows = await conn.fetchall(
                 "SELECT day, SUM(tokens) FROM token_daily WHERE day >= ? GROUP BY day ORDER BY day ASC",
@@ -1108,7 +1129,7 @@ async def admin_stats(_: str = Depends(require_admin)) -> Dict[str, Any]:
                     (cutoff,),
                 )
                 tokens_daily = [{"day": r[0], "tokens": r[1]} for r in daily_rows]
-        except Exception:
+        except Exception:  # noqa: BLE001 — backfill best-effort, no debe romper /admin/stats
             tokens_daily = []
 
     agents_public = (
@@ -1142,12 +1163,12 @@ async def admin_stats(_: str = Depends(require_admin)) -> Dict[str, Any]:
 
 @admin_router.get("/users")
 async def admin_list_users(
-    q: Optional[str] = None,
-    role: Optional[str] = None,
-    active: Optional[str] = None,
-    verified: Optional[str] = None,
+    q: str | None = None,
+    role: str | None = None,
+    active: str | None = None,
+    verified: str | None = None,
     _: str = Depends(require_admin),
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     users = await list_users()
     async with open_db() as conn:
         token_rows = await conn.fetchall(
@@ -1184,11 +1205,11 @@ async def admin_patch_user(
     username: str,
     request: Request,
     admin: str = Depends(require_admin),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     if username == admin:
         raise APIError(400, "cannot_modify_own_account", "No puedes modificar tu propia cuenta")
     body = await request.json()
-    updates: Dict[str, Any] = {}
+    updates: dict[str, Any] = {}
     if "is_active" in body:
         updates["is_active"] = 1 if body["is_active"] else 0
     if "role" in body:
@@ -1219,12 +1240,13 @@ async def admin_patch_user(
 async def admin_create_user(
     request: Request,
     _: str = Depends(require_admin),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Crea un usuario directamente desde el panel de admin.
 
     El usuario queda verificado y activo. No se envía email de verificación.
     """
-    from datetime import datetime, timezone as _tz
+    from datetime import datetime
+    from datetime import timezone as _tz
 
     body = await request.json()
     email = str(body.get("email") or "").strip().lower()
@@ -1249,34 +1271,33 @@ async def admin_create_user(
     username = email  # username = email (igual que en el registro normal)
     now = datetime.now(_tz.utc).isoformat()
     try:
-        async with open_db() as conn:
-            async with conn.transaction():
-                if await conn.fetchone("SELECT 1 FROM users WHERE email = ?", (email,)):
-                    raise APIError(
-                        409, "already_exists", "El email ya está registrado",
-                        extra={"resource": "email"},
-                    )
-                if await conn.fetchone("SELECT 1 FROM users WHERE username = ?", (username,)):
-                    raise APIError(
-                        409, "already_exists", "El usuario ya existe",
-                        extra={"resource": "user"},
-                    )
-                await conn.execute(
-                    "INSERT INTO users "
-                    "(username, email, password_hash, display_name, role, "
-                    "is_active, is_verified, created_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                    (
-                        username,
-                        email,
-                        hash_password(password),
-                        display_name or None,
-                        role,
-                        1,
-                        1,   # verificado — el admin crea la cuenta directamente
-                        now,
-                    ),
+        async with open_db() as conn, conn.transaction():
+            if await conn.fetchone("SELECT 1 FROM users WHERE email = ?", (email,)):
+                raise APIError(
+                    409, "already_exists", "El email ya está registrado",
+                    extra={"resource": "email"},
                 )
+            if await conn.fetchone("SELECT 1 FROM users WHERE username = ?", (username,)):
+                raise APIError(
+                    409, "already_exists", "El usuario ya existe",
+                    extra={"resource": "user"},
+                )
+            await conn.execute(
+                "INSERT INTO users "
+                "(username, email, password_hash, display_name, role, "
+                "is_active, is_verified, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    username,
+                    email,
+                    hash_password(password),
+                    display_name or None,
+                    role,
+                    1,
+                    1,   # verificado — el admin crea la cuenta directamente
+                    now,
+                ),
+            )
     except HTTPException:
         raise
     except Exception as exc:
@@ -1289,7 +1310,7 @@ async def admin_create_user(
 @admin_router.delete("/users/{username}")
 async def admin_delete_user(
     username: str, admin: str = Depends(require_admin)
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     if username == admin:
         raise APIError(400, "cannot_delete_own_account", "No puedes eliminar tu propia cuenta")
     if not await delete_user(username):
@@ -1300,7 +1321,7 @@ async def admin_delete_user(
 @admin_router.get("/connections")
 async def admin_list_connections(
     _: str = Depends(require_admin),
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
     import json as _json
 
     async with open_db() as conn:
@@ -1326,7 +1347,7 @@ async def admin_list_connections(
         )
         try:
             data = _json.loads(d.get("data") or "{}")
-        except Exception:
+        except (_json.JSONDecodeError, TypeError):
             data = {}
         result.append(
             {
@@ -1346,7 +1367,7 @@ async def admin_list_connections(
 @admin_router.delete("/connections/{conn_id}")
 async def admin_delete_connection(
     conn_id: str, _: str = Depends(require_admin)
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     from app.config.data import DB_FILE
     from app.storage.storage import ConnectionStorage
 
@@ -1356,7 +1377,7 @@ async def admin_delete_connection(
 
 
 @admin_router.get("/agents")
-async def admin_list_agents(_: str = Depends(require_admin)) -> List[Dict[str, Any]]:
+async def admin_list_agents(_: str = Depends(require_admin)) -> list[dict[str, Any]]:
     agents = await _agents.list(scope="all")
     async with open_db() as conn:
         user_rows = await conn.fetchall("SELECT username, email FROM users")
@@ -1389,7 +1410,7 @@ async def admin_update_agent(
     agent_id: str,
     request: Request,
     _: str = Depends(require_admin),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     agent = await _agents.get(agent_id, scope="private")
     if not agent:
         raise APIError(404, "not_found", "Agente no encontrado", extra={"resource": "agent"})
@@ -1410,7 +1431,7 @@ async def admin_delete_agent(
     agent_id: str,
     scope: str = "private",
     _: str = Depends(require_admin),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     if scope not in ("public", "private"):
         raise APIError(
             400, "invalid_field", "scope debe ser 'public' o 'private'",
@@ -1423,7 +1444,7 @@ async def admin_delete_agent(
 
 
 @admin_router.get("/knowledge")
-async def admin_list_knowledge(_: str = Depends(require_admin)) -> List[Dict[str, Any]]:
+async def admin_list_knowledge(_: str = Depends(require_admin)) -> list[dict[str, Any]]:
     from app.config.data import DB_FILE
     from app.storage.knowledge import KnowledgeStorage
 
@@ -1442,7 +1463,7 @@ async def admin_list_knowledge(_: str = Depends(require_admin)) -> List[Dict[str
 @admin_router.delete("/knowledge/{item_id}")
 async def admin_delete_knowledge(
     item_id: str, _: str = Depends(require_admin)
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     from app.config.data import DB_FILE
     from app.storage.knowledge import KnowledgeStorage
 
@@ -1451,11 +1472,35 @@ async def admin_delete_knowledge(
     return {"ok": True}
 
 
+@admin_router.get("/workflows")
+async def admin_list_workflows(_: str = Depends(require_admin)) -> list[dict[str, Any]]:
+    items = await _workflows.list_all()
+    async with open_db() as conn:
+        user_rows = await conn.fetchall("SELECT username, email FROM users")
+    email_map = {r[0]: r[1] for r in user_rows}
+    for item in items:
+        item["owner_email"] = email_map.get(item.get("owner_id", ""), item.get("owner_id", ""))
+        definition = item.pop("definition", None) or {}
+        item["steps"] = len(definition.get("nodes") or [])
+    return items
+
+
+@admin_router.delete("/workflows/{workflow_id}")
+async def admin_delete_workflow(
+    workflow_id: str, _: str = Depends(require_admin)
+) -> dict[str, Any]:
+    if not await _workflows.delete_any(workflow_id):
+        raise APIError(404, "not_found", "Orquestación no encontrada", extra={"resource": "workflow"})
+    return {"ok": True}
+
+
 @admin_router.get("/workspaces")
 async def admin_list_workspaces(
     _: str = Depends(require_admin),
-) -> List[Dict[str, Any]]:
+) -> list[dict[str, Any]]:
+    import contextlib
     import json as _json
+
     from app.config.data import AGENTS_DIR
 
     async with open_db() as conn:
@@ -1483,16 +1528,14 @@ async def admin_list_workspaces(
         )
         know_counts = {r[0]: r[1] for r in kc_rows}
 
-    agent_counts: Dict[str, int] = {}
+    agent_counts: dict[str, int] = {}
     if AGENTS_DIR.exists():
         for cfg_path in AGENTS_DIR.glob("private/*/config.json"):
-            try:
+            with contextlib.suppress(OSError, _json.JSONDecodeError, AttributeError):
                 data = _json.loads(cfg_path.read_text())
                 owner = data.get("owner_id")
                 if owner:
                     agent_counts[owner] = agent_counts.get(owner, 0) + 1
-            except Exception:
-                pass
 
     result = []
     for ws in workspaces:
@@ -1515,7 +1558,7 @@ async def admin_list_workspaces(
 @admin_router.delete("/workspaces/{workspace_id}")
 async def admin_delete_workspace(
     workspace_id: str, _: str = Depends(require_admin)
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     if not await _workspaces.get(workspace_id):
         raise APIError(404, "not_found", "Workspace no encontrado", extra={"resource": "workspace"})
     await _workspaces.delete(workspace_id)
@@ -1525,7 +1568,7 @@ async def admin_delete_workspace(
 @admin_router.post("/workspaces/{workspace_id}/status")
 async def admin_set_workspace_status(
     workspace_id: str, request: Request, _: str = Depends(require_admin)
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     body = await request.json()
     status = str(body.get("status") or "").strip()
     if status not in ("active", "disabled"):
@@ -1545,7 +1588,7 @@ async def admin_verify_resource(
     resource_id: str,
     request: Request,
     _: str = Depends(require_admin),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     _valid_types = ("agent", "skill", "knowledge")
     if resource_type not in _valid_types:
         raise APIError(
@@ -1581,7 +1624,7 @@ async def admin_impersonate(
     username: str,
     response: Response,
     admin: str = Depends(require_admin),
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     if username == admin:
         raise APIError(400, "already_own_user", "Ya eres este usuario")
 
@@ -1622,7 +1665,7 @@ async def admin_impersonate(
 
 
 @router.get("/tokens")
-async def list_tokens(username: str = Depends(require_auth)) -> List[Dict[str, Any]]:
+async def list_tokens(username: str = Depends(require_auth)) -> list[dict[str, Any]]:
     """Metadatos de los PATs del usuario. El secreto no se devuelve nunca."""
     return await _tokens.list_for_user(username)
 
@@ -1630,7 +1673,7 @@ async def list_tokens(username: str = Depends(require_auth)) -> List[Dict[str, A
 @router.post("/tokens")
 async def create_pat(
     request: Request, username: str = Depends(require_auth)
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Crea un PAT. El token en claro viaja en esta respuesta y en ninguna más."""
     from app.storage.guest import is_guest as _is_guest
 
@@ -1654,11 +1697,11 @@ async def create_pat(
     if expires is not None:
         try:
             expires = int(expires)
-        except (TypeError, ValueError):
+        except (TypeError, ValueError) as exc:
             raise APIError(
                 400, "invalid_field", "expires_in_days inválido",
                 extra={"field": "expires_in_days"},
-            )
+            ) from exc
     if expires not in VALID_EXPIRY_DAYS:
         raise APIError(
             400, "invalid_field", "expires_in_days debe ser 30, 90, 180 o null",
@@ -1673,7 +1716,7 @@ async def create_pat(
 @router.delete("/tokens/{token_id}")
 async def revoke_pat(
     token_id: str, username: str = Depends(require_auth)
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Revoca un PAT. Irreversible: deja de autenticar de inmediato."""
     if not await _tokens.revoke(token_id, username):
         raise APIError(404, "not_found", "Token no encontrado", extra={"resource": "token"})
@@ -1723,7 +1766,7 @@ async def vscode_start(
 @router.post("/vscode/authorize")
 async def vscode_authorize(
     request: Request, username: str = Depends(require_auth)
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Emite el código. Exige la sesión del navegador: es el consentimiento."""
     from app.storage.guest import is_guest as _is_guest
 
@@ -1743,7 +1786,7 @@ async def vscode_authorize(
 
 
 @router.post("/vscode/exchange")
-async def vscode_exchange(request: Request) -> Dict[str, Any]:
+async def vscode_exchange(request: Request) -> dict[str, Any]:
     """Código + state → PAT. Sin cookie: quien llama aquí es la extensión.
 
     El PAT se crea aquí y no al autorizar, para que el token en claro exista solo
