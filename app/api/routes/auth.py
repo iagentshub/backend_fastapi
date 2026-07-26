@@ -1097,6 +1097,9 @@ async def admin_stats(_: str = Depends(require_admin)) -> dict[str, Any]:
         conversations_total = (
             await conn.fetchval("SELECT COUNT(*) FROM conversations")
         ) or 0
+        workflows_total = (
+            await conn.fetchval("SELECT COUNT(*) FROM agent_workflows")
+        ) or 0
 
         _today_utc = _dt.datetime.now(_dt.timezone.utc).date()
         cutoff = (_today_utc - _dt.timedelta(days=13)).isoformat()
@@ -1154,6 +1157,7 @@ async def admin_stats(_: str = Depends(require_admin)) -> dict[str, Any]:
         "tokens_out": tokens_out,
         "knowledge_total": knowledge_total,
         "conversations_total": conversations_total,
+        "workflows_total": workflows_total,
         "agents_public": agents_public,
         "agents_private": agents_private,
         "webmail_url": WEBMAIL_URL,
