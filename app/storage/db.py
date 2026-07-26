@@ -297,6 +297,8 @@ CREATE TABLE IF NOT EXISTS agent_workflows (
     name        TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
     definition  TEXT NOT NULL,
+    scope       TEXT NOT NULL DEFAULT 'private',
+    labels      TEXT NOT NULL DEFAULT '["private"]',
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL,
     PRIMARY KEY(id, owner_id)
@@ -573,6 +575,8 @@ CREATE TABLE IF NOT EXISTS agent_workflows (
     name        TEXT NOT NULL,
     description TEXT NOT NULL DEFAULT '',
     definition  TEXT NOT NULL,
+    scope       TEXT NOT NULL DEFAULT 'private',
+    labels      TEXT NOT NULL DEFAULT '["private"]',
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL,
     PRIMARY KEY(id, owner_id)
@@ -912,6 +916,20 @@ async def _migrate_sqlite(conn: Any) -> None:
     try:
         await conn.execute(
             "ALTER TABLE resource_social ADD COLUMN verified INTEGER NOT NULL DEFAULT 0"
+        )
+        await conn.commit()
+    except Exception:
+        pass
+    try:
+        await conn.execute(
+            "ALTER TABLE agent_workflows ADD COLUMN scope TEXT NOT NULL DEFAULT 'private'"
+        )
+        await conn.commit()
+    except Exception:
+        pass
+    try:
+        await conn.execute(
+            "ALTER TABLE agent_workflows ADD COLUMN labels TEXT NOT NULL DEFAULT '[\"private\"]'"
         )
         await conn.commit()
     except Exception:
@@ -1382,6 +1400,12 @@ async def _migrate_pg(conn: Any) -> None:
     )
     await conn.execute(
         "ALTER TABLE resource_social ADD COLUMN IF NOT EXISTS verified BOOLEAN NOT NULL DEFAULT FALSE"
+    )
+    await conn.execute(
+        "ALTER TABLE agent_workflows ADD COLUMN IF NOT EXISTS scope TEXT NOT NULL DEFAULT 'private'"
+    )
+    await conn.execute(
+        "ALTER TABLE agent_workflows ADD COLUMN IF NOT EXISTS labels TEXT NOT NULL DEFAULT '[\"private\"]'"
     )
     # 13. Limpiar tokens de email/borrado guardados en plano (pre-hash)
     await conn.execute(

@@ -17,11 +17,12 @@ from app.services.chat import stream_chat
 from app.storage.db import IS_PG, open_db
 from app.storage.knowledge import KnowledgeStorage
 from app.storage.storage import AgentStorage, ConnectionStorage, MemoryStorage, SkillStorage
+from app.storage.workflows import WorkflowStorage
 
 router = APIRouter(tags=["social"])
 
 # A4: tipos de recurso válidos para star/unstar y endpoints sociales
-_VALID_SOCIAL_RESOURCE_TYPES: frozenset[str] = frozenset({"agent", "skill", "knowledge"})
+_VALID_SOCIAL_RESOURCE_TYPES: frozenset[str] = frozenset({"agent", "skill", "knowledge", "workflow"})
 
 # N2: rate limiting para endpoints sociales (star, follow)
 _social_limiter = RateLimiter(calls=30, window=60)
@@ -92,6 +93,177 @@ async def _inherit_agent_memory(
     content = await _inherit_memory_store.get(mem_name, source_owner)
     if content:
         await _inherit_memory_store.save(f"{new_agent_id}.md", content, owner_id=target_owner_id)
+
+
+async def _inherit_workflow_agents(
+    nodes: List[Dict[str, Any]], target_owner_id: str
+) -> List[Dict[str, Any]]:
+    """Al forkear/enlazar una orquestación, clona (o referencia) los agentes que usa,
+    igual que _inherit_resource_ids hace con skills/knowledge de un agente."""
+    agents_storage = AgentStorage(_cfg.AGENTS_DIR)
+    id_map: Dict[str, str] = {}
+    new_nodes: List[Dict[str, Any]] = []
+    for node in nodes:
+        old_agent_id = str(node.get("agent_id") or "")
+        if old_agent_id in id_map:
+            new_agent_id = id_map[old_agent_id]
+        else:
+            agent = await agents_storage.get(old_agent_id)
+            if not agent:
+                new_agent_id = old_agent_id
+            elif agent.get("owner_id") == target_owner_id or agent.get("scope") == "public":
+                new_agent_id = old_agent_id
+            else:
+                fork_payload = {
+                    k: v
+                    for k, v in agent.items()
+                    if k not in ("id", "scope", "owner_id", "created_at", "updated_at")
+                }
+                fork_payload["id"] = uuid4().hex[:12]
+                fork_payload["skills"] = await _inherit_resource_ids(
+                    fork_payload.get("skills") or [], "skill", target_owner_id
+                )
+                fork_payload["knowledge"] = await _inherit_resource_ids(
+                    fork_payload.get("knowledge") or [], "knowledge", target_owner_id
+                )
+                fork_payload["memory_file"] = None
+                saved = await agents_storage.save(
+                    fork_payload, "private", owner_id=target_owner_id
+                )
+                await _inherit_agent_memory(
+                    agent, str(agent.get("owner_id") or ""), saved["id"], target_owner_id
+                )
+                new_agent_id = saved["id"]
+            id_map[old_agent_id] = new_agent_id
+        new_nodes.append({**node, "agent_id": new_agent_id})
+    return new_nodes
+
+
+async def _publish_skill_cascade(
+    skill_id: str, username: str, owner_ids: set[str]
+) -> None:
+    skill_storage = SkillStorage(_cfg.SKILLS_DIR)
+    skill = await skill_storage.get_any(skill_id)
+    if not skill or skill.get("owner_id") not in owner_ids:
+        return
+    labels = list(skill.get("labels") or ["private"])
+    if "public" not in labels:
+        labels.append("public")
+        await skill_storage.save(
+            "private", {**skill, "labels": labels}, owner_id=skill["owner_id"]
+        )
+    async with open_db() as conn:
+        await _upsert_social(
+            conn,
+            "skill",
+            skill_id,
+            username,
+            skill.get("name", skill_id),
+            skill.get("description", ""),
+            "Other",
+            "warn",
+            json.dumps(skill.get("tags") or []),
+            1,
+            json.dumps(labels),
+        )
+        await conn.commit()
+
+
+async def _publish_knowledge_item_cascade(
+    know_id: str, username: str, owner_ids: set[str]
+) -> None:
+    """El conocimiento se publica a nivel de carpeta, no de item individual —
+    localiza la carpeta que contiene este item y la publica si es del mismo dueño."""
+    async with open_db() as conn:
+        item_owner_row = await conn.fetchone(
+            "SELECT owner_id FROM knowledge_items WHERE id=?", (know_id,)
+        )
+        if not item_owner_row or item_owner_row[0] not in owner_ids:
+            return
+        folder_row = await conn.fetchone(
+            "SELECT folder_id FROM resource_folder_items "
+            "WHERE resource_type='knowledge' AND resource_id=?",
+            (know_id,),
+        )
+        folder_id = folder_row[0] if folder_row else None
+        if not folder_id:
+            return
+        folder = await conn.fetchone(
+            "SELECT id, name, owner_id, is_public FROM resource_folders WHERE id=?",
+            (folder_id,),
+        )
+        if not folder or folder["owner_id"] not in owner_ids:
+            return
+        if folder["is_public"]:
+            return
+        await _upsert_social(
+            conn,
+            "knowledge",
+            folder_id,
+            username,
+            folder["name"],
+            "",
+            "Other",
+            "warn",
+            "[]",
+            1,
+            '["private"]',
+        )
+        await conn.execute(
+            "UPDATE resource_folders SET is_public=1 WHERE id=?", (folder_id,)
+        )
+        await conn.commit()
+
+
+async def _cascade_publish_agent(
+    agent: Dict[str, Any], username: str, workspace_id: str = ""
+) -> None:
+    """Al publicar un agente, publica en cascada sus skills y conocimiento propios."""
+    owner_ids = {username, workspace_id} - {""}
+    for skill_id in agent.get("skills") or []:
+        await _publish_skill_cascade(skill_id, username, owner_ids)
+    for know_id in agent.get("knowledge") or []:
+        await _publish_knowledge_item_cascade(know_id, username, owner_ids)
+
+
+async def _cascade_publish_workflow(
+    workflow: Dict[str, Any], username: str, workspace_id: str = ""
+) -> None:
+    """Al publicar una orquestación, publica en cascada los agentes propios que usa
+    (y, para cada uno, sus skills/conocimiento — ver _cascade_publish_agent)."""
+    owner_ids = {str(workflow.get("owner_id") or ""), username, workspace_id} - {""}
+    agents_storage = AgentStorage(_cfg.AGENTS_DIR)
+    seen: set[str] = set()
+    for node in workflow.get("definition", {}).get("nodes", []):
+        agent_id = str(node.get("agent_id") or "")
+        if not agent_id or agent_id in seen:
+            continue
+        seen.add(agent_id)
+        agent = await agents_storage.get(agent_id)
+        if not agent or agent.get("owner_id") not in owner_ids:
+            continue
+        labels = list(agent.get("labels") or ["private"])
+        if "public" not in labels:
+            labels.append("public")
+            agent = await agents_storage.save(
+                {**agent, "labels": labels}, agent.get("scope", "private"), owner_id=agent["owner_id"]
+            )
+        async with open_db() as conn:
+            await _upsert_social(
+                conn,
+                "agent",
+                agent_id,
+                username,
+                agent.get("name", agent_id),
+                agent.get("description", ""),
+                "Other",
+                "warn",
+                json.dumps(agent.get("tags") or []),
+                1,
+                json.dumps(labels),
+            )
+            await conn.commit()
+        await _cascade_publish_agent(agent, username, workspace_id)
 
 CATEGORIES = [
     "Coding",
@@ -196,6 +368,11 @@ class _SkillVisibilityBody(BaseModel):
 
 
 class _KnowledgeVisibilityBody(BaseModel):
+    is_public: bool
+    category: str
+
+
+class _WorkflowVisibilityBody(BaseModel):
     is_public: bool
     category: str
 
@@ -335,6 +512,51 @@ async def set_knowledge_visibility(
         )
         await conn.commit()
     return {"ok": True, "is_public": body.is_public}
+
+
+@router.put("/api/workflows/{workflow_id}/visibility")
+async def set_workflow_visibility(
+    workflow_id: str,
+    body: _WorkflowVisibilityBody,
+    ctx: WorkspaceContext = Depends(require_workspace),
+) -> Dict[str, Any]:
+    _check_category(body.category)
+    workflows = WorkflowStorage()
+    workflow = await workflows.get(workflow_id, ctx.workspace_id)
+    if not workflow:
+        raise APIError(
+            404, "not_found", "Orquestación no encontrada", extra={"resource": "workflow"}
+        )
+    resource_labels = workflow.get("labels") or ["private"]
+    is_public_val = 1 if "public" in resource_labels else 0
+
+    async with open_db() as conn:
+        if body.is_public:
+            await _upsert_social(
+                conn,
+                "workflow",
+                workflow_id,
+                ctx.user,
+                workflow.get("name", workflow_id),
+                workflow.get("description", ""),
+                body.category,
+                "warn",
+                "[]",
+                is_public_val,
+                json.dumps(resource_labels),
+            )
+        else:
+            await conn.execute(
+                "DELETE FROM resource_social "
+                "WHERE resource_type=? AND resource_id=? AND owner=?",
+                ("workflow", workflow_id, ctx.user),
+            )
+        await conn.commit()
+
+    if body.is_public and is_public_val:
+        await _cascade_publish_workflow(workflow, ctx.user, ctx.workspace_id)
+
+    return {"ok": True}
 
 
 @router.get("/api/explore")
@@ -481,6 +703,22 @@ async def explore_preview(
                 base["section"] = folder["section"]
                 base["items"] = [dict(row) for row in rows]
                 base["item_count"] = len(rows)
+
+    elif resource_type == "workflow":
+        workflow = await WorkflowStorage().get_any(resource_id)
+        if workflow:
+            agents_storage = AgentStorage(_cfg.AGENTS_DIR)
+            nodes = workflow.get("definition", {}).get("nodes", [])
+            agent_names = []
+            for node in nodes:
+                agent = await agents_storage.get(str(node.get("agent_id") or ""))
+                agent_names.append(
+                    (agent.get("name") if agent else None)
+                    or node.get("label")
+                    or node.get("agent_id")
+                )
+            base["steps"] = len(nodes)
+            base["agent_names"] = agent_names
 
     return base
 
@@ -1199,6 +1437,100 @@ async def link_skill(
             )
         await conn.commit()
     return {"ok": True, "skill_id": new_id, "name": link_name}
+
+
+async def _duplicate_workflow(
+    source_id: str, username: str, kind: str
+) -> Dict[str, Any]:
+    """Clona una orquestación pública para el usuario (fork o link).
+
+    Igual que fork_agent/link_agent: clona el workflow con id propio, hereda
+    (clonando si son privados) los agentes que usa junto con sus skills/knowledge,
+    y registra la copia en resource_social solo para trazar el origen (no queda
+    pública ella misma)."""
+    workflows = WorkflowStorage()
+    source = await workflows.get_any(source_id)
+    if not source:
+        raise APIError(
+            404, "not_found", "Orquestación no encontrada", extra={"resource": "workflow"}
+        )
+    source_owner = source.get("owner_id") or ""
+    await _assert_public("workflow", source_id)
+
+    nodes = source.get("definition", {}).get("nodes", [])
+    if username != source_owner:
+        nodes = await _inherit_workflow_agents(nodes, username)
+    definition = {"nodes": nodes, "edges": source.get("definition", {}).get("edges", [])}
+
+    labels = [lbl for lbl in (source.get("labels") or ["private"]) if lbl not in ("fork", "linked")]
+    labels.append(kind)
+
+    result = await workflows.save(
+        username,
+        {
+            "id": uuid4().hex[:12],
+            "name": source["name"],
+            "description": source.get("description", ""),
+            "definition": definition,
+            "labels": labels,
+        },
+    )
+    new_id = result["id"]
+    lineage_col = "fork_of_user, fork_of_id" if kind == "fork" else "linked_to_user, linked_to_id"
+    tags = json.dumps(source.get("tags") or [])
+
+    async with open_db() as conn:
+        if IS_PG:
+            await conn.execute(
+                "INSERT INTO resource_social "
+                f"(resource_type, resource_id, owner, name, description, is_public, category, "
+                f"trial_missing_deps, {lineage_col}, tags) "
+                "VALUES (?, ?, ?, ?, ?, FALSE, 'Other', 'warn', ?, ?, ?) "
+                "ON CONFLICT DO NOTHING",
+                (
+                    "workflow",
+                    new_id,
+                    username,
+                    result["name"],
+                    source.get("description", ""),
+                    source_owner,
+                    source_id,
+                    tags,
+                ),
+            )
+        else:
+            await conn.execute(
+                "INSERT OR IGNORE INTO resource_social "
+                f"(resource_type, resource_id, owner, name, description, is_public, category, "
+                f"trial_missing_deps, {lineage_col}, tags) "
+                "VALUES (?, ?, ?, ?, ?, 0, 'Other', 'warn', ?, ?, ?)",
+                (
+                    "workflow",
+                    new_id,
+                    username,
+                    result["name"],
+                    source.get("description", ""),
+                    source_owner,
+                    source_id,
+                    tags,
+                ),
+            )
+        await conn.commit()
+    return {"ok": True, "workflow_id": new_id, "name": result["name"]}
+
+
+@router.post("/api/workflows/{source_id}/fork")
+async def fork_workflow(
+    source_id: str, username: str = Depends(require_auth)
+) -> Dict[str, Any]:
+    return await _duplicate_workflow(source_id, username, "fork")
+
+
+@router.post("/api/workflows/{source_id}/link")
+async def link_workflow(
+    source_id: str, username: str = Depends(require_auth)
+) -> Dict[str, Any]:
+    return await _duplicate_workflow(source_id, username, "linked")
 
 
 @router.post("/api/agents/private/{agent_id}/sync")

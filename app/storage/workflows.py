@@ -64,29 +64,35 @@ class WorkflowStorage:
         workflow_id = str(payload.get("id") or uuid4().hex[:12])
         existing = await self.get(workflow_id, owner_id)
         now = _now()
+        labels = [str(lbl) for lbl in (payload.get("labels") or ["private"]) if lbl]
         item = {
             "id": workflow_id,
             "owner_id": owner_id,
             "name": str(payload["name"]).strip(),
             "description": str(payload.get("description") or "").strip(),
             "definition": payload["definition"],
+            "scope": str(payload.get("scope") or "private"),
+            "labels": labels,
             "created_at": existing["created_at"] if existing else now,
             "updated_at": now,
         }
         async with open_db() as conn:
             await conn.execute(
                 "INSERT INTO agent_workflows "
-                "(id, owner_id, name, description, definition, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?) "
+                "(id, owner_id, name, description, definition, scope, labels, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT(id, owner_id) DO UPDATE SET "
                 "name=excluded.name, description=excluded.description, "
-                "definition=excluded.definition, updated_at=excluded.updated_at",
+                "definition=excluded.definition, scope=excluded.scope, "
+                "labels=excluded.labels, updated_at=excluded.updated_at",
                 (
                     item["id"],
                     owner_id,
                     item["name"],
                     item["description"],
                     json.dumps(item["definition"], ensure_ascii=False),
+                    item["scope"],
+                    json.dumps(item["labels"], ensure_ascii=False),
                     item["created_at"],
                     item["updated_at"],
                 ),
@@ -136,4 +142,8 @@ class WorkflowStorage:
     def _decode(row: Any) -> Dict[str, Any]:
         item = dict(row)
         item["definition"] = json.loads(item["definition"])
+        try:
+            item["labels"] = json.loads(item.get("labels") or '["private"]')
+        except (json.JSONDecodeError, TypeError):
+            item["labels"] = ["private"]
         return item

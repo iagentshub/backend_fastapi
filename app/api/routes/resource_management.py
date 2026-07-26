@@ -34,6 +34,7 @@ class WorkflowBody(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     description: str = Field(default="", max_length=2_000)
     definition: Dict[str, Any]
+    labels: list[str] = Field(default_factory=lambda: ["private"])
 
 
 class WorkflowRunBody(BaseModel):
@@ -205,6 +206,7 @@ async def save_workflow(
             "name": body.name,
             "description": body.description,
             "definition": definition,
+            "labels": body.labels,
         },
     )
 
