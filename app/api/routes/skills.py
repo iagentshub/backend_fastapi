@@ -18,6 +18,7 @@ from app.storage.resource_versions import ResourceVersionStorage
 from app.storage.storage import SkillStorage
 from app.storage.workspace_shares import WorkspaceShareStorage
 from app.storage.workspaces import WorkspaceStorage
+from app.utils.origin import compute_origin_type
 
 router = APIRouter(prefix="/api/skills", tags=["skills"])
 
@@ -33,6 +34,14 @@ _VALID_SCOPES = {"public", "private", "all"}
 def _check_scope(scope: str) -> None:
     if scope not in _VALID_SCOPES:
         raise APIError(400, "invalid_field", "Scope no válido", extra={"field": "scope"})
+
+
+def _mark_origin(sk: Dict[str, Any], user: str, workspace_id: str) -> None:
+    """Solo marca origin_type cuando es tuyo o enlazado — deja sin marcar las
+    skills públicas de otros usuarios que aparecen en el listado (no son tuyas
+    ni un enlace, no hay badge que mostrar)."""
+    if sk.get("_shared") or sk.get("owner_id") in (user, workspace_id):
+        sk["origin_type"] = compute_origin_type(sk)
 
 
 @router.get("")
@@ -51,6 +60,8 @@ async def list_skills(
         public = await _storage.list("public") if scope in ("public", "all") else []
         private = s_obj.skills if scope in ("private", "all") else []
         items = public + private
+        for sk in items:
+            _mark_origin(sk, user, ctx.workspace_id)
         if offset:
             items = items[offset:]
         if limit:
@@ -100,6 +111,8 @@ async def list_skills(
         items = items[offset:]
     if limit:
         items = items[:limit]
+    for sk in items:
+        _mark_origin(sk, user, ctx.workspace_id)
     private_items = [item for item in items if item.get("scope") != "public"]
     enriched = await _folders.enrich_items(
         private_items, default_owner=ctx.workspace_id, resource_type="skill"
@@ -125,6 +138,7 @@ async def get_skill(
         )
         if not sk:
             raise APIError(404, "not_found", "Skill no encontrada", extra={"resource": "skill"})
+        _mark_origin(sk, user, ctx.workspace_id)
         return sk
     sk = await _storage.get(scope, skill_id)
     if not sk:
@@ -149,7 +163,9 @@ async def get_skill(
                         break
             if not allowed:
                 raise APIError(403, "forbidden", "No tienes acceso a esta skill")
+            sk["_shared"] = True
 
+    _mark_origin(sk, user, ctx.workspace_id)
     return sk
 
 

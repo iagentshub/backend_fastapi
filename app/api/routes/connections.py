@@ -28,6 +28,7 @@ from app.storage.guest import get_session, is_guest
 from app.storage.storage import AgentStorage, ConnectionStorage, SkillStorage
 from app.storage.workspace_shares import WorkspaceShareStorage
 from app.storage.workspaces import WorkspaceStorage
+from app.utils.origin import compute_origin_type
 
 
 def _safe_name(name: str, taken: Set[str], hub_label: str) -> str:
@@ -70,12 +71,15 @@ async def _list_accessible(user: str, workspace_id: str) -> List[Dict[str, Any]]
     En workspace de equipo incluye también las personales marcadas con _personal_key=True.
     """
     ws_conns = await _storage.list(workspace_id)
+    for c in ws_conns:
+        c["owner_id"] = workspace_id
     if workspace_id == user:
         return ws_conns
     personal_conns = await _storage.list(user)
     seen = {c["id"] for c in ws_conns}
     for c in personal_conns:
         if c["id"] not in seen:
+            c["owner_id"] = user
             c["_personal_key"] = True
             ws_conns.append(c)
     return ws_conns
@@ -100,6 +104,8 @@ async def _get_conn_any(
                 )
             if owner_row and await _ws.owner_is_active(owner_row[0]):
                 conn = await _storage.get(conn_id, None)
+                if conn is not None:
+                    conn["_shared"] = True
     return conn
 
 
@@ -337,6 +343,10 @@ async def list_connections(
                     c["_group_id"] = shared_map[rid]
                     raw.append(c)
 
+    for c in raw:
+        if c.get("_shared") or c.get("owner_id") in (user, workspace_id):
+            c["origin_type"] = compute_origin_type(c)
+
     non_ollama = [c for c in raw if c.get("type") != "ollama"]
     ollama_raw = [c for c in raw if c.get("type") == "ollama"]
     if workspace_id != user and not is_guest(user) and await get_user_role(user) != "admin":
@@ -472,6 +482,7 @@ async def get_connection(
         )
     ):
         raise APIError(403, "forbidden", "Sin permiso para usar esta conexión")
+    conn["origin_type"] = compute_origin_type(conn)
     return {k: v for k, v in conn.items() if k != "api_key"}
 
 

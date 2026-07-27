@@ -19,6 +19,7 @@ from app.storage.storage import AgentStorage, SkillStorage
 from app.storage.workspace_shares import WorkspaceShareStorage
 from app.storage.workspaces import WorkspaceStorage
 from app.storage.workflows import WorkflowStorage
+from app.utils.origin import compute_origin_type
 
 router = APIRouter(prefix="/api", tags=["resource-management"])
 _agents = AgentStorage(AGENTS_DIR)
@@ -150,7 +151,10 @@ async def list_workflows(
         item["_group_ids"] = shared_map[item["id"]]
         item["_group_id"] = shared_map[item["id"]][0]
         shared.append(item)
-    return sorted(own + shared, key=lambda item: item["updated_at"], reverse=True)
+    result = own + shared
+    for item in result:
+        item["origin_type"] = compute_origin_type(item)
+    return sorted(result, key=lambda item: item["updated_at"], reverse=True)
 
 
 async def _accessible_workflow(
@@ -180,6 +184,7 @@ async def get_workflow(
     item = await _accessible_workflow(workflow_id, ctx)
     if not item:
         raise HTTPException(status_code=404, detail="Orquestación no encontrada")
+    item["origin_type"] = compute_origin_type(item)
     return item
 
 

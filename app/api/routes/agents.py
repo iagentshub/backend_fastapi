@@ -25,6 +25,7 @@ from app.middleware.ratelimit import RateLimiter
 from app.models.agent import Agent
 from app.services.chat import stream_chat
 from app.storage.chat import ChatStorage
+from app.utils.origin import compute_origin_type
 
 from app.storage.db import IS_PG, PH, open_db
 from app.storage.guest import (
@@ -62,20 +63,6 @@ _chat_limiter = RateLimiter(calls=RATE_CHAT_CALLS, window=RATE_CHAT_WINDOW)
 
 class _AgentPreferenceBody(BaseModel):
     connection_id: Optional[str] = None
-
-
-def _compute_origin(agent: Dict[str, Any], current_user: str) -> str:
-    """Compute origin_type for an agent relative to the current user.
-
-    - "linked"  → agent arrived via workspace share (_shared=True)
-    - "fork"    → agent is a copy of another resource (fork_of_id or fork_of_user set)
-    - "owner"   → user created this agent
-    """
-    if agent.get("_shared") is True:
-        return "linked"
-    if agent.get("fork_of_id") or agent.get("fork_of_user"):
-        return "fork"
-    return "owner"
 
 
 async def _assert_can_read_agent(
@@ -181,7 +168,7 @@ async def list_agents(
         result: List[Dict[str, Any]] = []
         for a in items:
             a = _apply_locale(a, locale)
-            a["origin_type"] = _compute_origin(a, user)
+            a["origin_type"] = compute_origin_type(a)
             result.append(a)
         return result
     agents = await _agents.list(scope)
@@ -269,7 +256,7 @@ async def list_agents(
     enriched: List[Dict[str, Any]] = []
     for a in agents:
         a = _apply_locale(a, locale)
-        a["origin_type"] = _compute_origin(a, user)
+        a["origin_type"] = compute_origin_type(a)
         enriched.append(a)
     return enriched
 
@@ -339,7 +326,7 @@ async def get_agent(
         if not a:
             raise APIError(404, "not_found", "Agente no encontrado", extra={"resource": "agent"})
         a = _apply_locale(a, get_locale())
-        a["origin_type"] = _compute_origin(a, user)
+        a["origin_type"] = compute_origin_type(a)
         return a
     a = await _agents.get(agent_id)
     if not a:
@@ -350,7 +337,7 @@ async def get_agent(
     ):
         raise APIError(403, "forbidden", "Sin permiso para usar este agente")
     a = _apply_locale(a, get_locale())
-    a["origin_type"] = _compute_origin(a, user)
+    a["origin_type"] = compute_origin_type(a)
     owner = str(a.get("owner_id") or ctx.workspace_id)
     a["folder_id"] = await _folders.folder_for(owner, "agents", agent_id)
     return a

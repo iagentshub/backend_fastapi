@@ -29,7 +29,7 @@ _social_limiter = RateLimiter(calls=30, window=60)
 
 
 async def _assert_public(resource_type: str, source_id: str) -> None:
-    """Fork/link solo están disponibles para contenido público del marketplace."""
+    """Enlazar solo está disponible para contenido público del marketplace."""
     async with open_db() as conn:
         row = await conn.fetchone(
             "SELECT 1 FROM resource_social WHERE resource_type=? AND resource_id=? AND is_public=?",
@@ -47,7 +47,7 @@ _inherit_memory_store = MemoryStorage(_cfg.MEMORY_DIR)
 async def _inherit_resource_ids(
     ids: List[str], resource_type: str, target_owner_id: str
 ) -> List[str]:
-    """Al forkear/enlazar un agente, sus skills/conocimiento privados se clonan junto
+    """Al enlazar un agente, sus skills/conocimiento privados se clonan junto
     con él (heredados) para que sigan siendo accesibles desde el nuevo dueño. Los
     públicos, o los que ya pertenecen al destino, se referencian tal cual (sin clonar)."""
     new_ids: List[str] = []
@@ -98,7 +98,7 @@ async def _inherit_agent_memory(
 async def _inherit_workflow_agents(
     nodes: List[Dict[str, Any]], target_owner_id: str
 ) -> List[Dict[str, Any]]:
-    """Al forkear/enlazar una orquestación, clona (o referencia) los agentes que usa,
+    """Al enlazar una orquestación, clona (o referencia) los agentes que usa,
     igual que _inherit_resource_ids hace con skills/knowledge de un agente."""
     agents_storage = AgentStorage(_cfg.AGENTS_DIR)
     id_map: Dict[str, str] = {}
@@ -114,21 +114,21 @@ async def _inherit_workflow_agents(
             elif agent.get("owner_id") == target_owner_id or agent.get("scope") == "public":
                 new_agent_id = old_agent_id
             else:
-                fork_payload = {
+                clone_payload = {
                     k: v
                     for k, v in agent.items()
                     if k not in ("id", "scope", "owner_id", "created_at", "updated_at")
                 }
-                fork_payload["id"] = uuid4().hex[:12]
-                fork_payload["skills"] = await _inherit_resource_ids(
-                    fork_payload.get("skills") or [], "skill", target_owner_id
+                clone_payload["id"] = uuid4().hex[:12]
+                clone_payload["skills"] = await _inherit_resource_ids(
+                    clone_payload.get("skills") or [], "skill", target_owner_id
                 )
-                fork_payload["knowledge"] = await _inherit_resource_ids(
-                    fork_payload.get("knowledge") or [], "knowledge", target_owner_id
+                clone_payload["knowledge"] = await _inherit_resource_ids(
+                    clone_payload.get("knowledge") or [], "knowledge", target_owner_id
                 )
-                fork_payload["memory_file"] = None
+                clone_payload["memory_file"] = None
                 saved = await agents_storage.save(
-                    fork_payload, "private", owner_id=target_owner_id
+                    clone_payload, "private", owner_id=target_owner_id
                 )
                 await _inherit_agent_memory(
                     agent, str(agent.get("owner_id") or ""), saved["id"], target_owner_id
@@ -594,7 +594,7 @@ async def explore(
         params.extend([limit, offset])
         raw = await conn.fetchall(
             f"SELECT resource_type, resource_id, owner, name, description, category, "
-            f"stars_count, fork_of_user, fork_of_id, linked_to_user, linked_to_id, trial_missing_deps, tags, labels, verified "
+            f"stars_count, linked_to_user, linked_to_id, trial_missing_deps, tags, labels, verified "
             f"FROM resource_social WHERE {where} "
             f"ORDER BY stars_count DESC, updated_at DESC "
             f"LIMIT ? OFFSET ?",
@@ -739,7 +739,7 @@ async def my_resources(
         where = " AND ".join(conditions)
         raw = await conn.fetchall(
             f"SELECT resource_type, resource_id, owner, name, description, is_public, category, "
-            f"stars_count, fork_of_user, fork_of_id, linked_to_user, linked_to_id, trial_missing_deps, tags, labels, verified "
+            f"stars_count, linked_to_user, linked_to_id, trial_missing_deps, tags, labels, verified "
             f"FROM resource_social WHERE {where} "
             f"ORDER BY updated_at DESC",
             tuple(params),
@@ -795,7 +795,7 @@ async def user_resources(
         where = " AND ".join(conditions)
         raw = await conn.fetchall(
             f"SELECT resource_type, resource_id, owner, name, description, category, "
-            f"stars_count, fork_of_user, fork_of_id, linked_to_user, linked_to_id, trial_missing_deps, tags, labels "
+            f"stars_count, linked_to_user, linked_to_id, trial_missing_deps, tags, labels "
             f"FROM resource_social WHERE {where} "
             f"ORDER BY stars_count DESC, updated_at DESC",
             tuple(params),
@@ -977,67 +977,6 @@ async def star_resource(
     return {"ok": True, "stars": count or 0}
 
 
-@router.post("/api/knowledge/{source_id}/fork")
-async def fork_knowledge(
-    source_id: str,
-    username: str = Depends(require_auth),
-) -> Dict[str, Any]:
-    knowledge = KnowledgeStorage(_cfg.DB_FILE)
-    source = await knowledge.get(source_id)
-    if not source:
-        raise APIError(404, "not_found", "Knowledge no encontrado", extra={"resource": "knowledge"})
-
-    source_owner = source.get("owner_id") or ""
-    await _assert_public("knowledge", source_id)
-
-    new_title = source.get("title", source_id)
-    result = await knowledge.save(
-        type=source.get("type", "url"),
-        title=new_title,
-        source=source.get("source", ""),
-        content=source.get("content", ""),
-        owner_id=username,
-    )
-    new_id = result["id"]
-
-    async with open_db() as conn:
-        if IS_PG:
-            await conn.execute(
-                "INSERT INTO resource_social "
-                "(resource_type, resource_id, owner, name, description, is_public, category, "
-                "trial_missing_deps, fork_of_user, fork_of_id) "
-                "VALUES (?, ?, ?, ?, ?, FALSE, 'Other', 'warn', ?, ?) "
-                "ON CONFLICT DO NOTHING",
-                (
-                    "knowledge",
-                    new_id,
-                    username,
-                    new_title,
-                    source.get("source", ""),
-                    source_owner,
-                    source_id,
-                ),
-            )
-        else:
-            await conn.execute(
-                "INSERT OR IGNORE INTO resource_social "
-                "(resource_type, resource_id, owner, name, description, is_public, category, "
-                "trial_missing_deps, fork_of_user, fork_of_id) "
-                "VALUES (?, ?, ?, ?, ?, 0, 'Other', 'warn', ?, ?)",
-                (
-                    "knowledge",
-                    new_id,
-                    username,
-                    new_title,
-                    source.get("source", ""),
-                    source_owner,
-                    source_id,
-                ),
-            )
-        await conn.commit()
-    return {"ok": True, "knowledge_id": new_id, "name": new_title}
-
-
 @router.post("/api/knowledge/{source_id}/link")
 async def link_knowledge(
     source_id: str,
@@ -1099,180 +1038,6 @@ async def link_knowledge(
     return {"ok": True, "knowledge_id": new_id, "name": link_title}
 
 
-@router.post("/api/agents/{scope}/{source_id}/fork")
-async def fork_agent(
-    scope: str,
-    source_id: str,
-    username: str = Depends(require_auth),
-) -> Dict[str, Any]:
-    agents = AgentStorage(_cfg.AGENTS_DIR)
-    source = await agents.get(source_id, scope)
-    if not source:
-        raise APIError(404, "not_found", "Agente no encontrado", extra={"resource": "agent"})
-
-    source_owner = source.get("owner_id") or ""
-    if scope != "public":
-        await _assert_public("agent", source_id)
-
-    fork_payload = {
-        k: v
-        for k, v in source.items()
-        if k not in ("id", "scope", "owner_id", "created_at", "updated_at")
-    }
-    # id propio (no derivado del nombre): al no renombrar la copia, un id basado en
-    # el nombre colisionaría con el original (misma slug) y una lectura por id sin
-    # filtro de owner (GET /api/agents/{id}) devolvería cualquiera de los dos.
-    fork_payload["id"] = uuid4().hex[:12]
-    if username != source_owner:
-        # Skills/conocimiento privados y memoria se heredan junto con el agente
-        fork_payload["skills"] = await _inherit_resource_ids(
-            fork_payload.get("skills") or [], "skill", username
-        )
-        fork_payload["knowledge"] = await _inherit_resource_ids(
-            fork_payload.get("knowledge") or [], "knowledge", username
-        )
-        fork_payload["memory_file"] = None
-
-    try:
-        result = await agents.save(fork_payload, "private", owner_id=username)
-    except ValueError as exc:
-        raise APIError(422, "agent_save_invalid", str(exc)) from exc
-
-    if username != source_owner:
-        await _inherit_agent_memory(source, source_owner, result["id"], username)
-
-    fork_labels = list(result.get("labels") or ["private"])
-    for ol in ("fork", "linked"):
-        if ol in fork_labels:
-            fork_labels.remove(ol)
-    fork_labels.append("fork")
-    result = await agents.save(
-        {**result, "labels": fork_labels}, "private", owner_id=username
-    )
-
-    new_id = result["id"]
-    fork_name = result["name"]
-    fork_tags = json.dumps(source.get("tags") or [])
-
-    async with open_db() as conn:
-        if IS_PG:
-            await conn.execute(
-                "INSERT INTO resource_social "
-                "(resource_type, resource_id, owner, name, description, is_public, category, "
-                "trial_missing_deps, fork_of_user, fork_of_id, tags) "
-                "VALUES (?, ?, ?, ?, ?, FALSE, 'Other', 'warn', ?, ?, ?) "
-                "ON CONFLICT DO NOTHING",
-                (
-                    "agent",
-                    new_id,
-                    username,
-                    fork_name,
-                    source.get("description", ""),
-                    source_owner,
-                    source_id,
-                    fork_tags,
-                ),
-            )
-        else:
-            await conn.execute(
-                "INSERT OR IGNORE INTO resource_social "
-                "(resource_type, resource_id, owner, name, description, is_public, category, "
-                "trial_missing_deps, fork_of_user, fork_of_id, tags) "
-                "VALUES (?, ?, ?, ?, ?, 0, 'Other', 'warn', ?, ?, ?)",
-                (
-                    "agent",
-                    new_id,
-                    username,
-                    fork_name,
-                    source.get("description", ""),
-                    source_owner,
-                    source_id,
-                    fork_tags,
-                ),
-            )
-        await conn.commit()
-    return {"ok": True, "agent_id": new_id, "name": fork_name}
-
-
-@router.post("/api/skills/{scope}/{source_id}/fork")
-async def fork_skill(
-    scope: str,
-    source_id: str,
-    username: str = Depends(require_auth),
-) -> Dict[str, Any]:
-    skills = SkillStorage(_cfg.SKILLS_DIR)
-    source = await skills.get(scope, source_id)
-    if not source:
-        raise APIError(404, "not_found", "Skill no encontrada", extra={"resource": "skill"})
-
-    source_owner = source.get("owner_id") or ""
-    if scope != "public":
-        await _assert_public("skill", source_id)
-
-    fork_payload = {
-        k: v for k, v in source.items() if k not in ("id", "scope", "owner_id")
-    }
-    # id propio (no derivado del nombre) — ver comentario equivalente en fork_agent.
-    fork_payload["id"] = uuid4().hex[:12]
-
-    try:
-        result = await skills.save("private", fork_payload, owner_id=username)
-    except ValueError as exc:
-        raise APIError(422, "skill_save_invalid", str(exc)) from exc
-
-    fork_labels = list(result.get("labels") or ["private"])
-    for ol in ("fork", "linked"):
-        if ol in fork_labels:
-            fork_labels.remove(ol)
-    fork_labels.append("fork")
-    result = await skills.save(
-        "private", {**result, "labels": fork_labels}, owner_id=username
-    )
-
-    new_id = result["id"]
-    fork_name = result["name"]
-    fork_tags = json.dumps(source.get("tags") or [])
-
-    async with open_db() as conn:
-        if IS_PG:
-            await conn.execute(
-                "INSERT INTO resource_social "
-                "(resource_type, resource_id, owner, name, description, is_public, category, "
-                "trial_missing_deps, fork_of_user, fork_of_id, tags) "
-                "VALUES (?, ?, ?, ?, ?, FALSE, 'Other', 'warn', ?, ?, ?) "
-                "ON CONFLICT DO NOTHING",
-                (
-                    "skill",
-                    new_id,
-                    username,
-                    fork_name,
-                    source.get("description", ""),
-                    source_owner,
-                    source_id,
-                    fork_tags,
-                ),
-            )
-        else:
-            await conn.execute(
-                "INSERT OR IGNORE INTO resource_social "
-                "(resource_type, resource_id, owner, name, description, is_public, category, "
-                "trial_missing_deps, fork_of_user, fork_of_id, tags) "
-                "VALUES (?, ?, ?, ?, ?, 0, 'Other', 'warn', ?, ?, ?)",
-                (
-                    "skill",
-                    new_id,
-                    username,
-                    fork_name,
-                    source.get("description", ""),
-                    source_owner,
-                    source_id,
-                    fork_tags,
-                ),
-            )
-        await conn.commit()
-    return {"ok": True, "skill_id": new_id, "name": fork_name}
-
-
 @router.post("/api/agents/{scope}/{source_id}/link")
 async def link_agent(
     scope: str,
@@ -1293,7 +1058,9 @@ async def link_agent(
         for k, v in source.items()
         if k not in ("id", "scope", "owner_id", "created_at", "updated_at")
     }
-    # id propio (no derivado del nombre) — ver comentario equivalente en fork_agent.
+    # id propio (no derivado del nombre): al no renombrar la copia, un id basado en
+    # el nombre colisionaría con el original (misma slug) y una lectura por id sin
+    # filtro de owner devolvería cualquiera de los dos.
     link_payload["id"] = uuid4().hex[:12]
     link_labels = list(link_payload.get("labels") or ["private"])
     for ol in ("fork", "linked"):
@@ -1381,7 +1148,9 @@ async def link_skill(
     link_payload = {
         k: v for k, v in source.items() if k not in ("id", "scope", "owner_id")
     }
-    # id propio (no derivado del nombre) — ver comentario equivalente en fork_agent.
+    # id propio (no derivado del nombre): al no renombrar la copia, un id basado en
+    # el nombre colisionaría con el original (misma slug) y una lectura por id sin
+    # filtro de owner devolvería cualquiera de los dos.
     link_payload["id"] = uuid4().hex[:12]
     link_labels = list(link_payload.get("labels") or ["private"])
     for ol in ("fork", "linked"):
@@ -1439,14 +1208,12 @@ async def link_skill(
     return {"ok": True, "skill_id": new_id, "name": link_name}
 
 
-async def _duplicate_workflow(
-    source_id: str, username: str, kind: str
-) -> Dict[str, Any]:
-    """Clona una orquestación pública para el usuario (fork o link).
+async def _duplicate_workflow(source_id: str, username: str) -> Dict[str, Any]:
+    """Clona una orquestación pública para el usuario.
 
-    Igual que fork_agent/link_agent: clona el workflow con id propio, hereda
-    (clonando si son privados) los agentes que usa junto con sus skills/knowledge,
-    y registra la copia en resource_social solo para trazar el origen (no queda
+    Igual que link_agent: clona el workflow con id propio, hereda (clonando si
+    son privados) los agentes que usa junto con sus skills/knowledge, y
+    registra la copia en resource_social solo para trazar el origen (no queda
     pública ella misma)."""
     workflows = WorkflowStorage()
     source = await workflows.get_any(source_id)
@@ -1462,8 +1229,8 @@ async def _duplicate_workflow(
         nodes = await _inherit_workflow_agents(nodes, username)
     definition = {"nodes": nodes, "edges": source.get("definition", {}).get("edges", [])}
 
-    labels = [lbl for lbl in (source.get("labels") or ["private"]) if lbl not in ("fork", "linked")]
-    labels.append(kind)
+    labels = [lbl for lbl in (source.get("labels") or ["private"]) if lbl != "linked"]
+    labels.append("linked")
 
     result = await workflows.save(
         username,
@@ -1476,15 +1243,14 @@ async def _duplicate_workflow(
         },
     )
     new_id = result["id"]
-    lineage_col = "fork_of_user, fork_of_id" if kind == "fork" else "linked_to_user, linked_to_id"
     tags = json.dumps(source.get("tags") or [])
 
     async with open_db() as conn:
         if IS_PG:
             await conn.execute(
                 "INSERT INTO resource_social "
-                f"(resource_type, resource_id, owner, name, description, is_public, category, "
-                f"trial_missing_deps, {lineage_col}, tags) "
+                "(resource_type, resource_id, owner, name, description, is_public, category, "
+                "trial_missing_deps, linked_to_user, linked_to_id, tags) "
                 "VALUES (?, ?, ?, ?, ?, FALSE, 'Other', 'warn', ?, ?, ?) "
                 "ON CONFLICT DO NOTHING",
                 (
@@ -1501,8 +1267,8 @@ async def _duplicate_workflow(
         else:
             await conn.execute(
                 "INSERT OR IGNORE INTO resource_social "
-                f"(resource_type, resource_id, owner, name, description, is_public, category, "
-                f"trial_missing_deps, {lineage_col}, tags) "
+                "(resource_type, resource_id, owner, name, description, is_public, category, "
+                "trial_missing_deps, linked_to_user, linked_to_id, tags) "
                 "VALUES (?, ?, ?, ?, ?, 0, 'Other', 'warn', ?, ?, ?)",
                 (
                     "workflow",
@@ -1519,18 +1285,11 @@ async def _duplicate_workflow(
     return {"ok": True, "workflow_id": new_id, "name": result["name"]}
 
 
-@router.post("/api/workflows/{source_id}/fork")
-async def fork_workflow(
-    source_id: str, username: str = Depends(require_auth)
-) -> Dict[str, Any]:
-    return await _duplicate_workflow(source_id, username, "fork")
-
-
 @router.post("/api/workflows/{source_id}/link")
 async def link_workflow(
     source_id: str, username: str = Depends(require_auth)
 ) -> Dict[str, Any]:
-    return await _duplicate_workflow(source_id, username, "linked")
+    return await _duplicate_workflow(source_id, username)
 
 
 @router.post("/api/agents/private/{agent_id}/sync")
@@ -1731,101 +1490,3 @@ async def unstar_resource(
             (resource_type, resource_id),
         )
     return {"ok": True, "stars": count or 0}
-
-
-@router.post("/api/agents/private/{agent_id}/link/convert-to-fork")
-async def convert_agent_link_to_fork(
-    agent_id: str,
-    username: str = Depends(require_auth),
-) -> Dict[str, Any]:
-    async with open_db() as conn:
-        row = await conn.fetchone(
-            "SELECT linked_to_user, linked_to_id FROM resource_social "
-            "WHERE resource_type=? AND resource_id=? AND owner=? AND linked_to_id IS NOT NULL",
-            ("agent", agent_id, username),
-        )
-    if not row:
-        raise APIError(
-            404,
-            "not_found",
-            "Agente no encontrado o no tiene enlace activo",
-            extra={"resource": "agent"},
-        )
-
-    prev_linked_to_user = row[0]
-    prev_linked_to_id = row[1]
-
-    async with open_db() as conn:
-        await conn.execute(
-            "UPDATE resource_social SET "
-            "linked_to_user=NULL, linked_to_id=NULL, "
-            "fork_of_user=?, fork_of_id=? "
-            "WHERE resource_type=? AND resource_id=? AND owner=?",
-            (prev_linked_to_user, prev_linked_to_id, "agent", agent_id, username),
-        )
-        await conn.commit()
-
-    agents = AgentStorage(_cfg.AGENTS_DIR)
-    agent_data = await agents.get(agent_id, "private")
-    if agent_data:
-        updated = dict(agent_data)
-        updated.pop("linked_to_user", None)
-        updated.pop("linked_to_id", None)
-        labels: List[str] = list(updated.get("labels") or ["private"])
-        if "linked" in labels:
-            labels.remove("linked")
-        if "fork" not in labels:
-            labels.append("fork")
-        updated["labels"] = labels
-        await agents.save(updated, "private", owner_id=updated.get("owner_id"))
-
-    return {"ok": True, "agent_id": agent_id}
-
-
-@router.post("/api/skills/private/{skill_id}/link/convert-to-fork")
-async def convert_skill_link_to_fork(
-    skill_id: str,
-    username: str = Depends(require_auth),
-) -> Dict[str, Any]:
-    async with open_db() as conn:
-        row = await conn.fetchone(
-            "SELECT linked_to_user, linked_to_id FROM resource_social "
-            "WHERE resource_type=? AND resource_id=? AND owner=? AND linked_to_id IS NOT NULL",
-            ("skill", skill_id, username),
-        )
-    if not row:
-        raise APIError(
-            404,
-            "not_found",
-            "Skill no encontrada o no tiene enlace activo",
-            extra={"resource": "skill"},
-        )
-
-    prev_linked_to_user = row[0]
-    prev_linked_to_id = row[1]
-
-    async with open_db() as conn:
-        await conn.execute(
-            "UPDATE resource_social SET "
-            "linked_to_user=NULL, linked_to_id=NULL, "
-            "fork_of_user=?, fork_of_id=? "
-            "WHERE resource_type=? AND resource_id=? AND owner=?",
-            (prev_linked_to_user, prev_linked_to_id, "skill", skill_id, username),
-        )
-        await conn.commit()
-
-    skills = SkillStorage(_cfg.SKILLS_DIR)
-    skill_data = await skills.get("private", skill_id)
-    if skill_data:
-        updated = dict(skill_data)
-        updated.pop("linked_to_user", None)
-        updated.pop("linked_to_id", None)
-        labels_s: List[str] = list(updated.get("labels") or ["private"])
-        if "linked" in labels_s:
-            labels_s.remove("linked")
-        if "fork" not in labels_s:
-            labels_s.append("fork")
-        updated["labels"] = labels_s
-        await skills.save("private", updated, owner_id=updated.get("owner_id"))
-
-    return {"ok": True, "skill_id": skill_id}

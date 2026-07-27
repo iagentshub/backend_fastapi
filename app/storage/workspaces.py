@@ -81,7 +81,7 @@ class WorkspaceStorage:
 
     async def delete(self, workspace_id: str) -> bool:
         """Elimina el workspace y TODO su contenido: lo creado directamente en él y
-        lo enlazado/forkeado hacia él (una vez copiado, vive ahí — no se toca el
+        lo enlazado hacia él (una vez copiado, vive ahí — no se toca el
         original en su owner real). No afecta a nada fuera del workspace."""
         async with open_db() as conn:
             async with conn.transaction():

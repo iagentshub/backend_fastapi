@@ -161,10 +161,17 @@ def test_share_skill_with_group(client):
     r = client.post(f"/api/sharing/skill/{skill['id']}", json={"group_id": ws["id"]})
     assert r.status_code == 200
 
+    # El dueño sigue viendo origin_type='owner' en su propia lista
+    owner_skills = client.get("/api/skills?scope=all").json()
+    own = next(s for s in owner_skills if s["id"] == skill["id"])
+    assert own["origin_type"] == "owner"
+
     # El miembro ve la skill en su lista (vista general sin filtro de grupo)
     _set_cookie(client, "sh_member_h")
     skills = client.get("/api/skills?scope=all").json()
-    assert any(s["id"] == skill["id"] and s.get("_shared") for s in skills)
+    shared = next(s for s in skills if s["id"] == skill["id"])
+    assert shared.get("_shared")
+    assert shared["origin_type"] == "linked"
 
 
 def test_share_knowledge_with_group(client):
@@ -226,10 +233,18 @@ def test_share_workflow_with_group(client):
     assert shared.status_code == 200
     assert agent["id"] in shared.json()["cascaded"]
 
+    # El dueño sigue viendo origin_type='owner' en su propia lista
+    _set_cookie(client, "sh_workflow_owner")
+    own = next(
+        item for item in client.get("/api/workflows").json() if item["id"] == workflow["id"]
+    )
+    assert own["origin_type"] == "owner"
+
     _set_cookie(client, "sh_workflow_member")
     workflows = client.get("/api/workflows").json()
     visible = next(item for item in workflows if item["id"] == workflow["id"])
     assert visible["_shared"] is True
+    assert visible["origin_type"] == "linked"
 
     forbidden = client.post("/api/workflows", json=visible)
     assert forbidden.status_code == 403

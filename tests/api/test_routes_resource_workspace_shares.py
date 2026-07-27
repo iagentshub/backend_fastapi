@@ -48,10 +48,14 @@ def test_share_personal_connection_with_workspace_visible_to_member(client):
     _set_cookie(client, "rws_owner_a", workspace_id=ws["id"])
     r = client.post(f"/api/sharing/connection/{conn['id']}")
     assert r.status_code == 200
+    own = next(c for c in client.get("/api/connections").json() if c["id"] == conn["id"])
+    assert own["origin_type"] == "owner"
 
     _set_cookie(client, "rws_member_a", workspace_id=ws["id"])
     conns = client.get("/api/connections").json()
     assert any(c["id"] == conn["id"] for c in conns)
+    shared = next(c for c in conns if c["id"] == conn["id"])
+    assert shared["origin_type"] == "linked"
 
     # El original sigue siendo de rws_owner_a — no se duplicó el registro (mismo id,
     # sin crear una copia con otro owner_id)
