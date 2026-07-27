@@ -229,6 +229,9 @@ def test_explore_filtra_por_label_existente(client):
     _login(client, _uid("explbl"))
     agent_id = _make_public_agent(client, f"LabelFilterAgent {uuid4().hex[:6]}")
 
+    # Explore excluye los recursos propios del solicitante, así que se consulta
+    # como otro usuario distinto del dueño del agente.
+    _login(client, _uid("explbl_viewer"))
     r = client.get("/api/explore", params={"label": "public"})
     assert r.status_code == 200
     assert isinstance(r.json(), list)

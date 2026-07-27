@@ -72,6 +72,7 @@ def test_link_agente_publico_devuelve_200(client):
     agent_id = r.json()["id"]
     _make_agent_public(agent_id, owner)
 
+    _login(client, "linktest03b")
     r2 = client.post(f"/api/agents/private/{agent_id}/link")
     assert r2.status_code == 200
     body = r2.json()
@@ -87,6 +88,7 @@ def test_link_agente_tiene_label_linked(client):
     agent_id = r.json()["id"]
     _make_agent_public(agent_id, owner)
 
+    _login(client, "linktest04b")
     r2 = client.post(f"/api/agents/private/{agent_id}/link")
     assert r2.status_code == 200
     link_id = r2.json()["agent_id"]
@@ -105,6 +107,7 @@ def test_link_agente_guarda_linked_to_en_resource_social(client):
     agent_id = r.json()["id"]
     _make_agent_public(agent_id, owner)
 
+    _login(client, "linktest05b")
     r2 = client.post(f"/api/agents/private/{agent_id}/link")
     assert r2.status_code == 200
     link_id = r2.json()["agent_id"]
@@ -122,14 +125,57 @@ def test_link_agente_no_publico_devuelve_403(client):
     assert r.status_code == 200
     agent_id = r.json()["id"]
 
+    _login(client, "linktest06b")
     r2 = client.post(f"/api/agents/private/{agent_id}/link")
     assert r2.status_code == 403
+
+
+def test_link_agente_propio_devuelve_400(client):
+    owner = _login(client, "linktest06c")
+    r = client.post("/api/agents", json={"name": "Agente Propio Link", "description": "d"})
+    assert r.status_code == 200
+    agent_id = r.json()["id"]
+    _make_agent_public(agent_id, owner)
+
+    r2 = client.post(f"/api/agents/private/{agent_id}/link")
+    assert r2.status_code == 400
 
 
 def test_link_agente_inexistente_devuelve_404(client):
     _login(client, "linktest07")
     r = client.post("/api/agents/private/no-existe-este-agente/link")
     assert r.status_code == 404
+
+
+def test_link_agente_copia_no_conserva_label_public(client):
+    """La copia enlazada no debe conservar la label 'public' del original —
+    si la conservara, un guardado trivial del linker la volvería a publicar
+    como una entrada duplicada del original en Explorar."""
+    owner = _login(client, "linktest07b")
+    r = client.post("/api/agents", json={
+        "name": "Agente Publico Con Label", "description": "d", "labels": ["public"],
+    })
+    assert r.status_code == 200
+    agent_id = r.json()["id"]
+    _make_agent_public(agent_id, owner)
+
+    _login(client, "linktest07c")
+    r2 = client.post(f"/api/agents/private/{agent_id}/link")
+    assert r2.status_code == 200
+    link_id = r2.json()["agent_id"]
+
+    r3 = client.get(f"/api/agents/{link_id}")
+    assert r3.status_code == 200
+    labels = r3.json().get("labels", [])
+    assert "public" not in labels
+    assert "linked" in labels
+
+    # Y aunque alguien intentase publicarla de todas formas, el backend lo rechaza
+    r4 = client.put(
+        f"/api/agents/private/{link_id}/visibility",
+        json={"is_public": True, "category": "Coding", "trial_missing_deps": "warn"},
+    )
+    assert r4.status_code == 400
 
 
 # ---------------------------------------------------------------------------
@@ -147,6 +193,7 @@ def test_link_skill_publico_devuelve_200(client):
     skill_id = r.json()["id"]
     _make_skill_public(skill_id, owner)
 
+    _login(client, "linktest08b")
     r2 = client.post(f"/api/skills/private/{skill_id}/link")
     assert r2.status_code == 200
     body = r2.json()
@@ -166,6 +213,7 @@ def test_link_skill_tiene_label_linked(client):
     skill_id = r.json()["id"]
     _make_skill_public(skill_id, owner)
 
+    _login(client, "linktest09b")
     r2 = client.post(f"/api/skills/private/{skill_id}/link")
     assert r2.status_code == 200
     link_id = r2.json()["skill_id"]
@@ -188,6 +236,7 @@ def test_link_skill_guarda_linked_to_en_resource_social(client):
     skill_id = r.json()["id"]
     _make_skill_public(skill_id, owner)
 
+    _login(client, "linktest10b")
     r2 = client.post(f"/api/skills/private/{skill_id}/link")
     assert r2.status_code == 200
     link_id = r2.json()["skill_id"]
@@ -208,14 +257,61 @@ def test_link_skill_no_publico_devuelve_403(client):
     assert r.status_code == 200
     skill_id = r.json()["id"]
 
+    _login(client, "linktest11b")
     r2 = client.post(f"/api/skills/private/{skill_id}/link")
     assert r2.status_code == 403
+
+
+def test_link_skill_propio_devuelve_400(client):
+    owner = _login(client, "linktest11c")
+    r = client.post("/api/skills/private", json={
+        "name": "Skill Propia Link",
+        "description": "d",
+        "content": "# skill",
+    })
+    assert r.status_code == 200
+    skill_id = r.json()["id"]
+    _make_skill_public(skill_id, owner)
+
+    r2 = client.post(f"/api/skills/private/{skill_id}/link")
+    assert r2.status_code == 400
 
 
 def test_link_skill_inexistente_devuelve_404(client):
     _login(client, "linktest12")
     r = client.post("/api/skills/private/no-existe-esta-skill/link")
     assert r.status_code == 404
+
+
+def test_link_skill_copia_no_conserva_label_public(client):
+    """La copia enlazada de una skill no debe conservar la label 'public'."""
+    owner = _login(client, "linktest12b")
+    r = client.post("/api/skills/private", json={
+        "name": "Skill Publica Con Label",
+        "description": "d",
+        "content": "# skill",
+        "labels": ["public"],
+    })
+    assert r.status_code == 200
+    skill_id = r.json()["id"]
+    _make_skill_public(skill_id, owner)
+
+    _login(client, "linktest12c")
+    r2 = client.post(f"/api/skills/private/{skill_id}/link")
+    assert r2.status_code == 200
+    link_id = r2.json()["skill_id"]
+
+    r3 = client.get(f"/api/skills/private/{link_id}")
+    assert r3.status_code == 200
+    labels = r3.json().get("labels", [])
+    assert "public" not in labels
+    assert "linked" in labels
+
+    r4 = client.put(
+        f"/api/skills/private/{link_id}/visibility",
+        json={"is_public": True, "category": "Coding"},
+    )
+    assert r4.status_code == 400
 
 
 # ---------------------------------------------------------------------------
@@ -348,7 +444,7 @@ def test_verified_admin_puede_marcar(admin_client):
     from app.storage.db import open_db
 
     agent_id = "verify-agent-adm-001"
-    agent_owner = "testadmin"
+    agent_owner = "someone_else_verify_test"
 
     async def _insert():
         async with open_db() as conn:
@@ -442,3 +538,78 @@ def test_linked_broken_detectado(client):
     linked_row2 = next((x for x in resources2 if x["resource_id"] == link_id), None)
     assert linked_row2 is not None
     assert linked_row2.get("linked_broken") is True
+
+
+# ---------------------------------------------------------------------------
+# link workflow — la copia no debe conservar la label 'public'
+# ---------------------------------------------------------------------------
+
+def _make_workflow_public(workflow_id: str, owner: str) -> None:
+    import asyncio
+    from app.storage.db import open_db
+
+    async def _do() -> None:
+        async with open_db() as conn:
+            await conn.execute(
+                "INSERT OR IGNORE INTO resource_social "
+                "(resource_type, resource_id, owner, name, is_public, category, trial_missing_deps) "
+                "VALUES (?, ?, ?, ?, 1, 'Other', 'warn')",
+                ("workflow", workflow_id, owner, workflow_id),
+            )
+            await conn.commit()
+
+    asyncio.run(_do())
+
+
+def test_link_workflow_copia_no_conserva_label_public(client):
+    """La copia enlazada de una orquestación no debe conservar la label 'public'."""
+    owner = _login(client, "linktest13")
+    r_agent = client.post("/api/agents", json={"name": "Agente Workflow Link", "description": "d"})
+    assert r_agent.status_code == 200
+    agent_id = r_agent.json()["id"]
+
+    r = client.post("/api/workflows", json={
+        "name": "Workflow Publico Con Label",
+        "description": "d",
+        "definition": {"nodes": [{"id": "n1", "agent_id": agent_id}], "edges": []},
+        "labels": ["public"],
+    })
+    assert r.status_code == 200
+    workflow_id = r.json()["id"]
+    _make_workflow_public(workflow_id, owner)
+
+    _login(client, "linktest13b")
+    r2 = client.post(f"/api/workflows/{workflow_id}/link")
+    assert r2.status_code == 200
+    link_id = r2.json()["workflow_id"]
+
+    r3 = client.get(f"/api/workflows/{link_id}")
+    assert r3.status_code == 200
+    labels = r3.json().get("labels", [])
+    assert "public" not in labels
+    assert "linked" in labels
+
+    r4 = client.put(
+        f"/api/workflows/{link_id}/visibility",
+        json={"is_public": True, "category": "Other"},
+    )
+    assert r4.status_code == 400
+
+
+def test_link_workflow_propio_devuelve_400(client):
+    owner = _login(client, "linktest14")
+    r_agent = client.post("/api/agents", json={"name": "Agente Workflow Propio", "description": "d"})
+    assert r_agent.status_code == 200
+    agent_id = r_agent.json()["id"]
+
+    r = client.post("/api/workflows", json={
+        "name": "Workflow Propio",
+        "description": "d",
+        "definition": {"nodes": [{"id": "n1", "agent_id": agent_id}], "edges": []},
+    })
+    assert r.status_code == 200
+    workflow_id = r.json()["id"]
+    _make_workflow_public(workflow_id, owner)
+
+    r2 = client.post(f"/api/workflows/{workflow_id}/link")
+    assert r2.status_code == 400

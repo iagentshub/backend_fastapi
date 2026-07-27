@@ -12,6 +12,14 @@ def _login(client, username="socialtest", password="pass1234"):
     return username
 
 
+def _switch(client, username):
+    """Cambia la sesión a un usuario YA registrado, sin volver a crearlo."""
+    from app.auth.auth import create_token
+
+    client.cookies.set("ga_token", create_token(username))
+    return username
+
+
 def _create_agent(client, name="Social Agent"):
     r = client.post(
         "/api/agents",
@@ -55,6 +63,8 @@ def test_agente_publico_aparece_en_explore(client):
     assert r.status_code == 200
     assert r.json()["ok"] is True
 
+    # Explore excluye los recursos propios del solicitante — se consulta como otro usuario
+    _login(client, "exploretest1_viewer")
     r = client.get("/api/explore")
     assert r.status_code == 200
     ids = [x["resource_id"] for x in r.json()]
@@ -80,9 +90,12 @@ def test_agente_privado_desaparece_de_explore(client):
         },
     )
 
+    # Explore excluye los recursos propios del solicitante — se consulta como otro usuario
+    _login(client, "exploretest2_viewer")
     r = client.get("/api/explore")
     assert any(x["resource_id"] == agent_id for x in r.json())
 
+    _switch(client, "exploretest2")
     r2 = client.put(
         f"/api/agents/private/{agent_id}/visibility",
         json={
@@ -93,6 +106,7 @@ def test_agente_privado_desaparece_de_explore(client):
     )
     assert r2.status_code == 200
 
+    _switch(client, "exploretest2_viewer")
     r3 = client.get("/api/explore")
     assert not any(x["resource_id"] == agent_id for x in r3.json())
 
@@ -132,6 +146,8 @@ def test_explore_filtra_por_tipo_y_categoria(client):
         },
     )
 
+    # Explore excluye los recursos propios del solicitante — se consulta como otro usuario
+    _login(client, "filtertest_viewer")
     r_agents = client.get("/api/explore", params={"type": "agent"})
     assert r_agents.status_code == 200
     assert all(x["resource_type"] == "agent" for x in r_agents.json())
@@ -156,6 +172,8 @@ def test_explore_busqueda_por_texto(client):
         },
     )
 
+    # Explore excluye los recursos propios del solicitante — se consulta como otro usuario
+    _login(client, "qtest_viewer")
     r = client.get("/api/explore", params={"q": "Xylophone"})
     assert r.status_code == 200
     assert any(x["resource_id"] == agent["id"] for x in r.json())
@@ -179,6 +197,8 @@ def test_star_unstar_actualiza_stars_count(client):
         },
     )
 
+    # Explore excluye los recursos propios del solicitante — estrellar/consultar como otro usuario
+    _login(client, "startest_viewer")
     r_star = client.post(f"/api/agent/{agent_id}/star")
     assert r_star.status_code == 200
     body = r_star.json()
