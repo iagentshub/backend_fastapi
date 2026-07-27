@@ -72,6 +72,7 @@ def test_link_agente_publico_devuelve_200(client):
     agent_id = r.json()["id"]
     _make_agent_public(agent_id, owner)
 
+    _login(client, "linktest03b")
     r2 = client.post(f"/api/agents/private/{agent_id}/link")
     assert r2.status_code == 200
     body = r2.json()
@@ -87,6 +88,7 @@ def test_link_agente_tiene_label_linked(client):
     agent_id = r.json()["id"]
     _make_agent_public(agent_id, owner)
 
+    _login(client, "linktest04b")
     r2 = client.post(f"/api/agents/private/{agent_id}/link")
     assert r2.status_code == 200
     link_id = r2.json()["agent_id"]
@@ -105,6 +107,7 @@ def test_link_agente_guarda_linked_to_en_resource_social(client):
     agent_id = r.json()["id"]
     _make_agent_public(agent_id, owner)
 
+    _login(client, "linktest05b")
     r2 = client.post(f"/api/agents/private/{agent_id}/link")
     assert r2.status_code == 200
     link_id = r2.json()["agent_id"]
@@ -122,8 +125,20 @@ def test_link_agente_no_publico_devuelve_403(client):
     assert r.status_code == 200
     agent_id = r.json()["id"]
 
+    _login(client, "linktest06b")
     r2 = client.post(f"/api/agents/private/{agent_id}/link")
     assert r2.status_code == 403
+
+
+def test_link_agente_propio_devuelve_400(client):
+    owner = _login(client, "linktest06c")
+    r = client.post("/api/agents", json={"name": "Agente Propio Link", "description": "d"})
+    assert r.status_code == 200
+    agent_id = r.json()["id"]
+    _make_agent_public(agent_id, owner)
+
+    r2 = client.post(f"/api/agents/private/{agent_id}/link")
+    assert r2.status_code == 400
 
 
 def test_link_agente_inexistente_devuelve_404(client):
@@ -147,6 +162,7 @@ def test_link_skill_publico_devuelve_200(client):
     skill_id = r.json()["id"]
     _make_skill_public(skill_id, owner)
 
+    _login(client, "linktest08b")
     r2 = client.post(f"/api/skills/private/{skill_id}/link")
     assert r2.status_code == 200
     body = r2.json()
@@ -166,6 +182,7 @@ def test_link_skill_tiene_label_linked(client):
     skill_id = r.json()["id"]
     _make_skill_public(skill_id, owner)
 
+    _login(client, "linktest09b")
     r2 = client.post(f"/api/skills/private/{skill_id}/link")
     assert r2.status_code == 200
     link_id = r2.json()["skill_id"]
@@ -188,6 +205,7 @@ def test_link_skill_guarda_linked_to_en_resource_social(client):
     skill_id = r.json()["id"]
     _make_skill_public(skill_id, owner)
 
+    _login(client, "linktest10b")
     r2 = client.post(f"/api/skills/private/{skill_id}/link")
     assert r2.status_code == 200
     link_id = r2.json()["skill_id"]
@@ -208,8 +226,24 @@ def test_link_skill_no_publico_devuelve_403(client):
     assert r.status_code == 200
     skill_id = r.json()["id"]
 
+    _login(client, "linktest11b")
     r2 = client.post(f"/api/skills/private/{skill_id}/link")
     assert r2.status_code == 403
+
+
+def test_link_skill_propio_devuelve_400(client):
+    owner = _login(client, "linktest11c")
+    r = client.post("/api/skills/private", json={
+        "name": "Skill Propia Link",
+        "description": "d",
+        "content": "# skill",
+    })
+    assert r.status_code == 200
+    skill_id = r.json()["id"]
+    _make_skill_public(skill_id, owner)
+
+    r2 = client.post(f"/api/skills/private/{skill_id}/link")
+    assert r2.status_code == 400
 
 
 def test_link_skill_inexistente_devuelve_404(client):
@@ -348,7 +382,7 @@ def test_verified_admin_puede_marcar(admin_client):
     from app.storage.db import open_db
 
     agent_id = "verify-agent-adm-001"
-    agent_owner = "testadmin"
+    agent_owner = "someone_else_verify_test"
 
     async def _insert():
         async with open_db() as conn:

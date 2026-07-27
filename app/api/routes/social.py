@@ -573,8 +573,8 @@ async def explore(
     limit = min(limit, 100)
 
     async with open_db() as conn:
-        conditions: List[str] = ["is_public = ?"]
-        params: List[Any] = [_PUBLIC_VAL]
+        conditions: List[str] = ["is_public = ?", "owner != ?"]
+        params: List[Any] = [_PUBLIC_VAL, username]
         if type and type != "all":
             conditions.append("resource_type = ?")
             params.append(type)
@@ -989,6 +989,8 @@ async def link_knowledge(
 
     source_owner = source.get("owner_id") or ""
     await _assert_public("knowledge", source_id)
+    if source_owner == username:
+        raise APIError(400, "already_owner", "Ya eres el propietario de este recurso")
 
     link_title = source.get("title", source_id)
     result = await knowledge.save(
@@ -1052,6 +1054,8 @@ async def link_agent(
     source_owner = source.get("owner_id") or ""
     if scope != "public":
         await _assert_public("agent", source_id)
+    if source_owner == username:
+        raise APIError(400, "already_owner", "Ya eres el propietario de este recurso")
 
     link_payload = {
         k: v
@@ -1144,6 +1148,8 @@ async def link_skill(
     source_owner = source.get("owner_id") or ""
     if scope != "public":
         await _assert_public("skill", source_id)
+    if source_owner == username:
+        raise APIError(400, "already_owner", "Ya eres el propietario de este recurso")
 
     link_payload = {
         k: v for k, v in source.items() if k not in ("id", "scope", "owner_id")
@@ -1223,6 +1229,8 @@ async def _duplicate_workflow(source_id: str, username: str) -> Dict[str, Any]:
         )
     source_owner = source.get("owner_id") or ""
     await _assert_public("workflow", source_id)
+    if source_owner == username:
+        raise APIError(400, "already_owner", "Ya eres el propietario de este recurso")
 
     nodes = source.get("definition", {}).get("nodes", [])
     if username != source_owner:

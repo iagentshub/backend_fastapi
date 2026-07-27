@@ -98,6 +98,8 @@ def test_explore_filter_by_tag(client):
         "trial_missing_deps": "warn",
     })
 
+    # Explore excluye los recursos propios del solicitante — se consulta como otro usuario
+    _login(client, "taguser3_viewer")
     r3 = client.get("/api/explore", params={"tag": "python"})
     assert r3.status_code == 200
     results = r3.json()
