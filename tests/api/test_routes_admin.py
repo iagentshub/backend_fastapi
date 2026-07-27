@@ -74,7 +74,9 @@ def test_check_update_available(admin_client, monkeypatch):
     monkeypatch.setenv("GAIA_VERSION", "20260101000000")
 
     async def fake_get(*args, **kwargs):
-        return _mock_tags_response(["latest", "vanilla", "20260101000000", "20260601120000"])
+        return _mock_tags_response(
+            ["latest", "vanilla", "react-20260101000000", "react-20260601120000"]
+        )
 
     with patch.object(httpx.AsyncClient, "get", new=fake_get):
         r = admin_client.get("/api/admin/check-update")
@@ -87,11 +89,30 @@ def test_check_update_available(admin_client, monkeypatch):
     assert data["update_available"] is True
 
 
+def test_check_update_ignores_other_variant(admin_client, monkeypatch):
+    """Un tag `vanilla-*` más nuevo no debe disparar 'update_available' para
+    una instalación react (bug real que motivó el prefijo de variante)."""
+    monkeypatch.setenv("GAIA_VERSION", "20260101000000")
+
+    async def fake_get(*args, **kwargs):
+        return _mock_tags_response(
+            ["latest", "vanilla", "react-20260101000000", "vanilla-20260601120000"]
+        )
+
+    with patch.object(httpx.AsyncClient, "get", new=fake_get):
+        r = admin_client.get("/api/admin/check-update")
+
+    data = r.json()
+    assert data["checked"] is True
+    assert data["latest_version"] == "20260101000000"
+    assert data["update_available"] is False
+
+
 def test_check_update_up_to_date(admin_client, monkeypatch):
     monkeypatch.setenv("GAIA_VERSION", "20260601120000")
 
     async def fake_get(*args, **kwargs):
-        return _mock_tags_response(["latest", "20260101000000", "20260601120000"])
+        return _mock_tags_response(["latest", "react-20260101000000", "react-20260601120000"])
 
     with patch.object(httpx.AsyncClient, "get", new=fake_get):
         r = admin_client.get("/api/admin/check-update")
@@ -113,6 +134,24 @@ def test_check_update_no_remote_versions(admin_client, monkeypatch):
     data = r.json()
     assert data["checked"] is False
     assert data["reason"] == "no_remote_versions"
+
+
+def test_check_update_vanilla_variant(admin_client, monkeypatch):
+    monkeypatch.setenv("GAIA_VERSION", "20260101000000")
+    monkeypatch.setenv("IMAGE_TAG", "vanilla")
+
+    async def fake_get(*args, **kwargs):
+        return _mock_tags_response(
+            ["latest", "vanilla", "react-20260601120000", "vanilla-20260101000000"]
+        )
+
+    with patch.object(httpx.AsyncClient, "get", new=fake_get):
+        r = admin_client.get("/api/admin/check-update")
+
+    data = r.json()
+    assert data["checked"] is True
+    assert data["latest_version"] == "20260101000000"
+    assert data["update_available"] is False
 
 
 def test_check_update_docker_hub_error(admin_client, monkeypatch):

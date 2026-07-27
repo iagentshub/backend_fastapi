@@ -826,16 +826,26 @@ async def get_public_profile(
 admin_router = APIRouter(prefix="/api/admin", tags=["admin"])
 
 
-_VERSION_RE = re.compile(r"^\d{14}$")
+def _version_re(variant: str) -> re.Pattern:
+    return re.compile(rf"^{re.escape(variant)}-(\d{{14}})$")
 
 
-async def _latest_docker_hub_version(repo: str) -> str | None:
-    """Versión (tag YYYYMMDDHHMMSS) más reciente publicada en Docker Hub para `repo`.
+async def _latest_docker_hub_version(repo: str, variant: str) -> str | None:
+    """Versión (tag `<variant>-YYYYMMDDHHMMSS`) más reciente publicada en Docker
+    Hub para `repo`, restringida a `variant` ("react" o "vanilla").
+
+    `iagenthub/app` recibe pushes desde 3 workflows distintos (iAgents,
+    frontend_react, frontend_vanilla) que generan cada uno su propio timestamp
+    de build para react y para vanilla — sin el prefijo de variante, comparar
+    el máximo global mezclaría ambas familias de tags y detectaría "update
+    available" con solo que la OTRA variante se hubiese publicado un segundo
+    antes, aunque la que está desplegada siga totalmente al día.
 
     Usa la API pública de Docker Hub (hub.docker.com/v2), no el registry — sin
     autenticación y sin el rate-limit estricto de docker.io/pulls. None si el
-    repo no tiene ningún tag con ese formato todavía.
+    repo no tiene ningún tag de esa variante todavía.
     """
+    pattern = _version_re(variant)
     versions: list[str] = []
     url = f"https://hub.docker.com/v2/repositories/{repo}/tags?page_size=100"
     async with httpx.AsyncClient(timeout=10) as client:
@@ -843,9 +853,10 @@ async def _latest_docker_hub_version(repo: str) -> str | None:
             resp = await client.get(url)
             resp.raise_for_status()
             data = resp.json()
-            versions.extend(
-                t["name"] for t in data.get("results", []) if _VERSION_RE.match(t.get("name", ""))
-            )
+            for t in data.get("results", []):
+                match = pattern.match(t.get("name", ""))
+                if match:
+                    versions.append(match.group(1))
             url = data.get("next")
             if not url:
                 break
@@ -867,8 +878,9 @@ async def admin_check_update(_: str = Depends(require_admin)) -> dict:
 
     hub_user = os.environ.get("DOCKER_HUB_USER", "iagenthub")
     repo = f"{hub_user}/app"
+    variant = "vanilla" if os.environ.get("IMAGE_TAG") == "vanilla" else "react"
     try:
-        latest_version = await _latest_docker_hub_version(repo)
+        latest_version = await _latest_docker_hub_version(repo, variant)
     except httpx.HTTPError as exc:
         raise APIError(
             502, "check_update_failed", "No se pudo consultar Docker Hub"
