@@ -67,6 +67,10 @@ async def _inherit_resource_ids(
             # owner_id, así que dos ids iguales de dueños distintos son ambiguos.
             clone = {k: v for k, v in item.items() if k not in ("id", "scope", "owner_id")}
             clone["id"] = uuid4().hex[:12]
+            clone["labels"] = [
+                lbl for lbl in (clone.get("labels") or ["private"])
+                if lbl not in ("linked", "public")
+            ] or ["private"]
             saved = await _inherit_skills_store.save("private", clone, owner_id=target_owner_id)
         else:
             saved = await _inherit_knowledge_store.save(
@@ -120,6 +124,10 @@ async def _inherit_workflow_agents(
                     if k not in ("id", "scope", "owner_id", "created_at", "updated_at")
                 }
                 clone_payload["id"] = uuid4().hex[:12]
+                clone_payload["labels"] = [
+                    lbl for lbl in (clone_payload.get("labels") or ["private"])
+                    if lbl not in ("linked", "fork", "public")
+                ] or ["private"]
                 clone_payload["skills"] = await _inherit_resource_ids(
                     clone_payload.get("skills") or [], "skill", target_owner_id
                 )
@@ -153,6 +161,13 @@ async def _publish_skill_cascade(
             "private", {**skill, "labels": labels}, owner_id=skill["owner_id"]
         )
     async with open_db() as conn:
+        row = await conn.fetchone(
+            "SELECT linked_to_id FROM resource_social "
+            "WHERE resource_type=? AND resource_id=? AND owner=?",
+            ("skill", skill_id, username),
+        )
+        if row and row["linked_to_id"]:
+            return
         await _upsert_social(
             conn,
             "skill",
@@ -242,6 +257,14 @@ async def _cascade_publish_workflow(
         agent = await agents_storage.get(agent_id)
         if not agent or agent.get("owner_id") not in owner_ids:
             continue
+        async with open_db() as conn:
+            linked_row = await conn.fetchone(
+                "SELECT linked_to_id FROM resource_social "
+                "WHERE resource_type=? AND resource_id=? AND owner=?",
+                ("agent", agent_id, username),
+            )
+        if linked_row and linked_row["linked_to_id"]:
+            continue
         labels = list(agent.get("labels") or ["private"])
         if "public" not in labels:
             labels.append("public")
@@ -289,6 +312,24 @@ def _check_category(cat: str) -> None:
             "invalid_field",
             f"Categoría inválida. Opciones: {CATEGORIES}",
             extra={"field": "category"},
+        )
+
+
+async def _assert_not_linked_copy(
+    conn: Any, resource_type: str, resource_id: str, owner: str
+) -> None:
+    """Impide publicar una copia enlazada (creada vía "Enlazar" de un recurso ajeno):
+    republicarla generaría una entrada duplicada del original en Explorar."""
+    row = await conn.fetchone(
+        "SELECT linked_to_id FROM resource_social "
+        "WHERE resource_type=? AND resource_id=? AND owner=?",
+        (resource_type, resource_id, owner),
+    )
+    if row and row["linked_to_id"]:
+        raise APIError(
+            400,
+            "linked_copy_not_publishable",
+            "No puedes publicar una copia enlazada de un recurso ajeno",
         )
 
 
@@ -401,6 +442,7 @@ async def set_agent_visibility(
 
     async with open_db() as conn:
         if body.is_public:
+            await _assert_not_linked_copy(conn, "agent", agent_id, username)
             await _upsert_social(
                 conn,
                 "agent",
@@ -441,6 +483,7 @@ async def set_skill_visibility(
 
     async with open_db() as conn:
         if body.is_public:
+            await _assert_not_linked_copy(conn, "skill", skill_id, username)
             await _upsert_social(
                 conn,
                 "skill",
@@ -532,6 +575,7 @@ async def set_workflow_visibility(
 
     async with open_db() as conn:
         if body.is_public:
+            await _assert_not_linked_copy(conn, "workflow", workflow_id, ctx.user)
             await _upsert_social(
                 conn,
                 "workflow",
@@ -1067,7 +1111,7 @@ async def link_agent(
     # filtro de owner devolvería cualquiera de los dos.
     link_payload["id"] = uuid4().hex[:12]
     link_labels = list(link_payload.get("labels") or ["private"])
-    for ol in ("fork", "linked"):
+    for ol in ("fork", "linked", "public"):
         if ol in link_labels:
             link_labels.remove(ol)
     link_labels.append("linked")
@@ -1159,7 +1203,7 @@ async def link_skill(
     # filtro de owner devolvería cualquiera de los dos.
     link_payload["id"] = uuid4().hex[:12]
     link_labels = list(link_payload.get("labels") or ["private"])
-    for ol in ("fork", "linked"):
+    for ol in ("fork", "linked", "public"):
         if ol in link_labels:
             link_labels.remove(ol)
     link_labels.append("linked")
@@ -1237,7 +1281,10 @@ async def _duplicate_workflow(source_id: str, username: str) -> Dict[str, Any]:
         nodes = await _inherit_workflow_agents(nodes, username)
     definition = {"nodes": nodes, "edges": source.get("definition", {}).get("edges", [])}
 
-    labels = [lbl for lbl in (source.get("labels") or ["private"]) if lbl != "linked"]
+    labels = [
+        lbl for lbl in (source.get("labels") or ["private"])
+        if lbl not in ("linked", "fork", "public")
+    ]
     labels.append("linked")
 
     result = await workflows.save(
