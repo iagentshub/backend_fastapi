@@ -38,3 +38,48 @@ def test_workflow_crud_validates_graph(admin_client):
     workflow_id = workflow.json()["id"]
     assert admin_client.get("/api/workflows").json()[0]["id"] == workflow_id
     assert admin_client.delete(f"/api/workflows/{workflow_id}").json() == {"ok": True}
+
+
+def test_workflow_persists_canvas_positions_and_loops(admin_client):
+    created = admin_client.post(
+        "/api/agents",
+        json={"name": "Agente cíclico", "system_prompt": "Procesa la entrada"},
+    ).json()
+    definition = {
+        "nodes": [
+            {
+                "id": "draft",
+                "agent_id": created["id"],
+                "position": {"x": 120.25, "y": 80},
+            },
+            {
+                "id": "review",
+                "agent_id": created["id"],
+                "position": {"x": 360, "y": 80},
+            },
+        ],
+        "edges": [
+            {"source": "draft", "target": "review", "type": "sequence"},
+            {
+                "source": "review",
+                "target": "draft",
+                "type": "loop",
+                "mode": "fixed",
+                "iterations": 3,
+            },
+        ],
+    }
+
+    response = admin_client.post(
+        "/api/workflows",
+        json={"name": "Flujo con ciclo", "definition": definition},
+    )
+
+    assert response.status_code == 200
+    saved = response.json()["definition"]
+    assert saved["nodes"][0]["position"] == {"x": 120.25, "y": 80.0}
+    assert saved["edges"][1] == definition["edges"][1]
+
+    listed = admin_client.get("/api/workflows").json()
+    restored = next(item for item in listed if item["id"] == response.json()["id"])
+    assert restored["definition"] == saved
