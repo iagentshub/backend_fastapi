@@ -863,11 +863,34 @@ async def _latest_docker_hub_version(repo: str, variant: str) -> str | None:
     return max(versions) if versions else None
 
 
+async def _latest_github_commit_sha(repo: str, branch: str = "main") -> str | None:
+    """SHA completo del último commit en `branch` de `repo` (API pública de
+    GitHub, sin autenticación). None si la consulta falla por cualquier motivo
+    — a diferencia de Docker Hub, esta comprobación es solo informativa
+    (distingue si lo desactualizado es el backend o el frontend) y nunca debe
+    tumbar el resto de /check-update.
+    """
+    url = f"https://api.github.com/repos/{repo}/commits/{branch}"
+    try:
+        async with httpx.AsyncClient(timeout=10) as client:
+            resp = await client.get(url, headers={"Accept": "application/vnd.github+json"})
+            resp.raise_for_status()
+            return resp.json().get("sha")
+    except httpx.HTTPError:
+        return None
+
+
 @admin_router.get("/check-update")
 async def admin_check_update(_: str = Depends(require_admin)) -> dict:
     """Compara la versión de la imagen en ejecución (GAIA_VERSION) contra la
     más reciente publicada en Docker Hub. Solo informa — no aplica el update
-    (eso lo hace Watchtower, o `docker compose pull && up -d` manual)."""
+    (eso lo hace Watchtower, o `docker compose pull && up -d` manual).
+
+    GAIA_VERSION solo dice "cuándo" se construyó la imagen, no "qué" código de
+    backend_fastapi ni del frontend lleva dentro — así que además se compara
+    el commit horneado de cada repo (BACKEND_COMMIT/FRONTEND_COMMIT) contra el
+    HEAD de main en GitHub, para saber cuál de los dos está desactualizado.
+    """
     current_version = os.environ.get("GAIA_VERSION", "dev")
     if current_version == "dev":
         return {
@@ -886,11 +909,35 @@ async def admin_check_update(_: str = Depends(require_admin)) -> dict:
             502, "check_update_failed", "No se pudo consultar Docker Hub"
         ) from exc
 
+    backend_commit = os.environ.get("BACKEND_COMMIT", "dev")
+    frontend_commit = os.environ.get("FRONTEND_COMMIT", "dev")
+    frontend_repo = f"iagentshub/frontend_{variant}"
+    backend_latest, frontend_latest = None, None
+    if backend_commit != "dev":
+        backend_latest = await _latest_github_commit_sha("iagentshub/backend_fastapi")
+    if frontend_commit != "dev":
+        frontend_latest = await _latest_github_commit_sha(frontend_repo)
+
+    commits = {
+        "backend_commit": backend_commit,
+        "backend_commit_latest": backend_latest[:7] if backend_latest else None,
+        "backend_up_to_date": (
+            backend_latest.startswith(backend_commit) if backend_latest else None
+        ),
+        "frontend_commit": frontend_commit,
+        "frontend_commit_latest": frontend_latest[:7] if frontend_latest else None,
+        "frontend_up_to_date": (
+            frontend_latest.startswith(frontend_commit) if frontend_latest else None
+        ),
+        "frontend_variant": variant,
+    }
+
     if latest_version is None:
         return {
             "checked": False,
             "reason": "no_remote_versions",
             "current_version": current_version,
+            **commits,
         }
 
     return {
@@ -898,6 +945,7 @@ async def admin_check_update(_: str = Depends(require_admin)) -> dict:
         "current_version": current_version,
         "latest_version": latest_version,
         "update_available": latest_version > current_version,
+        **commits,
     }
 
 

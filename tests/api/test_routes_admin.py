@@ -166,6 +166,136 @@ def test_check_update_docker_hub_error(admin_client, monkeypatch):
     assert r.status_code == 502
 
 
+def _mock_github_commit_response(sha):
+    resp = MagicMock()
+    resp.raise_for_status = lambda: None
+    resp.json.return_value = {"sha": sha}
+    return resp
+
+
+def _routed_fake_get(tags_names, github_shas):
+    """Enruta según la URL: hub.docker.com -> tags, api.github.com -> commit."""
+
+    async def fake_get(*args, **kwargs):
+        url = args[-1]
+        if "hub.docker.com" in url:
+            return _mock_tags_response(tags_names)
+        for repo, sha in github_shas.items():
+            if repo in url:
+                return _mock_github_commit_response(sha)
+        raise httpx.ConnectError(f"URL no esperada en el test: {url}")
+
+    return fake_get
+
+
+def test_check_update_backend_frontend_commits_up_to_date(admin_client, monkeypatch):
+    monkeypatch.setenv("GAIA_VERSION", "20260101000000")
+    monkeypatch.setenv("BACKEND_COMMIT", "abc1234")
+    monkeypatch.setenv("FRONTEND_COMMIT", "def5678")
+
+    fake_get = _routed_fake_get(
+        ["latest", "react-20260101000000"],
+        {
+            "iagentshub/backend_fastapi": "abc1234567890abcdef",
+            "iagentshub/frontend_react": "def5678901234abcdef",
+        },
+    )
+    with patch.object(httpx.AsyncClient, "get", new=fake_get):
+        r = admin_client.get("/api/admin/check-update")
+
+    data = r.json()
+    assert data["backend_commit"] == "abc1234"
+    assert data["backend_commit_latest"] == "abc1234"
+    assert data["backend_up_to_date"] is True
+    assert data["frontend_commit"] == "def5678"
+    assert data["frontend_commit_latest"] == "def5678"
+    assert data["frontend_up_to_date"] is True
+    assert data["frontend_variant"] == "react"
+
+
+def test_check_update_backend_commit_outdated(admin_client, monkeypatch):
+    monkeypatch.setenv("GAIA_VERSION", "20260101000000")
+    monkeypatch.setenv("BACKEND_COMMIT", "abc1234")
+    monkeypatch.setenv("FRONTEND_COMMIT", "def5678")
+
+    fake_get = _routed_fake_get(
+        ["latest", "react-20260101000000"],
+        {
+            "iagentshub/backend_fastapi": "9999999999999999999",
+            "iagentshub/frontend_react": "def5678901234abcdef",
+        },
+    )
+    with patch.object(httpx.AsyncClient, "get", new=fake_get):
+        r = admin_client.get("/api/admin/check-update")
+
+    data = r.json()
+    assert data["backend_commit_latest"] == "9999999"
+    assert data["backend_up_to_date"] is False
+    assert data["frontend_up_to_date"] is True
+
+
+def test_check_update_vanilla_variant_checks_frontend_vanilla_repo(admin_client, monkeypatch):
+    monkeypatch.setenv("GAIA_VERSION", "20260101000000")
+    monkeypatch.setenv("IMAGE_TAG", "vanilla")
+    monkeypatch.setenv("BACKEND_COMMIT", "abc1234")
+    monkeypatch.setenv("FRONTEND_COMMIT", "def5678")
+
+    fake_get = _routed_fake_get(
+        ["vanilla", "vanilla-20260101000000"],
+        {
+            "iagentshub/backend_fastapi": "abc1234567890abcdef",
+            "iagentshub/frontend_vanilla": "def5678901234abcdef",
+        },
+    )
+    with patch.object(httpx.AsyncClient, "get", new=fake_get):
+        r = admin_client.get("/api/admin/check-update")
+
+    data = r.json()
+    assert data["frontend_variant"] == "vanilla"
+    assert data["frontend_up_to_date"] is True
+
+
+def test_check_update_commits_not_baked_are_omitted(admin_client, monkeypatch):
+    """Sin BACKEND_COMMIT/FRONTEND_COMMIT (instalaciones previas a este
+    cambio) no debe intentarse ninguna llamada a la API de GitHub."""
+    monkeypatch.setenv("GAIA_VERSION", "20260101000000")
+    monkeypatch.delenv("BACKEND_COMMIT", raising=False)
+    monkeypatch.delenv("FRONTEND_COMMIT", raising=False)
+
+    async def fake_get(*args, **kwargs):
+        return _mock_tags_response(["latest", "react-20260101000000"])
+
+    with patch.object(httpx.AsyncClient, "get", new=fake_get):
+        r = admin_client.get("/api/admin/check-update")
+
+    data = r.json()
+    assert data["backend_commit"] == "dev"
+    assert data["backend_commit_latest"] is None
+    assert data["backend_up_to_date"] is None
+    assert data["frontend_up_to_date"] is None
+
+
+def test_check_update_github_api_failure_is_not_fatal(admin_client, monkeypatch):
+    monkeypatch.setenv("GAIA_VERSION", "20260101000000")
+    monkeypatch.setenv("BACKEND_COMMIT", "abc1234")
+    monkeypatch.setenv("FRONTEND_COMMIT", "def5678")
+
+    async def fake_get(*args, **kwargs):
+        url = args[-1]
+        if "hub.docker.com" in url:
+            return _mock_tags_response(["latest", "react-20260101000000"])
+        raise httpx.ConnectError("GitHub no disponible")
+
+    with patch.object(httpx.AsyncClient, "get", new=fake_get):
+        r = admin_client.get("/api/admin/check-update")
+
+    assert r.status_code == 200
+    data = r.json()
+    assert data["checked"] is True
+    assert data["backend_commit_latest"] is None
+    assert data["backend_up_to_date"] is None
+
+
 def test_check_update_forbidden_for_standard(client, reset_rate_limiter):
     client.post("/api/auth/register", json={"email": "checkupdate@example.com", "password": "pass1234"})
     r = client.get("/api/admin/check-update")

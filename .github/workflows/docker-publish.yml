@@ -89,6 +89,12 @@ jobs:
         id: version
         run: echo "value=$(date -u +%Y%m%d%H%M%S)" >> "$GITHUB_OUTPUT"
 
+      - name: Obtener SHAs de backend y frontend
+        id: shas
+        run: |
+          echo "backend=$(git -C backend rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          echo "frontend=$(git -C frontend rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
       - name: Build y push imagen multi-plataforma
         uses: docker/build-push-action@v5
         with:
@@ -97,6 +103,8 @@ jobs:
           push: true
           build-args: |
             GAIA_VERSION=${{ steps.version.outputs.value }}
+            BACKEND_COMMIT=${{ steps.shas.outputs.backend }}
+            FRONTEND_COMMIT=${{ steps.shas.outputs.frontend }}
           tags: |
             iagenthub/app:latest
             iagenthub/app:react-${{ steps.version.outputs.value }}
@@ -148,6 +156,12 @@ jobs:
         id: version
         run: echo "value=$(date -u +%Y%m%d%H%M%S)" >> "$GITHUB_OUTPUT"
 
+      - name: Obtener SHAs de backend y frontend
+        id: shas
+        run: |
+          echo "backend=$(git -C backend rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+          echo "frontend=$(git -C frontend rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
       - name: Build y push imagen multi-plataforma
         uses: docker/build-push-action@v5
         with:
@@ -156,6 +170,8 @@ jobs:
           push: true
           build-args: |
             GAIA_VERSION=${{ steps.version.outputs.value }}
+            BACKEND_COMMIT=${{ steps.shas.outputs.backend }}
+            FRONTEND_COMMIT=${{ steps.shas.outputs.frontend }}
           tags: |
             iagenthub/app:vanilla
             iagenthub/app:vanilla-${{ steps.version.outputs.value }}
