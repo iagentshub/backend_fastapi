@@ -45,7 +45,7 @@ _CATEGORY_ALIASES = {
 
 class SkillBuilderMessage(BaseModel):
     role: Literal["user", "assistant"]
-    content: str = Field(min_length=1, max_length=12_000)
+    content: str = Field(min_length=1)
 
 
 class SkillDraft(BaseModel):
@@ -53,7 +53,7 @@ class SkillDraft(BaseModel):
     description: str = Field(default="", max_length=600)
     category: SkillCategory = "productivity"
     icon: str = Field(default="productivity", min_length=1, max_length=80)
-    content: str = Field(min_length=40, max_length=30_000)
+    content: str = Field(min_length=40)
 
 
 class SkillBuilderEnvelope(BaseModel):
@@ -78,6 +78,48 @@ def should_force_ready(
     return (
         any(len(re.findall(r"\w+", message, flags=re.UNICODE)) >= 4 for message in user_messages)
         or len(user_messages) >= 2
+    )
+
+
+def build_from_skill_markdown(
+    messages: List[SkillBuilderMessage],
+) -> Optional[SkillBuilderEnvelope]:
+    """Convert an already complete SKILL.md locally, without invoking an LLM."""
+    user_content = "\n\n".join(
+        message.content.strip()
+        for message in messages
+        if message.role == "user" and message.content.strip()
+    )
+    match = re.match(
+        r"\A---\s*\r?\n(?P<frontmatter>.*?)\r?\n---\s*\r?\n(?P<body>.*)\Z",
+        user_content,
+        flags=re.DOTALL,
+    )
+    if not match:
+        return None
+
+    frontmatter = match.group("frontmatter")
+
+    def field(name: str) -> str:
+        value = re.search(
+            rf"(?mi)^{re.escape(name)}:\s*(.+?)\s*$",
+            frontmatter,
+        )
+        return value.group(1).strip().strip("\"'") if value else ""
+
+    name = field("name")
+    body = match.group("body").strip()
+    if not name or not body:
+        return None
+    description = field("description") or f"Instrucciones reutilizables para {name}."
+    return SkillBuilderEnvelope(
+        assistant_message="He importado la skill completa sin modificar sus instrucciones.",
+        status="ready",
+        draft=SkillDraft(
+            name=name,
+            description=description,
+            content=body,
+        ),
     )
 
 

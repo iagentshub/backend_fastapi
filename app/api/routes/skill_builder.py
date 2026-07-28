@@ -19,6 +19,7 @@ from app.services.chat import stream_chat
 from app.services.skill_builder import (
     SkillBuilderMessage,
     SkillBuilderMode,
+    build_from_skill_markdown,
     build_fallback_ready,
     build_system_prompt,
     parse_builder_reply,
@@ -89,6 +90,15 @@ async def builder_chat(
             status_code=404,
             detail="La conexión seleccionada no existe o no está disponible",
         )
+
+    imported = build_from_skill_markdown(body.messages)
+    if imported:
+        async def imported_event():
+            yield _sse(
+                {"type": "builder_done", **imported.model_dump(mode="json")}
+            )
+
+        return StreamingResponse(imported_event(), media_type="text/event-stream")
 
     force_ready = should_force_ready(body.messages, body.mode)
     builder_conn = conn

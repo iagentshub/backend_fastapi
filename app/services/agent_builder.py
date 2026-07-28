@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field, ValidationError
 
 class BuilderMessage(BaseModel):
     role: Literal["user", "assistant"]
-    content: str = Field(min_length=1, max_length=8_000)
+    content: str = Field(min_length=1)
 
 
 class BuilderResource(BaseModel):
@@ -27,7 +27,7 @@ class BuilderResources(BaseModel):
 class AgentDraft(BaseModel):
     name: str = Field(min_length=1, max_length=120)
     description: str = Field(default="", max_length=600)
-    system_prompt: str = Field(min_length=20, max_length=30_000)
+    system_prompt: str = Field(min_length=20)
     model: str = Field(default="", max_length=200)
     temperature: float = Field(default=0.7, ge=0, le=2)
     skills: List[str] = Field(default_factory=list, max_length=50)

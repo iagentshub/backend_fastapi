@@ -3,6 +3,7 @@ from __future__ import annotations
 import pytest
 
 from app.services.agent_builder import (
+    AgentDraft,
     BuilderMessage,
     BuilderResource,
     BuilderResources,
@@ -12,6 +13,14 @@ from app.services.agent_builder import (
     parse_builder_reply,
     should_force_ready,
 )
+
+
+def test_builder_accepts_unlimited_message_and_prompt_content():
+    message = BuilderMessage(role="user", content="x" * 50_000)
+    draft = AgentDraft(name="Agente grande", system_prompt="x" * 50_000)
+
+    assert len(message.content) == 50_000
+    assert len(draft.system_prompt) == 50_000
 
 
 def test_parse_ready_draft_and_remove_unknown_resource_ids():
