@@ -238,6 +238,21 @@ def test_explore_filtra_por_label_existente(client):
     assert agent_id in ids
 
 
+def test_explore_filtra_por_varias_labels_or(client):
+    """?label=a&label=b devuelve recursos que tengan cualquiera de las dos (OR)."""
+    _login(client, _uid("explblmulti"))
+    agent_id = _make_public_agent(client, f"MultiLabelAgent {uuid4().hex[:6]}")
+
+    _login(client, _uid("explblmulti_viewer"))
+    r = client.get(
+        "/api/explore",
+        params={"label": ["label-never-exist-xyz999", "public"]},
+    )
+    assert r.status_code == 200
+    ids = [x["resource_id"] for x in r.json()]
+    assert agent_id in ids
+
+
 def test_explore_filtra_por_label_inexistente(client):
     """Líneas 230-231: label que no existe devuelve lista vacía."""
     _login(client, _uid("explbl2"))

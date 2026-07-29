@@ -6,7 +6,7 @@ import json
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel
 
 import app.config.data as _cfg
@@ -614,7 +614,7 @@ async def explore(
     category: Optional[str] = None,
     q: Optional[str] = None,
     tag: Optional[str] = None,
-    label: Optional[str] = None,
+    label: Optional[List[str]] = Query(None),
     limit: int = 40,
     offset: int = 0,
     username: str = Depends(require_auth),
@@ -637,8 +637,11 @@ async def explore(
             conditions.append("tags LIKE ?")
             params.append(f'%"{tag}"%')
         if label:
-            conditions.append("labels LIKE ?")
-            params.append(f'%"{label}"%')
+            # Coincide con cualquiera de las etiquetas seleccionadas (OR)
+            conditions.append(
+                "(" + " OR ".join(["labels LIKE ?"] * len(label)) + ")"
+            )
+            params.extend(f'%"{l}"%' for l in label)
         where = " AND ".join(conditions)
         params.extend([limit, offset])
         raw = await conn.fetchall(
