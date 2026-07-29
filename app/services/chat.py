@@ -166,6 +166,10 @@ def _do_openai_stream_with_dns_retry(
                 raise
             exc.close()
             time.sleep(attempt + 1)
+        except TimeoutError:
+            if emitted or attempt == 2:
+                raise
+            time.sleep(attempt + 1)
         except urllib.error.URLError as exc:
             reason = exc.reason
             errno = getattr(reason, "errno", None)
@@ -174,7 +178,8 @@ def _do_openai_stream_with_dns_retry(
                 -2,
                 11001,
             )
-            if emitted or not dns_failure or attempt == 2:
+            timeout_failure = isinstance(reason, TimeoutError)
+            if emitted or not (dns_failure or timeout_failure) or attempt == 2:
                 raise
             time.sleep(attempt + 1)
     raise RuntimeError("No se pudo contactar con el proveedor")
