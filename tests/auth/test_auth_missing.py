@@ -174,6 +174,29 @@ def test_ensure_admin_user_promotes_existing(patch_data_dir):
     assert user["role"] == "admin"
 
 
+def test_ensure_admin_user_does_not_reset_after_temporary_password_is_removed(
+    patch_data_dir,
+):
+    from unittest.mock import patch
+    import app.auth.auth as auth_mod
+    from app.auth.auth import ensure_admin_user, get_user_by_username, register_user
+
+    asyncio.run(register_user("stable@test.com", "stable-pass", email="stable@test.com"))
+    (auth_mod.DATA_DIR / ".admin_pass").unlink(missing_ok=True)
+    before = asyncio.run(get_user_by_username("stable@test.com"))["password_hash"]
+    with patch.dict(
+        "os.environ",
+        {"GAIA_ADMIN_EMAIL": "stable@test.com", "GAIA_ADMIN_RESET": ""},
+    ):
+        asyncio.run(ensure_admin_user())
+        promoted = asyncio.run(get_user_by_username("stable@test.com"))
+        asyncio.run(ensure_admin_user())
+    after = asyncio.run(get_user_by_username("stable@test.com"))["password_hash"]
+
+    assert promoted["role"] == "admin"
+    assert after == before
+
+
 # ── Compatibility shims ────────────────────────────────────────────────────────
 
 def test_load_users_raises():
