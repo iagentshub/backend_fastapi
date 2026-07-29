@@ -270,11 +270,19 @@ async def run_saved_workflow(
 
     async def events():
         try:
-            async for event in run_workflow(
-                definition, body.input, resolve
-            ):
+            async for event in run_workflow(definition, body.input, resolve):
+                if event.get("type") == "heartbeat":
+                    yield ": keep-alive\n\n"
+                    continue
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
         except Exception as exc:
             yield f"data: {json.dumps({'type': 'error', 'message': str(exc)}, ensure_ascii=False)}\n\n"
 
-    return StreamingResponse(events(), media_type="text/event-stream")
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+        },
+    )

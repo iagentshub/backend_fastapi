@@ -239,6 +239,29 @@ async def test_independent_branches_execute_concurrently(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_long_stage_emits_heartbeats(monkeypatch):
+    async def fake_stream_chat(agent, _connection, _messages, _history):
+        await asyncio.sleep(0.03)
+        yield f"data: {json.dumps({'type': 'done', 'reply': f'output-{agent.id}'})}\n\n"
+
+    async def resolve(agent_id):
+        return _agent(agent_id), {"id": f"connection-{agent_id}"}
+
+    definition = validate_workflow({"nodes": [_node("slow")], "edges": []})
+    monkeypatch.setattr("app.services.workflow_runner.stream_chat", fake_stream_chat)
+    monkeypatch.setattr(
+        "app.services.workflow_runner.WORKFLOW_HEARTBEAT_SECONDS", 0.005
+    )
+
+    events = [event async for event in run_workflow(definition, "entrada", resolve)]
+
+    types = [event["type"] for event in events]
+    assert types[0] == "stage_started"
+    assert "heartbeat" in types[1:-2]
+    assert types[-2:] == ["stage_done", "workflow_done"]
+
+
+@pytest.mark.asyncio
 async def test_gate_can_repeat_one_branch_without_rerunning_approved_sibling(monkeypatch):
     events = await _events(
         {

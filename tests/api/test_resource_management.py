@@ -40,6 +40,43 @@ def test_workflow_crud_validates_graph(admin_client):
     assert admin_client.delete(f"/api/workflows/{workflow_id}").json() == {"ok": True}
 
 
+def test_workflow_run_exposes_sse_heartbeat_headers(admin_client, monkeypatch):
+    created = admin_client.post(
+        "/api/agents",
+        json={"name": "Paso lento", "system_prompt": "Procesa la entrada"},
+    ).json()
+    workflow = admin_client.post(
+        "/api/workflows",
+        json={
+            "name": "Flujo con latidos",
+            "definition": {
+                "nodes": [{"id": "one", "agent_id": created["id"]}],
+                "edges": [],
+            },
+        },
+    ).json()
+
+    async def fake_run_workflow(_definition, _input, _resolve):
+        yield {"type": "heartbeat"}
+        yield {"type": "workflow_done", "output": "ok"}
+
+    monkeypatch.setattr(
+        "app.api.routes.resource_management.run_workflow", fake_run_workflow
+    )
+
+    response = admin_client.post(
+        f"/api/workflows/{workflow['id']}/run",
+        json={"input": "prueba"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["cache-control"] == "no-cache, no-transform"
+    assert response.headers["x-accel-buffering"] == "no"
+    assert response.text.startswith(": keep-alive\n\n")
+    assert '"type": "heartbeat"' not in response.text
+    assert '"type": "workflow_done"' in response.text
+
+
 def test_workflow_persists_canvas_positions_and_loops(admin_client):
     created = admin_client.post(
         "/api/agents",

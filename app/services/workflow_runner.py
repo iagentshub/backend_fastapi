@@ -10,6 +10,7 @@ from app.models.agent import Agent
 from app.services.chat import stream_chat
 
 AgentResolver = Callable[[str], Awaitable[tuple[Dict[str, Any], Dict[str, Any]]]]
+WORKFLOW_HEARTBEAT_SECONDS = 10.0
 
 
 def _sequence_edges(definition: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -285,7 +286,21 @@ async def run_workflow(
             tasks.append(task)
             task_meta.append((node, agent, content, iteration, event_index))
 
-        results = await asyncio.gather(*tasks, return_exceptions=True)
+        gathered = asyncio.gather(*tasks, return_exceptions=True)
+        try:
+            while not gathered.done():
+                done, _ = await asyncio.wait(
+                    {gathered}, timeout=WORKFLOW_HEARTBEAT_SECONDS
+                )
+                if not done:
+                    # Mantener viva la respuesta SSE aunque todos los agentes de
+                    # esta tanda sigan pensando. Sin este evento, un proxy
+                    # intermedio puede cerrar el stream por inactividad.
+                    yield {"type": "heartbeat"}
+            results = await gathered
+        finally:
+            if not gathered.done():
+                gathered.cancel()
         error = next(
             (result for result in results if isinstance(result, BaseException)),
             None,
