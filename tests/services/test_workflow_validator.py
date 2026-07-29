@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 import pytest
@@ -179,6 +180,62 @@ async def test_parallel_branches_are_merged_for_the_join(monkeypatch):
     assert "### b\noutput-b" in received["d"]
     assert "### c\noutput-c" in received["d"]
     assert events[-1] == {"type": "workflow_done", "output": "output-d"}
+
+
+@pytest.mark.asyncio
+async def test_independent_branches_execute_concurrently(monkeypatch):
+    active = 0
+    maximum_active = 0
+
+    async def fake_stream_chat(agent, _connection, _messages, _history):
+        nonlocal active, maximum_active
+        active += 1
+        maximum_active = max(maximum_active, active)
+        await asyncio.sleep(0.02)
+        active -= 1
+        yield f"data: {json.dumps({'type': 'done', 'reply': f'output-{agent.id}'})}\n\n"
+
+    async def resolve(agent_id):
+        return _agent(agent_id), {"id": f"connection-{agent_id}"}
+
+    definition = validate_workflow(
+        {
+            "nodes": [
+                _node("start"),
+                _node("frontend"),
+                _node("backend"),
+                _node("database"),
+                _node("join"),
+            ],
+            "edges": [
+                {"source": "start", "target": "frontend"},
+                {"source": "start", "target": "backend"},
+                {"source": "start", "target": "database"},
+                {"source": "frontend", "target": "join"},
+                {"source": "backend", "target": "join"},
+                {"source": "database", "target": "join"},
+            ],
+        }
+    )
+    monkeypatch.setattr("app.services.workflow_runner.stream_chat", fake_stream_chat)
+
+    events = [event async for event in run_workflow(definition, "entrada", resolve)]
+
+    assert maximum_active == 3
+    event_pairs = [
+        (event["type"], event.get("node_id"))
+        for event in events
+        if event["type"] in {"stage_started", "stage_done"}
+    ]
+    assert event_pairs.index(("stage_started", "backend")) < event_pairs.index(
+        ("stage_done", "frontend")
+    )
+    assert event_pairs.index(("stage_started", "frontend")) < event_pairs.index(
+        ("stage_done", "backend")
+    )
+    assert event_pairs.index(("stage_started", "database")) < event_pairs.index(
+        ("stage_done", "frontend")
+    )
 
 
 @pytest.mark.asyncio
