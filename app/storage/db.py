@@ -1682,8 +1682,9 @@ async def migrate_schema(sqlite_path: Optional[Path] = None) -> None:
             await conn.close()
         flog.ok("[db] esquema PostgreSQL migrado")
     else:
-        import aiosqlite  # type: ignore[import]
         import sqlite3
+
+        import aiosqlite  # type: ignore[import]
 
         path = sqlite_path or _sqlite_path
         if path is None:
@@ -1766,8 +1767,9 @@ async def _open_db_cm() -> AsyncGenerator[AsyncConn, None]:
         async with _pg_pool.acquire() as conn:
             yield AsyncConn(conn, is_pg=True)
     else:
-        import aiosqlite  # type: ignore[import]
         import sqlite3
+
+        import aiosqlite  # type: ignore[import]
 
         if _sqlite_path is None:
             raise RuntimeError("SQLite path not set — call init_db(path) at startup")

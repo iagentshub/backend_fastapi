@@ -4,8 +4,9 @@ from __future__ import annotations
 
 
 def _login(client, username="socialtest", password="pass1234"):
-    from app.auth.auth import create_token, register_user
     import asyncio
+
+    from app.auth.auth import create_token, register_user
 
     asyncio.run(register_user(username, password, email=f"{username}@example.com"))
     client.cookies.set("ga_token", create_token(username))
@@ -254,6 +255,7 @@ def _create_connection_raw(username: str, conn_id: str = "test-conn-try-001") ->
     """Inserta una connection directamente en la BD para pruebas."""
     import asyncio
     import json
+
     from app.storage.db import open_db
 
     async def _do() -> None:

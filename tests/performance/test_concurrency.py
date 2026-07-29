@@ -25,7 +25,6 @@ from typing import List, NamedTuple
 import httpx
 import pytest
 
-
 # ── Fixtures ─────────────────────────────────────────────────────────────────
 
 

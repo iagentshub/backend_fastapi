@@ -1,7 +1,11 @@
 import pytest
 
 from app.services import billing_pricing as bp
-from app.services.billing_pricing import InvalidPlanError, compute_total_cents, price_per_seat
+from app.services.billing_pricing import (
+    InvalidPlanError,
+    compute_total_cents,
+    price_per_seat,
+)
 
 
 def test_price_per_seat_developer():

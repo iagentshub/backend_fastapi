@@ -266,6 +266,7 @@ async def stream_chat(
     conversation_id: Optional[str] = None,
 ) -> AsyncGenerator[str, None]:
     import asyncio
+
     from app.models.agent import Agent
 
     if not isinstance(agent, Agent):

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 def _register(username: str) -> None:
     import asyncio
+
     from app.auth.auth import register_user
     try:
         asyncio.run(register_user(username, "pass1234", email=f"{username}@test.com"))

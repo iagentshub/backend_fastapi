@@ -7,7 +7,6 @@ from unittest.mock import MagicMock, patch
 
 from app.connections.ssh import SSHProvider
 
-
 # ── Metadatos del provider ─────────────────────────────────────────────────────
 
 

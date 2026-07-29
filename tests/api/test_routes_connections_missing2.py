@@ -152,8 +152,8 @@ def test_delete_connection_non_admin_not_found(client):
 
 def test_delete_connection_team_workspace_personal_fallback(client):
     """Conexión personal se borra desde workspace de equipo via fallback (línea 297)."""
-    from app.auth.auth import create_token, register_user
     from app.api.routes.auth import WorkspaceContext, require_workspace
+    from app.auth.auth import create_token, register_user
 
     username = "del_team_m2"
     asyncio.run(register_user(username, "pass1234", email=f"{username}@example.com"))
@@ -436,8 +436,8 @@ def test_test_connection_no_provider_returns_false(client):
 
 def test_get_conn_any_personal_workspace_fallback(client):
     """_get_conn_any busca en workspace personal cuando no está en el de equipo (líneas 71-73)."""
-    from app.auth.auth import create_token, register_user
     from app.api.routes.auth import WorkspaceContext, require_workspace
+    from app.auth.auth import create_token, register_user
 
     username = "pc_fb_m2"
     asyncio.run(register_user(username, "pass1234", email=f"{username}@example.com"))
@@ -473,8 +473,8 @@ def test_get_conn_any_personal_workspace_fallback(client):
 
 def test_list_accessible_personal_conns_in_team_workspace(client):
     """Conexiones personales aparecen al listar desde workspace de equipo (líneas 59-65)."""
-    from app.auth.auth import create_token, register_user
     from app.api.routes.auth import WorkspaceContext, require_workspace
+    from app.auth.auth import create_token, register_user
 
     username = "la_team_m2"
     asyncio.run(register_user(username, "pass1234", email=f"{username}@example.com"))

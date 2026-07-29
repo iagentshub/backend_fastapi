@@ -9,7 +9,6 @@ import pytest
 
 from app.auth.auth import create_token, register_user
 
-
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 

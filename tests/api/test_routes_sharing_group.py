@@ -7,8 +7,8 @@ Cubre:
 - El agente compartido aparece en GET /api/agents?group_id=... inmediatamente
 """
 from __future__ import annotations
-import asyncio
 
+import asyncio
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -251,8 +251,9 @@ def test_cascade_does_not_share_public_skills(client):
 
     # Insertar una skill pública directamente en la BD (las skills públicas
     # son de solo lectura vía API — pertenecen al sistema, no a usuarios)
-    import json as _json
     import asyncio as _asyncio
+    import json as _json
+
     from app.storage.db import open_db
 
     skill_id = "pub_skill_test_8"

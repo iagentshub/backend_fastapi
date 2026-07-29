@@ -17,8 +17,8 @@ from app.config.providers import PROVIDER_DEFAULT_MODELS
 from app.errors import APIError
 from app.models.agent import Agent
 from app.services.agent_builder import (
-    BuilderMode,
     BuilderMessage,
+    BuilderMode,
     BuilderResources,
     build_fallback_ready,
     build_system_prompt,

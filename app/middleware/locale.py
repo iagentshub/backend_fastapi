@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 from contextvars import ContextVar
+
 from fastapi import Request
 from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
 from starlette.responses import Response

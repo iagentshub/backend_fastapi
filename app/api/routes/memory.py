@@ -9,8 +9,8 @@ from fastapi import APIRouter, Depends, Request
 from app.api.routes.auth import require_auth
 from app.config.data import MEMORY_DIR
 from app.errors import APIError
-from app.storage.guest import get_session, is_guest
 from app.storage.folders import FolderStorage
+from app.storage.guest import get_session, is_guest
 from app.storage.storage import MemoryStorage
 
 router = APIRouter(prefix="/api/memory", tags=["memory"])

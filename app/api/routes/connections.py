@@ -11,20 +11,20 @@ from fastapi import APIRouter, Depends, Query, Request
 
 from app.api.routes.auth import WorkspaceContext, require_auth, require_workspace
 from app.auth.auth import get_user_role
-from app.connections import all_providers, get_provider
 from app.config.data import AGENTS_DIR, DB_FILE, SKILLS_DIR
 from app.config.security import assert_safe_url
-from app.errors import APIError
-from app.storage.knowledge import KnowledgeStorage
 from app.config.session import (
     RATE_TEST_CALLS,
     RATE_TEST_WINDOW,
     RATE_TESTALL_CALLS,
     RATE_TESTALL_WINDOW,
 )
+from app.connections import all_providers, get_provider
+from app.errors import APIError
 from app.middleware.ratelimit import RateLimiter
 from app.storage.db import IS_PG, open_db
 from app.storage.guest import get_session, is_guest
+from app.storage.knowledge import KnowledgeStorage
 from app.storage.storage import AgentStorage, ConnectionStorage, SkillStorage
 from app.storage.workspace_shares import WorkspaceShareStorage
 from app.storage.workspaces import WorkspaceStorage
@@ -140,8 +140,8 @@ async def _resolve_connections(
 
 def _fetch_ollama_models(host: str) -> List[str]:
     """Llama a /api/tags y devuelve los nombres de modelos instalados."""
-    from app.connections.ollama import OllamaProvider
     from app.config.security import assert_safe_url
+    from app.connections.ollama import OllamaProvider
 
     try:
         assert_safe_url(host)  # C3: prevenir SSRF via hosts de conexiones almacenadas

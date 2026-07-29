@@ -5,7 +5,6 @@ from __future__ import annotations
 import math
 from typing import Any, Dict, List, Set
 
-
 MAX_NODES = 30
 MAX_NODE_ID_LENGTH = 120
 MAX_AGENT_ID_LENGTH = 200

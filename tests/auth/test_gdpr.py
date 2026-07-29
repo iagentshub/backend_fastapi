@@ -6,6 +6,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import app.config.data as _cfg
 from app.auth.auth import (
     cancel_user_deletion,
     get_owned_workspaces,
@@ -15,8 +16,6 @@ from app.auth.auth import (
     register_user,
     schedule_user_deletion,
 )
-import app.config.data as _cfg
-
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 

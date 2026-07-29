@@ -25,9 +25,8 @@ from app.middleware.ratelimit import RateLimiter
 from app.models.agent import Agent
 from app.services.chat import stream_chat
 from app.storage.chat import ChatStorage
-from app.utils.origin import compute_origin_type
-
 from app.storage.db import IS_PG, PH, open_db
+from app.storage.folders import FolderStorage
 from app.storage.guest import (
     GuestKnowledgeAdapter,
     GuestMemoryAdapter,
@@ -36,7 +35,6 @@ from app.storage.guest import (
 )
 from app.storage.knowledge import KnowledgeStorage
 from app.storage.resource_versions import ResourceVersionStorage
-from app.storage.folders import FolderStorage
 from app.storage.storage import (
     AgentStorage,
     ConnectionStorage,
@@ -45,6 +43,7 @@ from app.storage.storage import (
 )
 from app.storage.workspace_shares import WorkspaceShareStorage
 from app.storage.workspaces import WorkspaceStorage
+from app.utils.origin import compute_origin_type
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
 

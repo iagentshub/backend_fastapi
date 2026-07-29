@@ -5,8 +5,9 @@ import json
 
 
 def _login(client, username: str) -> str:
-    from app.auth.auth import create_token, register_user
     import asyncio
+
+    from app.auth.auth import create_token, register_user
     asyncio.run(register_user(username, "pass1234", email=f"{username}@link.test"))
     client.cookies.set("ga_token", create_token(username))
     return username
@@ -14,6 +15,7 @@ def _login(client, username: str) -> str:
 
 def _make_agent_public(agent_id: str, owner: str) -> None:
     import asyncio
+
     from app.storage.db import open_db
 
     async def _do() -> None:
@@ -31,6 +33,7 @@ def _make_agent_public(agent_id: str, owner: str) -> None:
 
 def _make_skill_public(skill_id: str, owner: str) -> None:
     import asyncio
+
     from app.storage.db import open_db
 
     async def _do() -> None:
@@ -48,6 +51,7 @@ def _make_skill_public(skill_id: str, owner: str) -> None:
 
 def _get_social_row(resource_type: str, resource_id: str) -> dict:
     import asyncio
+
     from app.storage.db import open_db
 
     async def _do() -> dict:
@@ -320,8 +324,9 @@ def test_link_skill_copia_no_conserva_label_public(client):
 
 def _create_public_agent_via_filesystem(name: str) -> str:
     """Crea un agente público directamente en el filesystem (scope=public)."""
-    from app.config.data import AGENTS_DIR
     import uuid
+
+    from app.config.data import AGENTS_DIR
     agent_id = str(uuid.uuid4())
     sys_dir = AGENTS_DIR / "public" / agent_id
     sys_dir.mkdir(parents=True, exist_ok=True)
@@ -380,8 +385,9 @@ def test_sync_agente_inexistente_devuelve_404(client):
 
 def _create_public_skill_via_filesystem(name: str) -> str:
     """Crea una skill pública directamente en el filesystem (scope=public)."""
-    from app.config.data import SKILLS_DIR
     import uuid
+
+    from app.config.data import SKILLS_DIR
     skill_id = str(uuid.uuid4())
     sys_dir = SKILLS_DIR / "public" / skill_id
     sys_dir.mkdir(parents=True, exist_ok=True)
@@ -441,6 +447,7 @@ def test_sync_skill_inexistente_devuelve_404(client):
 def test_verified_admin_puede_marcar(admin_client):
     """Admin marca un recurso como verified; explore devuelve verified=True."""
     import asyncio
+
     from app.storage.db import open_db
 
     agent_id = "verify-agent-adm-001"
@@ -495,6 +502,7 @@ def test_verified_recurso_inexistente_devuelve_404(admin_client):
 def test_linked_broken_detectado(client):
     """Si el original se hace privado, linked_broken=True en my_resources del enlazador."""
     import asyncio
+
     from app.storage.db import open_db
 
     # Usuario A crea el agente vía HTTP para que exista en disco
@@ -546,6 +554,7 @@ def test_linked_broken_detectado(client):
 
 def _make_workflow_public(workflow_id: str, owner: str) -> None:
     import asyncio
+
     from app.storage.db import open_db
 
     async def _do() -> None:

@@ -4,7 +4,6 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import patch
 
-
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 def _direct_register(username: str, password: str = "pass1234", email: str = "") -> str:

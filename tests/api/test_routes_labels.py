@@ -3,12 +3,12 @@ from __future__ import annotations
 
 import json
 
-
 # ── helpers ───────────────────────────────────────────────────────────────────
 
 def _login(client, username="labelsuser", password="pass1234"):
-    from app.auth.auth import create_token, register_user
     import asyncio
+
+    from app.auth.auth import create_token, register_user
     asyncio.run(register_user(username, password, email=f"{username}@example.com"))
     client.cookies.set("ga_token", create_token(username))
     return username
@@ -38,6 +38,7 @@ def _create_skill(client, name="Label Skill", labels=None):
 
 def _get_social_row(agent_id, owner):
     import asyncio
+
     from app.storage.db import open_db
 
     async def _do():

@@ -3,16 +3,15 @@
 from __future__ import annotations
 
 import json
-
-from app.utils import flog
 from typing import List, Optional
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
-from app.api.routes.auth import require_auth, require_admin
+from app.api.routes.auth import require_admin, require_auth
 from app.errors import APIError
 from app.storage.db import open_db
+from app.utils import flog
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
@@ -218,8 +217,9 @@ _VALID_REGISTRATION = {"open", "closed"}
 
 
 def _read_platform_cfg() -> dict:
-    from app.config.data import SETTINGS_FILE
     import json as _json
+
+    from app.config.data import SETTINGS_FILE
 
     try:
         raw = _json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
@@ -233,8 +233,9 @@ def _read_platform_cfg() -> dict:
 
 
 def _write_platform_cfg(cfg: dict) -> None:
-    from app.config.data import SETTINGS_FILE
     import json as _json
+
+    from app.config.data import SETTINGS_FILE
 
     try:
         existing = _json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))

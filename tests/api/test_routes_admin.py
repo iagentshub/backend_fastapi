@@ -9,6 +9,7 @@ import httpx
 def _register(username, password="pass1234"):
     """Registra un usuario directamente, sin pasar por HTTP, para no contaminar cookies."""
     import asyncio
+
     from app.auth.auth import register_user
     asyncio.run(register_user(username, password, email=f"{username}@example.com"))
 
@@ -534,6 +535,7 @@ def test_admin_agents_forbidden_for_standard(client, reset_rate_limiter):
 
 def _insert_connection(owner_id: str = "testadmin") -> str:
     import asyncio
+
     from app.config.data import DB_FILE
     from app.storage.storage import ConnectionStorage
     c = asyncio.run(ConnectionStorage(DB_FILE).save(

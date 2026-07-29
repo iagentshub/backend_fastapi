@@ -5,7 +5,6 @@ import io
 import json
 import zipfile
 
-
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
 _SKILL_PAYLOAD = {

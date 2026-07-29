@@ -11,9 +11,8 @@ from app.api.routes.auth import WorkspaceContext, require_workspace
 from app.auth.auth import get_user_role
 from app.config.data import DB_FILE, SKILLS_DIR
 from app.errors import APIError
-
-from app.storage.guest import get_session, is_guest
 from app.storage.folders import FolderStorage
+from app.storage.guest import get_session, is_guest
 from app.storage.resource_versions import ResourceVersionStorage
 from app.storage.storage import SkillStorage
 from app.storage.workspace_shares import WorkspaceShareStorage

@@ -1,5 +1,18 @@
 """Connection providers package — import all to auto-register."""
 
+# Import each provider to trigger @register
+from . import (  # noqa: F401  # noqa: F401
+    anthropic,
+    database,
+    google,
+    grok,
+    iagentshub,
+    nvidia,
+    ollama,
+    openai,
+    qwen,
+    ssh,
+)
 from .base import (
     BaseProvider,
     FieldDef,
@@ -8,10 +21,6 @@ from .base import (
     get_provider,
     register,
 )
-
-# Import each provider to trigger @register
-from . import anthropic, google, grok, iagentshub, nvidia, ollama, openai, qwen  # noqa: F401
-from . import ssh, database  # noqa: F401
 
 __all__ = [
     "BaseProvider",

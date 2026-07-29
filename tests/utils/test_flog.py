@@ -9,8 +9,7 @@ from io import StringIO
 import pytest
 
 import app.utils.flog as flog_mod
-from app.utils.flog import _DBHandler, _OK, _StdoutFmt, debug, error, info, ok, warning
-
+from app.utils.flog import _OK, _DBHandler, _StdoutFmt, debug, error, info, ok, warning
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 

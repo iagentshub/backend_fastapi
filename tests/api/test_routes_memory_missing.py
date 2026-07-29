@@ -1,10 +1,8 @@
 """Tests de memoria — casos no cubiertos: patch, guest, move_folder."""
 from __future__ import annotations
 
-
 from app.auth.auth import create_token
 from app.storage.guest import new_guest_id
-
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 

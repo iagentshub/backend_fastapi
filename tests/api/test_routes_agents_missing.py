@@ -10,7 +10,6 @@ import asyncio
 import json
 from unittest.mock import AsyncMock, patch
 
-
 # ── Helpers de fixture ────────────────────────────────────────────────────────
 
 _AGENT = {"name": "Coverage Agent", "description": "desc"}
@@ -467,8 +466,9 @@ def test_chat_streams_sse_response(admin_client):
 def test_chat_with_conversation_id(admin_client):
     """Chat con conversation_id guarda mensajes (líneas 429-438)."""
     import asyncio as _asyncio
-    from app.storage.chat import ChatStorage
+
     from app.config.data import DB_FILE
+    from app.storage.chat import ChatStorage
 
     conn = _create_connection(admin_client)
     agent = _create_agent(

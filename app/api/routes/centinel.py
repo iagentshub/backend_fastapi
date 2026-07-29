@@ -16,8 +16,10 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import os
 import re
+import statistics
 import sys
 import time
 import uuid
@@ -422,9 +424,6 @@ async def _execute_run(run_id: str, target: str) -> None:
 #  STRESS / PERFORMANCE TEST
 # ════════════════════════════════════════════════════════════════════════════
 
-import math
-import statistics
-
 _stress: Dict[str, Any] = {
     "run_id": None,
     "status": "idle",  # idle | running | done | aborted | error
@@ -738,9 +737,10 @@ async def _stress_sse_generator(run_id: str):
 
 async def _execute_stress(run_id: str, cfg: StressRequest) -> None:
     """Runner principal del stress test. Lanza N workers en threads independientes."""
-    import httpx
     import threading
     from concurrent.futures import ThreadPoolExecutor
+
+    import httpx
 
     base_url = f"http://127.0.0.1:{os.getenv('GAIA_PORT', '8765')}"
     method = cfg.method.upper()
@@ -1088,9 +1088,10 @@ async def _run_probe_step(
     headers: dict,
 ) -> dict:
     """Ejecuta un paso del probe con workers en threads independientes."""
-    import httpx
     import threading
     from concurrent.futures import ThreadPoolExecutor
+
+    import httpx
 
     deadline = time.monotonic() + cfg.duration
     lock = threading.Lock()

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import os
+
 import uvicorn
 
 from app.config import data as _cfg

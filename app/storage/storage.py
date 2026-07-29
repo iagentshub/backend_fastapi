@@ -10,13 +10,12 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, TypedDict
 from uuid import uuid4
 
+import yaml
+
 from app.models.agent import Agent
 from app.storage.crypto import decrypt, encrypt
 from app.utils import flog
 from app.utils import now_iso as _now
-
-import yaml
-
 
 # ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -73,8 +72,8 @@ class ConnectionStorage:
 
     async def _migrate_json(self) -> None:
         """One-time import from connections.json if table is empty."""
-        from app.storage.db import open_db
         from app.config.data import DATA_DIR
+        from app.storage.db import open_db
 
         async with open_db() as conn:
             try:

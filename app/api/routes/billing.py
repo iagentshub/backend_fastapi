@@ -8,7 +8,6 @@ import stripe
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.api.routes.auth import require_auth
-from app.errors import APIError
 from app.auth.auth import (
     get_stripe_customer_id,
     get_user_by_username,
@@ -24,6 +23,7 @@ from app.config.billing import (
     STRIPE_WEBHOOK_SECRET,
 )
 from app.config.data import DB_FILE
+from app.errors import APIError
 from app.middleware.ratelimit import RateLimiter
 from app.services.billing_pricing import InvalidPlanError, compute_total_cents
 from app.storage.billing import BillingStorage

@@ -7,11 +7,9 @@ import json
 import os
 import secrets
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 from typing import Any, Optional
 
 import bcrypt as _bcrypt
-from app.utils import flog
 from jose import JWTError, jwt
 
 from app.config.data import AGENTS_DIR, DATA_DIR, SETTINGS_FILE, SKILLS_DIR
@@ -23,6 +21,7 @@ from app.config.session import (
     JWT_UNSAFE_SECRETS,
 )
 from app.storage.db import IS_PG, open_db
+from app.utils import flog
 
 # ── Settings ───────────────────────────────────────────────────────────────────
 

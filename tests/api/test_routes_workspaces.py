@@ -7,6 +7,7 @@ from fastapi.testclient import TestClient
 def _auth(client: TestClient, username: str, password: str = "pass1234") -> TestClient:
     """Registra un usuario y establece su cookie en el client."""
     import asyncio
+
     from app.auth.auth import create_token, register_user
     try:
         asyncio.run(register_user(username, password, email=f"{username}@test.com"))
@@ -259,6 +260,7 @@ def test_list_members(client):
 
 def test_add_member(client):
     import asyncio
+
     from app.auth.auth import register_user
     try:
         asyncio.run(register_user("ws_add_member_bob", "pass1234", email="ws_add_member_bob@test.com"))
@@ -281,6 +283,7 @@ def test_add_nonexistent_user_rejected(client):
 
 def test_add_member_without_permission_rejected(client):
     import asyncio
+
     from app.auth.auth import register_user
     try:
         asyncio.run(register_user("ws_addmem_no_perm_victim", "pass1234", email="ws_addmem_victim@test.com"))
@@ -297,6 +300,7 @@ def test_add_member_without_permission_rejected(client):
 
 def test_remove_member(client):
     import asyncio
+
     from app.auth.auth import register_user
     try:
         asyncio.run(register_user("ws_rem_member_bob", "pass1234", email="ws_rem_bob@test.com"))
@@ -351,6 +355,7 @@ def test_owner_leaves_after_transferring_ownership(client):
 
 def test_update_member_role(client):
     import asyncio
+
     from app.auth.auth import register_user
     try:
         asyncio.run(register_user("ws_role_bob", "pass1234", email="ws_role_bob@test.com"))
@@ -367,6 +372,7 @@ def test_update_member_role(client):
 
 def test_update_member_invalid_role(client):
     import asyncio
+
     from app.auth.auth import register_user
     try:
         asyncio.run(register_user("ws_badrole_bob", "pass1234", email="ws_badrole_bob@test.com"))
@@ -413,9 +419,10 @@ def test_update_and_list_granular_member_permissions(client):
     )
     assert member["permissions"] == permissions
 
+    import asyncio
+
     from app.config.data import DB_FILE
     from app.storage.workspaces import WorkspaceStorage
-    import asyncio
 
     storage = WorkspaceStorage(DB_FILE)
     assert asyncio.run(
@@ -450,9 +457,8 @@ def test_existing_member_permissions_default_to_allow(client):
     )
     _switch(client, ws["id"], "ws_default_perm_member")
 
-    from app.storage.workspaces import WorkspaceStorage
-
     from app.config.data import DB_FILE
+    from app.storage.workspaces import WorkspaceStorage
 
     storage = WorkspaceStorage(DB_FILE)
     import asyncio

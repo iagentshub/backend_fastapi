@@ -3,8 +3,9 @@ from __future__ import annotations
 
 
 def _login(client, username="tagstest", password="pass1234"):
-    from app.auth.auth import create_token, register_user
     import asyncio
+
+    from app.auth.auth import create_token, register_user
     asyncio.run(register_user(username, password, email=f"{username}@example.com"))
     client.cookies.set("ga_token", create_token(username))
     return username
@@ -48,6 +49,7 @@ def test_agent_tags_go_to_resource_social(client):
 
     import asyncio
     import json as _json
+
     from app.storage.db import open_db
 
     async def _get_tags():

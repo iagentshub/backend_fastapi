@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from app.storage.storage import SkillStorage, _PUBLIC_OWNER
+from app.storage.storage import _PUBLIC_OWNER, SkillStorage
 
 
 @pytest.fixture()

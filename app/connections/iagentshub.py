@@ -8,6 +8,7 @@ import urllib.request
 from typing import Any, Dict
 
 from app.config.security import assert_safe_url
+
 from .base import BaseProvider, FieldDef, TestResult, register
 
 

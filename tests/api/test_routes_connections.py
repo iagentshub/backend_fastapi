@@ -1,7 +1,6 @@
 """Tests CRUD de conexiones: GET, POST, DELETE /api/connections."""
 from __future__ import annotations
 
-
 _CONN_PAYLOAD = {
     "type": "openai",
     "label": "Mi OpenAI",

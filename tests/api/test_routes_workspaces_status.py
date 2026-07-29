@@ -13,6 +13,7 @@ from fastapi.testclient import TestClient
 
 def _register(username: str) -> None:
     import asyncio
+
     from app.auth.auth import register_user
     try:
         asyncio.run(register_user(username, "pass1234", email=f"{username}@test.com"))
@@ -183,6 +184,7 @@ def test_delete_workspace_removes_owned_content(admin_client):
     assert r.status_code == 200
 
     import asyncio
+
     from app.storage.db import open_db
 
     async def _counts():

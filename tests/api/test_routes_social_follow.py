@@ -3,8 +3,9 @@ from __future__ import annotations
 
 
 def _login(client, username, password="pass1234"):
-    from app.auth.auth import create_token, register_user
     import asyncio
+
+    from app.auth.auth import create_token, register_user
     asyncio.run(register_user(username, password, email=f"{username}@example.com"))
     client.cookies.set("ga_token", create_token(username))
     return username
@@ -12,12 +13,14 @@ def _login(client, username, password="pass1234"):
 
 def _register(username, password="pass1234"):
     import asyncio
+
     from app.auth.auth import register_user
     asyncio.run(register_user(username, password, email=f"{username}@example.com"))
 
 
 def _insert_resource_social(owner, resource_id, is_public=True):
     import asyncio
+
     from app.storage.db import open_db
     pub_val = 1 if is_public else 0
 

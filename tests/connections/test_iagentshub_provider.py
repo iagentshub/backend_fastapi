@@ -9,7 +9,6 @@ import pytest
 
 from app.connections.iagentshub import IAgentsHubProvider, _login
 
-
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def _mock_urlopen_response(data: dict, status: int = 200):

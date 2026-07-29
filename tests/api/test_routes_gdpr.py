@@ -10,13 +10,11 @@ from __future__ import annotations
 import io
 import zipfile
 
-from fastapi.testclient import TestClient
-
 import pytest
+from fastapi.testclient import TestClient
 
 import app.config.data as _cfg
 from app.auth.auth import create_token, register_user, schedule_user_deletion
-
 
 # ── Fixture: parcha gdpr.DB_FILE con la BD de test ───────────────────────────
 
@@ -100,6 +98,7 @@ def test_request_deletion_409_si_es_owner_de_workspace(client):
     _auth(client, "rd_ws_owner")
     # Crear workspace directamente en la misma BD que usa get_owned_workspaces
     import asyncio
+
     from app.storage.workspaces import WorkspaceStorage
     asyncio.run(WorkspaceStorage(_cfg.DB_FILE).create("Workspace Bloqueante", created_by="rd_ws_owner"))
     r = client.post("/api/auth/me/request-deletion")

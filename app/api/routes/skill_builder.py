@@ -19,8 +19,8 @@ from app.services.chat import stream_chat
 from app.services.skill_builder import (
     SkillBuilderMessage,
     SkillBuilderMode,
-    build_from_skill_markdown,
     build_fallback_ready,
+    build_from_skill_markdown,
     build_system_prompt,
     parse_builder_reply,
     should_force_ready,

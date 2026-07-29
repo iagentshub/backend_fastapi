@@ -7,10 +7,9 @@ import zipfile
 
 import pytest
 
+import app.config.data as _cfg
 from app.auth.auth import register_user
 from app.services.gdpr import _collect_file_owned, export_user_data
-import app.config.data as _cfg
-
 
 # ── Fixture: parcha gdpr.DB_FILE con la BD de test ───────────────────────────
 
@@ -30,6 +29,7 @@ async def _make_user(username: str, email: str | None = None) -> None:
 
 async def _insert_conversation(username: str, title: str = "Test conv") -> str:
     from uuid import uuid4
+
     from app.storage.db import open_db
     conv_id = uuid4().hex[:12]
     async with open_db() as conn:

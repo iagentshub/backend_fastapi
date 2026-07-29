@@ -13,9 +13,8 @@ from app.api.routes.auth import WorkspaceContext, require_workspace
 from app.auth.auth import get_user_role
 from app.config.data import AGENTS_DIR, DB_FILE
 from app.errors import APIError
-
+from app.storage.folders import VALID_SECTIONS, FolderStorage
 from app.storage.guest import get_session, is_guest
-from app.storage.folders import FolderStorage, VALID_SECTIONS
 from app.storage.knowledge import (
     KnowledgeStorage,
     extract_document_text,

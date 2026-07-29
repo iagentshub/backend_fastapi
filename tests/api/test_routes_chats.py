@@ -4,9 +4,10 @@ from __future__ import annotations
 import asyncio
 
 import pytest
+
 from app.auth.auth import create_token, register_user_email
-from app.storage.chat import ChatStorage
 from app.config.data import DB_FILE
+from app.storage.chat import ChatStorage
 
 
 def _auth_client(client, username: str):
@@ -112,8 +113,9 @@ def test_delete_conversation_not_found(alice):
 
 def test_isolation_alice_cannot_see_bob_conversations(patch_data_dir):
     """Bob crea una conversación; Alice no debe verla (clientes separados)."""
-    from app.api.app import create_app
     from fastapi.testclient import TestClient
+
+    from app.api.app import create_app
 
     app = create_app()
     with TestClient(app) as c:
@@ -131,8 +133,9 @@ def test_isolation_alice_cannot_see_bob_conversations(patch_data_dir):
 
 def test_isolation_alice_cannot_delete_bob_conversation(patch_data_dir):
     """Alice intenta borrar una conversación de Bob — debe recibir 404."""
-    from app.api.app import create_app
     from fastapi.testclient import TestClient
+
+    from app.api.app import create_app
 
     app = create_app()
     conv_id = None
@@ -150,8 +153,9 @@ def test_isolation_alice_cannot_delete_bob_conversation(patch_data_dir):
 
 def test_isolation_alice_cannot_read_bob_messages(patch_data_dir):
     """Alice intenta leer los mensajes de una conversación de Bob — debe recibir 404."""
-    from app.api.app import create_app
     from fastapi.testclient import TestClient
+
+    from app.api.app import create_app
 
     app = create_app()
     conv_id = None

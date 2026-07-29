@@ -31,6 +31,7 @@ def _get_fernet():
     if _fernet is not None:
         return _fernet
     from cryptography.fernet import Fernet
+
     from app.auth.auth import _secret
     raw = _secret().encode("utf-8")
     key_bytes = hashlib.pbkdf2_hmac("sha256", raw, _SALT, _ITERATIONS, dklen=32)

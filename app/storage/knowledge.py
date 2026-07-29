@@ -7,6 +7,7 @@ from datetime import datetime, timezone
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+
 from app.config.security import assert_safe_url
 from app.storage.db import open_db
 

@@ -1,7 +1,6 @@
 """Tests CRUD de agentes: GET, POST, DELETE /api/agents."""
 from __future__ import annotations
 
-
 _AGENT_PAYLOAD = {
     "name": "Test Agent",
     "system_prompt": "Eres un asistente de pruebas.",

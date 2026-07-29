@@ -7,7 +7,6 @@ from __future__ import annotations
 
 from fastapi.testclient import TestClient
 
-
 _CONN = {
     "type": "openai",
     "label": "Conn Compartida",
@@ -19,6 +18,7 @@ _CONN = {
 
 def _register(username: str) -> None:
     import asyncio
+
     from app.auth.auth import register_user
     try:
         asyncio.run(register_user(username, "pass1234", email=f"{username}@test.com"))
@@ -60,6 +60,7 @@ def test_share_personal_connection_with_workspace_visible_to_member(client):
     # El original sigue siendo de rws_owner_a — no se duplicó el registro (mismo id,
     # sin crear una copia con otro owner_id)
     import asyncio
+
     from app.storage.db import open_db
 
     async def _owner_of(conn_id: str) -> str | None:

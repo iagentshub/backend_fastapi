@@ -5,7 +5,6 @@ import asyncio
 
 import pytest
 
-
 # ── verify_password — excepción en bcrypt ──────────────────────────────────────
 
 def test_verify_password_bad_hash():
@@ -137,6 +136,7 @@ def test_build_email_html_con_cta():
 
 def test_send_smtp_no_host():
     from unittest.mock import patch
+
     from app.auth.auth import _send_smtp
     with patch("app.config.session.SMTP_HOST", ""):
         # Sin host → retorna sin enviar (no lanza)
@@ -156,6 +156,7 @@ def test_purge_user_data(patch_data_dir):
 
 def test_ensure_admin_user_creates_when_none_exists(patch_data_dir):
     from unittest.mock import patch
+
     from app.auth.auth import ensure_admin_user, get_user_by_username
     with patch.dict("os.environ", {"GAIA_ADMIN_EMAIL": "newadmin@test.com", "GAIA_ADMIN_RESET": ""}):
         asyncio.run(ensure_admin_user())
@@ -166,6 +167,7 @@ def test_ensure_admin_user_creates_when_none_exists(patch_data_dir):
 
 def test_ensure_admin_user_promotes_existing(patch_data_dir):
     from unittest.mock import patch
+
     from app.auth.auth import ensure_admin_user, get_user_by_username, register_user
     asyncio.run(register_user("promote@test.com", "pass", email="promote@test.com"))
     with patch.dict("os.environ", {"GAIA_ADMIN_EMAIL": "promote@test.com", "GAIA_ADMIN_RESET": ""}):

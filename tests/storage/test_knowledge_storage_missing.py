@@ -20,7 +20,6 @@ from app.storage.knowledge import (
     fetch_url_text,
 )
 
-
 # ── _TextParser ────────────────────────────────────────────────────────────────
 
 

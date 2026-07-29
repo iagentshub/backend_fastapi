@@ -8,7 +8,6 @@ from uuid import uuid4
 
 from app.storage.db import IS_PG, open_db
 
-
 VALID_SECTIONS = {"agents", "skill", "url", "document", "memory"}
 _SHARED_RESOURCE_TYPES = {
     "agents": "agent",

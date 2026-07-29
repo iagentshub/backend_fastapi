@@ -9,42 +9,42 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from jose import jwt as _jwt
 from fastapi.responses import JSONResponse
+from jose import jwt as _jwt
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-from app.utils import flog
-from app.utils.net import client_ip as _client_ip_util
-from app.auth.auth import ensure_admin_user, purge_expired_deletions
-from app.config.cors import CORS_ORIGINS
-from app.config import data as _cfg
-from app.config.session import BODY_MAX_BYTES as _BODY_MAX_BYTES
-from app.storage.db import init_db, close_db_pool, open_db
 from app.api.routes import (
-    auth,
-    connections,
-    agents,
-    skills,
-    memory,
-    settings,
     accounts,
-    chats,
-    knowledge,
-    logs,
-    sharing,
-    workspaces,
+    agent_builder,
+    agents,
+    auth,
     billing,
     centinel,
-    agent_builder,
-    skill_builder,
+    chats,
+    connections,
+    knowledge,
+    logs,
+    memory,
     resource_management,
+    settings,
+    sharing,
+    skill_builder,
+    skills,
+    workspaces,
 )
 from app.api.routes.auth import admin_router, users_router
 from app.api.routes.social import router as social_router
-from app.middleware.locale import LocaleMiddleware
+from app.auth.auth import ensure_admin_user, purge_expired_deletions
+from app.config import data as _cfg
+from app.config.cors import CORS_ORIGINS
+from app.config.session import BODY_MAX_BYTES as _BODY_MAX_BYTES
 from app.middleware.licenses import LicenseGateMiddleware
+from app.middleware.locale import LocaleMiddleware
 from app.middleware.security import SecurityHeadersMiddleware
+from app.storage.db import close_db_pool, init_db, open_db
+from app.utils import flog
+from app.utils.net import client_ip as _client_ip_util
 
 _docs_url = (
     "/docs" if os.getenv("GAIA_DEV_MODE", "").lower() in ("1", "true", "yes") else None

@@ -9,7 +9,6 @@ import httpx
 
 from tests.e2e.conftest import create_agent, create_skill, zip_names, zip_read
 
-
 # ── OpenAI ────────────────────────────────────────────────────────────────────
 
 def test_e2e_openai_export_real_http(auth_client):

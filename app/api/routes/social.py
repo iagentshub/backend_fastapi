@@ -16,7 +16,12 @@ from app.middleware.ratelimit import RateLimiter
 from app.services.chat import stream_chat
 from app.storage.db import IS_PG, open_db
 from app.storage.knowledge import KnowledgeStorage
-from app.storage.storage import AgentStorage, ConnectionStorage, MemoryStorage, SkillStorage
+from app.storage.storage import (
+    AgentStorage,
+    ConnectionStorage,
+    MemoryStorage,
+    SkillStorage,
+)
 from app.storage.workflows import WorkflowStorage
 
 router = APIRouter(tags=["social"])

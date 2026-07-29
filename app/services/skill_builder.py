@@ -4,10 +4,9 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Dict, Iterable, List, Literal, Optional
+from typing import List, Literal, Optional
 
 from pydantic import BaseModel, Field, ValidationError
-
 
 SkillBuilderMode = Literal["guided", "expert"]
 SkillCategory = Literal[

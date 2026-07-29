@@ -8,11 +8,9 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.auth.auth import decode_token, get_user_role
-from app.config.data import SETTINGS_FILE
+from app.config.data import DB_FILE, SETTINGS_FILE
 from app.storage.billing import BillingStorage
-from app.config.data import DB_FILE
 from app.storage.guest import is_guest
-
 
 _PROTECTED_PREFIXES = (
     "/api/agents",

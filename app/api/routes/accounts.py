@@ -12,9 +12,8 @@ from app.auth.auth import get_user_role
 from app.config.data import AGENTS_DIR, DB_FILE, SKILLS_DIR
 from app.errors import APIError
 from app.storage.accounts import AccountStorage, _mask
-from app.utils import now_iso as _now
-
 from app.storage.storage import AgentStorage, ConnectionStorage, SkillStorage
+from app.utils import now_iso as _now
 
 router = APIRouter(prefix="/api/accounts", tags=["accounts"])
 

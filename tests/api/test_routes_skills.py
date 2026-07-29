@@ -1,7 +1,6 @@
 """Tests de skills: GET, POST, DELETE /api/skills."""
 from __future__ import annotations
 
-
 _SKILL_PAYLOAD = {
     "name": "Test Skill",
     "description": "Una skill de prueba.",
