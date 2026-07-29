@@ -56,35 +56,55 @@ def _sequence_order(
         if sequence_edges:
             raise ValueError("Una orquestación de un solo paso no necesita conexiones")
         return list(node_ids)
-    if len(sequence_edges) != len(node_ids) - 1:
-        raise ValueError("Todos los pasos deben formar una única secuencia")
+    if len(sequence_edges) < len(node_ids) - 1:
+        raise ValueError("Todos los pasos deben estar conectados")
 
     outgoing = {node_id: [] for node_id in node_ids}
     incoming = {node_id: 0 for node_id in node_ids}
     for edge in sequence_edges:
         outgoing[edge["source"]].append(edge["target"])
         incoming[edge["target"]] += 1
-    if any(len(targets) > 1 for targets in outgoing.values()):
-        raise ValueError("Un paso no puede enviar su salida a varios pasos")
-    if any(count > 1 for count in incoming.values()):
-        raise ValueError("Un paso no puede recibir la salida de varios pasos")
-
     starts = [node_id for node_id, count in incoming.items() if count == 0]
     ends = [node_id for node_id, targets in outgoing.items() if not targets]
+    if not starts or not ends:
+        raise ValueError("La secuencia principal contiene un ciclo")
     if len(starts) != 1 or len(ends) != 1:
         raise ValueError("La orquestación debe tener un único inicio y un único final")
 
+    pending = dict(incoming)
+    queue = list(starts)
     ordered: List[str] = []
-    current = starts[0]
-    while current not in ordered:
+    while queue:
+        current = queue.pop(0)
         ordered.append(current)
-        targets = outgoing[current]
-        if not targets:
-            break
-        current = targets[0]
+        for target in outgoing[current]:
+            pending[target] -= 1
+            if pending[target] == 0:
+                queue.append(target)
     if len(ordered) != len(node_ids):
-        raise ValueError("La secuencia principal contiene un ciclo")
+        raise ValueError("El flujo principal contiene un ciclo o pasos desconectados")
     return ordered
+
+
+def _has_path(
+    source: str,
+    target: str,
+    sequence_edges: List[Dict[str, Any]],
+) -> bool:
+    outgoing: Dict[str, List[str]] = {}
+    for edge in sequence_edges:
+        outgoing.setdefault(edge["source"], []).append(edge["target"])
+    pending = [source]
+    seen: Set[str] = set()
+    while pending:
+        current = pending.pop()
+        if current == target:
+            return True
+        if current in seen:
+            continue
+        seen.add(current)
+        pending.extend(outgoing.get(current, []))
+    return False
 
 
 def validate_workflow(definition: Dict[str, Any]) -> Dict[str, Any]:
@@ -189,13 +209,18 @@ def validate_workflow(definition: Dict[str, Any]) -> Dict[str, Any]:
     for edge in loop_edges:
         start = indexes[edge["target"]]
         end = indexes[edge["source"]]
-        if start >= end:
+        if start >= end or not _has_path(
+            edge["target"], edge["source"], sequence_edges
+        ):
             raise ValueError("Un ciclo debe volver a un paso anterior")
         if edge["source"] in loop_sources:
             raise ValueError("Un paso no puede cerrar varios ciclos")
         loop_sources.add(edge["source"])
         interval = (start, end)
-        if any(not (end < other_start or start > other_end) for other_start, other_end in intervals):
+        if any(
+            not (end < other_start or start > other_end)
+            for other_start, other_end in intervals
+        ):
             raise ValueError("Los ciclos no pueden solaparse ni anidarse")
         intervals.append(interval)
 

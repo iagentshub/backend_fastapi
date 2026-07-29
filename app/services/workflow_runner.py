@@ -1,9 +1,10 @@
-"""Sequential execution engine with bounded visual workflow loops."""
+"""Concurrent execution engine for directed visual workflows with bounded loops."""
 
 from __future__ import annotations
 
+import asyncio
 import json
-from typing import Any, AsyncGenerator, Awaitable, Callable, Dict, List
+from typing import Any, AsyncGenerator, Awaitable, Callable, Dict, List, Set
 
 from app.models.agent import Agent
 from app.services.chat import stream_chat
@@ -20,7 +21,7 @@ def _sequence_edges(definition: Dict[str, Any]) -> List[Dict[str, Any]]:
 
 
 def execution_order(definition: Dict[str, Any]) -> List[Dict[str, Any]]:
-    """Return the stable main path while intentionally ignoring return edges."""
+    """Return a stable topological order while intentionally ignoring return edges."""
     nodes = {node["id"]: node for node in definition["nodes"]}
     incoming = {node_id: 0 for node_id in nodes}
     outgoing = {node_id: [] for node_id in nodes}
@@ -37,6 +38,61 @@ def execution_order(definition: Dict[str, Any]) -> List[Dict[str, Any]]:
             if incoming[target] == 0:
                 queue.append(target)
     return ordered
+
+
+def _graph(
+    definition: Dict[str, Any],
+) -> tuple[Dict[str, List[str]], Dict[str, List[str]]]:
+    node_ids = [node["id"] for node in definition["nodes"]]
+    predecessors = {node_id: [] for node_id in node_ids}
+    successors = {node_id: [] for node_id in node_ids}
+    for edge in _sequence_edges(definition):
+        predecessors[edge["target"]].append(edge["source"])
+        successors[edge["source"]].append(edge["target"])
+    return predecessors, successors
+
+
+def _reachable(start: str, adjacency: Dict[str, List[str]]) -> Set[str]:
+    pending = [start]
+    seen: Set[str] = set()
+    while pending:
+        current = pending.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        pending.extend(adjacency[current])
+    return seen
+
+
+def _loop_scope(
+    edge: Dict[str, Any],
+    predecessors: Dict[str, List[str]],
+    successors: Dict[str, List[str]],
+) -> Set[str]:
+    return _reachable(edge["target"], successors) & _reachable(
+        edge["source"], predecessors
+    )
+
+
+def _node_input(
+    node_id: str,
+    initial_input: str,
+    outputs: Dict[str, str],
+    predecessors: Dict[str, List[str]],
+    labels: Dict[str, str],
+) -> str:
+    sources = predecessors[node_id]
+    if not sources:
+        return initial_input
+    if len(sources) == 1:
+        return outputs[sources[0]]
+    sections = [
+        f"### {labels[source]}\n{outputs[source]}" for source in sources
+    ]
+    return (
+        "Resultados paralelos que debes consolidar para este paso:\n\n"
+        + "\n\n".join(sections)
+    )
 
 
 async def _agent_reply(
@@ -121,120 +177,192 @@ async def run_workflow(
     resolve: AgentResolver,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     ordered_nodes = execution_order(definition)
-    index_by_id = {node["id"]: index for index, node in enumerate(ordered_nodes)}
+    if len(ordered_nodes) != len(definition["nodes"]):
+        raise RuntimeError("El flujo principal no es un grafo acíclico válido")
+
+    predecessors, successors = _graph(definition)
     loops_by_source = {
         edge["source"]: edge
         for edge in definition["edges"]
         if edge.get("type") == "loop"
+    }
+    loop_scopes = {
+        source: _loop_scope(edge, predecessors, successors)
+        for source, edge in loops_by_source.items()
     }
     resolved: Dict[str, tuple[Dict[str, Any], Agent, Dict[str, Any]]] = {}
     for node in ordered_nodes:
         raw_agent, connection = await resolve(node["agent_id"])
         resolved[node["id"]] = (node, Agent.from_dict(raw_agent), connection)
 
-    current = initial_input
+    completed: Set[str] = set()
+    outputs: Dict[str, str] = {}
     loop_passes: Dict[str, int] = {}
     execution_count = 0
-    pointer = 0
-    while pointer < len(ordered_nodes):
-        node = ordered_nodes[pointer]
-        _, agent, connection = resolved[node["id"]]
-        loop = loops_by_source.get(node["id"])
-        iteration = loop_passes.get(node["id"], 1)
+    labels = {
+        node["id"]: str(node.get("label") or resolved[node["id"]][1].name)
+        for node in ordered_nodes
+    }
 
-        if node.get("kind") == "evaluator":
-            evaluator = node["evaluator"]
-            yield {
-                "type": "evaluation_started",
-                "node_id": node["id"],
-                "agent_id": agent.id,
-                "agent_name": agent.name,
-                "iteration": iteration,
-            }
-            decision = await _evaluate(
-                agent,
-                connection,
-                evaluator["condition"],
-                current,
-                iteration,
+    def iteration_for(node_id: str) -> int:
+        return max(
+            [
+                loop_passes.get(source, 1)
+                for source, scope in loop_scopes.items()
+                if node_id in scope
+            ]
+            or [1]
+        )
+
+    def reset_scope(source_id: str) -> None:
+        for scoped_id in loop_scopes[source_id]:
+            completed.discard(scoped_id)
+            outputs.pop(scoped_id, None)
+
+    while len(completed) < len(ordered_nodes):
+        ready = [
+            node
+            for node in ordered_nodes
+            if node["id"] not in completed
+            and all(source in completed for source in predecessors[node["id"]])
+        ]
+        if not ready:
+            raise RuntimeError("La orquestación no puede continuar por sus dependencias")
+
+        tasks: List[asyncio.Task[Any]] = []
+        task_meta: List[tuple[Dict[str, Any], Agent, str, int, int | None]] = []
+        for node in ready:
+            _, agent, connection = resolved[node["id"]]
+            iteration = iteration_for(node["id"])
+            content = _node_input(
+                node["id"], initial_input, outputs, predecessors, labels
             )
-            yield {
-                "type": "evaluation_done",
-                "node_id": node["id"],
-                "agent_id": agent.id,
-                "agent_name": agent.name,
-                "iteration": iteration,
-                **decision,
-            }
-            if decision["approved"]:
-                pointer += 1
-                continue
-            if iteration >= evaluator["max_iterations"]:
+            event_index: int | None = None
+            if node.get("kind") == "evaluator":
                 yield {
-                    "type": "loop_limit_reached",
+                    "type": "evaluation_started",
                     "node_id": node["id"],
+                    "agent_id": agent.id,
+                    "agent_name": agent.name,
                     "iteration": iteration,
-                    "message": (
-                        f"El evaluador {agent.name} no aprobó el resultado "
-                        f"en {iteration} vueltas"
-                    ),
                 }
-                raise RuntimeError(
-                    f"El ciclo alcanzó {iteration} vueltas sin cumplir la condición"
+                task = asyncio.create_task(
+                    _evaluate(
+                        agent,
+                        connection,
+                        node["evaluator"]["condition"],
+                        content,
+                        iteration,
+                    )
                 )
-            loop_passes[node["id"]] = iteration + 1
-            yield {
-                "type": "loop_iteration_started",
-                "node_id": node["id"],
-                "target_node_id": loop["target"],
-                "iteration": iteration + 1,
-            }
-            pointer = index_by_id[loop["target"]]
-            continue
+            else:
+                execution_count += 1
+                event_index = execution_count
+                yield {
+                    "type": "stage_started",
+                    "index": event_index,
+                    "total": len(ordered_nodes),
+                    "node_id": node["id"],
+                    "agent_id": agent.id,
+                    "agent_name": agent.name,
+                    "iteration": iteration,
+                }
+                instruction = str(node.get("instruction") or "").strip()
+                user_content = content
+                if instruction:
+                    source_label = (
+                        "Entrada inicial"
+                        if not predecessors[node["id"]]
+                        else "Resultados de pasos anteriores"
+                    )
+                    user_content = (
+                        f"Objetivo específico de este paso:\n{instruction}\n\n"
+                        f"{source_label}:\n{content}"
+                    )
+                task = asyncio.create_task(
+                    _agent_reply(agent, connection, user_content)
+                )
+            tasks.append(task)
+            task_meta.append((node, agent, content, iteration, event_index))
 
-        execution_count += 1
-        yield {
-            "type": "stage_started",
-            "index": execution_count,
-            "total": len(ordered_nodes),
-            "node_id": node["id"],
-            "agent_id": agent.id,
-            "agent_name": agent.name,
-            "iteration": iteration,
-        }
-        instruction = str(node.get("instruction") or "").strip()
-        user_content = current
-        if instruction:
-            source_label = "Entrada inicial" if execution_count == 1 else "Resultado anterior"
-            user_content = (
-                f"Objetivo específico de este paso:\n{instruction}\n\n"
-                f"{source_label}:\n{current}"
-            )
-        reply = await _agent_reply(agent, connection, user_content)
-        current = reply
-        yield {
-            "type": "stage_done",
-            "index": execution_count,
-            "total": len(ordered_nodes),
-            "node_id": node["id"],
-            "agent_id": agent.id,
-            "agent_name": agent.name,
-            "output": reply,
-            "iteration": iteration,
-        }
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        error = next(
+            (result for result in results if isinstance(result, BaseException)),
+            None,
+        )
+        if error is not None:
+            raise error
 
-        if loop and loop["mode"] == "fixed":
-            required = loop["iterations"]
-            if iteration < required:
-                loop_passes[node["id"]] = iteration + 1
+        restarted = False
+        for (node, agent, content, iteration, event_index), result in zip(
+            task_meta, results, strict=True
+        ):
+            node_id = node["id"]
+            loop = loops_by_source.get(node_id)
+            if node.get("kind") == "evaluator":
+                decision = result
+                yield {
+                    "type": "evaluation_done",
+                    "node_id": node_id,
+                    "agent_id": agent.id,
+                    "agent_name": agent.name,
+                    "iteration": iteration,
+                    **decision,
+                }
+                if decision["approved"]:
+                    outputs[node_id] = content
+                    completed.add(node_id)
+                    continue
+                if iteration >= node["evaluator"]["max_iterations"]:
+                    yield {
+                        "type": "loop_limit_reached",
+                        "node_id": node_id,
+                        "iteration": iteration,
+                        "message": (
+                            f"El evaluador {agent.name} no aprobó el resultado "
+                            f"en {iteration} vueltas"
+                        ),
+                    }
+                    raise RuntimeError(
+                        f"El ciclo alcanzó {iteration} vueltas sin cumplir la condición"
+                    )
+                loop_passes[node_id] = iteration + 1
+                reset_scope(node_id)
                 yield {
                     "type": "loop_iteration_started",
-                    "node_id": node["id"],
+                    "node_id": node_id,
                     "target_node_id": loop["target"],
                     "iteration": iteration + 1,
                 }
-                pointer = index_by_id[loop["target"]]
+                restarted = True
                 continue
-        pointer += 1
 
-    yield {"type": "workflow_done", "output": current}
+            reply = str(result)
+            outputs[node_id] = reply
+            completed.add(node_id)
+            yield {
+                "type": "stage_done",
+                "index": event_index,
+                "total": len(ordered_nodes),
+                "node_id": node_id,
+                "agent_id": agent.id,
+                "agent_name": agent.name,
+                "output": reply,
+                "iteration": iteration,
+            }
+            if loop and loop["mode"] == "fixed" and iteration < loop["iterations"]:
+                loop_passes[node_id] = iteration + 1
+                reset_scope(node_id)
+                yield {
+                    "type": "loop_iteration_started",
+                    "node_id": node_id,
+                    "target_node_id": loop["target"],
+                    "iteration": iteration + 1,
+                }
+                restarted = True
+
+        if restarted:
+            continue
+
+    final_nodes = [node_id for node_id, targets in successors.items() if not targets]
+    yield {"type": "workflow_done", "output": outputs[final_nodes[0]]}

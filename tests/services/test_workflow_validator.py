@@ -118,18 +118,117 @@ def test_preserves_step_instruction():
     "edges",
     [
         [],
-        [{"source": "a", "target": "b"}, {"source": "a", "target": "c"}],
-        [{"source": "a", "target": "c"}, {"source": "b", "target": "c"}],
     ],
 )
-def test_rejects_disconnected_or_branched_workflows(edges):
-    with pytest.raises(ValueError, match="secuencia|varios"):
+def test_rejects_disconnected_workflows(edges):
+    with pytest.raises(ValueError, match="conectados"):
         validate_workflow(
             {
                 "nodes": [_node("a"), _node("b"), _node("c")],
                 "edges": edges,
             }
         )
+
+
+def test_accepts_parallel_branches_with_single_join():
+    result = validate_workflow(
+        {
+            "nodes": [_node("a"), _node("b"), _node("c"), _node("d")],
+            "edges": [
+                {"source": "a", "target": "b"},
+                {"source": "a", "target": "c"},
+                {"source": "b", "target": "d"},
+                {"source": "c", "target": "d"},
+            ],
+        }
+    )
+    assert [node["id"] for node in execution_order(result)] == ["a", "b", "c", "d"]
+
+
+@pytest.mark.asyncio
+async def test_parallel_branches_are_merged_for_the_join(monkeypatch):
+    received = {}
+
+    async def fake_stream_chat(agent, _connection, messages, _history):
+        received[agent.id] = messages[0]["content"]
+        yield f"data: {json.dumps({'type': 'done', 'reply': f'output-{agent.id}'})}\n\n"
+
+    async def resolve(agent_id):
+        return _agent(agent_id), {"id": f"connection-{agent_id}"}
+
+    definition = validate_workflow(
+        {
+            "nodes": [_node("a"), _node("b"), _node("c"), _node("d")],
+            "edges": [
+                {"source": "a", "target": "b"},
+                {"source": "a", "target": "c"},
+                {"source": "b", "target": "d"},
+                {"source": "c", "target": "d"},
+            ],
+        }
+    )
+    monkeypatch.setattr("app.services.workflow_runner.stream_chat", fake_stream_chat)
+    events = [
+        event async for event in run_workflow(definition, "entrada", resolve)
+    ]
+
+    started = [event["node_id"] for event in events if event["type"] == "stage_started"]
+    assert started == ["a", "b", "c", "d"]
+    assert received["b"] == "output-a"
+    assert received["c"] == "output-a"
+    assert "### b\noutput-b" in received["d"]
+    assert "### c\noutput-c" in received["d"]
+    assert events[-1] == {"type": "workflow_done", "output": "output-d"}
+
+
+@pytest.mark.asyncio
+async def test_gate_can_repeat_one_branch_without_rerunning_approved_sibling(monkeypatch):
+    events = await _events(
+        {
+            "nodes": [
+                _node("start"),
+                _node("developer"),
+                _node("security"),
+                _node(
+                    "gate",
+                    kind="evaluator",
+                    evaluator={
+                        "condition": "La entrega está aprobada",
+                        "max_iterations": 3,
+                    },
+                ),
+            ],
+            "edges": [
+                {"source": "start", "target": "developer"},
+                {"source": "start", "target": "security"},
+                {"source": "developer", "target": "gate"},
+                {"source": "security", "target": "gate"},
+                {
+                    "source": "gate",
+                    "target": "developer",
+                    "type": "loop",
+                    "mode": "condition",
+                },
+            ],
+        },
+        monkeypatch,
+        {
+            "start": ["contexto"],
+            "developer": ["primera", "corregida"],
+            "security": ["seguro"],
+            "gate": [
+                '{"approved": false, "reason": "Falta corregir"}',
+                '{"approved": true, "reason": "Aprobado"}',
+            ],
+        },
+    )
+    completed = [
+        event["node_id"] for event in events if event["type"] == "stage_done"
+    ]
+    assert completed == ["start", "developer", "security", "developer"]
+    assert events[-1]["output"].startswith(
+        "Resultados paralelos que debes consolidar"
+    )
 
 
 def test_rejects_duplicate_edges():
