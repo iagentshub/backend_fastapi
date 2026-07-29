@@ -532,9 +532,21 @@ async def test_openai_usage_chunk_with_empty_choices():
     assert data["tokens"]["out"] == 12
 
 
-async def test_deepseek_v4_uses_bounded_non_thinking_generation():
-    agent = _make_agent("nvidia", model="deepseek-ai/deepseek-v4-pro")
-    conn = _make_conn("nvidia", model="deepseek-ai/deepseek-v4-pro")
+@pytest.mark.parametrize(
+    ("model", "expected_options"),
+    [
+        ("deepseek-ai/deepseek-v4-pro", {"thinking": False}),
+        (
+            "deepseek-ai/deepseek-v4-flash",
+            {"thinking": False, "reasoning_effort": "none"},
+        ),
+    ],
+)
+async def test_deepseek_v4_uses_bounded_non_thinking_generation(
+    model, expected_options
+):
+    agent = _make_agent("nvidia", model=model)
+    conn = _make_conn("nvidia", model=model)
     sent_payloads = []
 
     def fake_urlopen(req, timeout):
@@ -550,7 +562,7 @@ async def test_deepseek_v4_uses_bounded_non_thinking_generation():
         ]
 
     assert sent_payloads[0]["max_tokens"] == 2_048
-    assert sent_payloads[0]["chat_template_kwargs"] == {"thinking": False}
+    assert sent_payloads[0]["chat_template_kwargs"] == expected_options
 
 
 # ─── Tests de truncado de contexto ────────────────────────────────────────────

@@ -32,6 +32,11 @@ from app.config.providers import (
 )
 from app.config.security import PRIVATE_HOST_PREFIXES
 
+_NVIDIA_DEEPSEEK_V4_MODELS = {
+    "deepseek-ai/deepseek-v4-pro",
+    "deepseek-ai/deepseek-v4-flash",
+}
+
 
 @runtime_checkable
 class _SkillStorage(Protocol):
@@ -347,13 +352,15 @@ async def stream_chat(
             }
             if max_tokens:
                 payload["max_tokens"] = int(max_tokens)
-            elif conn_type == "nvidia" and model == "deepseek-ai/deepseek-v4-pro":
+            elif conn_type == "nvidia" and model in _NVIDIA_DEEPSEEK_V4_MODELS:
                 # El endpoint alojado permite respuestas muy largas. Un límite
                 # conservador evita que las etapas de una orquestación agoten el
                 # tiempo del gateway cuando el agente no define uno propio.
                 payload["max_tokens"] = 2_048
-            if conn_type == "nvidia" and model == "deepseek-ai/deepseek-v4-pro":
+            if conn_type == "nvidia" and model in _NVIDIA_DEEPSEEK_V4_MODELS:
                 payload["chat_template_kwargs"] = {"thinking": False}
+                if model == "deepseek-ai/deepseek-v4-flash":
+                    payload["chat_template_kwargs"]["reasoning_effort"] = "none"
             if agent.effort_level:
                 payload["reasoning_effort"] = agent.effort_level
             headers = {
