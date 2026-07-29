@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import socket
 import urllib.error
+from io import BytesIO
 from unittest.mock import MagicMock, patch
 
 import pytest
@@ -61,6 +62,34 @@ def test_openai_stream_retries_transient_dns_failure():
 
     with (
         patch("urllib.request.urlopen", side_effect=[dns_error, response]) as urlopen,
+        patch("app.services.chat.time.sleep") as sleep,
+    ):
+        reply, _, _ = _do_openai_stream_with_dns_retry(
+            "https://example.com/v1/chat/completions",
+            {"Authorization": "Bearer test"},
+            {"model": "test", "messages": [], "stream": True},
+            30,
+        )
+
+    assert reply == "OK"
+    assert urlopen.call_count == 2
+    sleep.assert_called_once_with(1)
+
+
+def test_openai_stream_retries_transient_gateway_failure():
+    gateway_error = urllib.error.HTTPError(
+        "https://example.com/v1/chat/completions",
+        504,
+        "Gateway Timeout",
+        {},
+        BytesIO(b"gateway timeout"),
+    )
+    response = _sse_done_response("OK")
+
+    with (
+        patch(
+            "urllib.request.urlopen", side_effect=[gateway_error, response]
+        ) as urlopen,
         patch("app.services.chat.time.sleep") as sleep,
     ):
         reply, _, _ = _do_openai_stream_with_dns_retry(
@@ -501,6 +530,27 @@ async def test_openai_usage_chunk_with_empty_choices():
     data = json.loads(done_event.removeprefix("data: ").strip())
     assert data["tokens"]["in"] == 30
     assert data["tokens"]["out"] == 12
+
+
+async def test_deepseek_v4_uses_bounded_non_thinking_generation():
+    agent = _make_agent("nvidia", model="deepseek-ai/deepseek-v4-pro")
+    conn = _make_conn("nvidia", model="deepseek-ai/deepseek-v4-pro")
+    sent_payloads = []
+
+    def fake_urlopen(req, timeout):
+        sent_payloads.append(json.loads(req.data.decode()))
+        return _sse_done_response()
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        [
+            event
+            async for event in stream_chat(
+                agent, conn, [{"role": "user", "content": "Hi"}], _skill_storage()
+            )
+        ]
+
+    assert sent_payloads[0]["max_tokens"] == 2_048
+    assert sent_payloads[0]["chat_template_kwargs"] == {"thinking": False}
 
 
 # ─── Tests de truncado de contexto ────────────────────────────────────────────

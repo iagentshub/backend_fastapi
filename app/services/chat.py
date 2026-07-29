@@ -143,7 +143,7 @@ def _do_openai_stream_with_dns_retry(
     timeout: Optional[int],
     on_token: Optional[Callable[[str], None]] = None,
 ) -> "tuple[str, int, int]":
-    """Retry transient DNS failures before the provider has emitted any token."""
+    """Retry transient connection/gateway failures before any token is emitted."""
     for attempt in range(3):
         emitted = False
 
@@ -155,6 +155,12 @@ def _do_openai_stream_with_dns_retry(
 
         try:
             return _do_openai_stream(url, headers, payload, timeout, _on_token)
+        except urllib.error.HTTPError as exc:
+            transient_gateway = exc.code in (502, 503, 504)
+            if emitted or not transient_gateway or attempt == 2:
+                raise
+            exc.close()
+            time.sleep(attempt + 1)
         except urllib.error.URLError as exc:
             reason = exc.reason
             errno = getattr(reason, "errno", None)
@@ -341,6 +347,13 @@ async def stream_chat(
             }
             if max_tokens:
                 payload["max_tokens"] = int(max_tokens)
+            elif conn_type == "nvidia" and model == "deepseek-ai/deepseek-v4-pro":
+                # El endpoint alojado permite respuestas muy largas. Un límite
+                # conservador evita que las etapas de una orquestación agoten el
+                # tiempo del gateway cuando el agente no define uno propio.
+                payload["max_tokens"] = 2_048
+            if conn_type == "nvidia" and model == "deepseek-ai/deepseek-v4-pro":
+                payload["chat_template_kwargs"] = {"thinking": False}
             if agent.effort_level:
                 payload["reasoning_effort"] = agent.effort_level
             headers = {

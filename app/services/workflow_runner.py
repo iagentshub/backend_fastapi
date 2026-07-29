@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+from contextlib import suppress
 from typing import Any, AsyncGenerator, Awaitable, Callable, Dict, List, Set
 
 from app.models.agent import Agent
@@ -102,22 +103,27 @@ async def _agent_reply(
     content: str,
 ) -> str:
     reply = ""
-    async for chunk in stream_chat(
-        agent,
-        connection,
-        [{"role": "user", "content": content}],
-        None,
-    ):
-        if not chunk.startswith("data: "):
-            continue
-        try:
-            event = json.loads(chunk[6:].strip())
-        except json.JSONDecodeError:
-            continue
-        if event.get("type") == "error":
-            raise RuntimeError(str(event.get("message") or "Error del agente"))
-        if event.get("type") == "done":
-            reply = str(event.get("reply") or "")
+    try:
+        async for chunk in stream_chat(
+            agent,
+            connection,
+            [{"role": "user", "content": content}],
+            None,
+        ):
+            if not chunk.startswith("data: "):
+                continue
+            try:
+                event = json.loads(chunk[6:].strip())
+            except json.JSONDecodeError:
+                continue
+            if event.get("type") == "error":
+                raise RuntimeError(str(event.get("message") or "Error del agente"))
+            if event.get("type") == "done":
+                reply = str(event.get("reply") or "")
+    except asyncio.CancelledError:
+        raise
+    except Exception as exc:
+        raise RuntimeError(f"{agent.name}: {exc}") from exc
     if not reply:
         raise RuntimeError(f"El agente {agent.name} no devolvió respuesta")
     return reply
@@ -301,6 +307,8 @@ async def run_workflow(
         finally:
             if not gathered.done():
                 gathered.cancel()
+                with suppress(asyncio.CancelledError):
+                    await gathered
         error = next(
             (result for result in results if isinstance(result, BaseException)),
             None,
