@@ -7,6 +7,7 @@ import json
 import os
 import secrets
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from typing import Any, Optional
 
 import bcrypt as _bcrypt
@@ -789,8 +790,6 @@ async def ensure_admin_user() -> None:
        Con GAIA_ADMIN_RESET=true también resetea su contraseña.
     2. Si .admin_pass existe pero no coincide con el hash de la DB → resetear
        automáticamente para que la contraseña mostrada por gaia.py sea siempre válida.
-       Si no existe, se considera que el administrador ya cambió la contraseña
-       temporal y no se fuerza ningún reset.
     3. Si GAIA_ADMIN_EMAIL no tiene cuenta → crearla como admin.
     4. Si no se puede hacer nada con GAIA_ADMIN_EMAIL y ya hay otro admin
        sin reset_mode → no tocar nada.
@@ -798,7 +797,12 @@ async def ensure_admin_user() -> None:
     reset_mode = os.environ.get("GAIA_ADMIN_RESET", "").lower() in ("1", "true", "yes")
     target_email = os.environ.get("GAIA_ADMIN_EMAIL", "admin@localhost")
 
+    # If .admin_pass doesn't exist yet, force a one-time reset so gaia.py can always display it
+    # DATA_DIR, no GAIA_DATA_DIR: sin la env var la contraseña se generaba y se
+    # perdía, dejando la cuenta admin inaccesible sin avisar.
     _pass_file = DATA_DIR / ".admin_pass"
+    if not reset_mode and not _pass_file.exists():
+        reset_mode = True
 
     # Verify .admin_pass against the DB hash — reset if they don't match.
     # This handles cases where the DB password was changed externally without
