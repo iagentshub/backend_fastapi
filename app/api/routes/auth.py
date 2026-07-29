@@ -1501,7 +1501,7 @@ async def admin_delete_agent(
             400, "invalid_field", "scope debe ser 'public' o 'private'",
             extra={"field": "scope"},
         )
-    deleted = await _agents.delete(agent_id, scope=scope)
+    deleted = await _agents.delete(agent_id, scope=scope, allow_public=True)
     if not deleted:
         raise APIError(404, "not_found", "Agente no encontrado", extra={"resource": "agent"})
     return {"ok": True}
@@ -1679,6 +1679,53 @@ async def admin_verify_resource(
             "UPDATE resource_social SET verified=? WHERE resource_type=? AND resource_id=?",
             (db_val, resource_type, resource_id),
         )
+        await conn.commit()
+    return {"ok": True}
+
+
+@admin_router.put("/resources/{resource_type}/{resource_id}/owner")
+async def admin_set_resource_owner(
+    resource_type: str,
+    resource_id: str,
+    request: Request,
+    _: str = Depends(require_admin),
+) -> dict[str, Any]:
+    """Reasigna el propietario de un recurso a otro usuario existente."""
+    table_map = {
+        "agent": "agents",
+        "skill": "skills",
+        "connection": "connections",
+        "knowledge": "knowledge_items",
+        "workflow": "agent_workflows",
+    }
+    table = table_map.get(resource_type)
+    if not table:
+        raise APIError(
+            422,
+            "invalid_field",
+            f"resource_type debe ser uno de {list(table_map)}",
+            extra={"field": "resource_type"},
+        )
+    body = await request.json()
+    new_owner = str(body.get("owner_id") or "").strip()
+    if not new_owner:
+        raise APIError(400, "invalid_field", "owner_id es obligatorio", extra={"field": "owner_id"})
+
+    async with open_db() as conn:
+        user_row = await conn.fetchone(
+            "SELECT username FROM users WHERE username=?", (new_owner,)
+        )
+        if not user_row:
+            raise APIError(
+                404, "not_found", "El usuario propietario no existe",
+                extra={"resource": "user"},
+            )
+        row = await conn.fetchone(f"SELECT id FROM {table} WHERE id=?", (resource_id,))
+        if not row:
+            raise APIError(
+                404, "not_found", "Recurso no encontrado", extra={"resource": resource_type},
+            )
+        await conn.execute(f"UPDATE {table} SET owner_id=? WHERE id=?", (new_owner, resource_id))
         await conn.commit()
     return {"ok": True}
 

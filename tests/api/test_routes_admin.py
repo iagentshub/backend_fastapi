@@ -478,6 +478,50 @@ def test_admin_delete_agent_not_found(admin_client):
     assert r.status_code == 404
 
 
+def test_admin_delete_public_agent(admin_client):
+    """El admin puede borrar agentes públicos (antes daba 500: eran de solo
+    lectura y el ValueError no se capturaba en la ruta admin)."""
+    created = admin_client.post(
+        "/api/agents", json={**_AGENT_PAYLOAD, "scope": "public"}
+    ).json()
+    r = admin_client.delete(f"/api/admin/agents/{created['id']}?scope=public")
+    assert r.status_code == 200
+    assert r.json()["ok"] is True
+    agents = admin_client.get("/api/admin/agents").json()
+    assert not any(a["id"] == created["id"] for a in agents)
+
+
+def test_admin_set_agent_owner(admin_client):
+    _register("new_owner_a1")
+    created = admin_client.post("/api/agents", json=_AGENT_PAYLOAD).json()
+    r = admin_client.put(
+        f"/api/admin/resources/agent/{created['id']}/owner",
+        json={"owner_id": "new_owner_a1"},
+    )
+    assert r.status_code == 200
+    agents = admin_client.get("/api/admin/agents").json()
+    moved = next(a for a in agents if a["id"] == created["id"])
+    assert moved["owner_id"] == "new_owner_a1"
+
+
+def test_admin_set_owner_unknown_user_returns_404(admin_client):
+    created = admin_client.post("/api/agents", json=_AGENT_PAYLOAD).json()
+    r = admin_client.put(
+        f"/api/admin/resources/agent/{created['id']}/owner",
+        json={"owner_id": "ghost_user_xyz"},
+    )
+    assert r.status_code == 404
+
+
+def test_admin_set_owner_invalid_resource_type_returns_422(admin_client):
+    _register("new_owner_a2")
+    r = admin_client.put(
+        "/api/admin/resources/bogus/some-id/owner",
+        json={"owner_id": "new_owner_a2"},
+    )
+    assert r.status_code == 422
+
+
 def test_admin_agents_forbidden_for_standard(client, reset_rate_limiter):
     client.post("/api/auth/register", json={"email": "std@example.com", "password": "pass1234"})
     r = client.get("/api/admin/agents")

@@ -499,24 +499,36 @@ class AgentStorage:
             await conn.commit()
 
     async def delete(
-        self, agent_id: str, scope: Optional[str] = None, owner_id: Optional[str] = None
+        self,
+        agent_id: str,
+        scope: Optional[str] = None,
+        owner_id: Optional[str] = None,
+        allow_public: bool = False,
     ) -> bool:
         await self._ensure_migrated()
-        if scope == "public":
+        if scope == "public" and not allow_public:
             raise ValueError("Los agentes públicos son de solo lectura")
         from app.storage.db import open_db
 
         async with open_db() as conn:
-            row = await conn.fetchone(
-                "SELECT id FROM agents WHERE id=? AND scope!='public' LIMIT 1",
-                (agent_id,),
-            )
-            if not row:
-                return False
-            await conn.execute(
-                "DELETE FROM agents WHERE id=? AND scope!='public'",
-                (agent_id,),
-            )
+            if allow_public:
+                row = await conn.fetchone(
+                    "SELECT id FROM agents WHERE id=? LIMIT 1", (agent_id,)
+                )
+                if not row:
+                    return False
+                await conn.execute("DELETE FROM agents WHERE id=?", (agent_id,))
+            else:
+                row = await conn.fetchone(
+                    "SELECT id FROM agents WHERE id=? AND scope!='public' LIMIT 1",
+                    (agent_id,),
+                )
+                if not row:
+                    return False
+                await conn.execute(
+                    "DELETE FROM agents WHERE id=? AND scope!='public'",
+                    (agent_id,),
+                )
             await conn.commit()
         return True
 
@@ -782,9 +794,13 @@ class SkillStorage:
         return data
 
     async def delete(
-        self, scope: str, skill_id: str, owner_id: Optional[str] = None
+        self,
+        scope: str,
+        skill_id: str,
+        owner_id: Optional[str] = None,
+        allow_public: bool = False,
     ) -> bool:
-        if scope == "public":
+        if scope == "public" and not allow_public:
             raise ValueError("Las skills públicas son de solo lectura")
         await self._ensure_migrated()
         from app.storage.db import open_db

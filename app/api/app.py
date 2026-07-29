@@ -202,6 +202,21 @@ def create_app() -> FastAPI:
         allow_headers=["*"],
     )
 
+    @app.exception_handler(ValueError)
+    async def _value_error_handler(request, exc: ValueError):
+        # Red de seguridad: convierte los ValueError de validación que se
+        # escapan de una ruta (p. ej. una restricción de storage no capturada
+        # localmente) en un 400 con {code, message} en vez de un 500 opaco.
+        return JSONResponse(
+            status_code=400,
+            content={
+                "detail": {
+                    "code": "invalid_operation",
+                    "message": str(exc) or "Operación no válida",
+                }
+            },
+        )
+
     app.include_router(auth.router)
     app.include_router(admin_router)
     app.include_router(users_router)
