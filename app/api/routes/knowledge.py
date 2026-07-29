@@ -97,32 +97,34 @@ async def list_items(
                 k["_group_id"] = group_id
                 items.append(k)
     else:
-        items = await _storage.list(await _owner(user, workspace_id), type)
-        if role not in ("admin",):
-            own_ids = {i["id"] for i in items}
-            # Acumula shares de todos los grupos del usuario
-            user_groups = await _ws.list_for_user(user)
-            shared_map: Dict[str, str] = {}  # resource_id -> group_id
-            for group in user_groups:
-                gid = group["id"]
-                for rid in await _shares.get_workspace_shared_resource_ids(
-                    gid, "knowledge"
+        # (incluye admin: la visibilidad global de admin se sirve vía /api/admin/*,
+        # listar por owner_id=None aquí exponía knowledge privado de otros usuarios
+        # sin marcarlo como ajeno)
+        items = await _storage.list(workspace_id, type)
+        own_ids = {i["id"] for i in items}
+        # Acumula shares de todos los grupos del usuario
+        user_groups = await _ws.list_for_user(user)
+        shared_map: Dict[str, str] = {}  # resource_id -> group_id
+        for group in user_groups:
+            gid = group["id"]
+            for rid in await _shares.get_workspace_shared_resource_ids(
+                gid, "knowledge"
+            ):
+                if rid not in shared_map:
+                    shared_map[rid] = gid
+        extra: List[Dict[str, Any]] = []
+        for kid, gid in shared_map.items():
+            if kid not in own_ids:
+                k = await _storage.get(kid)
+                if (
+                    k
+                    and (not type or k.get("type") == type)
+                    and await _ws.owner_is_active(k.get("owner_id") or "")
                 ):
-                    if rid not in shared_map:
-                        shared_map[rid] = gid
-            extra: List[Dict[str, Any]] = []
-            for kid, gid in shared_map.items():
-                if kid not in own_ids:
-                    k = await _storage.get(kid)
-                    if (
-                        k
-                        and (not type or k.get("type") == type)
-                        and await _ws.owner_is_active(k.get("owner_id") or "")
-                    ):
-                        k["_shared"] = True
-                        k["_group_id"] = gid
-                        extra.append(k)
-            items = items + extra
+                    k["_shared"] = True
+                    k["_group_id"] = gid
+                    extra.append(k)
+        items = items + extra
     if ctx.workspace_id != user and role != "admin":
         items = [
             item for item in items

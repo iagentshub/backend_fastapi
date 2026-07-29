@@ -112,12 +112,12 @@ async def _get_conn_any(
 async def _resolve_connections(
     user: str, workspace_id: str, include_shared: bool = True
 ) -> List[Dict[str, Any]]:
-    """Devuelve la lista de conexiones visibles para el usuario según su rol."""
+    """Devuelve la lista de conexiones visibles para el usuario según su rol.
+    (incluye admin: la visibilidad global de admin se sirve vía /api/admin/*,
+    devolver aquí todas las conexiones del sistema exponía las de otros
+    usuarios sin marcarlas como ajenas)"""
     if is_guest(user):
         return list(get_session(user).connections)
-    role = await get_user_role(user)
-    if role == "admin":
-        return await _storage.list(None)
     raw = await _list_accessible(user, workspace_id)
     if include_shared:
         shared_ids = set(

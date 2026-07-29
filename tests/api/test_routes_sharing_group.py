@@ -123,8 +123,11 @@ def test_admin_group_filter_excludes_unshared_agents(client):
     )
 
 
-def test_admin_sees_all_agents_without_group_filter(client):
-    """Sin filtro de grupo, el admin ve todos los agentes del sistema."""
+def test_admin_does_not_see_others_private_agents_without_group_filter(client):
+    """Sin filtro de grupo, el listado personal del admin NO debe incluir
+    agentes privados ajenos sin marcar como compartidos — eso exponía datos
+    privados de otros usuarios en la vista personal del admin. La visibilidad
+    global de admin se sirve por el endpoint dedicado /api/admin/agents."""
     _register("grp_admin_4", role="admin")
     _register("grp_owner_4")
 
@@ -135,8 +138,9 @@ def test_admin_sees_all_agents_without_group_filter(client):
 
     _set_cookie(client, "grp_admin_4")
     result = client.get("/api/agents").json()
-    assert any(a["id"] == agent["id"] for a in result), (
-        "Sin filtro de grupo, el admin debe ver todos los agentes"
+    assert not any(a["id"] == agent["id"] for a in result), (
+        "Sin filtro de grupo, el admin NO debe ver agentes privados ajenos "
+        "en su listado personal"
     )
 
 

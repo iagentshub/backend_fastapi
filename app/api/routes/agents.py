@@ -184,8 +184,10 @@ async def list_agents(
         for a in agents:
             a["_shared"] = True
             a["_group_id"] = group_id
-    elif role not in ("admin", "guest"):
+    else:
         # Vista por defecto: propios + recursos del workspace activo + compartidos
+        # (incluye admin: la visibilidad global de admin se sirve vía /api/admin/agents,
+        # no filtrar aquí exponía agentes privados de otros usuarios sin marcar como ajenos)
         # En workspace de equipo (workspace_id != user), owner_id puede ser el UUID del workspace.
         workspace_id = ctx.workspace_id
         own = [

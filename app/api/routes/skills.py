@@ -80,8 +80,10 @@ async def list_skills(
         for sk in items:
             sk["_shared"] = True
             sk["_group_id"] = group_id
-    elif role != "admin":
+    else:
         # Skills propias (personales o del workspace activo) + públicas + legacy sin owner
+        # (incluye admin: la visibilidad global de admin se sirve vía /api/admin/*,
+        # no filtrar aquí exponía skills privadas de otros usuarios sin marcar como ajenas)
         # + shares de todos los grupos del usuario.
         # En workspace de equipo (workspace_id != user), owner_id puede ser el UUID del workspace.
         workspace_id = ctx.workspace_id
