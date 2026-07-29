@@ -102,31 +102,37 @@ async def _agent_reply(
     connection: Dict[str, Any],
     content: str,
 ) -> str:
-    reply = ""
-    try:
-        async for chunk in stream_chat(
-            agent,
-            connection,
-            [{"role": "user", "content": content}],
-            None,
-        ):
-            if not chunk.startswith("data: "):
-                continue
-            try:
-                event = json.loads(chunk[6:].strip())
-            except json.JSONDecodeError:
-                continue
-            if event.get("type") == "error":
-                raise RuntimeError(str(event.get("message") or "Error del agente"))
-            if event.get("type") == "done":
-                reply = str(event.get("reply") or "")
-    except asyncio.CancelledError:
-        raise
-    except Exception as exc:
-        raise RuntimeError(f"{agent.name}: {exc}") from exc
-    if not reply:
-        raise RuntimeError(f"El agente {agent.name} no devolvió respuesta")
-    return reply
+    for attempt in range(2):
+        reply = ""
+        try:
+            async for chunk in stream_chat(
+                agent,
+                connection,
+                [{"role": "user", "content": content}],
+                None,
+            ):
+                if not chunk.startswith("data: "):
+                    continue
+                try:
+                    event = json.loads(chunk[6:].strip())
+                except json.JSONDecodeError:
+                    continue
+                if event.get("type") == "error":
+                    raise RuntimeError(str(event.get("message") or "Error del agente"))
+                if event.get("type") == "done":
+                    reply = str(event.get("reply") or "")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            raise RuntimeError(f"{agent.name}: {exc}") from exc
+        if reply.strip():
+            return reply
+        if attempt == 0:
+            content = (
+                f"{content}\n\nLa respuesta anterior llegó vacía. "
+                "Responde ahora con el contenido solicitado y sus marcadores."
+            )
+    raise RuntimeError(f"El agente {agent.name} no devolvió respuesta tras reintentarlo")
 
 
 def _evaluation_payload(reply: str) -> Dict[str, Any] | None:

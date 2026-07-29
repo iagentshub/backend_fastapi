@@ -262,6 +262,28 @@ async def test_long_stage_emits_heartbeats(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_empty_agent_reply_is_retried(monkeypatch):
+    attempts = 0
+
+    async def fake_stream_chat(agent, _connection, _messages, _history):
+        nonlocal attempts
+        attempts += 1
+        reply = "" if attempts == 1 else f"output-{agent.id}"
+        yield f"data: {json.dumps({'type': 'done', 'reply': reply})}\n\n"
+
+    async def resolve(agent_id):
+        return _agent(agent_id), {"id": f"connection-{agent_id}"}
+
+    definition = validate_workflow({"nodes": [_node("flaky")], "edges": []})
+    monkeypatch.setattr("app.services.workflow_runner.stream_chat", fake_stream_chat)
+
+    events = [event async for event in run_workflow(definition, "entrada", resolve)]
+
+    assert attempts == 2
+    assert events[-1] == {"type": "workflow_done", "output": "output-flaky"}
+
+
+@pytest.mark.asyncio
 async def test_gate_can_repeat_one_branch_without_rerunning_approved_sibling(monkeypatch):
     events = await _events(
         {
