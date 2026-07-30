@@ -9,7 +9,7 @@ from uuid import uuid4
 import httpx
 from fastapi import APIRouter, Depends, Query, Request
 
-from app.api.routes.auth import WorkspaceContext, require_auth, require_workspace
+from app.api.routes.auth import GroupContext, require_auth, require_group
 from app.auth.auth import get_user_role
 from app.config.data import AGENTS_DIR, DB_FILE, SKILLS_DIR
 from app.config.security import assert_safe_url
@@ -26,8 +26,8 @@ from app.storage.db import IS_PG, open_db
 from app.storage.guest import get_session, is_guest
 from app.storage.knowledge import KnowledgeStorage
 from app.storage.storage import AgentStorage, ConnectionStorage, SkillStorage
-from app.storage.workspace_shares import WorkspaceShareStorage
-from app.storage.workspaces import WorkspaceStorage
+from app.storage.group_shares import GroupShareStorage
+from app.storage.groups import GroupStorage
 from app.utils.origin import compute_origin_type
 
 
@@ -50,8 +50,8 @@ _storage = ConnectionStorage(DB_FILE)
 _agent_storage = AgentStorage(AGENTS_DIR)
 _skill_storage = SkillStorage(SKILLS_DIR)
 _know_storage = KnowledgeStorage(DB_FILE)
-_shares = WorkspaceShareStorage(DB_FILE)
-_ws = WorkspaceStorage(DB_FILE)
+_shares = GroupShareStorage(DB_FILE)
+_groups = GroupStorage(DB_FILE)
 _test_limiter = RateLimiter(calls=RATE_TEST_CALLS, window=RATE_TEST_WINDOW)
 _test_all_limiter = RateLimiter(calls=RATE_TESTALL_CALLS, window=RATE_TESTALL_WINDOW)
 # N2: limitar hub-sync para evitar amplificación de peticiones HTTP externas
@@ -59,63 +59,63 @@ _test_all_limiter = RateLimiter(calls=RATE_TESTALL_CALLS, window=RATE_TESTALL_WI
 _hub_sync_limiter = RateLimiter(calls=20, window=60)
 
 
-async def _owner(user: str, workspace_id: str) -> str | None:
-    """None → admin ve todo; str → filtra por workspace."""
-    return None if await get_user_role(user) == "admin" else workspace_id
+async def _owner(user: str, group_id: str) -> str | None:
+    """None → admin ve todo; str → filtra por group."""
+    return None if await get_user_role(user) == "admin" else group_id
 
 
-async def _list_accessible(user: str, workspace_id: str) -> List[Dict[str, Any]]:
-    """Lista conexiones del workspace activo + personales del usuario (en workspace de equipo).
+async def _list_accessible(user: str, group_id: str) -> List[Dict[str, Any]]:
+    """Lista conexiones del group activo + personales del usuario (en group de equipo).
 
-    En workspace personal (workspace_id == user) devuelve solo las propias.
-    En workspace de equipo incluye también las personales marcadas con _personal_key=True.
+    En group personal (group_id == user) devuelve solo las propias.
+    En group de equipo incluye también las personales marcadas con _personal_key=True.
     """
-    ws_conns = await _storage.list(workspace_id)
-    for c in ws_conns:
-        c["owner_id"] = workspace_id
-    if workspace_id == user:
-        return ws_conns
+    group_conns = await _storage.list(group_id)
+    for c in group_conns:
+        c["owner_id"] = group_id
+    if group_id == user:
+        return group_conns
     personal_conns = await _storage.list(user)
-    seen = {c["id"] for c in ws_conns}
+    seen = {c["id"] for c in group_conns}
     for c in personal_conns:
         if c["id"] not in seen:
             c["owner_id"] = user
             c["_personal_key"] = True
-            ws_conns.append(c)
-    return ws_conns
+            group_conns.append(c)
+    return group_conns
 
 
 async def _get_conn_any(
-    conn_id: str, user: str, workspace_id: str
+    conn_id: str, user: str, group_id: str
 ) -> Dict[str, Any] | None:
-    """Obtiene una conexión buscando en el workspace activo, el personal, y por último
-    entre las compartidas directamente con el workspace (referencia sin duplicar).
+    """Obtiene una conexión buscando en el group activo, el personal, y por último
+    entre las compartidas directamente con el group (referencia sin duplicar).
 
     Etiqueta el resultado con `owner_id` (y `_personal_key` en el caso del
     fallback personal), igual que hace `_list_accessible`, para que quien la
-    reciba pueda distinguir "es mía" de "es del workspace/compartida" sin
+    reciba pueda distinguir "es mía" de "es del group/compartida" sin
     tener que volver a consultar — sin esto, un check de permiso posterior
     aplicado indiscriminadamente bloquea al propio dueño de su conexión
-    personal en cuanto el workspace activo no es el suyo."""
-    conn = await _storage.get(conn_id, workspace_id)
+    personal en cuanto el group activo no es el suyo."""
+    conn = await _storage.get(conn_id, group_id)
     if conn is not None:
-        conn["owner_id"] = workspace_id
+        conn["owner_id"] = group_id
         return conn
-    if workspace_id != user:
+    if group_id != user:
         conn = await _storage.get(conn_id, user)
         if conn is not None:
             conn["owner_id"] = user
             conn["_personal_key"] = True
             return conn
-    granted_ids = await _shares.get_workspace_shared_resource_ids(
-        workspace_id, "connection"
+    granted_ids = await _shares.get_group_shared_resource_ids(
+        group_id, "connection"
     )
     if conn_id in granted_ids:
         async with open_db() as db:
             owner_row = await db.fetchone(
                 "SELECT owner_id FROM connections WHERE id = ?", (conn_id,)
             )
-        if owner_row and await _ws.owner_is_active(owner_row[0]):
+        if owner_row and await _groups.owner_is_active(owner_row[0]):
             conn = await _storage.get(conn_id, None)
             if conn is not None:
                 conn["owner_id"] = owner_row[0]
@@ -124,7 +124,7 @@ async def _get_conn_any(
 
 
 async def _resolve_connections(
-    user: str, workspace_id: str, include_shared: bool = True
+    user: str, group_id: str, include_shared: bool = True
 ) -> List[Dict[str, Any]]:
     """Devuelve la lista de conexiones visibles para el usuario según su rol.
     (incluye admin: la visibilidad global de admin se sirve vía /api/admin/*,
@@ -132,10 +132,10 @@ async def _resolve_connections(
     usuarios sin marcarlas como ajenas)"""
     if is_guest(user):
         return list(get_session(user).connections)
-    raw = await _list_accessible(user, workspace_id)
+    raw = await _list_accessible(user, group_id)
     if include_shared:
         shared_ids = set(
-            await _shares.get_workspace_shared_resource_ids(workspace_id, "connection")
+            await _shares.get_group_shared_resource_ids(group_id, "connection")
         )
         own_ids = {i["id"] for i in raw}
         for rid in shared_ids - own_ids:
@@ -143,7 +143,7 @@ async def _resolve_connections(
                 owner_row = await db.fetchone(
                     "SELECT owner_id FROM connections WHERE id = ?", (rid,)
                 )
-            if not owner_row or not await _ws.owner_is_active(owner_row[0]):
+            if not owner_row or not await _groups.owner_is_active(owner_row[0]):
                 continue
             c = await _storage.get(rid)
             if c:
@@ -226,12 +226,12 @@ async def _ollama_conns_to_models(
 
 @router.get("/raw")
 async def list_connections_raw(
-    ctx: WorkspaceContext = Depends(require_workspace),
+    ctx: GroupContext = Depends(require_group),
 ) -> List[Dict[str, Any]]:
     """Devuelve las conexiones tal como están en BD, sin expansión de modelos Ollama.
     Usado por el perfil para gestionar credenciales base."""
-    user, workspace_id = ctx.user, ctx.workspace_id
-    raw = await _resolve_connections(user, workspace_id)
+    user, group_id = ctx.user, ctx.group_id
+    raw = await _resolve_connections(user, group_id)
     return [{k: v for k, v in c.items() if k != "api_key"} for c in raw]
 
 
@@ -262,17 +262,17 @@ async def ollama_models(
 @router.post("/test-all")
 async def test_all_connections(
     request: Request,
-    ctx: WorkspaceContext = Depends(require_workspace),
+    ctx: GroupContext = Depends(require_group),
     _rl: None = Depends(_test_all_limiter),
 ) -> List[Dict[str, Any]]:
-    user, workspace_id = ctx.user, ctx.workspace_id
+    user, group_id = ctx.user, ctx.group_id
     body = (
         await request.json()
         if request.headers.get("content-type", "").startswith("application/json")
         else {}
     )
     ids = body.get("ids") or None
-    conns = await _resolve_connections(user, workspace_id, include_shared=False)
+    conns = await _resolve_connections(user, group_id, include_shared=False)
     if ids:
         conns = [c for c in conns if c.get("id") in ids]
 
@@ -304,20 +304,20 @@ async def test_all_connections(
 
 @router.get("")
 async def list_connections(
-    group_id: Optional[str] = None,
+    requested_group_id: Optional[str] = Query(None, alias="group_id"),
     limit: int = Query(0, ge=0, description="Máx. items. 0 = sin límite"),
     offset: int = Query(0, ge=0),
-    ctx: WorkspaceContext = Depends(require_workspace),
+    ctx: GroupContext = Depends(require_group),
 ) -> List[Dict[str, Any]]:
-    user, workspace_id = ctx.user, ctx.workspace_id
+    user, active_group_id = ctx.user, ctx.group_id
 
-    if group_id is not None and not is_guest(user):
+    if requested_group_id is not None and not is_guest(user):
         role = await get_user_role(user)
-        if role != "admin" and not await _ws.can_access(group_id, user):
+        if role != "admin" and not await _groups.can_access(requested_group_id, user):
             raise APIError(403, "forbidden", "Sin acceso a este grupo")
         # Devuelve solo las conexiones compartidas con este grupo específico
         shared_ids = set(
-            await _shares.get_workspace_shared_resource_ids(group_id, "connection")
+            await _shares.get_group_shared_resource_ids(requested_group_id, "connection")
         )
         raw: List[Dict[str, Any]] = []
         for rid in shared_ids:
@@ -325,23 +325,23 @@ async def list_connections(
                 owner_row = await db.fetchone(
                     "SELECT owner_id FROM connections WHERE id = ?", (rid,)
                 )
-            if not owner_row or not await _ws.owner_is_active(owner_row[0]):
+            if not owner_row or not await _groups.owner_is_active(owner_row[0]):
                 continue
             c = await _storage.get(rid)
             if c:
                 c["_shared"] = True
-                c["_group_id"] = group_id
+                c["_group_id"] = requested_group_id
                 raw.append(c)
     else:
-        raw = await _resolve_connections(user, workspace_id)
+        raw = await _resolve_connections(user, active_group_id)
         # Para usuarios normales, añadir shares de todos los grupos del usuario
         if not is_guest(user) and await get_user_role(user) != "admin":
             own_ids = {c["id"] for c in raw}
-            user_groups = await _ws.list_for_user(user)
+            user_groups = await _groups.list_for_user(user)
             shared_map: Dict[str, str] = {}  # resource_id -> group_id
             for group in user_groups:
                 gid = group["id"]
-                for rid in await _shares.get_workspace_shared_resource_ids(gid, "connection"):
+                for rid in await _shares.get_group_shared_resource_ids(gid, "connection"):
                     if rid not in shared_map:
                         shared_map[rid] = gid
             for rid in set(shared_map.keys()) - own_ids:
@@ -349,7 +349,7 @@ async def list_connections(
                     owner_row = await db.fetchone(
                         "SELECT owner_id FROM connections WHERE id = ?", (rid,)
                     )
-                if not owner_row or not await _ws.owner_is_active(owner_row[0]):
+                if not owner_row or not await _groups.owner_is_active(owner_row[0]):
                     continue
                 c = await _storage.get(rid)
                 if c:
@@ -358,30 +358,30 @@ async def list_connections(
                     raw.append(c)
 
     for c in raw:
-        if c.get("_shared") or c.get("owner_id") in (user, workspace_id):
+        if c.get("_shared") or c.get("owner_id") in (user, active_group_id):
             c["origin_type"] = compute_origin_type(c)
 
     non_ollama = [c for c in raw if c.get("type") != "ollama"]
     ollama_raw = [c for c in raw if c.get("type") == "ollama"]
-    if workspace_id != user and not is_guest(user) and await get_user_role(user) != "admin":
+    if active_group_id != user and not is_guest(user) and await get_user_role(user) != "admin":
         # Las conexiones personales del usuario (incluidas aquí por
-        # _list_accessible como cortesía al estar en un workspace de equipo)
+        # _list_accessible como cortesía al estar en un group de equipo)
         # no deben pasar por el permiso de RECURSO DE EQUIPO: son suyas,
-        # punto — si no, un usuario sin membresía "real" en el workspace
-        # activo (p. ej. justo tras cambiar de workspace) pierde el acceso a
+        # punto — si no, un usuario sin membresía "real" en el group
+        # activo (p. ej. justo tras cambiar de group) pierde el acceso a
         # sus propias conexiones personales.
         non_ollama = [
             connection for connection in non_ollama
             if connection.get("owner_id") == user
-            or await _ws.has_resource_permission(
-                workspace_id, user, "connections", connection["id"], "direct"
+            or await _groups.has_resource_permission(
+                active_group_id, user, "connections", connection["id"], "direct"
             )
         ]
         ollama_raw = [
             connection for connection in ollama_raw
             if connection.get("owner_id") == user
-            or await _ws.has_resource_permission(
-                workspace_id, user, "connections", connection["id"], "direct"
+            or await _groups.has_resource_permission(
+                active_group_id, user, "connections", connection["id"], "direct"
             )
         ]
 
@@ -401,11 +401,11 @@ async def list_connections(
 
 @router.post("")
 async def save_connection(
-    request: Request, ctx: WorkspaceContext = Depends(require_workspace)
+    request: Request, ctx: GroupContext = Depends(require_group)
 ) -> Dict[str, Any]:
-    user, workspace_id = ctx.user, ctx.workspace_id
+    user, group_id = ctx.user, ctx.group_id
     payload = await request.json()
-    scope = payload.pop("scope", "workspace")
+    scope = payload.pop("scope", "group")
     if not get_provider(payload.get("type") or ""):
         raise APIError(
             422,
@@ -414,7 +414,7 @@ async def save_connection(
             extra={"field": "connection_type"},
         )
 
-    # Las conexiones son siempre privadas — se pueden compartir con un workspace completo
+    # Las conexiones son siempre privadas — se pueden compartir con un group completo
     labels = [lbl for lbl in (payload.get("labels") or []) if lbl != "public"]
     if "private" not in labels:
         labels = ["private"] + labels
@@ -426,7 +426,7 @@ async def save_connection(
         s.connections = [c for c in s.connections if c.get("id") != conn["id"]]
         s.connections.append(conn)
         return {k: v for k, v in conn.items() if k != "api_key"}
-    owner = user if scope == "personal" else workspace_id
+    owner = user if scope == "personal" else group_id
     conn = await _storage.save(payload, owner_id=owner)
     return {k: v for k, v in conn.items() if k != "api_key"}
 
@@ -434,21 +434,21 @@ async def save_connection(
 @router.get("/tokens-daily")
 async def get_tokens_daily(
     days: int = 14,
-    ctx: WorkspaceContext = Depends(require_workspace),
+    ctx: GroupContext = Depends(require_group),
 ) -> List[Dict[str, Any]]:
     import datetime as _dt
 
     days = max(1, min(days, 90))
     cutoff = (_dt.date.today() - _dt.timedelta(days=days - 1)).isoformat()
     today = _dt.date.today().isoformat()
-    workspace_id = ctx.workspace_id
+    group_id = ctx.group_id
 
     async with open_db() as conn:
         try:
             rows = await conn.fetchall(
                 "SELECT day, SUM(tokens) FROM token_daily "
                 "WHERE owner_id = ? AND day >= ? GROUP BY day ORDER BY day ASC",
-                (workspace_id, cutoff),
+                (group_id, cutoff),
             )
             if not rows:
                 if IS_PG:
@@ -457,20 +457,20 @@ async def get_tokens_daily(
                         "SELECT ?, owner_id, tokens_in + tokens_out FROM connections "
                         "WHERE owner_id = ? AND tokens_in + tokens_out > 0 "
                         "ON CONFLICT (day, owner_id) DO NOTHING",
-                        (today, workspace_id),
+                        (today, group_id),
                     )
                 else:
                     await conn.execute(
                         "INSERT OR IGNORE INTO token_daily (day, owner_id, tokens) "
                         "SELECT ?, owner_id, tokens_in + tokens_out FROM connections "
                         "WHERE owner_id = ? AND tokens_in + tokens_out > 0",
-                        (today, workspace_id),
+                        (today, group_id),
                     )
                 await conn.commit()
                 rows = await conn.fetchall(
                     "SELECT day, SUM(tokens) FROM token_daily "
                     "WHERE owner_id = ? AND day >= ? GROUP BY day ORDER BY day ASC",
-                    (workspace_id, cutoff),
+                    (group_id, cutoff),
                 )
         except Exception:
             rows = []
@@ -480,9 +480,9 @@ async def get_tokens_daily(
 
 @router.get("/{conn_id}")
 async def get_connection(
-    conn_id: str, ctx: WorkspaceContext = Depends(require_workspace)
+    conn_id: str, ctx: GroupContext = Depends(require_group)
 ) -> Dict[str, Any]:
-    user, workspace_id = ctx.user, ctx.workspace_id
+    user, group_id = ctx.user, ctx.group_id
     if is_guest(user):
         conn = next(
             (c for c in get_session(user).connections if c.get("id") == conn_id), None
@@ -492,16 +492,16 @@ async def get_connection(
         if role == "admin":
             conn = await _storage.get(conn_id, None)
         else:
-            conn = await _get_conn_any(conn_id, user, workspace_id)
+            conn = await _get_conn_any(conn_id, user, group_id)
     if not conn:
         raise APIError(404, "not_found", "Conexión no encontrada", extra={"resource": "connection"})
     if (
-        workspace_id != user
+        group_id != user
         and not is_guest(user)
         and await get_user_role(user) != "admin"
         and conn.get("owner_id") != user
-        and not await _ws.has_resource_permission(
-            workspace_id, user, "connections", conn_id, "direct"
+        and not await _groups.has_resource_permission(
+            group_id, user, "connections", conn_id, "direct"
         )
     ):
         raise APIError(403, "forbidden", "Sin permiso para usar esta conexión")
@@ -511,9 +511,9 @@ async def get_connection(
 
 @router.delete("/{conn_id}")
 async def delete_connection(
-    conn_id: str, ctx: WorkspaceContext = Depends(require_workspace)
+    conn_id: str, ctx: GroupContext = Depends(require_group)
 ) -> Dict[str, Any]:
-    user, workspace_id = ctx.user, ctx.workspace_id
+    user, group_id = ctx.user, ctx.group_id
     if is_guest(user):
         s = get_session(user)
         before = len(s.connections)
@@ -521,9 +521,9 @@ async def delete_connection(
         if len(s.connections) == before:
             raise APIError(404, "not_found", "Conexión no encontrada", extra={"resource": "connection"})
         return {"ok": True}
-    owner_id = await _owner(user, workspace_id)
+    owner_id = await _owner(user, group_id)
     deleted = await _storage.delete(conn_id, owner_id)
-    if not deleted and workspace_id != user:
+    if not deleted and group_id != user:
         deleted = await _storage.delete(conn_id, user)
     if not deleted:
         raise APIError(404, "not_found", "Conexión no encontrada", extra={"resource": "connection"})
@@ -533,16 +533,16 @@ async def delete_connection(
 @router.post("/{conn_id}/hub-sync")
 async def hub_sync(
     conn_id: str,
-    ctx: WorkspaceContext = Depends(require_workspace),
+    ctx: GroupContext = Depends(require_group),
     _rl: None = Depends(_hub_sync_limiter),  # N2: prevenir amplificación HTTP
 ) -> Dict[str, Any]:
     """Sincroniza agentes, skills, conocimiento y conexiones desde un hub remoto."""
-    user, workspace_id = ctx.user, ctx.workspace_id
+    user, group_id = ctx.user, ctx.group_id
     role = await get_user_role(user)
     if role == "admin":
         conn = await _storage.get(conn_id, None)
     else:
-        conn = await _get_conn_any(conn_id, user, workspace_id)
+        conn = await _get_conn_any(conn_id, user, group_id)
     if not conn:
         raise APIError(404, "not_found", "Conexión no encontrada", extra={"resource": "connection"})
     if conn.get("type") != "iagentshub":
@@ -556,7 +556,7 @@ async def hub_sync(
     username = conn.get("username") or ""
     password = conn.get("api_key") or ""
     hub_label = conn.get("name") or "Hub"
-    owner = workspace_id
+    owner = group_id
 
     # C1: validar URL contra SSRF antes de hacer cualquier petición HTTP
     from app.config.security import assert_safe_url as _assert_safe_hub_url
@@ -754,15 +754,15 @@ async def hub_sync(
 @router.post("/{conn_id}/import-models")
 async def import_models(
     conn_id: str,
-    ctx: WorkspaceContext = Depends(require_workspace),
+    ctx: GroupContext = Depends(require_group),
 ) -> Dict[str, Any]:
     """Descubre modelos de la conexión-credencial y crea una conexión por modelo."""
-    user, workspace_id = ctx.user, ctx.workspace_id
+    user, group_id = ctx.user, ctx.group_id
     role = await get_user_role(user)
     if role == "admin":
         conn = await _storage.get(conn_id, None)
     else:
-        conn = await _get_conn_any(conn_id, user, workspace_id)
+        conn = await _get_conn_any(conn_id, user, group_id)
     if not conn:
         raise APIError(404, "not_found", "Conexión no encontrada", extra={"resource": "connection"})
 
@@ -796,8 +796,8 @@ async def import_models(
             502, "no_models_found", "No se encontraron modelos en este proveedor"
         )
 
-    owner_id = await _owner(user, workspace_id)
-    owner = conn.get("owner_id") or (owner_id or workspace_id)
+    owner_id = await _owner(user, group_id)
+    owner = conn.get("owner_id") or (owner_id or group_id)
 
     existing = await _storage.list(owner)
     existing_by_model = {
@@ -832,10 +832,10 @@ async def import_models(
 @router.post("/{conn_id}/test")
 async def test_connection(
     conn_id: str,
-    ctx: WorkspaceContext = Depends(require_workspace),
+    ctx: GroupContext = Depends(require_group),
     _rl: None = Depends(_test_limiter),
 ) -> Dict[str, Any]:
-    user, workspace_id = ctx.user, ctx.workspace_id
+    user, group_id = ctx.user, ctx.group_id
     if is_guest(user):
         conn = next(
             (c for c in get_session(user).connections if c.get("id") == conn_id), None
@@ -845,7 +845,7 @@ async def test_connection(
         if role == "admin":
             conn = await _storage.get(conn_id, None)
         else:
-            conn = await _get_conn_any(conn_id, user, workspace_id)
+            conn = await _get_conn_any(conn_id, user, group_id)
     if not conn:
         raise APIError(404, "not_found", "Conexión no encontrada", extra={"resource": "connection"})
     provider = get_provider(conn.get("type") or "")

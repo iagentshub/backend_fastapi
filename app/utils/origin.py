@@ -6,5 +6,5 @@ from typing import Any, Dict
 
 
 def compute_origin_type(resource: Dict[str, Any]) -> str:
-    """"linked" si el recurso llegó vía workspace share (`_shared=True`), si no "owner"."""
+    """"linked" si el recurso llegó vía group share (`_shared=True`), si no "owner"."""
     return "linked" if resource.get("_shared") is True else "owner"

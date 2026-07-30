@@ -27,7 +27,7 @@ Cuando el frontend envía una petición, el backend la autentica, ejecuta la ló
 | **Skills** | Carga y sirve las capacidades que pueden añadirse a los agentes |
 | **Memoria** | Almacena y recupera el contexto persistente de cada agente entre conversaciones |
 | **Conexiones** | Gestiona las credenciales y la comunicación con los proveedores de IA |
-| **Workspaces** | Multi-tenancy: grupos de usuarios que comparten recursos |
+| **Groups** | Multi-tenancy: grupos de usuarios que comparten recursos |
 
 ---
 

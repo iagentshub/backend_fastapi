@@ -1,6 +1,6 @@
 """Tests de cobertura 2 para connections.py.
 
-Cubre: _safe_name, _list_accessible team workspace, _get_conn_any personal fallback,
+Cubre: _safe_name, _list_accessible team group, _get_conn_any personal fallback,
 _resolve_connections (guest branch + shared), _fetch_ollama_models branches,
 _ollama_conns_to_models, hub_sync con datos reales, import_models branches,
 test_connection no-provider, delete no-admin, tokens-daily.
@@ -150,35 +150,35 @@ def test_delete_connection_non_admin_not_found(client):
     assert r.status_code == 404
 
 
-def test_delete_connection_team_workspace_personal_fallback(client):
-    """Conexión personal se borra desde workspace de equipo via fallback (línea 297)."""
-    from app.api.routes.auth import WorkspaceContext, require_workspace
+def test_delete_connection_team_group_personal_fallback(client):
+    """Conexión personal se borra desde group de equipo via fallback (línea 297)."""
+    from app.api.routes.auth import GroupContext, require_group
     from app.auth.auth import create_token, register_user
 
     username = "del_team_m2"
     asyncio.run(register_user(username, "pass1234", email=f"{username}@example.com"))
 
     app = client.app
-    personal_ctx = WorkspaceContext(user=username, workspace_id=username)
+    personal_ctx = GroupContext(user=username, group_id=username)
 
     async def _personal():
         return personal_ctx
 
-    app.dependency_overrides[require_workspace] = _personal
+    app.dependency_overrides[require_group] = _personal
     try:
         client.cookies.set("ga_token", create_token(username))
         r = client.post("/api/connections", json=_CONN_OPENAI)
         assert r.status_code == 200
         conn_id = r.json()["id"]
 
-        # Switch to team workspace (connection is in personal, not team)
-        team_ctx = WorkspaceContext(user=username, workspace_id="team-del-m2")
+        # Switch to team group (connection is in personal, not team)
+        team_ctx = GroupContext(user=username, group_id="team-del-m2")
 
         async def _team():
             return team_ctx
 
-        app.dependency_overrides[require_workspace] = _team
-        # First delete (team workspace owner_id) fails; second (personal) succeeds
+        app.dependency_overrides[require_group] = _team
+        # First delete (team group owner_id) fails; second (personal) succeeds
         r = client.delete(f"/api/connections/{conn_id}")
         assert r.status_code == 200
         assert r.json()["ok"] is True
@@ -434,34 +434,34 @@ def test_test_connection_no_provider_returns_false(client):
 
 # ── 16. _get_conn_any fallback personal (líneas 70-73) ───────────────────────
 
-def test_get_conn_any_personal_workspace_fallback(client):
-    """_get_conn_any busca en workspace personal cuando no está en el de equipo (líneas 71-73)."""
-    from app.api.routes.auth import WorkspaceContext, require_workspace
+def test_get_conn_any_personal_group_fallback(client):
+    """_get_conn_any busca en group personal cuando no está en el de equipo (líneas 71-73)."""
+    from app.api.routes.auth import GroupContext, require_group
     from app.auth.auth import create_token, register_user
 
     username = "pc_fb_m2"
     asyncio.run(register_user(username, "pass1234", email=f"{username}@example.com"))
 
     app = client.app
-    personal_ctx = WorkspaceContext(user=username, workspace_id=username)
+    personal_ctx = GroupContext(user=username, group_id=username)
 
     async def _personal():
         return personal_ctx
 
-    app.dependency_overrides[require_workspace] = _personal
+    app.dependency_overrides[require_group] = _personal
     try:
         client.cookies.set("ga_token", create_token(username))
         r = client.post("/api/connections", json=_CONN_OPENAI)
         assert r.status_code == 200
         conn_id = r.json()["id"]
 
-        team_ctx = WorkspaceContext(user=username, workspace_id="team-m2-xyz")
+        team_ctx = GroupContext(user=username, group_id="team-m2-xyz")
 
         async def _team():
             return team_ctx
 
-        app.dependency_overrides[require_workspace] = _team
-        # Conn not in team workspace → fallback to personal workspace
+        app.dependency_overrides[require_group] = _team
+        # Conn not in team group → fallback to personal group
         r = client.get(f"/api/connections/{conn_id}")
         assert r.status_code == 200
         assert r.json()["id"] == conn_id
@@ -469,35 +469,35 @@ def test_get_conn_any_personal_workspace_fallback(client):
         app.dependency_overrides.clear()
 
 
-# ── 17. _list_accessible workspace de equipo (líneas 59-65) ─────────────────
+# ── 17. _list_accessible group de equipo (líneas 59-65) ─────────────────
 
-def test_list_accessible_personal_conns_in_team_workspace(client):
-    """Conexiones personales aparecen al listar desde workspace de equipo (líneas 59-65)."""
-    from app.api.routes.auth import WorkspaceContext, require_workspace
+def test_list_accessible_personal_conns_in_team_group(client):
+    """Conexiones personales aparecen al listar desde group de equipo (líneas 59-65)."""
+    from app.api.routes.auth import GroupContext, require_group
     from app.auth.auth import create_token, register_user
 
     username = "la_team_m2"
     asyncio.run(register_user(username, "pass1234", email=f"{username}@example.com"))
 
     app = client.app
-    personal_ctx = WorkspaceContext(user=username, workspace_id=username)
+    personal_ctx = GroupContext(user=username, group_id=username)
 
     async def _personal():
         return personal_ctx
 
-    app.dependency_overrides[require_workspace] = _personal
+    app.dependency_overrides[require_group] = _personal
     try:
         client.cookies.set("ga_token", create_token(username))
         r = client.post("/api/connections", json=_CONN_OPENAI)
         assert r.status_code == 200
         personal_conn_id = r.json()["id"]
 
-        team_ctx = WorkspaceContext(user=username, workspace_id="team-la-m2")
+        team_ctx = GroupContext(user=username, group_id="team-la-m2")
 
         async def _team():
             return team_ctx
 
-        app.dependency_overrides[require_workspace] = _team
+        app.dependency_overrides[require_group] = _team
         r = client.get("/api/connections")
         assert r.status_code == 200
         ids = [c["id"] for c in r.json()]
@@ -508,8 +508,8 @@ def test_list_accessible_personal_conns_in_team_workspace(client):
 
 # ── 18. _resolve_connections conexiones compartidas (líneas 93-96) ────────────
 
-def test_resolve_connections_includes_shared_from_workspace(admin_client):
-    """Conexiones compartidas con el workspace aparecen en la lista del usuario."""
+def test_resolve_connections_includes_shared_from_group(admin_client):
+    """Conexiones compartidas con el group aparecen en la lista del usuario."""
     conn = _create_conn(admin_client, {**_CONN_OPENAI, "name": "Shared Conn M2"})
     shared_id = conn["id"]
 
@@ -518,7 +518,7 @@ def test_resolve_connections_includes_shared_from_workspace(admin_client):
     admin_client.cookies.set("ga_token", create_token("shared_u_m2"))
 
     with patch(
-        "app.storage.workspace_shares.WorkspaceShareStorage.get_workspace_shared_resource_ids",
+        "app.storage.group_shares.GroupShareStorage.get_group_shared_resource_ids",
         new_callable=AsyncMock,
         return_value=[shared_id],
     ):

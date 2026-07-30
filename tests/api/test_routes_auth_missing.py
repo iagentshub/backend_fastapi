@@ -23,10 +23,10 @@ def test_require_auth_invalid_token(client):
     assert r.json()["detail"]["code"] == "invalid_token"
 
 
-# ── require_workspace — token inválido (línea 87) ────────────────────────────
+# ── require_group — token inválido (línea 87) ────────────────────────────
 
-def test_require_workspace_invalid_token(client):
-    """Ruta que usa require_workspace con token malformado → 401."""
+def test_require_group_invalid_token(client):
+    """Ruta que usa require_group con token malformado → 401."""
     client.cookies.set("ga_token", "bad.token.xyz")
     r = client.get("/api/agents")
     assert r.status_code == 401
@@ -342,39 +342,39 @@ def test_admin_delete_knowledge_ok(admin_client):
     assert r.json()["ok"] is True
 
 
-# ── admin_list_workspaces (líneas 829-878) ───────────────────────────────────
+# ── admin_list_groups (líneas 829-878) ───────────────────────────────────
 
-def test_admin_list_workspaces(admin_client):
-    r = admin_client.get("/api/admin/workspaces")
+def test_admin_list_groups(admin_client):
+    r = admin_client.get("/api/admin/groups")
     assert r.status_code == 200
     assert isinstance(r.json(), list)
 
 
-def test_admin_list_workspaces_has_expected_fields(admin_client):
-    admin_client.post("/api/workspaces", json={"name": "AdminWS Fields"})
-    r = admin_client.get("/api/admin/workspaces")
+def test_admin_list_groups_has_expected_fields(admin_client):
+    admin_client.post("/api/groups", json={"name": "AdminWS Fields"})
+    r = admin_client.get("/api/admin/groups")
     assert r.status_code == 200
-    workspaces = r.json()
-    assert len(workspaces) >= 1
-    ws = workspaces[0]
+    groups = r.json()
+    assert len(groups) >= 1
+    group = groups[0]
     for field in ("id", "name", "created_by", "member_count", "connections_count", "tokens_in", "tokens_out"):
-        assert field in ws, f"Campo '{field}' ausente en workspace"
+        assert field in group, f"Campo '{field}' ausente en group"
 
 
-# ── admin_delete_workspace — no encontrado (línea 886) ───────────────────────
+# ── admin_delete_group — no encontrado (línea 886) ───────────────────────
 
-def test_admin_delete_workspace_not_found(admin_client):
-    r = admin_client.delete("/api/admin/workspaces/nonexistent-workspace-id")
+def test_admin_delete_group_not_found(admin_client):
+    r = admin_client.delete("/api/admin/groups/nonexistent-group-id")
     assert r.status_code == 404
 
 
-# ── admin_delete_workspace — éxito (líneas 887-888) ──────────────────────────
+# ── admin_delete_group — éxito (líneas 887-888) ──────────────────────────
 
-def test_admin_delete_workspace_ok(admin_client):
-    ws_r = admin_client.post("/api/workspaces", json={"name": "WS To Delete"})
-    assert ws_r.status_code == 200
-    ws_id = ws_r.json()["id"]
-    r = admin_client.delete(f"/api/admin/workspaces/{ws_id}")
+def test_admin_delete_group_ok(admin_client):
+    group_r = admin_client.post("/api/groups", json={"name": "Grupo To Delete"})
+    assert group_r.status_code == 200
+    group_id = group_r.json()["id"]
+    r = admin_client.delete(f"/api/admin/groups/{group_id}")
     assert r.status_code == 200
     assert r.json()["ok"] is True
 

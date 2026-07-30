@@ -77,14 +77,14 @@ async def export_user_data(username: str) -> io.BytesIO:
                 json.dumps([dict(r) for r in rows], ensure_ascii=False, indent=2),
             )
 
-            # 6. Workspaces donde es miembro
+            # 6. Groups donde es miembro
             rows = await conn.fetchall(
                 "SELECT w.id, w.name, w.created_at, wm.role, wm.joined_at "
-                "FROM workspaces w JOIN workspace_members wm ON w.id = wm.workspace_id WHERE wm.username = ?",
+                "FROM groups w JOIN group_members wm ON w.id = wm.group_id WHERE wm.username = ?",
                 (username,),
             )
             zf.writestr(
-                "workspaces.json",
+                "groups.json",
                 json.dumps([dict(r) for r in rows], ensure_ascii=False, indent=2),
             )
 

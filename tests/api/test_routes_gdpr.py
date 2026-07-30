@@ -3,7 +3,7 @@ GET  /api/auth/me/deletion-status
 POST /api/auth/me/request-deletion
 POST /api/auth/me/cancel-deletion
 GET  /api/auth/me/export
-POST /api/workspaces/{id}/transfer-ownership
+POST /api/groups/{id}/transfer-ownership
 """
 from __future__ import annotations
 
@@ -35,22 +35,22 @@ def _auth(client: TestClient, username: str, password: str = "pass1234") -> Test
     return client
 
 
-def _create_workspace_api(client: TestClient, name: str = "Equipo Test") -> dict:
-    """Crea workspace a través de la API (usa la BD del TestClient)."""
-    r = client.post("/api/workspaces", json={"name": name})
-    assert r.status_code == 200, f"Error creando workspace: {r.text}"
+def _create_group_api(client: TestClient, name: str = "Equipo Test") -> dict:
+    """Crea group a través de la API (usa la BD del TestClient)."""
+    r = client.post("/api/groups", json={"name": name})
+    assert r.status_code == 200, f"Error creando group: {r.text}"
     return r.json()
 
 
-def _add_member_api(client: TestClient, ws_id: str, username: str) -> None:
-    """Añade un miembro al workspace a través de la API."""
-    r = client.post(f"/api/workspaces/{ws_id}/invitations", json={"username": username})
+def _add_member_api(client: TestClient, group_id: str, username: str) -> None:
+    """Añade un miembro al group a través de la API."""
+    r = client.post(f"/api/groups/{group_id}/invitations", json={"username": username})
     assert r.status_code == 200, f"Error invitando miembro: {r.text}"
     inv_id = r.json()["id"]
     # Aceptar con el cliente del miembro
     member_client = TestClient(client.app, raise_server_exceptions=True)
     member_client.cookies.set("ga_token", create_token(username))
-    r2 = member_client.post(f"/api/workspaces/invitations/{inv_id}/accept")
+    r2 = member_client.post(f"/api/groups/invitations/{inv_id}/accept")
     assert r2.status_code == 200, f"Error aceptando invitación: {r2.text}"
 
 
@@ -94,33 +94,33 @@ def test_request_deletion_ok(client):
     assert r.json()["ok"] is True
 
 
-def test_request_deletion_409_si_es_owner_de_workspace(client):
-    _auth(client, "rd_ws_owner")
-    # Crear workspace directamente en la misma BD que usa get_owned_workspaces
+def test_request_deletion_409_si_es_owner_de_group(client):
+    _auth(client, "rd_group_owner")
+    # Crear group directamente en la misma BD que usa get_owned_groups
     import asyncio
 
-    from app.storage.workspaces import WorkspaceStorage
-    asyncio.run(WorkspaceStorage(_cfg.DB_FILE).create("Workspace Bloqueante", created_by="rd_ws_owner"))
+    from app.storage.groups import GroupStorage
+    asyncio.run(GroupStorage(_cfg.DB_FILE).create("Group Bloqueante", created_by="rd_group_owner"))
     r = client.post("/api/auth/me/request-deletion")
     assert r.status_code == 409
     data = r.json()
-    assert "workspaces" in data["detail"]
-    assert len(data["detail"]["workspaces"]) == 1
+    assert "groups" in data["detail"]
+    assert len(data["detail"]["groups"]) == 1
 
 
-def test_request_deletion_ok_si_workspaces_son_solo_miembro(client):
+def test_request_deletion_ok_si_groups_son_solo_miembro(client):
     import asyncio
     asyncio.run(register_user("rd_other_owner", "pass1234", email="rd_other@test.com"))
     other = TestClient(client.app, raise_server_exceptions=True)
     _auth(other, "rd_other_owner")
-    ws = _create_workspace_api(other, "Workspace Ajeno")
+    group = _create_group_api(other, "Group Ajeno")
 
     asyncio.run(register_user("rd_member_only", "pass1234", email="rd_member@test.com"))
-    other.post(f"/api/workspaces/{ws['id']}/invitations", json={"username": "rd_member_only"})
-    inv_id = other.get(f"/api/workspaces/{ws['id']}/invitations").json()[0]["id"]
+    other.post(f"/api/groups/{group['id']}/invitations", json={"username": "rd_member_only"})
+    inv_id = other.get(f"/api/groups/{group['id']}/invitations").json()[0]["id"]
 
     _auth(client, "rd_member_only")
-    client.post(f"/api/workspaces/invitations/{inv_id}/accept")
+    client.post(f"/api/groups/invitations/{inv_id}/accept")
     r = client.post("/api/auth/me/request-deletion")
     assert r.status_code == 200
 
@@ -203,16 +203,16 @@ def test_export_zip_contiene_profile(client):
         assert "profile.json" in zf.namelist()
 
 
-# ── POST /api/workspaces/{id}/transfer-ownership ─────────────────────────────
+# ── POST /api/groups/{id}/transfer-ownership ─────────────────────────────
 
 def _setup_transfer(client: TestClient, owner: str, member: str) -> str:
-    """Crea workspace y añade member vía API. Devuelve ws_id con cliente autenticado como owner."""
+    """Crea group y añade member vía API. Devuelve group_id con cliente autenticado como owner."""
     import asyncio
     _auth(client, owner)
-    ws = _create_workspace_api(client, "WS Transferible")
+    group = _create_group_api(client, "Grupo Transferible")
     asyncio.run(register_user(member, "pass1234", email=f"{member}@test.com"))
-    _add_member_api(client, ws["id"], member)
-    return ws["id"]
+    _add_member_api(client, group["id"], member)
+    return group["id"]
 
 
 def test_transfer_ownership_require_auth(client):
@@ -220,57 +220,57 @@ def test_transfer_ownership_require_auth(client):
     asyncio.run(register_user("transfer_anon_owner", "pass1234", email="tanon@test.com"))
     other = TestClient(client.app, raise_server_exceptions=True)
     _auth(other, "transfer_anon_owner")
-    ws = _create_workspace_api(other, "WS Anon")
-    r = client.post(f"/api/workspaces/{ws['id']}/transfer-ownership", json={"username": "nobody"})
+    group = _create_group_api(other, "Grupo Anon")
+    r = client.post(f"/api/groups/{group['id']}/transfer-ownership", json={"username": "nobody"})
     assert r.status_code == 401
 
 
 def test_transfer_ownership_ok(client):
-    ws_id = _setup_transfer(client, "to_owner", "to_new_owner")
-    r = client.post(f"/api/workspaces/{ws_id}/transfer-ownership", json={"username": "to_new_owner"})
+    group_id = _setup_transfer(client, "to_owner", "to_new_owner")
+    r = client.post(f"/api/groups/{group_id}/transfer-ownership", json={"username": "to_new_owner"})
     assert r.status_code == 200
     assert r.json()["ok"] is True
 
 
 def test_transfer_ownership_verifica_nuevo_owner(client):
-    ws_id = _setup_transfer(client, "to2_owner", "to2_member")
-    client.post(f"/api/workspaces/{ws_id}/transfer-ownership", json={"username": "to2_member"})
-    r = client.get("/api/workspaces")
-    # to2_member es ahora el owner; to2_owner ya no tiene ese workspace como "owned"
-    ws_list = r.json()
-    team_ws = [w for w in ws_list if w["type"] == "team" and w["id"] == ws_id]
-    assert len(team_ws) == 1
+    group_id = _setup_transfer(client, "to2_owner", "to2_member")
+    client.post(f"/api/groups/{group_id}/transfer-ownership", json={"username": "to2_member"})
+    r = client.get("/api/groups")
+    # to2_member es ahora el owner; to2_owner ya no tiene ese group como "owned"
+    group_list = r.json()
+    team_groups = [w for w in group_list if w["type"] == "team" and w["id"] == group_id]
+    assert len(team_groups) == 1
 
 
 def test_transfer_ownership_nuevo_owner_no_miembro(client):
-    ws_id = _setup_transfer(client, "to3_owner", "to3_member")
-    r = client.post(f"/api/workspaces/{ws_id}/transfer-ownership", json={"username": "to3_outsider"})
+    group_id = _setup_transfer(client, "to3_owner", "to3_member")
+    r = client.post(f"/api/groups/{group_id}/transfer-ownership", json={"username": "to3_outsider"})
     assert r.status_code == 400
 
 
-def test_transfer_ownership_workspace_no_encontrado(client):
+def test_transfer_ownership_group_no_encontrado(client):
     _auth(client, "to4_owner")
-    r = client.post("/api/workspaces/ws-no-existe/transfer-ownership", json={"username": "anyone"})
+    r = client.post("/api/groups/group-no-existe/transfer-ownership", json={"username": "anyone"})
     assert r.status_code == 404
 
 
 def test_transfer_ownership_solo_el_owner_puede(client):
-    ws_id = _setup_transfer(client, "to5_owner", "to5_member")
+    group_id = _setup_transfer(client, "to5_owner", "to5_member")
     client.cookies.set("ga_token", create_token("to5_member"))
-    r = client.post(f"/api/workspaces/{ws_id}/transfer-ownership", json={"username": "to5_owner"})
+    r = client.post(f"/api/groups/{group_id}/transfer-ownership", json={"username": "to5_owner"})
     assert r.status_code == 403
 
 
 def test_transfer_ownership_self(client):
-    ws_id = _setup_transfer(client, "to6_owner", "to6_member")
-    r = client.post(f"/api/workspaces/{ws_id}/transfer-ownership", json={"username": "to6_owner"})
+    group_id = _setup_transfer(client, "to6_owner", "to6_member")
+    r = client.post(f"/api/groups/{group_id}/transfer-ownership", json={"username": "to6_owner"})
     assert r.status_code == 400
 
 
 def test_transfer_permite_eliminar_cuenta_tras_transferir(client):
-    """Flujo completo: transferir workspace → solicitar borrado de cuenta."""
-    ws_id = _setup_transfer(client, "full_flow_owner", "full_flow_member")
-    r = client.post(f"/api/workspaces/{ws_id}/transfer-ownership", json={"username": "full_flow_member"})
+    """Flujo completo: transferir group → solicitar borrado de cuenta."""
+    group_id = _setup_transfer(client, "full_flow_owner", "full_flow_member")
+    r = client.post(f"/api/groups/{group_id}/transfer-ownership", json={"username": "full_flow_member"})
     assert r.status_code == 200
     r = client.post("/api/auth/me/request-deletion")
     assert r.status_code == 200

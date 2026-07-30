@@ -9,15 +9,15 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from app.api.routes.auth import WorkspaceContext, require_workspace
+from app.api.routes.auth import GroupContext, require_group
 from app.config.data import AGENTS_DIR, DB_FILE
 from app.services.workflow_runner import run_workflow
 from app.services.workflow_validator import validate_workflow
 from app.storage.resource_versions import ResourceVersionStorage
 from app.storage.storage import AgentStorage, SkillStorage
 from app.storage.workflows import WorkflowStorage
-from app.storage.workspace_shares import WorkspaceShareStorage
-from app.storage.workspaces import WorkspaceStorage
+from app.storage.group_shares import GroupShareStorage
+from app.storage.groups import GroupStorage
 from app.utils.origin import compute_origin_type
 
 router = APIRouter(prefix="/api", tags=["resource-management"])
@@ -25,8 +25,8 @@ _agents = AgentStorage(AGENTS_DIR)
 _skills = SkillStorage(DB_FILE)
 _versions = ResourceVersionStorage()
 _workflows = WorkflowStorage()
-_shares = WorkspaceShareStorage(DB_FILE)
-_workspace_storage = WorkspaceStorage(DB_FILE)
+_shares = GroupShareStorage(DB_FILE)
+_group_storage = GroupStorage(DB_FILE)
 
 
 class WorkflowBody(BaseModel):
@@ -67,10 +67,10 @@ async def _owned_resource(
 async def versions(
     resource_type: str,
     resource_id: str,
-    ctx: WorkspaceContext = Depends(require_workspace),
+    ctx: GroupContext = Depends(require_group),
 ) -> list[Dict[str, Any]]:
-    await _owned_resource(resource_type, resource_id, ctx.workspace_id)
-    return await _versions.list(resource_type, resource_id, ctx.workspace_id)
+    await _owned_resource(resource_type, resource_id, ctx.group_id)
+    return await _versions.list(resource_type, resource_id, ctx.group_id)
 
 
 @router.get("/resources/{resource_type}/{resource_id}/versions/{version}")
@@ -78,11 +78,11 @@ async def version_detail(
     resource_type: str,
     resource_id: str,
     version: int,
-    ctx: WorkspaceContext = Depends(require_workspace),
+    ctx: GroupContext = Depends(require_group),
 ) -> Dict[str, Any]:
-    await _owned_resource(resource_type, resource_id, ctx.workspace_id)
+    await _owned_resource(resource_type, resource_id, ctx.group_id)
     item = await _versions.get(
-        _check_type(resource_type), resource_id, ctx.workspace_id, version
+        _check_type(resource_type), resource_id, ctx.group_id, version
     )
     if not item:
         raise HTTPException(status_code=404, detail="Versión no encontrada")
@@ -94,23 +94,23 @@ async def restore_version(
     resource_type: str,
     resource_id: str,
     version: int,
-    ctx: WorkspaceContext = Depends(require_workspace),
+    ctx: GroupContext = Depends(require_group),
 ) -> Dict[str, Any]:
-    await _owned_resource(resource_type, resource_id, ctx.workspace_id)
+    await _owned_resource(resource_type, resource_id, ctx.group_id)
     item = await _versions.get(
-        _check_type(resource_type), resource_id, ctx.workspace_id, version
+        _check_type(resource_type), resource_id, ctx.group_id, version
     )
     if not item:
         raise HTTPException(status_code=404, detail="Versión no encontrada")
     snapshot = {**item["snapshot"], "id": resource_id}
     if resource_type == "agent":
-        saved = await _agents.save(snapshot, "private", ctx.workspace_id)
+        saved = await _agents.save(snapshot, "private", ctx.group_id)
     else:
-        saved = await _skills.save("private", snapshot, ctx.workspace_id)
+        saved = await _skills.save("private", snapshot, ctx.group_id)
     await _versions.create(
         resource_type,
         resource_id,
-        ctx.workspace_id,
+        ctx.group_id,
         saved,
         ctx.user,
         reason=f"restore:{version}",
@@ -120,18 +120,18 @@ async def restore_version(
 
 @router.get("/workflows")
 async def list_workflows(
-    ctx: WorkspaceContext = Depends(require_workspace),
+    ctx: GroupContext = Depends(require_group),
 ) -> list[Dict[str, Any]]:
-    owner_ids = {ctx.user, ctx.workspace_id}
+    owner_ids = {ctx.user, ctx.group_id}
     own: list[Dict[str, Any]] = []
     for owner_id in owner_ids:
         own.extend(await _workflows.list(owner_id))
     own_keys = {(item["id"], item["owner_id"]) for item in own}
 
     shared_map: dict[str, list[str]] = {}
-    for workspace in await _workspace_storage.list_for_user(ctx.user):
-        group_id = str(workspace["id"])
-        for resource_id in await _shares.get_workspace_shared_resource_ids(
+    for group in await _group_storage.list_for_user(ctx.user):
+        group_id = str(group["id"])
+        for resource_id in await _shares.get_group_shared_resource_ids(
             group_id, "workflow"
         ):
             shared_map.setdefault(resource_id, []).append(group_id)
@@ -144,7 +144,7 @@ async def list_workflows(
     for item in await _workflows.list_by_ids(list(shared_map)):
         if (item["id"], item["owner_id"]) in own_keys:
             continue
-        if not await _workspace_storage.owner_is_active(item["owner_id"]):
+        if not await _group_storage.owner_is_active(item["owner_id"]):
             continue
         item["_shared"] = True
         item["_group_ids"] = shared_map[item["id"]]
@@ -157,20 +157,20 @@ async def list_workflows(
 
 
 async def _accessible_workflow(
-    workflow_id: str, ctx: WorkspaceContext
+    workflow_id: str, ctx: GroupContext
 ) -> Dict[str, Any] | None:
     item = await _workflows.get_any(workflow_id)
     if not item:
         return None
-    if item["owner_id"] in {ctx.user, ctx.workspace_id}:
+    if item["owner_id"] in {ctx.user, ctx.group_id}:
         return item
-    for workspace in await _workspace_storage.list_for_user(ctx.user):
-        shared_ids = await _shares.get_workspace_shared_resource_ids(
-            str(workspace["id"]), "workflow"
+    for group in await _group_storage.list_for_user(ctx.user):
+        shared_ids = await _shares.get_group_shared_resource_ids(
+            str(group["id"]), "workflow"
         )
         if workflow_id in shared_ids:
             item["_shared"] = True
-            item["_group_id"] = str(workspace["id"])
+            item["_group_id"] = str(group["id"])
             return item
     return None
 
@@ -178,7 +178,7 @@ async def _accessible_workflow(
 @router.get("/workflows/{workflow_id}")
 async def get_workflow(
     workflow_id: str,
-    ctx: WorkspaceContext = Depends(require_workspace),
+    ctx: GroupContext = Depends(require_group),
 ) -> Dict[str, Any]:
     item = await _accessible_workflow(workflow_id, ctx)
     if not item:
@@ -190,11 +190,11 @@ async def get_workflow(
 @router.post("/workflows")
 async def save_workflow(
     body: WorkflowBody,
-    ctx: WorkspaceContext = Depends(require_workspace),
+    ctx: GroupContext = Depends(require_group),
 ) -> Dict[str, Any]:
     if body.id:
         existing = await _workflows.get_any(body.id)
-        if existing and existing["owner_id"] != ctx.workspace_id:
+        if existing and existing["owner_id"] != ctx.group_id:
             raise HTTPException(
                 status_code=403,
                 detail="Las orquestaciones compartidas son de solo lectura",
@@ -204,7 +204,7 @@ async def save_workflow(
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return await _workflows.save(
-        ctx.workspace_id,
+        ctx.group_id,
         {
             "id": body.id,
             "name": body.name,
@@ -218,9 +218,9 @@ async def save_workflow(
 @router.delete("/workflows/{workflow_id}")
 async def delete_workflow(
     workflow_id: str,
-    ctx: WorkspaceContext = Depends(require_workspace),
+    ctx: GroupContext = Depends(require_group),
 ) -> Dict[str, bool]:
-    if not await _workflows.delete(workflow_id, ctx.workspace_id):
+    if not await _workflows.delete(workflow_id, ctx.group_id):
         raise HTTPException(status_code=404, detail="Orquestación no encontrada")
     return {"ok": True}
 
@@ -229,7 +229,7 @@ async def delete_workflow(
 async def run_saved_workflow(
     workflow_id: str,
     body: WorkflowRunBody,
-    ctx: WorkspaceContext = Depends(require_workspace),
+    ctx: GroupContext = Depends(require_group),
 ) -> StreamingResponse:
     workflow = await _accessible_workflow(workflow_id, ctx)
     if not workflow:
@@ -246,11 +246,11 @@ async def run_saved_workflow(
         agent = await _agents.get(agent_id)
         if not agent:
             raise RuntimeError(f"El agente {agent_id} no está disponible")
-        if agent.get("owner_id") not in {ctx.user, ctx.workspace_id}:
+        if agent.get("owner_id") not in {ctx.user, ctx.group_id}:
             shared_agent = False
-            for workspace in await _workspace_storage.list_for_user(ctx.user):
-                shared_ids = await _shares.get_workspace_shared_resource_ids(
-                    str(workspace["id"]), "agent"
+            for group in await _group_storage.list_for_user(ctx.user):
+                shared_ids = await _shares.get_group_shared_resource_ids(
+                    str(group["id"]), "agent"
                 )
                 if agent_id in shared_ids:
                     shared_agent = True
@@ -262,7 +262,7 @@ async def run_saved_workflow(
             raise RuntimeError(f"El agente {agent.get('name')} no tiene conexión")
         from app.api.routes.connections import _get_conn_any
 
-        connection = await _get_conn_any(connection_id, ctx.user, ctx.workspace_id)
+        connection = await _get_conn_any(connection_id, ctx.user, ctx.group_id)
         if not connection:
             raise RuntimeError(f"La conexión del agente {agent.get('name')} no está disponible")
         return agent, connection

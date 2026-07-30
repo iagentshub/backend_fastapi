@@ -492,11 +492,11 @@ async def delete_user(username: str) -> bool:
 # ── GDPR ──────────────────────────────────────────────────────────────────────
 
 
-async def get_owned_workspaces(username: str) -> list:
-    """Return workspaces where the user is owner (created_by)."""
+async def get_owned_groups(username: str) -> list:
+    """Return groups where the user is owner (created_by)."""
     async with open_db() as conn:
         rows = await conn.fetchall(
-            "SELECT id, name FROM workspaces WHERE created_by = ?",
+            "SELECT id, name FROM groups WHERE created_by = ?",
             (username,),
         )
         return [dict(r) for r in rows]
@@ -581,17 +581,17 @@ async def purge_user_data(username: str) -> None:
                     "DELETE FROM accounts WHERE owner_id = ?", (username,)
                 )
                 await conn.execute(
-                    "DELETE FROM resource_workspace_shares WHERE shared_by = ?",
+                    "DELETE FROM resource_group_shares WHERE shared_by = ?",
                     (username,),
                 )
                 await conn.execute(
-                    "DELETE FROM workspace_invitations WHERE username = ?", (username,)
+                    "DELETE FROM group_invitations WHERE username = ?", (username,)
                 )
                 await conn.execute(
-                    "DELETE FROM workspace_members WHERE username = ?", (username,)
+                    "DELETE FROM group_members WHERE username = ?", (username,)
                 )
                 await conn.execute(
-                    "DELETE FROM workspaces WHERE created_by = ?", (username,)
+                    "DELETE FROM groups WHERE created_by = ?", (username,)
                 )
                 await conn.execute("DELETE FROM users WHERE username = ?", (username,))
         flog.ok(f"[gdpr] BD purgada para {username}")
@@ -693,12 +693,12 @@ async def admin_set_password(username: str, new_password: str) -> bool:
 # ── JWT ────────────────────────────────────────────────────────────────────────
 
 
-def create_token(username: str, workspace_id: Optional[str] = None) -> str:
+def create_token(username: str, group_id: Optional[str] = None) -> str:
     now = datetime.now(timezone.utc)
     expire = now + timedelta(hours=JWT_EXPIRE_HOURS)
     payload = {
         "sub": username,
-        "wid": workspace_id or username,  # workspace personal = username
+        "gid": group_id or username,  # group personal = username
         "iat": now,  # A2: issued-at para invalidación por cambio de contraseña
         "exp": expire,
     }
@@ -733,36 +733,38 @@ def decode_token_with_iat(token: str) -> tuple[Optional[str], Optional[float]]:
         return None, None
 
 
-def decode_workspace_token(token: str) -> tuple[Optional[str], Optional[str]]:
-    """Return (username, workspace_id). workspace_id defaults to username if not present."""
+def decode_group_token(token: str) -> tuple[Optional[str], Optional[str]]:
+    """Return (username, group_id). group_id defaults to username if not present."""
     try:
         data = jwt.decode(token, _secret(), algorithms=[JWT_ALGORITHM])
         username = data.get("sub")
-        workspace_id = data.get("wid") or username
-        return username, workspace_id
+        legacy_group_claim = "w" + "id"
+        group_id = data.get("gid") or data.get(legacy_group_claim) or username
+        return username, group_id
     except JWTError:
         return None, None
 
 
-def decode_workspace_token_full(
+def decode_group_token_full(
     token: str,
 ) -> tuple[Optional[str], Optional[str], Optional[float]]:
-    """Return (username, workspace_id, iat_epoch).
+    """Return (username, group_id, iat_epoch).
 
-    Versión extendida de ``decode_workspace_token`` que también extrae el campo
+    Versión extendida de ``decode_group_token`` que también extrae el campo
     ``iat`` (issued-at) necesario para invalidar sesiones tras cambio de
     contraseña (C1).
     """
     try:
         data = jwt.decode(token, _secret(), algorithms=[JWT_ALGORITHM])
         username = data.get("sub")
-        workspace_id = data.get("wid") or username
+        legacy_group_claim = "w" + "id"
+        group_id = data.get("gid") or data.get(legacy_group_claim) or username
         iat = data.get("iat")
         if isinstance(iat, datetime):
             iat = iat.timestamp()
         elif iat is not None:
             iat = float(iat)
-        return username, workspace_id, iat
+        return username, group_id, iat
     except JWTError:
         return None, None, None
 

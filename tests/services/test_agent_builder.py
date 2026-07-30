@@ -132,7 +132,7 @@ def test_clear_guided_request_forces_ready_model_response():
     assert can_build_without_model(messages, "guided") is False
 
 
-def test_guided_mode_allows_two_short_clarifications():
+def test_guided_mode_allogroup_two_short_clarifications():
     vague_turn = [BuilderMessage(role="user", content="Ayúdame")]
     actionable_turn = [
         BuilderMessage(role="user", content="Quiero ayudar a mis clientes")

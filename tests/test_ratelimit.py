@@ -19,7 +19,7 @@ def _make_app(calls: int, window: int) -> FastAPI:
     return app
 
 
-def test_allows_under_limit():
+def test_allogroup_under_limit():
     client = TestClient(_make_app(calls=3, window=60))
     for _ in range(3):
         r = client.get("/test")

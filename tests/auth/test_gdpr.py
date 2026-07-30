@@ -1,6 +1,6 @@
 """Tests unitarios para las funciones GDPR en auth.py:
 schedule_user_deletion, cancel_user_deletion, purge_user_data,
-purge_expired_deletions y get_owned_workspaces.
+purge_expired_deletions y get_owned_groups.
 """
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from datetime import datetime, timedelta, timezone
 import app.config.data as _cfg
 from app.auth.auth import (
     cancel_user_deletion,
-    get_owned_workspaces,
+    get_owned_groups,
     get_user_by_username,
     purge_expired_deletions,
     purge_user_data,
@@ -33,34 +33,34 @@ async def _set_deletion_date(username: str, dt: datetime) -> None:
         await conn.commit()
 
 
-async def _workspace_storage():
-    from app.storage.workspaces import WorkspaceStorage
-    return WorkspaceStorage(_cfg.DB_FILE)
+async def _group_storage():
+    from app.storage.groups import GroupStorage
+    return GroupStorage(_cfg.DB_FILE)
 
 
-# ── get_owned_workspaces ──────────────────────────────────────────────────────
+# ── get_owned_groups ──────────────────────────────────────────────────────
 
-async def test_get_owned_workspaces_sin_workspaces(patch_data_dir):
-    await _make_user("gows_solo")
-    assert await get_owned_workspaces("gows_solo") == []
+async def test_get_owned_groups_sin_groups(patch_data_dir):
+    await _make_user("gogroup_solo")
+    assert await get_owned_groups("gogroup_solo") == []
 
 
-async def test_get_owned_workspaces_con_workspace(patch_data_dir):
-    await _make_user("gows_owner")
-    ws = await _workspace_storage()
-    created = await ws.create("Mi Equipo", created_by="gows_owner")
-    owned = await get_owned_workspaces("gows_owner")
+async def test_get_owned_groups_con_group(patch_data_dir):
+    await _make_user("gogroup_owner")
+    group = await _group_storage()
+    created = await group.create("Mi Equipo", created_by="gogroup_owner")
+    owned = await get_owned_groups("gogroup_owner")
     assert len(owned) == 1
     assert owned[0]["id"] == created["id"]
     assert owned[0]["name"] == "Mi Equipo"
 
 
-async def test_get_owned_workspaces_no_devuelve_los_que_no_son_suyos(patch_data_dir):
-    await _make_user("gows_other_owner")
-    await _make_user("gows_member")
-    ws = await _workspace_storage()
-    await ws.create("Equipo ajeno", created_by="gows_other_owner")
-    assert await get_owned_workspaces("gows_member") == []
+async def test_get_owned_groups_no_devuelve_los_que_no_son_suyos(patch_data_dir):
+    await _make_user("gogroup_other_owner")
+    await _make_user("gogroup_member")
+    group = await _group_storage()
+    await group.create("Equipo ajeno", created_by="gogroup_other_owner")
+    assert await get_owned_groups("gogroup_member") == []
 
 
 # ── schedule_user_deletion ────────────────────────────────────────────────────
@@ -119,12 +119,12 @@ async def test_purge_elimina_usuario_de_bd(patch_data_dir):
     assert await get_user_by_username("purge_basic") is None
 
 
-async def test_purge_elimina_workspace_propio(patch_data_dir):
-    await _make_user("purge_ws_owner")
-    ws = await _workspace_storage()
-    created = await ws.create("Workspace a purgar", created_by="purge_ws_owner")
-    await purge_user_data("purge_ws_owner")
-    assert await ws.get(created["id"]) is None
+async def test_purge_elimina_group_propio(patch_data_dir):
+    await _make_user("purge_group_owner")
+    group = await _group_storage()
+    created = await group.create("Group a purgar", created_by="purge_group_owner")
+    await purge_user_data("purge_group_owner")
+    assert await group.get(created["id"]) is None
 
 
 async def test_purge_no_afecta_a_otros_usuarios(patch_data_dir):
@@ -134,16 +134,16 @@ async def test_purge_no_afecta_a_otros_usuarios(patch_data_dir):
     assert await get_user_by_username("purge_bystander") is not None
 
 
-async def test_purge_elimina_miembros_del_workspace(patch_data_dir):
+async def test_purge_elimina_miembros_del_group(patch_data_dir):
     await _make_user("purge_member_owner")
     await _make_user("purge_member_user")
-    ws = await _workspace_storage()
-    created = await ws.create("Workspace compartido", created_by="purge_member_owner")
-    await ws.add_member(created["id"], "purge_member_user")
+    group = await _group_storage()
+    created = await group.create("Group compartido", created_by="purge_member_owner")
+    await group.add_member(created["id"], "purge_member_user")
     await purge_user_data("purge_member_user")
-    members = await ws.list_members(created["id"])
+    members = await group.list_members(created["id"])
     assert not any(m["username"] == "purge_member_user" for m in members)
-    assert await ws.get(created["id"]) is not None
+    assert await group.get(created["id"]) is not None
 
 
 async def test_purge_elimina_agents_del_filesystem(patch_data_dir, tmp_path, monkeypatch):

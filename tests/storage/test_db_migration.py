@@ -187,6 +187,68 @@ def test_schema_index_deps_well_formed():
         assert isinstance(defn, str) and defn
 
 
+async def test_legacy_group_tables_keep_their_data(tmp_path):
+    """The terminology migration renames tables, columns and keeps every row."""
+    import app.storage.db as db_mod
+
+    db = tmp_path / "legacy-groups.db"
+    legacy_scope = "work" + "space"
+    legacy_id = f"{legacy_scope}_id"
+    conn_s = sqlite3.connect(str(db))
+    conn_s.executescript(f"""
+        CREATE TABLE "{legacy_scope}s" (
+            id TEXT PRIMARY KEY,
+            name TEXT NOT NULL,
+            created_by TEXT NOT NULL,
+            created_at TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'active'
+        );
+        CREATE TABLE "{legacy_scope}_members" (
+            "{legacy_id}" TEXT NOT NULL,
+            username TEXT NOT NULL,
+            role TEXT NOT NULL,
+            permissions TEXT NOT NULL DEFAULT '{{}}',
+            joined_at TEXT NOT NULL,
+            PRIMARY KEY ("{legacy_id}", username)
+        );
+        INSERT INTO "{legacy_scope}s"
+            VALUES ('group-1', 'Equipo', 'alice', '2026-01-01', 'active');
+        INSERT INTO "{legacy_scope}_members"
+            VALUES ('group-1', 'alice', 'owner', '{{}}', '2026-01-01');
+    """)
+    conn_s.commit()
+    conn_s.close()
+
+    async with aiosqlite.connect(str(db)) as conn:
+        conn.row_factory = sqlite3.Row
+        await db_mod._rename_legacy_group_schema_sqlite(conn)
+
+    migrated = sqlite3.connect(str(db))
+    tables = {
+        row[0]
+        for row in migrated.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+    member_columns = {
+        row[1] for row in migrated.execute("PRAGMA table_info(group_members)")
+    }
+    group_row = migrated.execute(
+        "SELECT id, name, created_by FROM groups"
+    ).fetchone()
+    member_row = migrated.execute(
+        "SELECT group_id, username, role FROM group_members"
+    ).fetchone()
+    migrated.close()
+
+    assert f"{legacy_scope}s" not in tables
+    assert f"{legacy_scope}_members" not in tables
+    assert legacy_id not in member_columns
+    assert "group_id" in member_columns
+    assert group_row == ("group-1", "Equipo", "alice")
+    assert member_row == ("group-1", "alice", "owner")
+
+
 # ── Tests de init_db sobre DB antigua ─────────────────────────────────────────
 
 

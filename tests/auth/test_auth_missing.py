@@ -45,29 +45,29 @@ def test_decode_token_empty():
     assert decode_token("") is None
 
 
-# ── decode_workspace_token — token inválido ────────────────────────────────────
+# ── decode_group_token — token inválido ────────────────────────────────────
 
-def test_decode_workspace_token_invalid():
-    from app.auth.auth import decode_workspace_token
-    user, ws = decode_workspace_token("garbage.token.here")
+def test_decode_group_token_invalid():
+    from app.auth.auth import decode_group_token
+    user, group = decode_group_token("garbage.token.here")
     assert user is None
-    assert ws is None
+    assert group is None
 
 
-def test_decode_workspace_token_valid(patch_data_dir):
-    from app.auth.auth import create_token, decode_workspace_token
-    token = create_token("alice", "ws-123")
-    user, ws = decode_workspace_token(token)
+def test_decode_group_token_valid(patch_data_dir):
+    from app.auth.auth import create_token, decode_group_token
+    token = create_token("alice", "group-123")
+    user, group = decode_group_token(token)
     assert user == "alice"
-    assert ws == "ws-123"
+    assert group == "group-123"
 
 
-def test_decode_workspace_token_defaults_to_username(patch_data_dir):
-    from app.auth.auth import create_token, decode_workspace_token
+def test_decode_group_token_defaults_to_username(patch_data_dir):
+    from app.auth.auth import create_token, decode_group_token
     token = create_token("bob")
-    user, ws = decode_workspace_token(token)
+    user, group = decode_group_token(token)
     assert user == "bob"
-    assert ws == "bob"
+    assert group == "bob"
 
 
 # ── admin_update_user ──────────────────────────────────────────────────────────

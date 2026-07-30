@@ -42,9 +42,9 @@ async def _insert_conversation(username: str, title: str = "Test conv") -> str:
     return conv_id
 
 
-async def _workspace_storage():
-    from app.storage.workspaces import WorkspaceStorage
-    return WorkspaceStorage(_cfg.DB_FILE)
+async def _group_storage():
+    from app.storage.groups import GroupStorage
+    return GroupStorage(_cfg.DB_FILE)
 
 
 def _zip_names(buf: io.BytesIO) -> list:
@@ -78,7 +78,7 @@ async def test_export_contiene_ficheros_requeridos(patch_gdpr_db):
     buf = await export_user_data("exp_files")
     names = _zip_names(buf)
     for expected in ("profile.json", "connections.json", "knowledge.json",
-                     "token_usage.json", "workspaces.json", "accounts.json",
+                     "token_usage.json", "groups.json", "accounts.json",
                      "agents.json", "skills.json"):
         assert expected in names, f"Falta {expected} en el ZIP"
 
@@ -125,29 +125,29 @@ async def test_export_sin_conversaciones(patch_gdpr_db):
     assert len(conv_files) == 0
 
 
-# ── workspaces.json ───────────────────────────────────────────────────────────
+# ── groups.json ───────────────────────────────────────────────────────────
 
-async def test_export_workspaces_incluye_membresías(patch_gdpr_db):
-    await _make_user("exp_ws_owner")
-    await _make_user("exp_ws_member")
-    ws = await _workspace_storage()
-    created = await ws.create("Equipo Export", created_by="exp_ws_owner")
-    await ws.add_member(created["id"], "exp_ws_member")
+async def test_export_groups_incluye_membresías(patch_gdpr_db):
+    await _make_user("exp_group_owner")
+    await _make_user("exp_group_member")
+    group = await _group_storage()
+    created = await group.create("Equipo Export", created_by="exp_group_owner")
+    await group.add_member(created["id"], "exp_group_member")
 
-    buf = await export_user_data("exp_ws_member")
-    workspaces = json.loads(_zip_read(buf, "workspaces.json"))
-    assert any(w["id"] == created["id"] for w in workspaces)
+    buf = await export_user_data("exp_group_member")
+    groups = json.loads(_zip_read(buf, "groups.json"))
+    assert any(w["id"] == created["id"] for w in groups)
 
 
-async def test_export_workspaces_no_incluye_los_ajenos(patch_gdpr_db):
-    await _make_user("exp_ws_noaccess")
-    await _make_user("exp_ws_other_owner")
-    ws = await _workspace_storage()
-    await ws.create("Equipo Ajeno", created_by="exp_ws_other_owner")
+async def test_export_groups_no_incluye_los_ajenos(patch_gdpr_db):
+    await _make_user("exp_group_noaccess")
+    await _make_user("exp_group_other_owner")
+    group = await _group_storage()
+    await group.create("Equipo Ajeno", created_by="exp_group_other_owner")
 
-    buf = await export_user_data("exp_ws_noaccess")
-    workspaces = json.loads(_zip_read(buf, "workspaces.json"))
-    assert workspaces == []
+    buf = await export_user_data("exp_group_noaccess")
+    groups = json.loads(_zip_read(buf, "groups.json"))
+    assert groups == []
 
 
 # ── _collect_file_owned ───────────────────────────────────────────────────────

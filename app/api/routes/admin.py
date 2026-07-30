@@ -5,7 +5,7 @@ Extraído de auth.py (que se estaba acercando a las 2000 líneas mezclando
 sesión de usuario y administración) para que un fix de ownership/acceso en
 un sitio no se quede sin replicar en el otro por simple tamaño del archivo.
 Las dependencias de autenticación (`require_admin`, `require_auth`,
-`WorkspaceContext`, etc.) siguen viviendo en auth.py — son el contrato que
+`GroupContext`, etc.) siguen viviendo en auth.py — son el contrato que
 importan ~18 archivos de todo el backend y moverlas habría sido un cambio de
 alto riesgo sin beneficio real.
 """
@@ -38,10 +38,10 @@ from app.errors import APIError
 from app.storage.db import IS_PG, open_db
 from app.storage.storage import AgentStorage as _AgentStorage
 from app.storage.workflows import WorkflowStorage as _WorkflowStorage
-from app.storage.workspaces import WorkspaceStorage as _WorkspaceStorage
+from app.storage.groups import GroupStorage as _GroupStorage
 from app.utils import flog
 
-_workspaces = _WorkspaceStorage(_DB_FILE)
+_groups = _GroupStorage(_DB_FILE)
 _agents = _AgentStorage(_AGENTS_DIR)
 _workflows = _WorkflowStorage()
 
@@ -780,8 +780,8 @@ async def admin_delete_workflow(
     return {"ok": True}
 
 
-@admin_router.get("/workspaces")
-async def admin_list_workspaces(
+@admin_router.get("/groups")
+async def admin_list_groups(
     _: str = Depends(require_admin),
 ) -> list[dict[str, Any]]:
     import contextlib
@@ -790,15 +790,15 @@ async def admin_list_workspaces(
     from app.config.data import AGENTS_DIR
 
     async with open_db() as conn:
-        ws_rows = await conn.fetchall(
-            "SELECT id, name, created_by, created_at, status FROM workspaces ORDER BY created_at DESC"
+        group_rows = await conn.fetchall(
+            "SELECT id, name, created_by, created_at, status FROM groups ORDER BY created_at DESC"
         )
-        workspaces = [
+        groups = [
             {"id": r[0], "name": r[1], "created_by": r[2], "created_at": r[3], "status": r[4]}
-            for r in ws_rows
+            for r in group_rows
         ]
         mc_rows = await conn.fetchall(
-            "SELECT workspace_id, COUNT(*) FROM workspace_members GROUP BY workspace_id"
+            "SELECT group_id, COUNT(*) FROM group_members GROUP BY group_id"
         )
         member_counts = {r[0]: r[1] for r in mc_rows}
         cs_rows = await conn.fetchall(
@@ -824,36 +824,36 @@ async def admin_list_workspaces(
                     agent_counts[owner] = agent_counts.get(owner, 0) + 1
 
     result = []
-    for ws in workspaces:
-        ws_id = ws["id"]
-        stats = conn_stats.get(ws_id, {"count": 0, "tokens_in": 0, "tokens_out": 0})
+    for group in groups:
+        group_id = group["id"]
+        stats = conn_stats.get(group_id, {"count": 0, "tokens_in": 0, "tokens_out": 0})
         result.append(
             {
-                **ws,
-                "member_count": member_counts.get(ws_id, 0),
+                **group,
+                "member_count": member_counts.get(group_id, 0),
                 "connections_count": stats["count"],
                 "tokens_in": stats["tokens_in"],
                 "tokens_out": stats["tokens_out"],
-                "knowledge_count": know_counts.get(ws_id, 0),
-                "agents_count": agent_counts.get(ws_id, 0),
+                "knowledge_count": know_counts.get(group_id, 0),
+                "agents_count": agent_counts.get(group_id, 0),
             }
         )
     return result
 
 
-@admin_router.delete("/workspaces/{workspace_id}")
-async def admin_delete_workspace(
-    workspace_id: str, _: str = Depends(require_admin)
+@admin_router.delete("/groups/{group_id}")
+async def admin_delete_group(
+    group_id: str, _: str = Depends(require_admin)
 ) -> dict[str, Any]:
-    if not await _workspaces.get(workspace_id):
-        raise APIError(404, "not_found", "Workspace no encontrado", extra={"resource": "workspace"})
-    await _workspaces.delete(workspace_id)
+    if not await _groups.get(group_id):
+        raise APIError(404, "not_found", "Grupo no encontrado", extra={"resource": "group"})
+    await _groups.delete(group_id)
     return {"ok": True}
 
 
-@admin_router.post("/workspaces/{workspace_id}/status")
-async def admin_set_workspace_status(
-    workspace_id: str, request: Request, _: str = Depends(require_admin)
+@admin_router.post("/groups/{group_id}/status")
+async def admin_set_group_status(
+    group_id: str, request: Request, _: str = Depends(require_admin)
 ) -> dict[str, Any]:
     body = await request.json()
     status = str(body.get("status") or "").strip()
@@ -862,9 +862,9 @@ async def admin_set_workspace_status(
             422, "invalid_field", "status debe ser 'active' o 'disabled'",
             extra={"field": "status"},
         )
-    if not await _workspaces.get(workspace_id):
-        raise APIError(404, "not_found", "Workspace no encontrado", extra={"resource": "workspace"})
-    await _workspaces.set_status(workspace_id, status)
+    if not await _groups.get(group_id):
+        raise APIError(404, "not_found", "Grupo no encontrado", extra={"resource": "group"})
+    await _groups.set_status(group_id, status)
     return {"ok": True, "status": status}
 
 
@@ -979,8 +979,8 @@ async def admin_impersonate(
     # N3: registrar la impersonación para auditoría de seguridad
     flog.warning(f"[admin] IMPERSONACIÓN: admin={admin!r} → usuario={username!r}")
 
-    # Crear token para el workspace personal del usuario impersonado
-    # (workspace_id=username por defecto)
+    # Crear token para el group personal del usuario impersonado
+    # (group_id=username por defecto)
     token = create_token(username)
 
     # Establecer la cookie del nuevo token
@@ -995,4 +995,3 @@ async def admin_impersonate(
 
     flog.ok(f"[admin] Token de impersonación creado exitosamente para {username!r}")
     return {"ok": True, "username": username}
-

@@ -93,7 +93,7 @@ def test_list_connections_raw_requires_auth(client):
 
 
 def test_list_connections_raw_empty_initially(client):
-    """Sin auth workspace no llega — con auth vacío devuelve lista vacía."""
+    """Sin auth group no llega — con auth vacío devuelve lista vacía."""
     _setup_user(client, "rawuser")
     r = client.get("/api/connections/raw")
     assert r.status_code == 200
@@ -201,7 +201,7 @@ def test_test_all_connections_returns_list(admin_client):
         assert "ok" in item
 
 
-def test_test_all_connections_empty_workspace(client):
+def test_test_all_connections_empty_group(client):
     """test-all sin conexiones devuelve lista vacía."""
     _setup_user(client, "testalluser")
     r = client.post("/api/connections/test-all", json={})

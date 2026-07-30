@@ -21,8 +21,8 @@ from app.storage.db import IS_PG, open_db
 from app.storage.knowledge import KnowledgeStorage
 from app.storage.storage import AgentStorage, SkillStorage
 from app.storage.workflows import WorkflowStorage
-from app.storage.workspace_shares import WorkspaceShareStorage
-from app.storage.workspaces import WorkspaceStorage
+from app.storage.group_shares import GroupShareStorage
+from app.storage.groups import GroupStorage
 
 router = APIRouter(tags=["explore"])
 
@@ -121,8 +121,8 @@ async def explore_preview(
         agents = AgentStorage(_cfg.AGENTS_DIR)
         agent = await agents.get(resource_id)
         if agent:
-            shares = WorkspaceShareStorage(_cfg.DB_FILE)
-            workspaces = WorkspaceStorage(_cfg.DB_FILE)
+            shares = GroupShareStorage(_cfg.DB_FILE)
+            groups = GroupStorage(_cfg.DB_FILE)
             skills_storage = SkillStorage(_cfg.SKILLS_DIR)
             skill_names = []
             for sid in agent.get("skills", []):
@@ -132,7 +132,7 @@ async def explore_preview(
                 # No revelar nombres de skills privadas ajenas en la vista
                 # previa pública, aunque el agente que las usa sí sea público.
                 if sk.get("scope") != "public" and not await shares.is_accessible(
-                    workspaces,
+                    groups,
                     resource_type="skill",
                     resource_id=sid,
                     owner_id=sk.get("owner_id"),
@@ -147,7 +147,7 @@ async def explore_preview(
                 if not item:
                     continue
                 if not await shares.is_accessible(
-                    workspaces,
+                    groups,
                     resource_type="knowledge",
                     resource_id=kid,
                     owner_id=item.get("owner_id"),

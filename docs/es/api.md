@@ -184,15 +184,15 @@ Las preferencias se guardan por usuario en la base de datos. Cambiarlas en un di
 
 ## Compartición de recursos
 
-Permite compartir recursos privados (agentes, skills, conexiones, conocimiento) con un workspace. No mueve ni copia el recurso — solo concede acceso de uso a todos los miembros del workspace destino. El `owner_id` del recurso no cambia.
+Permite compartir recursos privados (agentes, skills, conexiones, conocimiento) con un grupo. No mueve ni copia el recurso — solo concede acceso de uso a todos los miembros del grupo destino. El `owner_id` del recurso no cambia.
 
 Solo el dueño directo del recurso (o un admin) puede compartirlo.
 
 | Método | Endpoint | Descripción |
 |---|---|---|
-| `GET` | `/api/sharing/{type}/{resource_id}/groups` | Listar los workspaces con los que está compartido un recurso |
-| `POST` | `/api/sharing/{type}/{resource_id}` | Compartir un recurso con un workspace (`body: {"workspace_id": "..."}`) |
-| `DELETE` | `/api/sharing/{type}/{resource_id}/{workspace_id}` | Retirar el acceso de un workspace a un recurso |
+| `GET` | `/api/sharing/{type}/{resource_id}/groups` | Listar los grupos con los que está compartido un recurso |
+| `POST` | `/api/sharing/{type}/{resource_id}` | Compartir un recurso con un grupo (`body: {"group_id": "..."}`) |
+| `DELETE` | `/api/sharing/{type}/{resource_id}?group_id={group_id}` | Retirar el acceso de un grupo a un recurso |
 
 Tipos válidos para `{type}`: `agent`, `skill`, `connection`, `knowledge`.
 

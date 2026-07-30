@@ -30,7 +30,7 @@ _KNOWN_WIDGETS = {
     "token-kpi",
     "recent-resources",
     "agent-health",
-    "workspace",
+    "group",
 }
 
 VALID_THEMES = {

@@ -179,15 +179,15 @@ Known widget IDs: `summary`, `token-usage`, `activity`, `conn-status`, `recent`.
 
 ## Resource Sharing
 
-Allows sharing private resources (agents, skills, connections, knowledge) with a workspace. The resource is not moved or copied — access is granted to all members of the destination workspace. The `owner_id` of the resource does not change.
+Allows sharing private resources (agents, skills, connections, knowledge) with a group. The resource is not moved or copied — access is granted to all members of the destination group. The `owner_id` of the resource does not change.
 
 Only the direct owner of the resource (or an admin) can share it.
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/sharing/{type}/{resource_id}/groups` | List workspaces a resource is shared with |
-| `POST` | `/api/sharing/{type}/{resource_id}` | Share a resource with a workspace (`body: {"workspace_id": "..."}`) |
-| `DELETE` | `/api/sharing/{type}/{resource_id}/{workspace_id}` | Revoke a workspace's access to a resource |
+| `GET` | `/api/sharing/{type}/{resource_id}/groups` | List groups a resource is shared with |
+| `POST` | `/api/sharing/{type}/{resource_id}` | Share a resource with a group (`body: {"group_id": "..."}`) |
+| `DELETE` | `/api/sharing/{type}/{resource_id}?group_id={group_id}` | Revoke a group's access to a resource |
 
 Valid values for `{type}`: `agent`, `skill`, `connection`, `knowledge`.
 

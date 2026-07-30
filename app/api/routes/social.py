@@ -16,7 +16,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
 import app.config.data as _cfg
-from app.api.routes.auth import WorkspaceContext, require_auth, require_workspace
+from app.api.routes.auth import GroupContext, require_auth, require_group
 from app.errors import APIError
 from app.middleware.ratelimit import RateLimiter
 from app.storage.db import IS_PG, open_db
@@ -240,10 +240,10 @@ async def _publish_knowledge_item_cascade(
 
 
 async def _cascade_publish_agent(
-    agent: Dict[str, Any], username: str, workspace_id: str = ""
+    agent: Dict[str, Any], username: str, group_id: str = ""
 ) -> None:
     """Al publicar un agente, publica en cascada sus skills y conocimiento propios."""
-    owner_ids = {username, workspace_id} - {""}
+    owner_ids = {username, group_id} - {""}
     for skill_id in agent.get("skills") or []:
         await _publish_skill_cascade(skill_id, username, owner_ids)
     for know_id in agent.get("knowledge") or []:
@@ -251,11 +251,11 @@ async def _cascade_publish_agent(
 
 
 async def _cascade_publish_workflow(
-    workflow: Dict[str, Any], username: str, workspace_id: str = ""
+    workflow: Dict[str, Any], username: str, group_id: str = ""
 ) -> None:
     """Al publicar una orquestación, publica en cascada los agentes propios que usa
     (y, para cada uno, sus skills/conocimiento — ver _cascade_publish_agent)."""
-    owner_ids = {str(workflow.get("owner_id") or ""), username, workspace_id} - {""}
+    owner_ids = {str(workflow.get("owner_id") or ""), username, group_id} - {""}
     agents_storage = AgentStorage(_cfg.AGENTS_DIR)
     seen: set[str] = set()
     for node in workflow.get("definition", {}).get("nodes", []):
@@ -295,7 +295,7 @@ async def _cascade_publish_workflow(
                 json.dumps(labels),
             )
             await conn.commit()
-        await _cascade_publish_agent(agent, username, workspace_id)
+        await _cascade_publish_agent(agent, username, group_id)
 
 CATEGORIES = [
     "Coding",
@@ -567,11 +567,11 @@ async def set_knowledge_visibility(
 async def set_workflow_visibility(
     workflow_id: str,
     body: _WorkflowVisibilityBody,
-    ctx: WorkspaceContext = Depends(require_workspace),
+    ctx: GroupContext = Depends(require_group),
 ) -> Dict[str, Any]:
     _check_category(body.category)
     workflows = WorkflowStorage()
-    workflow = await workflows.get(workflow_id, ctx.workspace_id)
+    workflow = await workflows.get(workflow_id, ctx.group_id)
     if not workflow:
         raise APIError(
             404, "not_found", "Orquestación no encontrada", extra={"resource": "workflow"}
@@ -604,7 +604,7 @@ async def set_workflow_visibility(
         await conn.commit()
 
     if body.is_public and is_public_val:
-        await _cascade_publish_workflow(workflow, ctx.user, ctx.workspace_id)
+        await _cascade_publish_workflow(workflow, ctx.user, ctx.group_id)
 
     return {"ok": True}
 

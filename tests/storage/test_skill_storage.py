@@ -58,7 +58,7 @@ def test_get_nonexistent_skill(storage):
     assert asyncio.run(storage.get("private", "ghost-skill")) is None
 
 
-def test_list_shows_private_skills(storage):
+def test_list_shogroup_private_skills(storage):
     asyncio.run(storage.save("private", _SKILL))
     items = asyncio.run(storage.list("private"))
     assert len(items) == 1

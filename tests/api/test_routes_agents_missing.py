@@ -597,7 +597,7 @@ def test_uncaught_valueerror_returns_generic_400_and_logs(client):
     assert mock_error.called
 
 
-def test_save_agent_allows_own_private_skill(client):
+def test_save_agent_allogroup_own_private_skill(client):
     _register_and_login(client, "idor_own_skill")
     skill = client.post(
         "/api/skills/private",
@@ -607,7 +607,7 @@ def test_save_agent_allows_own_private_skill(client):
     assert r.status_code == 200
 
 
-def test_save_agent_allows_skill_shared_with_group(client):
+def test_save_agent_allogroup_skill_shared_with_group(client):
     from app.auth.auth import create_token, register_user
 
     asyncio.run(register_user("idor_share_owner", "pass1234", email="idor_share_owner@cov.test"))
@@ -618,14 +618,14 @@ def test_save_agent_allows_skill_shared_with_group(client):
         "/api/skills/private",
         json={"name": "Shared Skill", "description": "d", "content": "c"},
     ).json()
-    ws = client.post("/api/workspaces", json={"name": "IDOR Test Group"}).json()
+    group = client.post("/api/groups", json={"name": "IDOR Test Group"}).json()
     client.post(
-        f"/api/workspaces/{ws['id']}/members",
+        f"/api/groups/{group['id']}/members",
         json={"username": "idor_share_member", "role": "member"},
     )
     r_share = client.post(
         f"/api/sharing/skill/{skill['id']}",
-        json={"group_id": ws["id"]},
+        json={"group_id": group["id"]},
     )
     assert r_share.status_code == 200, r_share.text
 

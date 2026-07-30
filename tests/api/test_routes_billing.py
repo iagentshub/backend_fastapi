@@ -276,7 +276,7 @@ def test_license_gate_blocks_standard_user_without_license(client):
     assert r.json()["detail"]["code"] == "license_required"
 
 
-def test_license_gate_allows_assigned_user(client):
+def test_license_gate_allogroup_assigned_user(client):
     _enable_billing()
     _setup_user(client, "alice")
     _setup_user(client, "bob")

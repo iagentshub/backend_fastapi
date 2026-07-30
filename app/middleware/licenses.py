@@ -18,7 +18,7 @@ _PROTECTED_PREFIXES = (
     "/api/knowledge",
     "/api/memory",
     "/api/chats",
-    "/api/workspaces",
+    "/api/groups",
 )
 
 

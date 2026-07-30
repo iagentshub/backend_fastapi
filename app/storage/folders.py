@@ -1,4 +1,4 @@
-"""Workspace-scoped folders shared by agents, skills, knowledge and memory."""
+"""Group-scoped folders shared by agents, skills, knowledge and memory."""
 
 from __future__ import annotations
 
@@ -115,7 +115,7 @@ class FolderStorage:
                     shared_type = _SHARED_RESOURCE_TYPES.get(resource_type)
                     if shared_type:
                         await conn.execute(
-                            "DELETE FROM resource_workspace_shares "
+                            "DELETE FROM resource_group_shares "
                             "WHERE resource_type=? AND resource_id=?",
                             (shared_type, resource_id),
                         )

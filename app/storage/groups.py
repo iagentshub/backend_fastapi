@@ -1,7 +1,7 @@
-"""WorkspaceStorage — gestión de workspaces de equipo.
+"""GroupStorage — gestión de groups de equipo.
 
-Los workspaces personales son virtuales (workspace_id = username), sin entrada en BD.
-Solo los workspaces de equipo tienen filas en las tablas workspaces / workspace_members.
+Los groups personales son virtuales (group_id = username), sin entrada en BD.
+Solo los groups de equipo tienen filas en las tablas groups / group_members.
 """
 
 from __future__ import annotations
@@ -23,98 +23,98 @@ def _row(row: Any) -> Optional[Dict[str, Any]]:
     return dict(row)
 
 
-class WorkspaceStorage:
+class GroupStorage:
     def __init__(self, db_path: Path) -> None:
         self._path = db_path
 
-    # ── Workspaces ─────────────────────────────────────────────────────────────
+    # ── Groups ─────────────────────────────────────────────────────────────
 
-    async def get(self, workspace_id: str) -> Optional[Dict[str, Any]]:
+    async def get(self, group_id: str) -> Optional[Dict[str, Any]]:
         async with open_db() as conn:
             row = await conn.fetchone(
-                "SELECT * FROM workspaces WHERE id = ?", (workspace_id,)
+                "SELECT * FROM groups WHERE id = ?", (group_id,)
             )
             return _row(row)
 
     async def list_for_user(self, username: str) -> List[Dict[str, Any]]:
-        """Devuelve todos los workspaces de equipo donde el usuario es miembro."""
+        """Devuelve todos los groups de equipo donde el usuario es miembro."""
         async with open_db() as conn:
             rows = await conn.fetchall(
-                "SELECT w.*, wm.role FROM workspaces w "
-                "JOIN workspace_members wm ON w.id = wm.workspace_id "
+                "SELECT w.*, wm.role FROM groups w "
+                "JOIN group_members wm ON w.id = wm.group_id "
                 "WHERE wm.username = ? ORDER BY w.created_at ASC",
                 (username,),
             )
             return [dict(r) for r in rows]
 
     async def create(self, name: str, created_by: str) -> Dict[str, Any]:
-        ws_id = uuid4().hex[:16]
+        group_id = uuid4().hex[:16]
         now = _now()
         async with open_db() as conn:
             async with conn.transaction():
                 await conn.execute(
-                    "INSERT INTO workspaces (id, name, created_by, created_at) "
+                    "INSERT INTO groups (id, name, created_by, created_at) "
                     "VALUES (?, ?, ?, ?)",
-                    (ws_id, name.strip(), created_by, now),
+                    (group_id, name.strip(), created_by, now),
                 )
                 await conn.execute(
-                    "INSERT INTO workspace_members (workspace_id, username, role, joined_at) "
+                    "INSERT INTO group_members (group_id, username, role, joined_at) "
                     "VALUES (?, ?, ?, ?)",
-                    (ws_id, created_by, "owner", now),
+                    (group_id, created_by, "owner", now),
                 )
         return {
-            "id": ws_id,
+            "id": group_id,
             "name": name.strip(),
             "created_by": created_by,
             "created_at": now,
             "role": "owner",
         }
 
-    async def update(self, workspace_id: str, name: str) -> bool:
+    async def update(self, group_id: str, name: str) -> bool:
         async with open_db() as conn:
             row = await conn.fetchone(
-                "UPDATE workspaces SET name = ? WHERE id = ? RETURNING id",
-                (name.strip(), workspace_id),
+                "UPDATE groups SET name = ? WHERE id = ? RETURNING id",
+                (name.strip(), group_id),
             )
             await conn.commit()
             return row is not None
 
-    async def delete(self, workspace_id: str) -> bool:
-        """Elimina el workspace y TODO su contenido: lo creado directamente en él y
+    async def delete(self, group_id: str) -> bool:
+        """Elimina el group y TODO su contenido: lo creado directamente en él y
         lo enlazado hacia él (una vez copiado, vive ahí — no se toca el
-        original en su owner real). No afecta a nada fuera del workspace."""
+        original en su owner real). No afecta a nada fuera del group."""
         async with open_db() as conn:
             async with conn.transaction():
                 agent_ids = [
                     r[0]
                     for r in await conn.fetchall(
-                        "SELECT id FROM agents WHERE owner_id = ?", (workspace_id,)
+                        "SELECT id FROM agents WHERE owner_id = ?", (group_id,)
                     )
                 ]
                 skill_ids = [
                     r[0]
                     for r in await conn.fetchall(
-                        "SELECT id FROM skills WHERE owner_id = ?", (workspace_id,)
+                        "SELECT id FROM skills WHERE owner_id = ?", (group_id,)
                     )
                 ]
                 knowledge_ids = [
                     r[0]
                     for r in await conn.fetchall(
                         "SELECT id FROM knowledge_items WHERE owner_id = ?",
-                        (workspace_id,),
+                        (group_id,),
                     )
                 ]
                 connection_ids = [
                     r[0]
                     for r in await conn.fetchall(
-                        "SELECT id FROM connections WHERE owner_id = ?", (workspace_id,)
+                        "SELECT id FROM connections WHERE owner_id = ?", (group_id,)
                     )
                 ]
                 workflow_ids = [
                     r[0]
                     for r in await conn.fetchall(
                         "SELECT id FROM agent_workflows WHERE owner_id = ?",
-                        (workspace_id,),
+                        (group_id,),
                     )
                 ]
 
@@ -131,98 +131,98 @@ class WorkspaceStorage:
                             (resource_type, rid),
                         )
                         await conn.execute(
-                            "DELETE FROM resource_workspace_shares WHERE resource_type = ? AND resource_id = ?",
+                            "DELETE FROM resource_group_shares WHERE resource_type = ? AND resource_id = ?",
                             (resource_type, rid),
                         )
 
                 await conn.execute(
-                    "DELETE FROM agents WHERE owner_id = ?", (workspace_id,)
+                    "DELETE FROM agents WHERE owner_id = ?", (group_id,)
                 )
                 await conn.execute(
-                    "DELETE FROM skills WHERE owner_id = ?", (workspace_id,)
+                    "DELETE FROM skills WHERE owner_id = ?", (group_id,)
                 )
                 await conn.execute(
-                    "DELETE FROM knowledge_items WHERE owner_id = ?", (workspace_id,)
+                    "DELETE FROM knowledge_items WHERE owner_id = ?", (group_id,)
                 )
                 await conn.execute(
-                    "DELETE FROM connections WHERE owner_id = ?", (workspace_id,)
+                    "DELETE FROM connections WHERE owner_id = ?", (group_id,)
                 )
                 await conn.execute(
-                    "DELETE FROM agent_workflows WHERE owner_id = ?", (workspace_id,)
+                    "DELETE FROM agent_workflows WHERE owner_id = ?", (group_id,)
                 )
                 await conn.execute(
-                    "DELETE FROM resource_workspace_shares WHERE workspace_id = ?",
-                    (workspace_id,),
+                    "DELETE FROM resource_group_shares WHERE group_id = ?",
+                    (group_id,),
                 )
                 await conn.execute(
-                    "DELETE FROM workspace_invitations WHERE workspace_id = ?",
-                    (workspace_id,),
+                    "DELETE FROM group_invitations WHERE group_id = ?",
+                    (group_id,),
                 )
                 await conn.execute(
-                    "DELETE FROM workspace_members WHERE workspace_id = ?",
-                    (workspace_id,),
+                    "DELETE FROM group_members WHERE group_id = ?",
+                    (group_id,),
                 )
                 row = await conn.fetchone(
-                    "DELETE FROM workspaces WHERE id = ? RETURNING id",
-                    (workspace_id,),
+                    "DELETE FROM groups WHERE id = ? RETURNING id",
+                    (group_id,),
                 )
             return row is not None
 
-    async def set_status(self, workspace_id: str, status: str) -> bool:
+    async def set_status(self, group_id: str, status: str) -> bool:
         async with open_db() as conn:
             row = await conn.fetchone(
-                "UPDATE workspaces SET status = ? WHERE id = ? RETURNING id",
-                (status, workspace_id),
+                "UPDATE groups SET status = ? WHERE id = ? RETURNING id",
+                (status, group_id),
             )
             await conn.commit()
             return row is not None
 
-    async def is_active(self, workspace_id: str, username: str) -> bool:
-        """True si el workspace está activo. Un workspace personal siempre lo está."""
-        if workspace_id == username:
+    async def is_active(self, group_id: str, username: str) -> bool:
+        """True si el group está activo. Un group personal siempre lo está."""
+        if group_id == username:
             return True
-        ws = await self.get(workspace_id)
-        return bool(ws) and ws.get("status", "active") == "active"
+        group = await self.get(group_id)
+        return bool(group) and group.get("status", "active") == "active"
 
     async def owner_is_active(self, owner_id: str) -> bool:
-        """True si owner_id es un espacio personal (no hay fila en workspaces) o un
-        workspace de equipo activo. Usado para bloquear contenido compartido desde
-        un workspace desactivado."""
-        ws = await self.get(owner_id)
-        if not ws:
+        """True si owner_id es un espacio personal (no hay fila en groups) o un
+        group de equipo activo. Usado para bloquear contenido compartido desde
+        un group desactivado."""
+        group = await self.get(owner_id)
+        if not group:
             return True
-        return ws.get("status", "active") == "active"
+        return group.get("status", "active") == "active"
 
-    async def transfer_ownership(self, workspace_id: str, new_owner: str) -> bool:
+    async def transfer_ownership(self, group_id: str, new_owner: str) -> bool:
         """Transfer ownership to an existing member. Returns False if not a member."""
         async with open_db() as conn:
             member = await conn.fetchone(
-                "SELECT 1 FROM workspace_members WHERE workspace_id = ? AND username = ?",
-                (workspace_id, new_owner),
+                "SELECT 1 FROM group_members WHERE group_id = ? AND username = ?",
+                (group_id, new_owner),
             )
             if not member:
                 return False
             async with conn.transaction():
                 await conn.execute(
-                    "UPDATE workspaces SET created_by = ? WHERE id = ?",
-                    (new_owner, workspace_id),
+                    "UPDATE groups SET created_by = ? WHERE id = ?",
+                    (new_owner, group_id),
                 )
                 await conn.execute(
-                    "UPDATE workspace_members SET role = ? WHERE workspace_id = ? AND username = ?",
-                    ("owner", workspace_id, new_owner),
+                    "UPDATE group_members SET role = ? WHERE group_id = ? AND username = ?",
+                    ("owner", group_id, new_owner),
                 )
             return True
 
     # ── Members ────────────────────────────────────────────────────────────────
 
-    async def list_members(self, workspace_id: str) -> List[Dict[str, Any]]:
+    async def list_members(self, group_id: str) -> List[Dict[str, Any]]:
         async with open_db() as conn:
             rows = await conn.fetchall(
                 "SELECT wm.username, wm.role, wm.permissions, wm.joined_at, u.display_name, u.email "
-                "FROM workspace_members wm "
+                "FROM group_members wm "
                 "LEFT JOIN users u ON u.username = wm.username "
-                "WHERE wm.workspace_id = ? ORDER BY wm.joined_at ASC",
-                (workspace_id,),
+                "WHERE wm.group_id = ? ORDER BY wm.joined_at ASC",
+                (group_id,),
             )
             result = []
             for row in rows:
@@ -235,21 +235,21 @@ class WorkspaceStorage:
             return result
 
     async def get_member(
-        self, workspace_id: str, username: str
+        self, group_id: str, username: str
     ) -> Optional[Dict[str, Any]]:
         async with open_db() as conn:
             row = await conn.fetchone(
-                "SELECT * FROM workspace_members WHERE workspace_id = ? AND username = ?",
-                (workspace_id, username),
+                "SELECT * FROM group_members WHERE group_id = ? AND username = ?",
+                (group_id, username),
             )
             return _row(row)
 
-    async def is_member(self, workspace_id: str, username: str) -> bool:
-        """True si el usuario pertenece a este workspace de equipo."""
-        return await self.get_member(workspace_id, username) is not None
+    async def is_member(self, group_id: str, username: str) -> bool:
+        """True si el usuario pertenece a este group de equipo."""
+        return await self.get_member(group_id, username) is not None
 
     async def add_member(
-        self, workspace_id: str, username: str, role: str = "member"
+        self, group_id: str, username: str, role: str = "member"
     ) -> bool:
         if role not in _VALID_ROLES:
             return False
@@ -257,88 +257,88 @@ class WorkspaceStorage:
         async with open_db() as conn:
             if IS_PG:
                 await conn.execute(
-                    "INSERT INTO workspace_members (workspace_id, username, role, joined_at) "
-                    "VALUES (?, ?, ?, ?) ON CONFLICT (workspace_id, username) DO UPDATE SET role = ?",
-                    (workspace_id, username, role, now, role),
+                    "INSERT INTO group_members (group_id, username, role, joined_at) "
+                    "VALUES (?, ?, ?, ?) ON CONFLICT (group_id, username) DO UPDATE SET role = ?",
+                    (group_id, username, role, now, role),
                 )
             else:
                 await conn.execute(
-                    "INSERT INTO workspace_members "
-                    "(workspace_id, username, role, joined_at) VALUES (?, ?, ?, ?) "
-                    "ON CONFLICT(workspace_id, username) "
+                    "INSERT INTO group_members "
+                    "(group_id, username, role, joined_at) VALUES (?, ?, ?, ?) "
+                    "ON CONFLICT(group_id, username) "
                     "DO UPDATE SET role=excluded.role",
-                    (workspace_id, username, role, now),
+                    (group_id, username, role, now),
                 )
             await conn.commit()
             return True
 
-    async def remove_member(self, workspace_id: str, username: str) -> bool:
+    async def remove_member(self, group_id: str, username: str) -> bool:
         async with open_db() as conn:
             row = await conn.fetchone(
-                "DELETE FROM workspace_members "
-                "WHERE workspace_id = ? AND username = ? RETURNING workspace_id",
-                (workspace_id, username),
+                "DELETE FROM group_members "
+                "WHERE group_id = ? AND username = ? RETURNING group_id",
+                (group_id, username),
             )
             await conn.commit()
             return row is not None
 
     async def update_member_role(
-        self, workspace_id: str, username: str, role: str
+        self, group_id: str, username: str, role: str
     ) -> bool:
         if role not in _VALID_ROLES:
             return False
         async with open_db() as conn:
             row = await conn.fetchone(
-                "UPDATE workspace_members SET role = ? "
-                "WHERE workspace_id = ? AND username = ? RETURNING workspace_id",
-                (role, workspace_id, username),
+                "UPDATE group_members SET role = ? "
+                "WHERE group_id = ? AND username = ? RETURNING group_id",
+                (role, group_id, username),
             )
             await conn.commit()
             return row is not None
 
     async def update_member_permissions(
-        self, workspace_id: str, username: str, permissions: Dict[str, Any]
+        self, group_id: str, username: str, permissions: Dict[str, Any]
     ) -> bool:
         async with open_db() as conn:
             row = await conn.fetchone(
-                "UPDATE workspace_members SET permissions = ? "
-                "WHERE workspace_id = ? AND username = ? RETURNING workspace_id",
-                (json.dumps(permissions, ensure_ascii=False), workspace_id, username),
+                "UPDATE group_members SET permissions = ? "
+                "WHERE group_id = ? AND username = ? RETURNING group_id",
+                (json.dumps(permissions, ensure_ascii=False), group_id, username),
             )
             await conn.commit()
             return row is not None
 
     # ── Authorization helpers ──────────────────────────────────────────────────
 
-    async def can_access(self, workspace_id: str, username: str) -> bool:
-        """True si el usuario puede usar este workspace.
+    async def can_access(self, group_id: str, username: str) -> bool:
+        """True si el usuario puede usar este group.
 
-        Un workspace personal (id == username) siempre es accesible por ese usuario.
-        Un workspace de equipo requiere membresía.
+        Un group personal (id == username) siempre es accesible por ese usuario.
+        Un group de equipo requiere membresía.
         """
-        if workspace_id == username:
+        if group_id == username:
             return True
-        return await self.is_member(workspace_id, username)
+        return await self.is_member(group_id, username)
 
-    async def can_manage(self, workspace_id: str, username: str) -> bool:
-        """True si el usuario puede modificar configuración del workspace (owner o admin)."""
-        if workspace_id == username:
+    async def can_manage(self, group_id: str, username: str) -> bool:
+        """True si el usuario puede modificar configuración del group (owner o admin)."""
+        if group_id == username:
             return True
-        member = await self.get_member(workspace_id, username)
+        member = await self.get_member(group_id, username)
         return member is not None and member.get("role") in ("owner", "admin")
 
     async def has_resource_permission(
         self,
-        workspace_id: str,
+        group_id: str,
         username: str,
         section: str,
         resource_id: str,
         action: str,
     ) -> bool:
         """Resolve granular member permissions; missing/empty config is allow-all."""
-        if workspace_id == username:
+        if group_id == username:
             return True
-        member = await self.get_member(workspace_id, username)
+        member = await self.get_member(group_id, username)
         if not member:
             return False
         if member.get("role") in ("owner", "admin"):
@@ -356,103 +356,103 @@ class WorkspaceStorage:
     # ── Invitaciones ───────────────────────────────────────────────────────────
 
     async def invite_user(
-        self, workspace_id: str, username: str, invited_by: str
+        self, group_id: str, username: str, invited_by: str
     ) -> Optional[Dict[str, Any]]:
         inv_id = uuid4().hex[:16]
         now = _now()
         async with open_db() as conn:
             if IS_PG:
                 row = await conn.fetchone(
-                    "INSERT INTO workspace_invitations "
-                    "(id, workspace_id, invited_by, username, status, created_at) "
+                    "INSERT INTO group_invitations "
+                    "(id, group_id, invited_by, username, status, created_at) "
                     "VALUES (?, ?, ?, ?, 'pending', ?) "
-                    "ON CONFLICT (workspace_id, username) DO NOTHING RETURNING id",
-                    (inv_id, workspace_id, invited_by, username, now),
+                    "ON CONFLICT (group_id, username) DO NOTHING RETURNING id",
+                    (inv_id, group_id, invited_by, username, now),
                 )
             else:
                 row = await conn.fetchone(
-                    "INSERT OR IGNORE INTO workspace_invitations "
-                    "(id, workspace_id, invited_by, username, status, created_at) "
+                    "INSERT OR IGNORE INTO group_invitations "
+                    "(id, group_id, invited_by, username, status, created_at) "
                     "VALUES (?, ?, ?, ?, 'pending', ?) RETURNING id",
-                    (inv_id, workspace_id, invited_by, username, now),
+                    (inv_id, group_id, invited_by, username, now),
                 )
             await conn.commit()
             if row is None:
                 return None  # Already invited or already a member
             return {
                 "id": inv_id,
-                "workspace_id": workspace_id,
+                "group_id": group_id,
                 "invited_by": invited_by,
                 "username": username,
                 "status": "pending",
                 "created_at": now,
             }
 
-    async def list_invitations(self, workspace_id: str) -> List[Dict[str, Any]]:
+    async def list_invitations(self, group_id: str) -> List[Dict[str, Any]]:
         async with open_db() as conn:
             rows = await conn.fetchall(
-                "SELECT * FROM workspace_invitations "
-                "WHERE workspace_id = ? AND status = 'pending' ORDER BY created_at DESC",
-                (workspace_id,),
+                "SELECT * FROM group_invitations "
+                "WHERE group_id = ? AND status = 'pending' ORDER BY created_at DESC",
+                (group_id,),
             )
             return [dict(r) for r in rows]
 
     async def list_my_invitations(self, username: str) -> List[Dict[str, Any]]:
         async with open_db() as conn:
             rows = await conn.fetchall(
-                "SELECT wi.*, w.name AS workspace_name FROM workspace_invitations wi "
-                "LEFT JOIN workspaces w ON w.id = wi.workspace_id "
+                "SELECT wi.*, w.name AS group_name FROM group_invitations wi "
+                "LEFT JOIN groups w ON w.id = wi.group_id "
                 "WHERE wi.username = ? AND wi.status = 'pending' ORDER BY wi.created_at DESC",
                 (username,),
             )
             return [dict(r) for r in rows]
 
-    async def cancel_invitation(self, inv_id: str, workspace_id: str) -> bool:
+    async def cancel_invitation(self, inv_id: str, group_id: str) -> bool:
         async with open_db() as conn:
             row = await conn.fetchone(
-                "DELETE FROM workspace_invitations "
-                "WHERE id = ? AND workspace_id = ? RETURNING id",
-                (inv_id, workspace_id),
+                "DELETE FROM group_invitations "
+                "WHERE id = ? AND group_id = ? RETURNING id",
+                (inv_id, group_id),
             )
             await conn.commit()
             return row is not None
 
     async def accept_invitation(self, inv_id: str, username: str) -> Optional[str]:
-        """Acepta la invitación y añade al usuario como miembro. Devuelve workspace_id."""
+        """Acepta la invitación y añade al usuario como miembro. Devuelve group_id."""
         async with open_db() as conn:
             row = await conn.fetchone(
-                "SELECT * FROM workspace_invitations "
+                "SELECT * FROM group_invitations "
                 "WHERE id = ? AND username = ? AND status = 'pending'",
                 (inv_id, username),
             )
             if not row:
                 return None
-            workspace_id = dict(row)["workspace_id"]
+            group_id = dict(row)["group_id"]
             now = _now()
             async with conn.transaction():
                 if IS_PG:
                     await conn.execute(
-                        "INSERT INTO workspace_members "
-                        "(workspace_id, username, role, joined_at) "
+                        "INSERT INTO group_members "
+                        "(group_id, username, role, joined_at) "
                         "VALUES (?, ?, 'member', ?) "
-                        "ON CONFLICT (workspace_id, username) DO NOTHING",
-                        (workspace_id, username, now),
+                        "ON CONFLICT (group_id, username) DO NOTHING",
+                        (group_id, username, now),
                     )
                 else:
                     await conn.execute(
-                        "INSERT OR IGNORE INTO workspace_members "
-                        "(workspace_id, username, role, joined_at) VALUES (?, ?, 'member', ?)",
-                        (workspace_id, username, now),
+                        "INSERT OR IGNORE INTO group_members "
+                        "(group_id, username, role, joined_at) VALUES (?, ?, 'member', ?)",
+                        (group_id, username, now),
                     )
                 await conn.execute(
-                    "DELETE FROM workspace_invitations WHERE id = ?", (inv_id,)
+                    "DELETE FROM group_invitations WHERE id = ?", (inv_id,)
                 )
-            return workspace_id
+            return group_id
 
     async def reject_invitation(self, inv_id: str, username: str) -> bool:
         async with open_db() as conn:
             row = await conn.fetchone(
-                "DELETE FROM workspace_invitations "
+                "DELETE FROM group_invitations "
                 "WHERE id = ? AND username = ? RETURNING id",
                 (inv_id, username),
             )

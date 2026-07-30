@@ -27,7 +27,7 @@ When the frontend sends a request, the backend authenticates it, runs the corres
 | **Skills** | Loads and serves the capabilities that can be added to agents |
 | **Memory** | Stores and retrieves each agent's persistent context between conversations |
 | **Connections** | Manages credentials and communication with AI providers |
-| **Workspaces** | Multi-tenancy: groups of users who share resources |
+| **Groups** | Multi-tenancy: groups of users who share resources |
 
 ---
 

@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
 
 import app.config.data as _cfg
-from app.api.routes.auth import WorkspaceContext, require_auth, require_workspace
+from app.api.routes.auth import GroupContext, require_auth, require_group
 from app.api.routes.social import (
     _PUBLIC_VAL,
     _assert_public,
@@ -458,7 +458,7 @@ async def try_agent(
     scope: str,
     agent_id: str,
     body: _AgentTryBody,
-    ctx: WorkspaceContext = Depends(require_workspace),
+    ctx: GroupContext = Depends(require_group),
 ) -> Dict[str, Any]:
     """Prueba un agente público usando la connection propia del caller, sin guardar historial."""
 
@@ -482,10 +482,10 @@ async def try_agent(
     if not agent_data:
         raise APIError(404, "not_found", "Agente no encontrado", extra={"resource": "agent"})
 
-    # Step 3: Resolve caller's connection (workspace first, then personal fallback)
+    # Step 3: Resolve caller's connection (group first, then personal fallback)
     conn_storage = ConnectionStorage(_cfg.DB_FILE)
-    conn_data = await conn_storage.get(body.connection_id, ctx.workspace_id)
-    if conn_data is None and ctx.workspace_id != ctx.user:
+    conn_data = await conn_storage.get(body.connection_id, ctx.group_id)
+    if conn_data is None and ctx.group_id != ctx.user:
         conn_data = await conn_storage.get(body.connection_id, ctx.user)
     if conn_data is None:
         raise APIError(400, "not_found", "Connection no encontrada", extra={"resource": "connection"})
@@ -501,7 +501,7 @@ async def try_agent(
             accessible.append(skill_id)
             continue
         priv = await skills_storage.get("private", skill_id)
-        if priv and priv.get("owner_id") == ctx.workspace_id:
+        if priv and priv.get("owner_id") == ctx.group_id:
             accessible.append(skill_id)
             continue
         if trial_missing_deps == "warn":

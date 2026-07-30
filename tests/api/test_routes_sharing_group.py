@@ -50,16 +50,16 @@ def test_shared_agent_appears_in_group_filter(client):
     agent = client.post("/api/agents", json={
         "name": "Agente filtro grupo", "system_prompt": "p", "model": "gpt-4o",
     }).json()
-    ws = client.post("/api/workspaces", json={"name": "Grupo Filtro"}).json()
-    client.post(f"/api/workspaces/{ws['id']}/members",
+    group = client.post("/api/groups", json={"name": "Grupo Filtro"}).json()
+    client.post(f"/api/groups/{group['id']}/members",
                 json={"username": "grp_member_1", "role": "member"})
 
     # Compartir el agente con el grupo
-    r = client.post(f"/api/sharing/agent/{agent['id']}", json={"group_id": ws["id"]})
+    r = client.post(f"/api/sharing/agent/{agent['id']}", json={"group_id": group["id"]})
     assert r.status_code == 200, r.text
 
     # El dueño puede consultarlo con filtro de grupo
-    result = client.get(f"/api/agents?group_id={ws['id']}").json()
+    result = client.get(f"/api/agents?group_id={group['id']}").json()
     assert any(a["id"] == agent["id"] for a in result), (
         "El agente compartido no aparece en GET /api/agents?group_id=..."
     )
@@ -79,13 +79,13 @@ def test_group_filter_excludes_unshared_agents(client):
     a_private = client.post("/api/agents", json={
         "name": "Privado", "system_prompt": "p", "model": "gpt-4o",
     }).json()
-    ws = client.post("/api/workspaces", json={"name": "Grupo Exclusion"}).json()
-    client.post(f"/api/workspaces/{ws['id']}/members",
+    group = client.post("/api/groups", json={"name": "Grupo Exclusion"}).json()
+    client.post(f"/api/groups/{group['id']}/members",
                 json={"username": "grp_member_2", "role": "member"})
 
-    client.post(f"/api/sharing/agent/{a_shared['id']}", json={"group_id": ws["id"]})
+    client.post(f"/api/sharing/agent/{a_shared['id']}", json={"group_id": group["id"]})
 
-    result = client.get(f"/api/agents?group_id={ws['id']}").json()
+    result = client.get(f"/api/agents?group_id={group['id']}").json()
     ids = {a["id"] for a in result}
     assert a_shared["id"] in ids, "El agente compartido debe aparecer"
     assert a_private["id"] not in ids, "El agente no compartido no debe aparecer"
@@ -108,14 +108,14 @@ def test_admin_group_filter_excludes_unshared_agents(client):
     a_private = client.post("/api/agents", json={
         "name": "Solo del dueño", "system_prompt": "p", "model": "gpt-4o",
     }).json()
-    ws = client.post("/api/workspaces", json={"name": "Grupo Admin Test"}).json()
-    client.post(f"/api/workspaces/{ws['id']}/members",
+    group = client.post("/api/groups", json={"name": "Grupo Admin Test"}).json()
+    client.post(f"/api/groups/{group['id']}/members",
                 json={"username": "grp_member_3", "role": "member"})
-    client.post(f"/api/sharing/agent/{a_shared['id']}", json={"group_id": ws["id"]})
+    client.post(f"/api/sharing/agent/{a_shared['id']}", json={"group_id": group["id"]})
 
     # El admin filtra por grupo — debe ver SOLO el compartido, no el privado del dueño
     _set_cookie(client, "grp_admin_3")
-    result = client.get(f"/api/agents?group_id={ws['id']}").json()
+    result = client.get(f"/api/agents?group_id={group['id']}").json()
     ids = {a["id"] for a in result}
     assert a_shared["id"] in ids, "El agente compartido debe aparecer para el admin"
     assert a_private["id"] not in ids, (
@@ -160,16 +160,16 @@ def test_admin_can_share_others_agent(client):
 
     # El admin crea un grupo y comparte el agente ajeno
     _set_cookie(client, "grp_admin_5")
-    ws = client.post("/api/workspaces", json={"name": "Grupo Admin"}).json()
-    client.post(f"/api/workspaces/{ws['id']}/members",
+    group = client.post("/api/groups", json={"name": "Grupo Admin"}).json()
+    client.post(f"/api/groups/{group['id']}/members",
                 json={"username": "grp_member_5", "role": "member"})
 
-    r = client.post(f"/api/sharing/agent/{agent['id']}", json={"group_id": ws["id"]})
+    r = client.post(f"/api/sharing/agent/{agent['id']}", json={"group_id": group["id"]})
     assert r.status_code == 200, f"Admin debería poder compartir: {r.text}"
 
     # El miembro puede ver el agente con filtro de grupo
     _set_cookie(client, "grp_member_5")
-    result = client.get(f"/api/agents?group_id={ws['id']}").json()
+    result = client.get(f"/api/agents?group_id={group['id']}").json()
     assert any(a["id"] == agent["id"] for a in result)
 
 
@@ -188,12 +188,12 @@ def test_cascade_shares_private_skills(client):
         "name": "Agente con skill", "system_prompt": "p", "model": "gpt-4o",
         "skills": [skill["id"]],
     }).json()
-    ws = client.post("/api/workspaces", json={"name": "Grupo Cascade Skills"}).json()
-    client.post(f"/api/workspaces/{ws['id']}/members",
+    group = client.post("/api/groups", json={"name": "Grupo Cascade Skills"}).json()
+    client.post(f"/api/groups/{group['id']}/members",
                 json={"username": "grp_member_6", "role": "member"})
 
     # Compartir el agente — debe hacer cascade en la skill privada
-    r = client.post(f"/api/sharing/agent/{agent['id']}", json={"group_id": ws["id"]})
+    r = client.post(f"/api/sharing/agent/{agent['id']}", json={"group_id": group["id"]})
     assert r.status_code == 200
     cascaded = r.json().get("cascaded", [])
     assert skill["id"] in cascaded, (
@@ -202,7 +202,7 @@ def test_cascade_shares_private_skills(client):
 
     # El miembro puede ver la skill con filtro de grupo
     _set_cookie(client, "grp_member_6")
-    skills = client.get(f"/api/skills?group_id={ws['id']}").json()
+    skills = client.get(f"/api/skills?group_id={group['id']}").json()
     assert any(s["id"] == skill["id"] for s in skills), (
         "La skill no aparece en el filtro de grupo tras el cascade"
     )
@@ -221,11 +221,11 @@ def test_cascade_shares_knowledge(client):
         "name": "Agente con knowledge", "system_prompt": "p", "model": "gpt-4o",
         "knowledge": [know["id"]],
     }).json()
-    ws = client.post("/api/workspaces", json={"name": "Grupo Cascade Know"}).json()
-    client.post(f"/api/workspaces/{ws['id']}/members",
+    group = client.post("/api/groups", json={"name": "Grupo Cascade Know"}).json()
+    client.post(f"/api/groups/{group['id']}/members",
                 json={"username": "grp_member_7", "role": "member"})
 
-    r = client.post(f"/api/sharing/agent/{agent['id']}", json={"group_id": ws["id"]})
+    r = client.post(f"/api/sharing/agent/{agent['id']}", json={"group_id": group["id"]})
     assert r.status_code == 200
     cascaded = r.json().get("cascaded", [])
     assert know["id"] in cascaded, (
@@ -234,7 +234,7 @@ def test_cascade_shares_knowledge(client):
 
     # El miembro puede ver el knowledge con filtro de grupo
     _set_cookie(client, "grp_member_7")
-    items = client.get(f"/api/knowledge?group_id={ws['id']}").json()
+    items = client.get(f"/api/knowledge?group_id={group['id']}").json()
     assert any(k["id"] == know["id"] for k in items), (
         "El knowledge no aparece en el filtro de grupo tras el cascade"
     )
@@ -277,9 +277,9 @@ def test_cascade_does_not_share_public_skills(client):
         "name": "Agente skill pública", "system_prompt": "p", "model": "gpt-4o",
         "skills": [skill_id],
     }).json()
-    ws = client.post("/api/workspaces", json={"name": "Grupo Cascade Publicas"}).json()
+    group = client.post("/api/groups", json={"name": "Grupo Cascade Publicas"}).json()
 
-    r = client.post(f"/api/sharing/agent/{agent['id']}", json={"group_id": ws["id"]})
+    r = client.post(f"/api/sharing/agent/{agent['id']}", json={"group_id": group["id"]})
     assert r.status_code == 200
     cascaded = r.json().get("cascaded", [])
     assert skill_id not in cascaded, (
@@ -301,9 +301,9 @@ def test_cascade_does_not_share_connections(client):
         "name": "Agente con conexion", "system_prompt": "p", "model": "gpt-4o",
         "connection_id": conn.get("id"),
     }).json()
-    ws = client.post("/api/workspaces", json={"name": "Grupo No Conn"}).json()
+    group = client.post("/api/groups", json={"name": "Grupo No Conn"}).json()
 
-    r = client.post(f"/api/sharing/agent/{agent['id']}", json={"group_id": ws["id"]})
+    r = client.post(f"/api/sharing/agent/{agent['id']}", json={"group_id": group["id"]})
     assert r.status_code == 200
     cascaded = r.json().get("cascaded", [])
     if conn.get("id"):
@@ -320,17 +320,17 @@ def test_list_groups_for_shared_resource(client):
     agent = client.post("/api/agents", json={
         "name": "Agente listar grupos", "system_prompt": "p", "model": "gpt-4o",
     }).json()
-    ws1 = client.post("/api/workspaces", json={"name": "Grupo Lista 1"}).json()
-    ws2 = client.post("/api/workspaces", json={"name": "Grupo Lista 2"}).json()
+    group1 = client.post("/api/groups", json={"name": "Grupo Lista 1"}).json()
+    group2 = client.post("/api/groups", json={"name": "Grupo Lista 2"}).json()
 
-    client.post(f"/api/sharing/agent/{agent['id']}", json={"group_id": ws1["id"]})
-    client.post(f"/api/sharing/agent/{agent['id']}", json={"group_id": ws2["id"]})
+    client.post(f"/api/sharing/agent/{agent['id']}", json={"group_id": group1["id"]})
+    client.post(f"/api/sharing/agent/{agent['id']}", json={"group_id": group2["id"]})
 
     r = client.get(f"/api/sharing/agent/{agent['id']}/groups")
     assert r.status_code == 200
     group_ids = set(r.json()["group_ids"])
-    assert ws1["id"] in group_ids
-    assert ws2["id"] in group_ids
+    assert group1["id"] in group_ids
+    assert group2["id"] in group_ids
 
 
 def test_list_groups_empty_when_not_shared(client):

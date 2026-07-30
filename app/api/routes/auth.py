@@ -24,8 +24,8 @@ from app.auth.auth import (
     consume_reset_token,
     create_password_reset_token,
     create_token,
-    decode_workspace_token_full,
-    get_owned_workspaces,
+    decode_group_token_full,
+    get_owned_groups,
     get_user_by_email,
     get_user_by_username,
     get_user_role,
@@ -72,11 +72,11 @@ from app.storage.tokens import (
 from app.storage.tokens import (
     parse_ts as _parse_ts,
 )
-from app.storage.workspaces import WorkspaceStorage as _WorkspaceStorage
+from app.storage.groups import GroupStorage as _GroupStorage
 from app.utils import flog
 from app.utils.net import client_ip as _client_ip
 
-_workspaces = _WorkspaceStorage(_DB_FILE)
+_groups = _GroupStorage(_DB_FILE)
 _tokens = _TokenStorage()
 
 # Regex estricta de email (RFC 5321): bloquea payloads XSS como x'><script>@a.com
@@ -163,14 +163,14 @@ async def _is_user_active(username: str) -> bool:
     return active
 
 
-class WorkspaceContext:
-    """Contexto de request con usuario y workspace activo."""
+class GroupContext:
+    """Contexto de request con usuario y group activo."""
 
-    __slots__ = ("user", "workspace_id")
+    __slots__ = ("user", "group_id")
 
-    def __init__(self, user: str, workspace_id: str) -> None:
+    def __init__(self, user: str, group_id: str) -> None:
         self.user = user
-        self.workspace_id = workspace_id
+        self.group_id = group_id
 
 
 def _bearer(authorization: str | None) -> str | None:
@@ -186,13 +186,13 @@ def _bearer(authorization: str | None) -> str | None:
 async def _identify(
     ga_token: str | None, authorization: str | None
 ) -> tuple[str, float | None, str | None]:
-    """Resuelve la credencial de la request → (username, issued_at, wid).
+    """Resuelve la credencial de la request → (username, issued_at, gid).
 
     Acepta dos credenciales, con la MISMA autoridad:
-      - Cookie `ga_token` (JWT): la sesión del navegador. `wid` sale del claim.
+      - Cookie `ga_token` (JWT): la sesión del navegador. `gid` sale del claim.
       - `Authorization: Bearer iah_...` (PAT): clientes no navegador (extensión
-        de VS Code, scripts). Un PAT no es un JWT y no lleva workspace dentro,
-        así que devuelve wid=None y quien llama lo saca de X-iAgents-Workspace.
+        de VS Code, scripts). Un PAT no es un JWT y no lleva group dentro,
+        así que devuelve gid=None y quien llama lo saca de X-iAgents-Group.
 
     `issued_at` unifica el `iat` del JWT y el `created_at` del PAT: ambos se
     contrastan igual contra password_changed_at.
@@ -209,10 +209,10 @@ async def _identify(
         return pat["username"], created.timestamp() if created else None, None
 
     if ga_token:
-        username, wid, token_iat = decode_workspace_token_full(ga_token)
+        username, gid, token_iat = decode_group_token_full(ga_token)
         if not username:
             raise APIError(401, "invalid_token", "Token inválido o expirado")
-        return username, token_iat, wid
+        return username, token_iat, gid
 
     raise APIError(401, "not_authenticated", "No autenticado")
 
@@ -252,35 +252,35 @@ async def require_auth(
     return username
 
 
-async def require_workspace(
+async def require_group(
     ga_token: str | None = Cookie(default=None),
     authorization: str | None = Header(default=None),
-    x_iagents_workspace: str | None = Header(default=None),
-) -> WorkspaceContext:
-    """Dependency: valida la credencial y resuelve el workspace activo.
+    x_iagents_group: str | None = Header(default=None),
+) -> GroupContext:
+    """Dependency: valida la credencial y resuelve el group activo.
 
-    El workspace sale del claim `wid` del JWT (navegador) o de la cabecera
-    `X-iAgents-Workspace` (Bearer). En ambos casos se valida igual: si el
-    workspace no existe, está desactivado o el usuario ya no es miembro, se cae
-    al espacio personal (workspace_id = username).
+    El group sale del claim `gid` del JWT (navegador) o de la cabecera
+    `X-iAgents-Group` (Bearer). En ambos casos se valida igual: si el
+    group no existe, está desactivado o el usuario ya no es miembro, se cae
+    al espacio personal (group_id = username).
     """
-    username, issued_at, wid = await _identify(ga_token, authorization)
+    username, issued_at, gid = await _identify(ga_token, authorization)
     await _assert_account_ok(username, issued_at)
 
-    if wid is None:
-        wid = x_iagents_workspace
+    if gid is None:
+        gid = x_iagents_group
 
-    # Si el wid es distinto del username → validar workspace de equipo
-    if wid and wid != username:
-        ws = await _workspaces.get(wid)
+    # Si el gid es distinto del username → validar group de equipo
+    if gid and gid != username:
+        group = await _groups.get(gid)
         if (
-            ws
-            and ws.get("status", "active") == "active"
-            and await _workspaces.is_member(wid, username)
+            group
+            and group.get("status", "active") == "active"
+            and await _groups.is_member(gid, username)
         ):
-            return WorkspaceContext(user=username, workspace_id=wid)
-        # Workspace desactivado, eliminado o no miembro → espacio personal
-    return WorkspaceContext(user=username, workspace_id=username)
+            return GroupContext(user=username, group_id=gid)
+        # Group desactivado, eliminado o no miembro → espacio personal
+    return GroupContext(user=username, group_id=username)
 
 
 async def require_admin(username: str = Depends(require_auth)) -> str:
@@ -447,39 +447,39 @@ async def logout(response: Response) -> dict[str, Any]:
 
 @router.get("/me")
 async def me(
-    ctx: WorkspaceContext = Depends(require_workspace),  # noqa: B008
+    ctx: GroupContext = Depends(require_group),  # noqa: B008
 ) -> dict[str, Any]:
     from app.config.session import WEBMAIL_URL
     from app.storage.guest import is_guest
 
     username = ctx.user
-    workspace_id = ctx.workspace_id
+    group_id = ctx.group_id
 
     role = await get_user_role(username)
-    ws_name: str | None = None
+    group_name: str | None = None
     if is_guest(username):
         auth_method = "guest"
         user_row: dict[str, Any] = {}
     else:
         user_row = await get_user_by_username(username) or {}
         auth_method = user_row.get("provider") or "internal"
-        if workspace_id != username:
-            ws = await _workspaces.get(workspace_id)
-            ws_name = ws["name"] if ws else workspace_id
+        if group_id != username:
+            group = await _groups.get(group_id)
+            group_name = group["name"] if group else group_id
         else:
-            ws_name = user_row.get("display_name") or username
+            group_name = user_row.get("display_name") or username
 
     payload: dict[str, Any] = {
         "username": username,
         "role": role,
         "auth_method": auth_method,
-        "workspace_id": workspace_id,
-        "workspace_personal": workspace_id == username,
+        "group_id": group_id,
+        "group_personal": group_id == username,
     }
     if role == "admin" and WEBMAIL_URL:
         payload["webmail_url"] = WEBMAIL_URL
-    if ws_name is not None:
-        payload["workspace_name"] = ws_name
+    if group_name is not None:
+        payload["group_name"] = group_name
     return payload
 
 
@@ -570,13 +570,13 @@ async def get_deletion_status(username: str = Depends(require_auth)) -> dict[str
 async def request_account_deletion(
     username: str = Depends(require_auth),
 ) -> dict[str, Any]:
-    owned = await get_owned_workspaces(username)
+    owned = await get_owned_groups(username)
     if owned:
         raise APIError(
             409,
-            "owned_workspaces_exist",
-            "Transfiere o elimina tus workspaces antes de borrar la cuenta",
-            extra={"workspaces": owned},
+            "owned_groups_exist",
+            "Transfiere o elimina tus grupos antes de borrar la cuenta",
+            extra={"groups": owned},
         )
     await schedule_user_deletion(username)
     return {"ok": True, "message": "Cuenta programada para eliminación en 30 días"}

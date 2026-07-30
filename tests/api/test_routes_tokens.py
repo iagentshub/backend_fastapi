@@ -2,7 +2,7 @@
 
 El test que justifica todo el diseño es `test_paridad_cookie_bearer_*`: un PAT
 debe abrir exactamente las mismas puertas que la cookie de sesión, porque
-require_auth/require_workspace son las dos únicas funciones que leen la
+require_auth/require_group son las dos únicas funciones que leen la
 credencial y de ellas cuelgan los ~164 Depends() del resto de routers.
 """
 from __future__ import annotations
@@ -136,9 +136,9 @@ def test_paridad_cookie_bearer_en_me(client):
     assert r.json()["username"] == "pat_parity"
 
 
-def test_paridad_cookie_bearer_en_require_workspace(client):
-    """/api/agents cuelga de require_workspace, no de require_auth."""
-    _register(client, "pat_ws")
+def test_paridad_cookie_bearer_en_require_group(client):
+    """/api/agents cuelga de require_group, no de require_auth."""
+    _register(client, "pat_groups")
     token = _make_token(client)
 
     con_cookie = client.get("/api/agents")
@@ -279,14 +279,14 @@ def test_cuenta_desactivada_invalida_el_token(client):
     assert client.get("/api/auth/me", headers=_bearer(token)).status_code == 403
 
 
-# ── Cabecera X-iAgents-Workspace ──────────────────────────────────────────────
+# ── Cabecera X-iAgents-Group ──────────────────────────────────────────────
 
 
-def test_workspace_ajeno_cae_al_personal(client):
-    """El test de seguridad de la cabecera: pedir un workspace del que no eres
+def test_group_ajeno_cae_al_personal(client):
+    """El test de seguridad de la cabecera: pedir un group del que no eres
     miembro NO debe darte acceso a él."""
     _register(client, "pat_owner")
-    ws_id = client.post("/api/workspaces", json={"name": "Equipo privado"}).json()["id"]
+    group_id = client.post("/api/groups", json={"name": "Equipo privado"}).json()["id"]
 
     _register(client, "pat_intruso")
     token = _make_token(client)
@@ -294,72 +294,72 @@ def test_workspace_ajeno_cae_al_personal(client):
 
     r = client.get(
         "/api/agents",
-        headers={**_bearer(token), "X-iAgents-Workspace": ws_id},
+        headers={**_bearer(token), "X-iAgents-Group": group_id},
     )
-    # No es miembro → fallback al workspace personal, nunca 200 sobre el ajeno
+    # No es miembro → fallback al group personal, nunca 200 sobre el ajeno
     assert r.status_code == 200
 
-    from app.api.routes.auth import require_workspace
+    from app.api.routes.auth import require_group
 
     async def _ctx():
-        return await require_workspace(
+        return await require_group(
             ga_token=None,
             authorization=f"Bearer {token}",
-            x_iagents_workspace=ws_id,
+            x_iagents_group=group_id,
         )
 
     ctx = asyncio.run(_ctx())
-    assert ctx.workspace_id == "pat_intruso"  # el suyo, no el ajeno
+    assert ctx.group_id == "pat_intruso"  # el suyo, no el ajeno
 
 
-def test_workspace_inexistente_cae_al_personal(client):
-    _register(client, "pat_wsghost")
+def test_group_inexistente_cae_al_personal(client):
+    _register(client, "pat_groupghost")
     token = _make_token(client)
 
-    from app.api.routes.auth import require_workspace
+    from app.api.routes.auth import require_group
 
     async def _ctx():
-        return await require_workspace(
+        return await require_group(
             ga_token=None,
             authorization=f"Bearer {token}",
-            x_iagents_workspace="no-existe",
+            x_iagents_group="no-existe",
         )
 
     ctx = asyncio.run(_ctx())
-    assert ctx.workspace_id == "pat_wsghost"
+    assert ctx.group_id == "pat_groupghost"
 
 
-def test_workspace_propio_se_respeta(client):
-    _register(client, "pat_wsok")
-    ws_id = client.post("/api/workspaces", json={"name": "Mi equipo"}).json()["id"]
+def test_group_propio_se_respeta(client):
+    _register(client, "pat_groupok")
+    group_id = client.post("/api/groups", json={"name": "Mi equipo"}).json()["id"]
     token = _make_token(client)
 
-    from app.api.routes.auth import require_workspace
+    from app.api.routes.auth import require_group
 
     async def _ctx():
-        return await require_workspace(
+        return await require_group(
             ga_token=None,
             authorization=f"Bearer {token}",
-            x_iagents_workspace=ws_id,
+            x_iagents_group=group_id,
         )
 
     ctx = asyncio.run(_ctx())
-    assert ctx.workspace_id == ws_id
+    assert ctx.group_id == group_id
 
 
-def test_sin_cabecera_usa_el_workspace_personal(client):
-    _register(client, "pat_wsdefault")
+def test_sin_cabecera_usa_el_group_personal(client):
+    _register(client, "pat_groupdefault")
     token = _make_token(client)
 
-    from app.api.routes.auth import require_workspace
+    from app.api.routes.auth import require_group
 
     async def _ctx():
-        return await require_workspace(
-            ga_token=None, authorization=f"Bearer {token}", x_iagents_workspace=None
+        return await require_group(
+            ga_token=None, authorization=f"Bearer {token}", x_iagents_group=None
         )
 
     ctx = asyncio.run(_ctx())
-    assert ctx.workspace_id == "pat_wsdefault"
+    assert ctx.group_id == "pat_groupdefault"
 
 
 def test_invitado_no_puede_crear_tokens(client):

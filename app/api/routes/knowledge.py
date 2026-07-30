@@ -9,7 +9,7 @@ from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Query, Request, UploadFile
 
-from app.api.routes.auth import WorkspaceContext, require_workspace
+from app.api.routes.auth import GroupContext, require_group
 from app.auth.auth import get_user_role
 from app.config.data import AGENTS_DIR, DB_FILE
 from app.errors import APIError
@@ -21,22 +21,22 @@ from app.storage.knowledge import (
     fetch_url_text,
 )
 from app.storage.storage import AgentStorage
-from app.storage.workspace_shares import WorkspaceShareStorage
-from app.storage.workspaces import WorkspaceStorage
+from app.storage.group_shares import GroupShareStorage
+from app.storage.groups import GroupStorage
 
 router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
 
 _storage = KnowledgeStorage(DB_FILE)
 _agents = AgentStorage(AGENTS_DIR)
-_shares = WorkspaceShareStorage(DB_FILE)
-_ws = WorkspaceStorage(DB_FILE)
+_shares = GroupShareStorage(DB_FILE)
+_groups = GroupStorage(DB_FILE)
 _folders = FolderStorage()
 
 _ALLOWED_EXTS = {".txt", ".md", ".pdf"}
 
 
-async def _owner(user: str, workspace_id: str) -> Optional[str]:
-    return None if await get_user_role(user) == "admin" else workspace_id
+async def _owner(user: str, group_id: str) -> Optional[str]:
+    return None if await get_user_role(user) == "admin" else group_id
 
 
 def _guest_item(*, type: str, title: str, source: str, content: str) -> Dict[str, Any]:
@@ -59,15 +59,14 @@ def _guest_item(*, type: str, title: str, source: str, content: str) -> Dict[str
 @router.get("", response_model=List[Dict[str, Any]])
 async def list_items(
     type: Optional[str] = None,
-    owner_scope: str = "workspace",
-    group_id: Optional[str] = None,
+    owner_scope: str = "group",
+    requested_group_id: Optional[str] = Query(None, alias="group_id"),
     limit: int = Query(0, ge=0, description="Máx. items. 0 = sin límite"),
     offset: int = Query(0, ge=0),
-    ctx: WorkspaceContext = Depends(require_workspace),
+    ctx: GroupContext = Depends(require_group),
 ) -> List[Dict[str, Any]]:
-    user, workspace_id = ctx.user, ctx.workspace_id
-    if owner_scope == "personal":
-        workspace_id = user
+    user = ctx.user
+    owner_id = user if owner_scope == "personal" else ctx.group_id
     if is_guest(user):
         items = get_session(user).knowledge
         filtered = [i for i in items if not type or i["type"] == type]
@@ -77,12 +76,14 @@ async def list_items(
             filtered = filtered[:limit]
         return filtered
     role = await get_user_role(user)
-    if group_id is not None:
+    if requested_group_id is not None:
         # Filtro por grupo: se aplica siempre, incluido admin
-        if role != "admin" and not await _ws.can_access(group_id, user):
+        if role != "admin" and not await _groups.can_access(requested_group_id, user):
             raise APIError(403, "forbidden", "Sin acceso a este grupo")
         shared_ids = set(
-            await _shares.get_workspace_shared_resource_ids(group_id, "knowledge")
+            await _shares.get_group_shared_resource_ids(
+                requested_group_id, "knowledge"
+            )
         )
         items: List[Dict[str, Any]] = []
         for kid in shared_ids:
@@ -90,23 +91,23 @@ async def list_items(
             if (
                 k
                 and (not type or k.get("type") == type)
-                and await _ws.owner_is_active(k.get("owner_id") or "")
+                and await _groups.owner_is_active(k.get("owner_id") or "")
             ):
                 k["_shared"] = True
-                k["_group_id"] = group_id
+                k["_group_id"] = requested_group_id
                 items.append(k)
     else:
         # (incluye admin: la visibilidad global de admin se sirve vía /api/admin/*,
         # listar por owner_id=None aquí exponía knowledge privado de otros usuarios
         # sin marcarlo como ajeno)
-        items = await _storage.list(workspace_id, type)
+        items = await _storage.list(owner_id, type)
         own_ids = {i["id"] for i in items}
         # Acumula shares de todos los grupos del usuario
-        user_groups = await _ws.list_for_user(user)
+        user_groups = await _groups.list_for_user(user)
         shared_map: Dict[str, str] = {}  # resource_id -> group_id
         for group in user_groups:
             gid = group["id"]
-            for rid in await _shares.get_workspace_shared_resource_ids(
+            for rid in await _shares.get_group_shared_resource_ids(
                 gid, "knowledge"
             ):
                 if rid not in shared_map:
@@ -118,32 +119,33 @@ async def list_items(
                 if (
                     k
                     and (not type or k.get("type") == type)
-                    and await _ws.owner_is_active(k.get("owner_id") or "")
+                    and await _groups.owner_is_active(k.get("owner_id") or "")
                 ):
                     k["_shared"] = True
                     k["_group_id"] = gid
                     extra.append(k)
         items = items + extra
-    if ctx.workspace_id != user and role != "admin":
+    permission_group_id = requested_group_id or ctx.group_id
+    if permission_group_id != user and role != "admin":
         items = [
             item for item in items
-            if await _ws.has_resource_permission(
-                ctx.workspace_id, user, "knowledge", item["id"], "view"
+            if await _groups.has_resource_permission(
+                permission_group_id, user, "knowledge", item["id"], "view"
             )
         ]
     if offset:
         items = items[offset:]
     if limit:
         items = items[:limit]
-    return await _folders.enrich_items(items, default_owner=workspace_id)
+    return await _folders.enrich_items(items, default_owner=owner_id)
 
 
 @router.post("/text")
 async def add_text(
     request: Request,
-    ctx: WorkspaceContext = Depends(require_workspace),
+    ctx: GroupContext = Depends(require_group),
 ) -> Dict[str, Any]:
-    user, workspace_id = ctx.user, ctx.workspace_id
+    user, group_id = ctx.user, ctx.group_id
     body = await request.json()
     title = str(body.get("title") or "").strip()
     content = str(body.get("content") or "").strip()
@@ -156,7 +158,7 @@ async def add_text(
         item = _guest_item(type="text", title=title, source=source, content=content)
         get_session(user).knowledge.append(item)
         return item
-    owner = await _owner(user, workspace_id) or workspace_id
+    owner = await _owner(user, group_id) or group_id
     return await _storage.save(
         type="text", title=title, source=source, content=content, owner_id=owner
     )
@@ -165,9 +167,9 @@ async def add_text(
 @router.post("/url")
 async def add_url(
     request: Request,
-    ctx: WorkspaceContext = Depends(require_workspace),
+    ctx: GroupContext = Depends(require_group),
 ) -> Dict[str, Any]:
-    user, workspace_id = ctx.user, ctx.workspace_id
+    user, group_id = ctx.user, ctx.group_id
     body = await request.json()
     url = str(body.get("url") or "").strip()
     title = str(body.get("title") or "").strip() or url
@@ -187,7 +189,7 @@ async def add_url(
         item = _guest_item(type="url", title=title, source=url, content=content)
         get_session(user).knowledge.append(item)
         return item
-    owner = await _owner(user, workspace_id) or workspace_id
+    owner = await _owner(user, group_id) or group_id
     return await _storage.save(
         type="url", title=title, source=url, content=content, owner_id=owner
     )
@@ -196,9 +198,9 @@ async def add_url(
 @router.post("/document")
 async def upload_document(
     file: UploadFile = File(...),
-    ctx: WorkspaceContext = Depends(require_workspace),
+    ctx: GroupContext = Depends(require_group),
 ) -> Dict[str, Any]:
-    user, workspace_id = ctx.user, ctx.workspace_id
+    user, group_id = ctx.user, ctx.group_id
     filename = file.filename or "documento"
     ext = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     if ext not in _ALLOWED_EXTS:
@@ -234,7 +236,7 @@ async def upload_document(
         )
         get_session(user).knowledge.append(item)
         return item
-    owner = await _owner(user, workspace_id) or workspace_id
+    owner = await _owner(user, group_id) or group_id
     return await _storage.save(
         type="document",
         title=filename,
@@ -250,19 +252,19 @@ async def upload_document(
 @router.get("/folders")
 async def list_folders(
     section: str = Query(...),
-    ctx: WorkspaceContext = Depends(require_workspace),
+    ctx: GroupContext = Depends(require_group),
 ) -> List[Dict[str, Any]]:
     if section not in VALID_SECTIONS:
         raise APIError(422, "invalid_field", "Sección de carpeta no válida", extra={"field": "section"})
     if is_guest(ctx.user):
         return []
-    return await _folders.list(ctx.workspace_id, section)
+    return await _folders.list(ctx.group_id, section)
 
 
 @router.post("/folders")
 async def create_folder(
     request: Request,
-    ctx: WorkspaceContext = Depends(require_workspace),
+    ctx: GroupContext = Depends(require_group),
 ) -> Dict[str, Any]:
     if is_guest(ctx.user):
         raise APIError(403, "forbidden", "Los invitados no pueden crear carpetas")
@@ -272,7 +274,7 @@ async def create_folder(
     if section not in VALID_SECTIONS or not name:
         raise APIError(422, "folder_fields_required", "Sección y nombre son obligatorios")
     try:
-        return await _folders.create(ctx.workspace_id, section, name[:80])
+        return await _folders.create(ctx.group_id, section, name[:80])
     except Exception as exc:
         if "unique" in str(exc).lower():
             raise APIError(
@@ -286,7 +288,7 @@ async def create_folder(
 async def update_folder(
     folder_id: str,
     request: Request,
-    ctx: WorkspaceContext = Depends(require_workspace),
+    ctx: GroupContext = Depends(require_group),
 ) -> Dict[str, Any]:
     body = await request.json()
     name = body.get("name")
@@ -294,7 +296,7 @@ async def update_folder(
         name = str(name).strip()[:80]
         if not name:
             raise APIError(422, "invalid_field", "Nombre obligatorio", extra={"field": "name"})
-    folder = await _folders.update(folder_id, ctx.workspace_id, name=name)
+    folder = await _folders.update(folder_id, ctx.group_id, name=name)
     if not folder:
         raise APIError(404, "not_found", "Carpeta no encontrada", extra={"resource": "folder"})
     return folder
@@ -304,9 +306,9 @@ async def update_folder(
 async def delete_folder(
     folder_id: str,
     cascade: bool = Query(False),
-    ctx: WorkspaceContext = Depends(require_workspace),
+    ctx: GroupContext = Depends(require_group),
 ) -> Dict[str, bool]:
-    if not await _folders.delete(folder_id, ctx.workspace_id, cascade):
+    if not await _folders.delete(folder_id, ctx.group_id, cascade):
         raise APIError(404, "not_found", "Carpeta no encontrada", extra={"resource": "folder"})
     return {"ok": True}
 
@@ -315,15 +317,15 @@ async def delete_folder(
 async def update_item_folder(
     item_id: str,
     request: Request,
-    ctx: WorkspaceContext = Depends(require_workspace),
+    ctx: GroupContext = Depends(require_group),
 ) -> Dict[str, Any]:
-    item = await _storage.get(item_id, await _owner(ctx.user, ctx.workspace_id))
+    item = await _storage.get(item_id, await _owner(ctx.user, ctx.group_id))
     if not item:
         raise APIError(404, "not_found", "Item no encontrado", extra={"resource": "item"})
     body = await request.json()
     try:
         await _folders.assign(
-            ctx.workspace_id, str(item.get("type") or "document"), item_id,
+            ctx.group_id, str(item.get("type") or "document"), item_id,
             str(body["folder_id"]) if body.get("folder_id") else None,
         )
     except ValueError as exc:
@@ -331,7 +333,7 @@ async def update_item_folder(
     return {
         **item,
         "folder_id": await _folders.folder_for(
-            ctx.workspace_id, str(item.get("type") or "document"), item_id
+            ctx.group_id, str(item.get("type") or "document"), item_id
         ),
     }
 
@@ -339,9 +341,9 @@ async def update_item_folder(
 @router.delete("/{item_id}")
 async def delete_item(
     item_id: str,
-    ctx: WorkspaceContext = Depends(require_workspace),
+    ctx: GroupContext = Depends(require_group),
 ) -> Dict[str, bool]:
-    user, workspace_id = ctx.user, ctx.workspace_id
+    user, group_id = ctx.user, ctx.group_id
     if is_guest(user):
         s = get_session(user)
         before = len(s.knowledge)
@@ -349,12 +351,12 @@ async def delete_item(
         if len(s.knowledge) == before:
             raise APIError(404, "not_found", "Item no encontrado", extra={"resource": "item"})
         return {"ok": True}
-    owner = await _owner(user, workspace_id)
+    owner = await _owner(user, group_id)
     item = await _storage.get(item_id, owner)
     if not item or not await _storage.delete(item_id, owner):
         raise APIError(404, "not_found", "Item no encontrado", extra={"resource": "item"})
     await _folders.remove_resource(
-        str(item.get("owner_id") or workspace_id),
+        str(item.get("owner_id") or group_id),
         str(item.get("type") or "document"),
         item_id,
     )

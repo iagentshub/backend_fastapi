@@ -15,7 +15,7 @@ from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from app.api.routes.auth import WorkspaceContext, require_auth, require_workspace
+from app.api.routes.auth import GroupContext, require_auth, require_group
 from app.auth.auth import get_user_role
 from app.config.data import AGENTS_DIR, DB_FILE, MEMORY_DIR, SKILLS_DIR
 from app.config.session import RATE_CHAT_CALLS, RATE_CHAT_WINDOW
@@ -41,8 +41,8 @@ from app.storage.storage import (
     MemoryStorage,
     SkillStorage,
 )
-from app.storage.workspace_shares import WorkspaceShareStorage
-from app.storage.workspaces import WorkspaceStorage
+from app.storage.group_shares import GroupShareStorage
+from app.storage.groups import GroupStorage
 from app.utils.origin import compute_origin_type
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
@@ -51,8 +51,8 @@ _agents = AgentStorage(AGENTS_DIR)
 _conns = ConnectionStorage(DB_FILE)
 _skills = SkillStorage(SKILLS_DIR)
 _memory = MemoryStorage(MEMORY_DIR)
-_shares = WorkspaceShareStorage(DB_FILE)
-_ws = WorkspaceStorage(DB_FILE)
+_shares = GroupShareStorage(DB_FILE)
+_groups = GroupStorage(DB_FILE)
 _chat = ChatStorage(DB_FILE)
 _knowledge = KnowledgeStorage(DB_FILE)
 _folders = FolderStorage()
@@ -65,7 +65,7 @@ class _AgentPreferenceBody(BaseModel):
 
 
 async def _validate_resource_refs(
-    payload: Dict[str, Any], user: str, workspace_id: str
+    payload: Dict[str, Any], user: str, group_id: str
 ) -> None:
     """Rechaza IDs de skills/knowledge que el usuario no puede legítimamente
     usar (ni son suyos, públicos, ni están compartidos con él).
@@ -79,12 +79,12 @@ async def _validate_resource_refs(
         if not skill or skill.get("scope") == "public":
             continue
         if not await _shares.is_accessible(
-            _ws,
+            _groups,
             resource_type="skill",
             resource_id=sid,
             owner_id=skill.get("owner_id"),
             requester=user,
-            requester_workspace=workspace_id,
+            requester_group=group_id,
         ):
             raise APIError(
                 403,
@@ -97,12 +97,12 @@ async def _validate_resource_refs(
         if not item:
             continue
         if not await _shares.is_accessible(
-            _ws,
+            _groups,
             resource_type="knowledge",
             resource_id=kid,
             owner_id=item.get("owner_id"),
             requester=user,
-            requester_workspace=workspace_id,
+            requester_group=group_id,
         ):
             raise APIError(
                 403,
@@ -115,32 +115,32 @@ async def _validate_resource_refs(
 async def _assert_can_read_agent(
     agent_id: str,
     agent: Dict[str, Any],
-    ctx: WorkspaceContext,
+    ctx: GroupContext,
 ) -> None:
     """Lanza 403 si el usuario no tiene derecho de lectura sobre el agente.
 
     Acceso permitido cuando se cumple al menos una condición:
     - El agente es público (scope == "public")
-    - owner_id coincide con el usuario o con su workspace activo
+    - owner_id coincide con el usuario o con su group activo
     - El usuario tiene rol "admin"
-    - El agente está compartido con algún workspace al que pertenece el usuario
+    - El agente está compartido con algún group al que pertenece el usuario
     """
     if agent.get("scope") == "public":
         return
     user = ctx.user
-    workspace_id = ctx.workspace_id
+    group_id = ctx.group_id
     owner_id = agent.get("owner_id")
-    if owner_id in (user, workspace_id):
+    if owner_id in (user, group_id):
         return
     if await get_user_role(user) == "admin":
         return
-    # Comprobar shares activos con los workspaces del usuario
-    user_groups = await _ws.list_for_user(user)
+    # Comprobar shares activos con los groups del usuario
+    user_groups = await _groups.list_for_user(user)
     if user_groups:
         group_ids = [g["id"] for g in user_groups]
         results = await asyncio.gather(
             *[
-                _shares.get_workspace_shared_resource_ids(gid, "agent")
+                _shares.get_group_shared_resource_ids(gid, "agent")
                 for gid in group_ids
             ]
         )
@@ -192,11 +192,11 @@ def _apply_locale(agent: Dict[str, Any], locale: str) -> Dict[str, Any]:
 async def list_agents(
     scope: str = "all",
     label: Optional[str] = None,
-    owner_scope: str = "workspace",
+    owner_scope: str = "group",
     group_id: Optional[str] = None,
     limit: int = Query(0, ge=0, description="Máx. items. 0 = sin límite"),
     offset: int = Query(0, ge=0),
-    ctx: WorkspaceContext = Depends(require_workspace),
+    ctx: GroupContext = Depends(require_group),
 ) -> List[Dict[str, Any]]:
     _check_scope(scope)
     locale = get_locale()
@@ -222,35 +222,35 @@ async def list_agents(
     role = await get_user_role(user)
     if group_id is not None:
         # Filtro por grupo: se aplica siempre, incluido admin
-        if role != "admin" and not await _ws.can_access(group_id, user):
+        if role != "admin" and not await _groups.can_access(group_id, user):
             raise APIError(403, "forbidden", "Sin acceso a este grupo")
         shared_ids = set(
-            await _shares.get_workspace_shared_resource_ids(group_id, "agent")
+            await _shares.get_group_shared_resource_ids(group_id, "agent")
         )
         agents = [a for a in agents if a["id"] in shared_ids]
         for a in agents:
             a["_shared"] = True
             a["_group_id"] = group_id
     else:
-        # Vista por defecto: propios + recursos del workspace activo + compartidos
+        # Vista por defecto: propios + recursos del group activo + compartidos
         # (incluye admin: la visibilidad global de admin se sirve vía /api/admin/agents,
         # no filtrar aquí exponía agentes privados de otros usuarios sin marcar como ajenos)
-        # En workspace de equipo (workspace_id != user), owner_id puede ser el UUID del workspace.
-        workspace_id = ctx.workspace_id
+        # En group de equipo (group_id != user), owner_id puede ser el UUID del group.
+        group_id = ctx.group_id
         own = [
             a
             for a in agents
-            if a.get("owner_id") == user or a.get("owner_id") == workspace_id
+            if a.get("owner_id") == user or a.get("owner_id") == group_id
         ]
         own_ids = {a["id"] for a in own}
-        user_groups = await _ws.list_for_user(user)
+        user_groups = await _groups.list_for_user(user)
 
         # Paralelizar todas las queries de shares (una por grupo) en lugar de N+1 serial
         if user_groups:
             group_ids = [g["id"] for g in user_groups]
             results = await asyncio.gather(
                 *[
-                    _shares.get_workspace_shared_resource_ids(gid, "agent")
+                    _shares.get_group_shared_resource_ids(gid, "agent")
                     for gid in group_ids
                 ]
             )
@@ -271,7 +271,7 @@ async def list_agents(
         if extra_candidates:
             unique_owners = list({a.get("owner_id") or "" for a in extra_candidates})
             active_results = await asyncio.gather(
-                *[_ws.owner_is_active(oid) for oid in unique_owners]
+                *[_groups.owner_is_active(oid) for oid in unique_owners]
             )
             active_owners = {
                 oid for oid, ok in zip(unique_owners, active_results) if ok
@@ -288,11 +288,11 @@ async def list_agents(
         agents = own + extra
     if label:
         agents = [a for a in agents if label in (a.get("labels") or [])]
-    if ctx.workspace_id != user and role != "admin":
+    if ctx.group_id != user and role != "admin":
         agents = [
             agent for agent in agents
-            if await _ws.has_resource_permission(
-                ctx.workspace_id, user, "agents", agent["id"], "use"
+            if await _groups.has_resource_permission(
+                ctx.group_id, user, "agents", agent["id"], "use"
             )
         ]
     if offset:
@@ -300,7 +300,7 @@ async def list_agents(
     if limit:
         agents = agents[:limit]
     agents = await _folders.enrich_items(
-        agents, default_owner=ctx.workspace_id, resource_type="agents"
+        agents, default_owner=ctx.group_id, resource_type="agents"
     )
     enriched: List[Dict[str, Any]] = []
     for a in agents:
@@ -312,9 +312,9 @@ async def list_agents(
 
 @router.post("")
 async def save_agent(
-    request: Request, ctx: WorkspaceContext = Depends(require_workspace)
+    request: Request, ctx: GroupContext = Depends(require_group)
 ) -> Dict[str, Any]:
-    user, workspace_id = ctx.user, ctx.workspace_id
+    user, group_id = ctx.user, ctx.group_id
     payload = await request.json()
     scope = str(payload.pop("scope", "private") or "private")
     if scope not in ("public", "private"):
@@ -337,7 +337,7 @@ async def save_agent(
         if (
             existing
             and existing.get("owner_id") is not None
-            and existing.get("owner_id") != workspace_id
+            and existing.get("owner_id") != group_id
         ):
             if role != "admin":
                 raise APIError(
@@ -346,18 +346,18 @@ async def save_agent(
                     "Solo el propietario puede editar este agente",
                 )
     if role != "admin":
-        await _validate_resource_refs(payload, user, workspace_id)
+        await _validate_resource_refs(payload, user, group_id)
     try:
         folder_id = payload.pop("folder_id", None)
-        saved = await _agents.save(payload, scope, owner_id=workspace_id)
+        saved = await _agents.save(payload, scope, owner_id=group_id)
         if folder_id is not None:
             try:
-                await _folders.assign(workspace_id, "agents", saved["id"], folder_id or None)
+                await _folders.assign(group_id, "agents", saved["id"], folder_id or None)
             except ValueError as exc:
                 raise APIError(422, "folder_resource_mismatch", str(exc)) from exc
-        saved["folder_id"] = await _folders.folder_for(workspace_id, "agents", saved["id"])
+        saved["folder_id"] = await _folders.folder_for(group_id, "agents", saved["id"])
         await _versions.create(
-            "agent", saved["id"], workspace_id, saved, user, reason="save"
+            "agent", saved["id"], group_id, saved, user, reason="save"
         )
         return saved
     except ValueError as e:
@@ -366,7 +366,7 @@ async def save_agent(
 
 @router.get("/{agent_id}")
 async def get_agent(
-    agent_id: str, ctx: WorkspaceContext = Depends(require_workspace)
+    agent_id: str, ctx: GroupContext = Depends(require_group)
 ) -> Dict[str, Any]:
     user = ctx.user
     if is_guest(user):
@@ -383,30 +383,30 @@ async def get_agent(
     if not a:
         raise APIError(404, "not_found", "Agente no encontrado", extra={"resource": "agent"})
     await _assert_can_read_agent(agent_id, a, ctx)
-    if not await _ws.has_resource_permission(
-        ctx.workspace_id, user, "agents", agent_id, "use"
+    if not await _groups.has_resource_permission(
+        ctx.group_id, user, "agents", agent_id, "use"
     ):
         raise APIError(403, "forbidden", "Sin permiso para usar este agente")
     a = _apply_locale(a, get_locale())
     a["origin_type"] = compute_origin_type(a)
-    owner = str(a.get("owner_id") or ctx.workspace_id)
+    owner = str(a.get("owner_id") or ctx.group_id)
     a["folder_id"] = await _folders.folder_for(owner, "agents", agent_id)
     return a
 
 
 @router.patch("/{agent_id}/folder")
 async def move_agent_to_folder(
-    agent_id: str, request: Request, ctx: WorkspaceContext = Depends(require_workspace)
+    agent_id: str, request: Request, ctx: GroupContext = Depends(require_group)
 ) -> Dict[str, Any]:
     agent = await _agents.get(agent_id)
     if not agent:
         raise APIError(404, "not_found", "Agente no encontrado", extra={"resource": "agent"})
-    if await get_user_role(ctx.user) != "admin" and agent.get("owner_id") != ctx.workspace_id:
+    if await get_user_role(ctx.user) != "admin" and agent.get("owner_id") != ctx.group_id:
         raise APIError(403, "forbidden", "Solo el propietario puede mover el agente")
     body = await request.json()
     try:
         await _folders.assign(
-            ctx.workspace_id, "agents", agent_id,
+            ctx.group_id, "agents", agent_id,
             str(body["folder_id"]) if body.get("folder_id") else None,
         )
     except ValueError as exc:
@@ -416,9 +416,9 @@ async def move_agent_to_folder(
 
 @router.delete("/{agent_id}")
 async def delete_agent(
-    agent_id: str, ctx: WorkspaceContext = Depends(require_workspace)
+    agent_id: str, ctx: GroupContext = Depends(require_group)
 ) -> Dict[str, Any]:
-    user, workspace_id = ctx.user, ctx.workspace_id
+    user, group_id = ctx.user, ctx.group_id
     if is_guest(user):
         s = get_session(user)
         before = len(s.agents)
@@ -427,7 +427,7 @@ async def delete_agent(
             raise APIError(404, "not_found", "Agente no encontrado", extra={"resource": "agent"})
         return {"ok": True}
     a = await _agents.get(agent_id)
-    if a and await get_user_role(user) != "admin" and a.get("owner_id") != workspace_id:
+    if a and await get_user_role(user) != "admin" and a.get("owner_id") != group_id:
         raise APIError(403, "forbidden", "No tienes permiso para eliminar este agente")
     try:
         if not await _agents.delete(agent_id):
@@ -436,7 +436,7 @@ async def delete_agent(
         raise APIError(403, "agent_delete_forbidden", str(e))
     if a:
         await _folders.remove_resource(
-            str(a.get("owner_id") or workspace_id), "agents", agent_id
+            str(a.get("owner_id") or group_id), "agents", agent_id
         )
     return {"ok": True}
 
@@ -485,7 +485,7 @@ async def put_agent_preferences(
 
 @router.get("/{agent_id}/export/{fmt}")
 async def export_agent(
-    agent_id: str, fmt: str, ctx: WorkspaceContext = Depends(require_workspace)
+    agent_id: str, fmt: str, ctx: GroupContext = Depends(require_group)
 ) -> Response:
     """fmt: openai | claude | github | mcp"""
     user = ctx.user
@@ -660,10 +660,10 @@ async def export_agent(
 async def chat(
     agent_id: str,
     request: Request,
-    ctx: WorkspaceContext = Depends(require_workspace),
+    ctx: GroupContext = Depends(require_group),
     _rl: None = Depends(_chat_limiter),
 ) -> StreamingResponse:
-    user, workspace_id = ctx.user, ctx.workspace_id
+    user, group_id = ctx.user, ctx.group_id
     if is_guest(user):
         s = get_session(user)
         a = next(
@@ -705,11 +705,11 @@ async def chat(
 
     if (
         not is_guest(user)
-        and workspace_id != user
+        and group_id != user
         and role != "admin"
         and base_conn_id
-        and not await _ws.has_resource_permission(
-            workspace_id, user, "connections", base_conn_id, "via_agent"
+        and not await _groups.has_resource_permission(
+            group_id, user, "connections", base_conn_id, "via_agent"
         )
     ):
         raise APIError(
@@ -718,11 +718,11 @@ async def chat(
             "No tienes permiso para usar esta conexión mediante agentes",
         )
 
-    if not is_guest(user) and workspace_id != user and role != "admin":
+    if not is_guest(user) and group_id != user and role != "admin":
         for operation_connection_id in a.get("op_connections") or []:
             operation_connection_id = str(operation_connection_id).split("::", 1)[0]
-            if operation_connection_id and not await _ws.has_resource_permission(
-                workspace_id,
+            if operation_connection_id and not await _groups.has_resource_permission(
+                group_id,
                 user,
                 "connections",
                 operation_connection_id,
@@ -749,7 +749,7 @@ async def chat(
         else:
             from app.api.routes.connections import _get_conn_any
 
-            conn = await _get_conn_any(conn_id, user, workspace_id)
+            conn = await _get_conn_any(conn_id, user, group_id)
         memory_store = _memory
         knowledge_store = _knowledge
 

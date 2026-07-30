@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from app.api.routes.auth import WorkspaceContext, require_workspace
+from app.api.routes.auth import GroupContext, require_group
 from app.auth.auth import get_user_role
 from app.config.data import DB_FILE
 from app.config.providers import PROVIDER_DEFAULT_MODELS
@@ -27,12 +27,12 @@ from app.services.skill_builder import (
 )
 from app.storage.guest import get_session, is_guest
 from app.storage.storage import ConnectionStorage
-from app.storage.workspaces import WorkspaceStorage
+from app.storage.groups import GroupStorage
 
 router = APIRouter(prefix="/api/skill-builder", tags=["skill-builder"])
 logger = logging.getLogger(__name__)
 _conns = ConnectionStorage(DB_FILE)
-_workspaces = WorkspaceStorage(DB_FILE)
+_groups = GroupStorage(DB_FILE)
 
 
 class SkillBuilderChatBody(BaseModel):
@@ -48,9 +48,9 @@ def _sse(data: Dict[str, Any]) -> str:
 @router.post("/chat")
 async def builder_chat(
     body: SkillBuilderChatBody,
-    ctx: WorkspaceContext = Depends(require_workspace),
+    ctx: GroupContext = Depends(require_group),
 ) -> StreamingResponse:
-    user, workspace_id = ctx.user, ctx.workspace_id
+    user, group_id = ctx.user, ctx.group_id
     raw_conn_id = body.connection_id
     if "::" in raw_conn_id:
         conn_id, ollama_model = raw_conn_id.split("::", 1)
@@ -66,10 +66,10 @@ async def builder_chat(
     else:
         role = await get_user_role(user)
         if (
-            workspace_id != user
+            group_id != user
             and role != "admin"
-            and not await _workspaces.has_resource_permission(
-                workspace_id, user, "connections", conn_id, "direct"
+            and not await _groups.has_resource_permission(
+                group_id, user, "connections", conn_id, "direct"
             )
         ):
             raise HTTPException(
@@ -81,7 +81,7 @@ async def builder_chat(
         else:
             from app.api.routes.connections import _get_conn_any
 
-            conn = await _get_conn_any(conn_id, user, workspace_id)
+            conn = await _get_conn_any(conn_id, user, group_id)
 
     if conn and ollama_model:
         conn = {**conn, "model": ollama_model}

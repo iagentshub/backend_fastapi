@@ -64,12 +64,12 @@ def test_post_sharing_without_group_id_returns_400(client):
 def test_share_agent_with_group_success(client):
     _register("sh_owner_b")
     _set_cookie(client, "sh_owner_b")
-    ws = client.post("/api/workspaces", json={"name": "WS Compartir Agente"}).json()
+    group = client.post("/api/groups", json={"name": "Grupo Compartir Agente"}).json()
     agent = client.post("/api/agents", json={
         "name": "Agente a compartir", "system_prompt": "p", "model": "gpt-4o",
     }).json()
 
-    r = client.post(f"/api/sharing/agent/{agent['id']}", json={"group_id": ws["id"]})
+    r = client.post(f"/api/sharing/agent/{agent['id']}", json={"group_id": group["id"]})
     assert r.status_code == 200
     assert r.json()["ok"] is True
 
@@ -82,12 +82,12 @@ def test_share_agent_visible_to_group_member(client):
     agent = client.post("/api/agents", json={
         "name": "Agente compartido", "system_prompt": "p", "model": "gpt-4o",
     }).json()
-    ws = client.post("/api/workspaces", json={"name": "WS Visible"}).json()
-    client.post(f"/api/workspaces/{ws['id']}/members",
+    group = client.post("/api/groups", json={"name": "Grupo Visible"}).json()
+    client.post(f"/api/groups/{group['id']}/members",
                 json={"username": "sh_member_c", "role": "member"})
 
     # El dueño comparte el agente con el grupo (group_id en el body)
-    client.post(f"/api/sharing/agent/{agent['id']}", json={"group_id": ws["id"]})
+    client.post(f"/api/sharing/agent/{agent['id']}", json={"group_id": group["id"]})
 
     # El miembro puede ver el agente en su lista general (sin filtro de grupo)
     _set_cookie(client, "sh_member_c")
@@ -100,9 +100,9 @@ def test_share_agent_visible_to_group_member(client):
 def test_share_nonexistent_resource_returns_404(client):
     _register("sh_owner_d")
     _set_cookie(client, "sh_owner_d")
-    ws = client.post("/api/workspaces", json={"name": "WS D"}).json()
+    group = client.post("/api/groups", json={"name": "Grupo D"}).json()
     r = client.post("/api/sharing/agent/no-existe-este-agente",
-                    json={"group_id": ws["id"]})
+                    json={"group_id": group["id"]})
     assert r.status_code == 404
 
 
@@ -117,8 +117,8 @@ def test_share_resource_without_ownership_forbidden(client):
 
     # El intruso crea su propio grupo e intenta compartir el agente ajeno
     _set_cookie(client, "sh_bystander_e")
-    ws = client.post("/api/workspaces", json={"name": "WS Bystander"}).json()
-    r = client.post(f"/api/sharing/agent/{agent['id']}", json={"group_id": ws["id"]})
+    group = client.post("/api/groups", json={"name": "Grupo Bystander"}).json()
+    r = client.post(f"/api/sharing/agent/{agent['id']}", json={"group_id": group["id"]})
     assert r.status_code == 403
 
 
@@ -132,13 +132,13 @@ def test_unshare_agent_revokes_access(client):
     agent = client.post("/api/agents", json={
         "name": "Agente a revocar", "system_prompt": "p", "model": "gpt-4o",
     }).json()
-    ws = client.post("/api/workspaces", json={"name": "WS Revoke"}).json()
-    client.post(f"/api/workspaces/{ws['id']}/members",
+    group = client.post("/api/groups", json={"name": "Grupo Revoke"}).json()
+    client.post(f"/api/groups/{group['id']}/members",
                 json={"username": "sh_member_g", "role": "member"})
 
     # Compartir y luego dejar de compartir (group_id como query param en DELETE)
-    client.post(f"/api/sharing/agent/{agent['id']}", json={"group_id": ws["id"]})
-    r = client.delete(f"/api/sharing/agent/{agent['id']}?group_id={ws['id']}")
+    client.post(f"/api/sharing/agent/{agent['id']}", json={"group_id": group["id"]})
+    r = client.delete(f"/api/sharing/agent/{agent['id']}?group_id={group['id']}")
     assert r.status_code == 200
 
     # El miembro ya no debe ver el agente
@@ -155,11 +155,11 @@ def test_share_skill_with_group(client):
 
     _set_cookie(client, "sh_owner_h")
     skill = client.post("/api/skills/private", json={"name": "Skill H", "description": "d"}).json()
-    ws = client.post("/api/workspaces", json={"name": "WS Skill H"}).json()
-    client.post(f"/api/workspaces/{ws['id']}/members",
+    group = client.post("/api/groups", json={"name": "Grupo Skill H"}).json()
+    client.post(f"/api/groups/{group['id']}/members",
                 json={"username": "sh_member_h", "role": "member"})
 
-    r = client.post(f"/api/sharing/skill/{skill['id']}", json={"group_id": ws["id"]})
+    r = client.post(f"/api/sharing/skill/{skill['id']}", json={"group_id": group["id"]})
     assert r.status_code == 200
 
     # El dueño sigue viendo origin_type='owner' en su propia lista
@@ -183,11 +183,11 @@ def test_share_knowledge_with_group(client):
     know = client.post("/api/knowledge/text", json={
         "title": "Doc compartido", "content": "contenido",
     }).json()
-    ws = client.post("/api/workspaces", json={"name": "WS Know I"}).json()
-    client.post(f"/api/workspaces/{ws['id']}/members",
+    group = client.post("/api/groups", json={"name": "Grupo Know I"}).json()
+    client.post(f"/api/groups/{group['id']}/members",
                 json={"username": "sh_member_i", "role": "member"})
 
-    r = client.post(f"/api/sharing/knowledge/{know['id']}", json={"group_id": ws["id"]})
+    r = client.post(f"/api/sharing/knowledge/{know['id']}", json={"group_id": group["id"]})
     assert r.status_code == 200
 
     # El miembro ve el conocimiento compartido
@@ -219,17 +219,17 @@ def test_share_workflow_with_group(client):
             },
         },
     ).json()
-    workspace = client.post(
-        "/api/workspaces", json={"name": "Grupo de orquestación"}
+    group = client.post(
+        "/api/groups", json={"name": "Grupo de orquestación"}
     ).json()
     client.post(
-        f"/api/workspaces/{workspace['id']}/members",
+        f"/api/groups/{group['id']}/members",
         json={"username": "sh_workflow_member", "role": "member"},
     )
 
     shared = client.post(
         f"/api/sharing/workflow/{workflow['id']}",
-        json={"group_id": workspace["id"]},
+        json={"group_id": group["id"]},
     )
     assert shared.status_code == 200
     assert agent["id"] in shared.json()["cascaded"]

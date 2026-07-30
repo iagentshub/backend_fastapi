@@ -38,7 +38,7 @@ def test_list_accounts_requires_auth(client):
     assert r.status_code == 401
 
 
-def test_list_accounts_shows_linked_after_put(client):
+def test_list_accounts_shogroup_linked_after_put(client):
     """Después de vincular una cuenta, aparece en la lista sin api_key en claro."""
     _setup_user(client, "acclist2")
     r_put = client.put("/api/accounts/openai", json={"api_key": "sk-test-openai-123456"})

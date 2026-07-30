@@ -36,7 +36,7 @@ from app.api.routes import (
     skills,
     social,
     users,
-    workspaces,
+    groups,
 )
 from app.api.routes.admin import admin_router
 from app.api.routes.users import users_router
@@ -244,7 +244,7 @@ def create_app() -> FastAPI:
     app.include_router(knowledge.router)
     app.include_router(logs.router)
     app.include_router(sharing.router)
-    app.include_router(workspaces.router)
+    app.include_router(groups.router)
     app.include_router(billing.router)
     app.include_router(centinel.router)
     app.include_router(agent_builder.router)

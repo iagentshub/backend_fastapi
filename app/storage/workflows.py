@@ -113,7 +113,7 @@ class WorkflowStorage:
                 (workflow_id, owner_id),
             )
             await conn.execute(
-                "DELETE FROM resource_workspace_shares "
+                "DELETE FROM resource_group_shares "
                 "WHERE resource_type='workflow' AND resource_id=?",
                 (workflow_id,),
             )
@@ -131,7 +131,7 @@ class WorkflowStorage:
                 "DELETE FROM agent_workflows WHERE id=?", (workflow_id,)
             )
             await conn.execute(
-                "DELETE FROM resource_workspace_shares "
+                "DELETE FROM resource_group_shares "
                 "WHERE resource_type='workflow' AND resource_id=?",
                 (workflow_id,),
             )

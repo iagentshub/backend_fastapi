@@ -57,32 +57,32 @@ def test_agent_origin_type_owner(client):
 # ── origin_type: linked ───────────────────────────────────────────────────────
 
 def test_agent_origin_type_linked(client):
-    """Un agente compartido via workspace aparece con origin_type='linked'."""
+    """Un agente compartido via group aparece con origin_type='linked'."""
 
     _register("orig_linked_owner")
     _register("orig_linked_member")
 
-    # owner creates workspace and agent
+    # owner creates group and agent
     _set_cookie(client, "orig_linked_owner")
-    r_ws = client.post("/api/workspaces", json={"name": "Linked WS"})
-    assert r_ws.status_code == 200
-    ws_id = r_ws.json()["id"]
+    r_groups = client.post("/api/groups", json={"name": "Linked Grupo"})
+    assert r_groups.status_code == 200
+    group_id = r_groups.json()["id"]
 
     r_agent = client.post("/api/agents", json=_AGENT_PAYLOAD)
     assert r_agent.status_code == 200
     agent_id = r_agent.json()["id"]
 
-    # add member directly to workspace
+    # add member directly to group
     r_add = client.post(
-        f"/api/workspaces/{ws_id}/members",
+        f"/api/groups/{group_id}/members",
         json={"username": "orig_linked_member", "role": "member"},
     )
     assert r_add.status_code == 200
 
-    # owner shares the agent with the workspace (group_id = workspace id)
+    # owner shares the agent with the group (group_id = group id)
     r_share = client.post(
         f"/api/sharing/agent/{agent_id}",
-        json={"group_id": ws_id},
+        json={"group_id": group_id},
     )
     assert r_share.status_code == 200
 
