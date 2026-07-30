@@ -538,3 +538,97 @@ def test_chat_guest_agent_not_found(client):
     _setup_guest(client)
     r = client.post("/api/agents/ghost-guest-chat/chat", json={"messages": []})
     assert r.status_code == 404
+
+
+# ── save_agent rechaza skills/knowledge ajenos ────────────────────────────────
+# Sin esto, cualquiera puede adjuntar el ID de una skill/knowledge privados de
+# otro usuario a su propio agente y leer su contenido completo vía chat/export.
+
+def test_save_agent_rejects_foreign_private_skill(client):
+    victim = _register_and_login(client, "idor_skill_victim")
+    skill = client.post(
+        "/api/skills/private",
+        json={"name": "Victim Skill", "description": "d", "content": "secret content"},
+    ).json()
+
+    _register_and_login(client, "idor_skill_attacker")
+    r = client.post(
+        "/api/agents",
+        json={**_AGENT, "skills": [skill["id"]]},
+    )
+    assert r.status_code == 403
+
+
+def test_save_agent_rejects_foreign_private_knowledge(client):
+    _register_and_login(client, "idor_kn_victim")
+    item = client.post(
+        "/api/knowledge/text",
+        json={"title": "Victim Notes", "content": "secret notes"},
+    ).json()
+
+    _register_and_login(client, "idor_kn_attacker")
+    r = client.post(
+        "/api/agents",
+        json={**_AGENT, "knowledge": [item["id"]]},
+    )
+    assert r.status_code == 403
+
+
+def test_uncaught_valueerror_returns_generic_400_and_logs(client):
+    """El handler global de ValueError no debe filtrar el texto crudo de la
+    excepción al cliente, y sí debe loguearlo (antes se perdía el traceback
+    al convertirlo silenciosamente en un 400)."""
+    _register_and_login(client, "valueerror_handler_probe")
+    agent = _create_agent(client)
+
+    with patch(
+        "app.api.routes.agents.open_db",
+        side_effect=ValueError("boom: detalle interno de la ruta /users/x"),
+    ), patch("app.api.app.flog.error") as mock_error:
+        r = client.put(
+            f"/api/agents/{agent['id']}/preferences",
+            json={"connection_id": None},
+        )
+
+    assert r.status_code == 400
+    body = r.json()["detail"]
+    assert body["message"] == "Operación no válida"
+    assert "detalle interno" not in body["message"]
+    assert mock_error.called
+
+
+def test_save_agent_allows_own_private_skill(client):
+    _register_and_login(client, "idor_own_skill")
+    skill = client.post(
+        "/api/skills/private",
+        json={"name": "My Skill", "description": "d", "content": "c"},
+    ).json()
+    r = client.post("/api/agents", json={**_AGENT, "skills": [skill["id"]]})
+    assert r.status_code == 200
+
+
+def test_save_agent_allows_skill_shared_with_group(client):
+    from app.auth.auth import create_token, register_user
+
+    asyncio.run(register_user("idor_share_owner", "pass1234", email="idor_share_owner@cov.test"))
+    asyncio.run(register_user("idor_share_member", "pass1234", email="idor_share_member@cov.test"))
+
+    client.cookies.set("ga_token", create_token("idor_share_owner"))
+    skill = client.post(
+        "/api/skills/private",
+        json={"name": "Shared Skill", "description": "d", "content": "c"},
+    ).json()
+    ws = client.post("/api/workspaces", json={"name": "IDOR Test Group"}).json()
+    client.post(
+        f"/api/workspaces/{ws['id']}/members",
+        json={"username": "idor_share_member", "role": "member"},
+    )
+    r_share = client.post(
+        f"/api/sharing/skill/{skill['id']}",
+        json={"group_id": ws["id"]},
+    )
+    assert r_share.status_code == 200, r_share.text
+
+    client.cookies.set("ga_token", create_token("idor_share_member"))
+    r = client.post("/api/agents", json={**_AGENT, "skills": [skill["id"]]})
+    assert r.status_code == 200, r.text

@@ -239,7 +239,7 @@ def test_admin_patch_user_self_rejected(admin_client):
 def test_admin_patch_user_is_active_sends_notification(admin_client):
     """Cambiar is_active dispara send_account_status_email si el usuario tiene email."""
     _direct_register("patch_active_tgt")
-    with patch("app.api.routes.auth.send_account_status_email") as mock_email:
+    with patch("app.api.routes.admin.send_account_status_email") as mock_email:
         r = admin_client.patch("/api/admin/users/patch_active_tgt", json={"is_active": False})
     assert r.status_code == 200
     assert r.json()["ok"] is True

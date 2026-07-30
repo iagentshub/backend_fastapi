@@ -514,6 +514,19 @@ def test_admin_set_owner_unknown_user_returns_404(admin_client):
     assert r.status_code == 404
 
 
+def test_admin_set_owner_inactive_user_returns_400(admin_client):
+    _register("new_owner_a3")
+    admin_client.patch(
+        "/api/admin/users/new_owner_a3", json={"is_active": False}
+    )
+    created = admin_client.post("/api/agents", json=_AGENT_PAYLOAD).json()
+    r = admin_client.put(
+        f"/api/admin/resources/agent/{created['id']}/owner",
+        json={"owner_id": "new_owner_a3"},
+    )
+    assert r.status_code == 400
+
+
 def test_admin_set_owner_invalid_resource_type_returns_422(admin_client):
     _register("new_owner_a2")
     r = admin_client.put(

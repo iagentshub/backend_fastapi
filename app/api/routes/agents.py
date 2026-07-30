@@ -64,6 +64,54 @@ class _AgentPreferenceBody(BaseModel):
     connection_id: Optional[str] = None
 
 
+async def _validate_resource_refs(
+    payload: Dict[str, Any], user: str, workspace_id: str
+) -> None:
+    """Rechaza IDs de skills/knowledge que el usuario no puede legítimamente
+    usar (ni son suyos, públicos, ni están compartidos con él).
+
+    Sin esto, cualquiera puede adjuntar el ID de una skill o un knowledge
+    ajenos a su propio agente y leer su contenido completo vía chat o export
+    (mismo problema que ALTO-5/A1 en sharing.py, sin corregir aquí).
+    """
+    for sid in payload.get("skills") or []:
+        skill = await _skills.get_any(sid)
+        if not skill or skill.get("scope") == "public":
+            continue
+        if not await _shares.is_accessible(
+            _ws,
+            resource_type="skill",
+            resource_id=sid,
+            owner_id=skill.get("owner_id"),
+            requester=user,
+            requester_workspace=workspace_id,
+        ):
+            raise APIError(
+                403,
+                "forbidden",
+                "No tienes acceso a una de las skills indicadas",
+                extra={"resource": "skill", "id": sid},
+            )
+    for kid in payload.get("knowledge") or []:
+        item = await _knowledge.get(kid)
+        if not item:
+            continue
+        if not await _shares.is_accessible(
+            _ws,
+            resource_type="knowledge",
+            resource_id=kid,
+            owner_id=item.get("owner_id"),
+            requester=user,
+            requester_workspace=workspace_id,
+        ):
+            raise APIError(
+                403,
+                "forbidden",
+                "No tienes acceso a uno de los elementos de conocimiento indicados",
+                extra={"resource": "knowledge", "id": kid},
+            )
+
+
 async def _assert_can_read_agent(
     agent_id: str,
     agent: Dict[str, Any],
@@ -281,6 +329,7 @@ async def save_agent(
         s.agents = [a for a in s.agents if a.get("id") != agent["id"]]
         s.agents.append(agent)
         return agent
+    role = await get_user_role(user)
     # Restrict editing to owner: if payload has an existing ID owned by someone else, block it
     agent_id_in_payload = payload.get("id")
     if agent_id_in_payload:
@@ -290,13 +339,14 @@ async def save_agent(
             and existing.get("owner_id") is not None
             and existing.get("owner_id") != workspace_id
         ):
-            role = await get_user_role(user)
             if role != "admin":
                 raise APIError(
                     403,
                     "forbidden",
                     "Solo el propietario puede editar este agente",
                 )
+    if role != "admin":
+        await _validate_resource_refs(payload, user, workspace_id)
     try:
         folder_id = payload.pop("folder_id", None)
         saved = await _agents.save(payload, scope, owner_id=workspace_id)

@@ -303,7 +303,7 @@ def test_try_agente_publico_ok(client, monkeypatch):
         yield 'data: {"type":"chunk","content":"hola"}\n\n'
         yield 'data: {"type":"done"}\n\n'
 
-    monkeypatch.setattr("app.api.routes.social.stream_chat", _fake_stream)
+    monkeypatch.setattr("app.api.routes.resource_linking.stream_chat", _fake_stream)
 
     r = client.post(
         f"/api/agents/private/{agent_id}/try",

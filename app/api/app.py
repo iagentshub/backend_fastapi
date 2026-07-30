@@ -16,6 +16,7 @@ from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.api.routes import (
     accounts,
+    admin,
     agent_builder,
     agents,
     auth,
@@ -23,18 +24,22 @@ from app.api.routes import (
     centinel,
     chats,
     connections,
+    explore,
     knowledge,
     logs,
     memory,
+    resource_linking,
     resource_management,
     settings,
     sharing,
     skill_builder,
     skills,
+    social,
+    users,
     workspaces,
 )
-from app.api.routes.auth import admin_router, users_router
-from app.api.routes.social import router as social_router
+from app.api.routes.admin import admin_router
+from app.api.routes.users import users_router
 from app.auth.auth import ensure_admin_user, purge_expired_deletions
 from app.config import data as _cfg
 from app.config.cors import CORS_ORIGINS
@@ -204,15 +209,24 @@ def create_app() -> FastAPI:
 
     @app.exception_handler(ValueError)
     async def _value_error_handler(request, exc: ValueError):
-        # Red de seguridad: convierte los ValueError de validación que se
-        # escapan de una ruta (p. ej. una restricción de storage no capturada
-        # localmente) en un 400 con {code, message} en vez de un 500 opaco.
+        # Red de seguridad para ValueError que se escapan de una ruta sin
+        # captura local (siempre un bug, no validación de usuario — esa ya
+        # se convierte a APIError en cada endpoint). Se registra con
+        # traceback completo como antes (nivel error, no warning) para no
+        # perder visibilidad, y se devuelve un mensaje genérico al cliente
+        # en vez del texto crudo de la excepción, que puede contener detalle
+        # interno (rutas, nombres de columna, etc.) no pensado para salir de
+        # los logs del servidor.
+        flog.error(
+            f"ValueError no capturado en {request.method} {request.url.path}: {exc}",
+            exc_info=True,
+        )
         return JSONResponse(
             status_code=400,
             content={
                 "detail": {
                     "code": "invalid_operation",
-                    "message": str(exc) or "Operación no válida",
+                    "message": "Operación no válida",
                 }
             },
         )
@@ -236,7 +250,9 @@ def create_app() -> FastAPI:
     app.include_router(agent_builder.router)
     app.include_router(skill_builder.router)
     app.include_router(resource_management.router)
-    app.include_router(social_router)
+    app.include_router(social.router)
+    app.include_router(explore.router)
+    app.include_router(resource_linking.router)
 
     @app.get("/api/health", tags=["health"])
     async def _health():

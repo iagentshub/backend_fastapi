@@ -89,23 +89,37 @@ async def _get_conn_any(
     conn_id: str, user: str, workspace_id: str
 ) -> Dict[str, Any] | None:
     """Obtiene una conexión buscando en el workspace activo, el personal, y por último
-    entre las compartidas directamente con el workspace (referencia sin duplicar)."""
+    entre las compartidas directamente con el workspace (referencia sin duplicar).
+
+    Etiqueta el resultado con `owner_id` (y `_personal_key` en el caso del
+    fallback personal), igual que hace `_list_accessible`, para que quien la
+    reciba pueda distinguir "es mía" de "es del workspace/compartida" sin
+    tener que volver a consultar — sin esto, un check de permiso posterior
+    aplicado indiscriminadamente bloquea al propio dueño de su conexión
+    personal en cuanto el workspace activo no es el suyo."""
     conn = await _storage.get(conn_id, workspace_id)
-    if conn is None and workspace_id != user:
+    if conn is not None:
+        conn["owner_id"] = workspace_id
+        return conn
+    if workspace_id != user:
         conn = await _storage.get(conn_id, user)
-    if conn is None:
-        granted_ids = await _shares.get_workspace_shared_resource_ids(
-            workspace_id, "connection"
-        )
-        if conn_id in granted_ids:
-            async with open_db() as db:
-                owner_row = await db.fetchone(
-                    "SELECT owner_id FROM connections WHERE id = ?", (conn_id,)
-                )
-            if owner_row and await _ws.owner_is_active(owner_row[0]):
-                conn = await _storage.get(conn_id, None)
-                if conn is not None:
-                    conn["_shared"] = True
+        if conn is not None:
+            conn["owner_id"] = user
+            conn["_personal_key"] = True
+            return conn
+    granted_ids = await _shares.get_workspace_shared_resource_ids(
+        workspace_id, "connection"
+    )
+    if conn_id in granted_ids:
+        async with open_db() as db:
+            owner_row = await db.fetchone(
+                "SELECT owner_id FROM connections WHERE id = ?", (conn_id,)
+            )
+        if owner_row and await _ws.owner_is_active(owner_row[0]):
+            conn = await _storage.get(conn_id, None)
+            if conn is not None:
+                conn["owner_id"] = owner_row[0]
+                conn["_shared"] = True
     return conn
 
 
@@ -350,15 +364,23 @@ async def list_connections(
     non_ollama = [c for c in raw if c.get("type") != "ollama"]
     ollama_raw = [c for c in raw if c.get("type") == "ollama"]
     if workspace_id != user and not is_guest(user) and await get_user_role(user) != "admin":
+        # Las conexiones personales del usuario (incluidas aquí por
+        # _list_accessible como cortesía al estar en un workspace de equipo)
+        # no deben pasar por el permiso de RECURSO DE EQUIPO: son suyas,
+        # punto — si no, un usuario sin membresía "real" en el workspace
+        # activo (p. ej. justo tras cambiar de workspace) pierde el acceso a
+        # sus propias conexiones personales.
         non_ollama = [
             connection for connection in non_ollama
-            if await _ws.has_resource_permission(
+            if connection.get("owner_id") == user
+            or await _ws.has_resource_permission(
                 workspace_id, user, "connections", connection["id"], "direct"
             )
         ]
         ollama_raw = [
             connection for connection in ollama_raw
-            if await _ws.has_resource_permission(
+            if connection.get("owner_id") == user
+            or await _ws.has_resource_permission(
                 workspace_id, user, "connections", connection["id"], "direct"
             )
         ]
@@ -477,6 +499,7 @@ async def get_connection(
         workspace_id != user
         and not is_guest(user)
         and await get_user_role(user) != "admin"
+        and conn.get("owner_id") != user
         and not await _ws.has_resource_permission(
             workspace_id, user, "connections", conn_id, "direct"
         )
