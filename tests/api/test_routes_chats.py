@@ -66,6 +66,22 @@ def test_list_conversations_after_create(alice):
     assert len(r.json()) == 2
 
 
+def test_list_recent_conversations_across_agents(alice):
+    alice.post("/api/chats/agent-a", json={"title": "Primera"})
+    alice.post("/api/chats/agent-b", json={"title": "Segunda"})
+
+    r = alice.get("/api/chats/recent?limit=1")
+
+    assert r.status_code == 200
+    assert len(r.json()) == 1
+    assert r.json()[0]["agent_id"] == "agent-b"
+
+
+def test_list_recent_conversations_validates_limit(alice):
+    assert alice.get("/api/chats/recent?limit=0").status_code == 422
+    assert alice.get("/api/chats/recent?limit=51").status_code == 422
+
+
 # ── Mensajes ───────────────────────────────────────────────────────────────────
 
 def test_get_messages_empty(alice):

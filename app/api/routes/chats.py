@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request
 
 from app.api.routes.auth import require_auth
 from app.config.data import DB_FILE
@@ -13,6 +13,16 @@ from app.storage.guest import is_guest
 
 router = APIRouter(prefix="/api/chats", tags=["chats"])
 _chat = ChatStorage(DB_FILE)
+
+
+@router.get("/recent")
+async def list_recent_conversations(
+    limit: int = Query(default=8, ge=1, le=50),
+    user: str = Depends(require_auth),
+) -> List[Dict[str, Any]]:
+    if is_guest(user):
+        return []
+    return await _chat.list_recent_conversations(user, limit)
 
 
 @router.get("/{agent_id}")

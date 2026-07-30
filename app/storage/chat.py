@@ -27,6 +27,18 @@ class ChatStorage:
             )
             return [dict(r) for r in rows]
 
+    async def list_recent_conversations(
+        self, user_id: str, limit: int = 8
+    ) -> List[Dict[str, Any]]:
+        async with open_db() as conn:
+            rows = await conn.fetchall(
+                "SELECT id, user_id, agent_id, title, created_at, updated_at "
+                "FROM conversations WHERE user_id = ? "
+                "ORDER BY updated_at DESC LIMIT ?",
+                (user_id, limit),
+            )
+            return [dict(r) for r in rows]
+
     async def new_conversation(
         self, user_id: str, agent_id: str, title: str = ""
     ) -> Dict[str, Any]:

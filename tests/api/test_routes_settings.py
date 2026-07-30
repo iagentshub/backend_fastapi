@@ -143,6 +143,85 @@ def test_put_dashboard_layout_empty_list(client):
 
 
 # ---------------------------------------------------------------------------
+# Dashboard layout v2: instancias, tamaños y compatibilidad
+# ---------------------------------------------------------------------------
+
+
+def test_get_dashboard_layout_v2_default(client):
+    _auth_client(client)
+    r = client.get("/api/settings/dashboard-layout-v2")
+    assert r.status_code == 200
+    assert r.json() == {"version": 2, "items": None}
+
+
+def test_put_dashboard_layout_v2_persists_instances_and_legacy_layout(client):
+    _auth_client(client)
+    items = [
+        {
+            "id": "tokens-today",
+            "type": "token-kpi",
+            "size": "compact",
+            "config": {"period": "today"},
+        },
+        {
+            "id": "tokens-month",
+            "type": "token-kpi",
+            "size": "compact",
+            "config": {"period": "30d"},
+        },
+        {
+            "id": "actions",
+            "type": "quick-actions",
+            "size": "medium",
+            "config": {},
+        },
+    ]
+
+    saved = client.put(
+        "/api/settings/dashboard-layout-v2",
+        json={"version": 2, "items": items},
+    )
+    assert saved.status_code == 200
+    assert saved.json()["items"] == items
+
+    loaded = client.get("/api/settings/dashboard-layout-v2")
+    assert loaded.status_code == 200
+    assert loaded.json()["items"] == items
+
+    legacy = client.get("/api/settings/dashboard-layout")
+    assert legacy.status_code == 200
+    assert legacy.json()["layout"] == ["token-kpi", "quick-actions"]
+
+
+def test_put_dashboard_layout_v2_rejects_unknown_duplicate_and_bad_size(client):
+    _auth_client(client)
+    base = {
+        "id": "widget-1",
+        "type": "summary",
+        "size": "medium",
+        "config": {},
+    }
+
+    unknown = client.put(
+        "/api/settings/dashboard-layout-v2",
+        json={"version": 2, "items": [{**base, "type": "unknown"}]},
+    )
+    assert unknown.status_code == 422
+
+    duplicate = client.put(
+        "/api/settings/dashboard-layout-v2",
+        json={"version": 2, "items": [base, base]},
+    )
+    assert duplicate.status_code == 422
+
+    bad_size = client.put(
+        "/api/settings/dashboard-layout-v2",
+        json={"version": 2, "items": [{**base, "size": "gigantic"}]},
+    )
+    assert bad_size.status_code == 422
+
+
+# ---------------------------------------------------------------------------
 # GET /api/settings/dashboard-config
 # ---------------------------------------------------------------------------
 

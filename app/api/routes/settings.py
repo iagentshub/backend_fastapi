@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import json
-from typing import List, Optional
+from typing import Any, List, Literal, Optional
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, Field, model_validator
 
 from app.api.routes.auth import require_admin, require_auth
 from app.errors import APIError
@@ -17,7 +17,21 @@ router = APIRouter(prefix="/api/settings", tags=["settings"])
 
 _PUBLIC_KEYS = {"theme", "language"}
 _DEFAULTS = {"theme": "dark-red", "language": "es"}
-_KNOWN_WIDGETS = {"summary", "token-usage", "activity", "conn-status", "recent"}
+_KNOWN_WIDGETS = {
+    "summary",
+    "token-usage",
+    "activity",
+    "conn-status",
+    "recent",
+    "recent-conversations",
+    "composition",
+    "feed",
+    "quick-actions",
+    "token-kpi",
+    "recent-resources",
+    "agent-health",
+    "workspace",
+}
 
 VALID_THEMES = {
     "dark-red",
@@ -73,6 +87,28 @@ class DashboardLayoutUpdate(BaseModel):
 
 class DashboardConfigUpdate(BaseModel):
     config: dict
+
+
+class DashboardWidgetInstancePayload(BaseModel):
+    id: str = Field(min_length=1, max_length=80, pattern=r"^[a-zA-Z0-9_-]+$")
+    type: str
+    size: Literal["compact", "medium", "wide", "full"]
+    config: dict[str, Any] = Field(default_factory=dict)
+
+
+class DashboardLayoutV2Update(BaseModel):
+    version: Literal[2] = 2
+    items: list[DashboardWidgetInstancePayload] = Field(max_length=50)
+
+    @model_validator(mode="after")
+    def validate_items(self) -> "DashboardLayoutV2Update":
+        unknown = sorted({item.type for item in self.items} - _KNOWN_WIDGETS)
+        if unknown:
+            raise ValueError(f"Widgets desconocidos: {unknown}")
+        ids = [item.id for item in self.items]
+        if len(ids) != len(set(ids)):
+            raise ValueError("Los IDs de widget deben ser únicos")
+        return self
 
 
 @router.get("")
@@ -132,6 +168,31 @@ async def update_dashboard_layout(
     prefs["dashboard_layout"] = body.layout
     await _save_prefs(username, prefs)
     return {"layout": body.layout}
+
+
+@router.get("/dashboard-layout-v2")
+async def get_dashboard_layout_v2(username: str = Depends(require_auth)) -> dict:
+    prefs = await _get_prefs(username)
+    stored = prefs.get("dashboard_layout_v2")
+    if not isinstance(stored, dict) or stored.get("version") != 2:
+        return {"version": 2, "items": None}
+    return stored
+
+
+@router.put("/dashboard-layout-v2")
+async def update_dashboard_layout_v2(
+    body: DashboardLayoutV2Update,
+    username: str = Depends(require_auth),
+) -> dict:
+    payload = body.model_dump()
+    # Mantener el layout histórico sincronizado permite que clientes antiguos
+    # sigan abriendo una versión razonable del dashboard.
+    legacy_layout = list(dict.fromkeys(item.type for item in body.items))
+    prefs = await _get_prefs(username)
+    prefs["dashboard_layout_v2"] = payload
+    prefs["dashboard_layout"] = legacy_layout
+    await _save_prefs(username, prefs)
+    return payload
 
 
 @router.get("/dashboard-config")
