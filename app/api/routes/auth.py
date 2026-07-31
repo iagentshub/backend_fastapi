@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-import re
 import time
 from typing import Any
 from urllib.parse import urlencode, urlsplit
@@ -31,8 +30,6 @@ from app.auth.auth import (
     get_user_role,
     register_user_email,
     schedule_user_deletion,
-    send_reset_email,
-    send_verification_email,
     set_own_password,
     verify_email_token,
     verify_password_async,
@@ -55,7 +52,9 @@ from app.config.session import (
 )
 from app.errors import APIError
 from app.middleware.ratelimit import RateLimiter
+from app.services.email import send_reset_email, send_verification_email
 from app.storage.db import open_db
+from app.storage.groups import GroupStorage as _GroupStorage
 from app.storage.tokens import (
     DEFAULT_EXPIRY_DAYS,
     VALID_EXPIRY_DAYS,
@@ -72,27 +71,25 @@ from app.storage.tokens import (
 from app.storage.tokens import (
     parse_ts as _parse_ts,
 )
-from app.storage.groups import GroupStorage as _GroupStorage
 from app.utils import flog
 from app.utils.net import client_ip as _client_ip
+from app.utils.validation import is_valid_email
 
 _groups = _GroupStorage(_DB_FILE)
 _tokens = _TokenStorage()
-
-# Regex estricta de email (RFC 5321): bloquea payloads XSS como x'><script>@a.com
-_EMAIL_RE = re.compile(r"^[a-zA-Z0-9._%+\-]+@[a-zA-Z0-9.\-]+\.[a-zA-Z]{2,}$")
 
 
 def _public_base_url(request: Request) -> str:
     """URL base canónica para construir enlaces en emails.
 
     Usa GAIA_FRONTEND_URL si está configurada (evita Host Header Injection).
-    Solo recurre a request.base_url en entornos de desarrollo sin esa variable.
+    En desarrollo usa un origen local fijo; nunca confía en la cabecera Host.
     """
+    del request  # La firma sigue siendo cómoda para los handlers FastAPI.
     configured = os.getenv("GAIA_FRONTEND_URL", "").rstrip("/")
     if configured:
         return configured
-    return str(request.base_url).rstrip("/")
+    return "http://localhost:8007"
 _register_limiter = RateLimiter(
     calls=REGISTER_MAX, window=REGISTER_WINDOW, key_func=_client_ip
 )
@@ -308,7 +305,7 @@ async def register(request: Request, response: Response) -> dict[str, Any]:
     country = str(body.get("country") or "").strip() or None
     phone = str(body.get("phone") or "").strip() or None
 
-    if not email or not _EMAIL_RE.match(email):
+    if not email or not is_valid_email(email):
         raise APIError(400, "invalid_field", "Email inválido", extra={"field": "email"})
     if len(password) < 8:
         raise APIError(
@@ -490,7 +487,7 @@ async def forgot_password(
 ) -> dict[str, Any]:
     body = await request.json()
     email = str(body.get("email") or "").strip().lower()
-    if not email or not _EMAIL_RE.match(email):
+    if not email or not is_valid_email(email):
         raise APIError(400, "invalid_field", "Email inválido", extra={"field": "email"})
     token = await create_password_reset_token(email)
     if token:

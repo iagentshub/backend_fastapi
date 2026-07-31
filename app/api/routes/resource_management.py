@@ -13,11 +13,11 @@ from app.api.routes.auth import GroupContext, require_group
 from app.config.data import AGENTS_DIR, DB_FILE
 from app.services.workflow_runner import run_workflow
 from app.services.workflow_validator import validate_workflow
+from app.storage.group_shares import GroupShareStorage
+from app.storage.groups import GroupStorage
 from app.storage.resource_versions import ResourceVersionStorage
 from app.storage.storage import AgentStorage, SkillStorage
 from app.storage.workflows import WorkflowStorage
-from app.storage.group_shares import GroupShareStorage
-from app.storage.groups import GroupStorage
 from app.utils.origin import compute_origin_type
 
 router = APIRouter(prefix="/api", tags=["resource-management"])

@@ -13,6 +13,38 @@ def _direct_register(username: str, password: str = "pass1234", email: str = "")
     return create_token(username)
 
 
+def test_public_base_url_ignores_untrusted_host_header():
+    from starlette.requests import Request
+
+    from app.api.routes.auth import _public_base_url
+
+    request = Request(
+        {
+            "type": "http",
+            "method": "POST",
+            "path": "/api/auth/forgot-password",
+            "headers": [(b"host", b"attacker.example")],
+            "server": ("attacker.example", 443),
+            "scheme": "https",
+        }
+    )
+    with patch.dict("os.environ", {"GAIA_FRONTEND_URL": ""}):
+        assert _public_base_url(request) == "http://localhost:8007"
+
+
+def test_public_base_url_prefers_configured_frontend():
+    from starlette.requests import Request
+
+    from app.api.routes.auth import _public_base_url
+
+    request = Request({"type": "http", "headers": []})
+    with patch.dict(
+        "os.environ",
+        {"GAIA_FRONTEND_URL": "https://app.iagents.example/"},
+    ):
+        assert _public_base_url(request) == "https://app.iagents.example"
+
+
 # ── require_auth — token presente pero inválido (línea 73) ───────────────────
 
 def test_require_auth_invalid_token(client):

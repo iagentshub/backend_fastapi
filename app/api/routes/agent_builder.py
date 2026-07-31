@@ -27,9 +27,9 @@ from app.services.agent_builder import (
     should_force_ready,
 )
 from app.services.chat import stream_chat
+from app.storage.groups import GroupStorage
 from app.storage.guest import get_session, is_guest
 from app.storage.storage import ConnectionStorage
-from app.storage.groups import GroupStorage
 
 router = APIRouter(prefix="/api/agent-builder", tags=["agent-builder"])
 logger = logging.getLogger(__name__)

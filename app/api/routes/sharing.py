@@ -16,11 +16,11 @@ from app.auth.auth import get_user_role
 from app.config.data import DB_FILE
 from app.errors import APIError
 from app.storage.db import open_db
+from app.storage.group_shares import GroupShareStorage
+from app.storage.groups import GroupStorage
 from app.storage.knowledge import KnowledgeStorage
 from app.storage.storage import AgentStorage, SkillStorage
 from app.storage.workflows import WorkflowStorage
-from app.storage.group_shares import GroupShareStorage
-from app.storage.groups import GroupStorage
 
 router = APIRouter(prefix="/api/sharing", tags=["sharing"])
 

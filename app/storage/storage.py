@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 import re
 from datetime import date
@@ -14,6 +13,7 @@ import yaml
 
 from app.models.agent import Agent
 from app.storage.crypto import decrypt, encrypt
+from app.storage.migration import LegacyMigrationStorage
 from app.utils import flog
 from app.utils import now_iso as _now
 
@@ -60,17 +60,14 @@ def _slug(value: str) -> str:
 _ENCRYPTED_FIELDS = ("api_key", "password", "ssh_key")
 
 
-class ConnectionStorage:
+class ConnectionStorage(LegacyMigrationStorage):
     """DB-backed async connection storage."""
 
     def __init__(self, db_path: Path) -> None:
+        super().__init__()
         self._db_path = Path(db_path)  # informational only
-        self._migrated = False
-        self._migrate_lock: "asyncio.Lock | None" = (
-            None  # created lazily (needs running loop)
-        )
 
-    async def _migrate_json(self) -> None:
+    async def _migrate_legacy_data(self) -> None:
         """One-time import from connections.json if table is empty."""
         from app.config.data import DATA_DIR
         from app.storage.db import open_db
@@ -93,16 +90,6 @@ class ConnectionStorage:
                 old.rename(old.with_suffix(".migrated"))
             except Exception as exc:
                 flog.warning(f"[storage] Migración de connections.json fallida: {exc}")
-
-    async def _ensure_migrated(self) -> None:
-        if self._migrated:
-            return
-        if self._migrate_lock is None:
-            self._migrate_lock = asyncio.Lock()
-        async with self._migrate_lock:
-            if not self._migrated:
-                self._migrated = True
-                await self._migrate_json()
 
     async def _upsert(
         self, conn: Any, payload: Dict[str, Any], owner_id: str = "admin"
@@ -278,17 +265,16 @@ class ConnectionStorage:
 # DB-backed. owner_id='__public__' para agentes de sistema/públicos.
 
 
-class AgentStorage:
+class AgentStorage(LegacyMigrationStorage):
     """Async DB-backed agent storage (SQLite / PostgreSQL)."""
 
     def __init__(self, root_dir: Path) -> None:
+        super().__init__()
         self._root_dir = Path(root_dir)  # solo para la migración única desde ficheros
-        self._migrated = False
-        self._migrate_lock: "asyncio.Lock | None" = None
 
     # ── one-time file→DB migration ───────────────────────────────────────────
 
-    async def _migrate_files(self) -> None:
+    async def _migrate_legacy_data(self) -> None:
         from app.storage.db import open_db
 
         async with open_db() as conn:
@@ -319,16 +305,6 @@ class AgentStorage:
                     except Exception as exc:
                         flog.warning(f"[agents] Migración fallida {p}: {exc}")
             await conn.commit()
-
-    async def _ensure_migrated(self) -> None:
-        if self._migrated:
-            return
-        if self._migrate_lock is None:
-            self._migrate_lock = asyncio.Lock()
-        async with self._migrate_lock:
-            if not self._migrated:
-                self._migrated = True
-                await self._migrate_files()
 
     # ── internal helpers ─────────────────────────────────────────────────────
 
@@ -580,17 +556,16 @@ def _parse_skill_md(raw: str, default_id: str = "") -> Dict[str, Any]:
     return meta
 
 
-class SkillStorage:
+class SkillStorage(LegacyMigrationStorage):
     """Async DB-backed skill storage (SQLite / PostgreSQL)."""
 
     def __init__(self, root_dir: Path) -> None:
+        super().__init__()
         self._root_dir = Path(root_dir)  # solo para la migración única desde ficheros
-        self._migrated = False
-        self._migrate_lock: "asyncio.Lock | None" = None
 
     # ── one-time file→DB migration ───────────────────────────────────────────
 
-    async def _migrate_files(self) -> None:
+    async def _migrate_legacy_data(self) -> None:
         from app.storage.db import open_db
 
         async with open_db() as conn:
@@ -623,16 +598,6 @@ class SkillStorage:
                     except Exception as exc:
                         flog.warning(f"[skills] Migración fallida {p}: {exc}")
             await conn.commit()
-
-    async def _ensure_migrated(self) -> None:
-        if self._migrated:
-            return
-        if self._migrate_lock is None:
-            self._migrate_lock = asyncio.Lock()
-        async with self._migrate_lock:
-            if not self._migrated:
-                self._migrated = True
-                await self._migrate_files()
 
     # ── internal helpers ─────────────────────────────────────────────────────
 
@@ -828,17 +793,16 @@ def _safe_mem_id(filename: str) -> str:
     return name or "memory"
 
 
-class MemoryStorage:
+class MemoryStorage(LegacyMigrationStorage):
     """Async DB-backed memory storage (SQLite / PostgreSQL)."""
 
     def __init__(self, root_dir: Path) -> None:
+        super().__init__()
         self._root_dir = Path(root_dir)  # solo para la migración única desde ficheros
-        self._migrated = False
-        self._migrate_lock: "asyncio.Lock | None" = None
 
     # ── one-time file→DB migration ───────────────────────────────────────────
 
-    async def _migrate_files(self) -> None:
+    async def _migrate_legacy_data(self) -> None:
         from app.storage.db import open_db
 
         async with open_db() as conn:
@@ -861,16 +825,6 @@ class MemoryStorage:
                 except Exception as exc:
                     flog.warning(f"[memory] Migración fallida {p}: {exc}")
             await conn.commit()
-
-    async def _ensure_migrated(self) -> None:
-        if self._migrated:
-            return
-        if self._migrate_lock is None:
-            self._migrate_lock = asyncio.Lock()
-        async with self._migrate_lock:
-            if not self._migrated:
-                self._migrated = True
-                await self._migrate_files()
 
     # ── public API ───────────────────────────────────────────────────────────
 

@@ -5,6 +5,7 @@ import json
 import urllib.error
 from unittest.mock import MagicMock, patch
 
+from app.connections.base import TestResult as _TestResult
 from app.connections.nvidia import NvidiaProvider
 
 
@@ -31,17 +32,23 @@ def test_test_success():
 
 
 def test_test_uses_configured_model():
-    """El test debe usar el modelo configurado, no el hardcoded, para validar que funciona."""
-    captured = []
+    """El modelo configurado se valida en el catálogo sin generar una respuesta lenta."""
+    configured_model = "meta/llama-3.3-70b-instruct"
 
-    def fake_urlopen(req, timeout):
-        captured.append(json.loads(req.data.decode()))
-        return _mock_response({})
+    with (
+        patch.object(
+            NvidiaProvider,
+            "_probe_auth",
+            return_value=_TestResult(True, "OK"),
+        ),
+        patch.object(NvidiaProvider, "_model_available", return_value=True) as available,
+    ):
+        result = NvidiaProvider.test(
+            {"api_key": "nvapi-fake", "model": configured_model}
+        )
 
-    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
-        NvidiaProvider.test({"api_key": "nvapi-fake", "model": "meta/llama-3.3-70b-instruct"})
-
-    assert captured[0]["model"] == "meta/llama-3.3-70b-instruct"
+    assert result.ok is True
+    available.assert_called_once_with("nvapi-fake", configured_model)
 
 
 def test_test_auth_error():

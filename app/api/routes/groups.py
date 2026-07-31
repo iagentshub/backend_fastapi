@@ -10,8 +10,8 @@ from app.auth.auth import create_token, get_user_by_username, get_user_role
 from app.config.data import DB_FILE
 from app.config.session import SECURE_COOKIES
 from app.errors import APIError
-from app.storage.guest import is_guest
 from app.storage.groups import GroupStorage
+from app.storage.guest import is_guest
 
 router = APIRouter(prefix="/api/groups", tags=["groups"])
 

@@ -4,19 +4,14 @@ from __future__ import annotations
 
 import asyncio
 import os
-import time
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from jose import jwt as _jwt
-from starlette.middleware.base import BaseHTTPMiddleware
-from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.api.routes import (
     accounts,
-    admin,
     agent_builder,
     agents,
     auth,
@@ -25,6 +20,7 @@ from app.api.routes import (
     chats,
     connections,
     explore,
+    groups,
     knowledge,
     logs,
     memory,
@@ -35,116 +31,23 @@ from app.api.routes import (
     skill_builder,
     skills,
     social,
-    users,
-    groups,
 )
 from app.api.routes.admin import admin_router
 from app.api.routes.users import users_router
 from app.auth.auth import ensure_admin_user, purge_expired_deletions
 from app.config import data as _cfg
 from app.config.cors import CORS_ORIGINS
-from app.config.session import BODY_MAX_BYTES as _BODY_MAX_BYTES
+from app.middleware.body_limit import BodySizeLimitMiddleware
 from app.middleware.licenses import LicenseGateMiddleware
 from app.middleware.locale import LocaleMiddleware
+from app.middleware.request_logging import RequestLoggerMiddleware
 from app.middleware.security import SecurityHeadersMiddleware
 from app.storage.db import close_db_pool, init_db, open_db
 from app.utils import flog
-from app.utils.net import client_ip as _client_ip_util
 
 _docs_url = (
     "/docs" if os.getenv("GAIA_DEV_MODE", "").lower() in ("1", "true", "yes") else None
 )
-
-
-class _BodySizeLimitMiddleware:
-    """Middleware ASGI puro que limita el tamaño real del body (no solo Content-Length).
-
-    A diferencia de BaseHTTPMiddleware, envuelve el callable `receive` del protocolo
-    ASGI y cuenta los bytes reales según llegan, lo que impide el bypass vía
-    Content-Length declarado falso sin romper endpoints SSE/streaming.
-    """
-
-    def __init__(self, app: ASGIApp) -> None:
-        self.app = app
-
-    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
-        if scope["type"] != "http":
-            await self.app(scope, receive, send)
-            return
-
-        # Rechazo rápido por Content-Length declarado (evita leer el body innecesariamente)
-        headers = {k.lower(): v for k, v in scope.get("headers", [])}
-        cl_raw = headers.get(b"content-length")
-        if cl_raw:
-            try:
-                if int(cl_raw) > _BODY_MAX_BYTES:
-                    response = JSONResponse(
-                        {
-                            "detail": {
-                                "code": "payload_too_large",
-                                "message": "Payload demasiado grande (máx. 2 MB)",
-                            }
-                        },
-                        status_code=413,
-                    )
-                    await response(scope, receive, send)
-                    return
-            except (ValueError, OverflowError):
-                pass
-
-        # Envolver receive para contar bytes reales chunk a chunk
-        total_bytes = 0
-        limit_exceeded = False
-
-        async def limited_receive() -> dict:
-            nonlocal total_bytes, limit_exceeded
-            message = await receive()
-            if message.get("type") == "http.request":
-                chunk = message.get("body", b"")
-                total_bytes += len(chunk)
-                if total_bytes > _BODY_MAX_BYTES:
-                    limit_exceeded = True
-                    # Sustituir el body por vacío para que FastAPI no lo procese
-                    return {"type": "http.request", "body": b"", "more_body": False}
-            return message
-
-        await self.app(scope, limited_receive, send)
-
-        # Si se superó el límite durante la lectura, el handler ya habrá respondido
-        # o el error será capturado por FastAPI. El flag queda para depuración.
-
-
-class _RequestLogger(BaseHTTPMiddleware):
-    async def dispatch(self, request, call_next):
-        t0 = time.perf_counter()
-        response = await call_next(request)
-        ms = (time.perf_counter() - t0) * 1000
-
-        # A3: usar client_ip() para respetar TRUSTED_PROXIES y evitar log injection
-        ip = _client_ip_util(request) or "-"
-
-        # Extraer usuario del JWT
-        username = "-"
-        try:
-            token = request.cookies.get("ga_token", "")
-            if token:
-                payload = _jwt.get_unverified_claims(token)
-                username = payload.get("sub") or payload.get("username") or "-"
-            elif request.cookies.get("ga_guest"):
-                username = "guest"
-        except Exception:
-            pass
-
-        msg = (
-            f"{request.method} {request.url.path} → {response.status_code} ({ms:.0f}ms)"
-        )
-        if response.status_code >= 500:
-            flog.error(msg, ip=ip, username=username)
-        elif response.status_code >= 400:
-            flog.warning(msg, ip=ip, username=username)
-        else:
-            flog.info(msg, ip=ip, username=username)
-        return response
 
 
 async def _gdpr_purge_loop() -> None:
@@ -175,14 +78,19 @@ async def _log_purge_loop() -> None:
 async def _lifespan(app: FastAPI):
     await init_db(_cfg.DB_FILE)
     await ensure_admin_user()
-    purge_task = asyncio.create_task(_gdpr_purge_loop())
-    log_purge_task = asyncio.create_task(_log_purge_loop())
+    tasks = (
+        asyncio.create_task(_gdpr_purge_loop(), name="gdpr-purge"),
+        asyncio.create_task(_log_purge_loop(), name="log-purge"),
+    )
     flog.ok("iAgents Hub arrancado")
-    yield
-    purge_task.cancel()
-    log_purge_task.cancel()
-    await close_db_pool()
-    flog.info("iAgents Hub detenido")
+    try:
+        yield
+    finally:
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+        await close_db_pool()
+        flog.info("iAgents Hub detenido")
 
 
 def create_app() -> FastAPI:
@@ -194,8 +102,8 @@ def create_app() -> FastAPI:
         lifespan=_lifespan,
     )
 
-    app.add_middleware(_RequestLogger)
-    app.add_middleware(_BodySizeLimitMiddleware)
+    app.add_middleware(RequestLoggerMiddleware)
+    app.add_middleware(BodySizeLimitMiddleware)
     app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(LocaleMiddleware)
     app.add_middleware(LicenseGateMiddleware)

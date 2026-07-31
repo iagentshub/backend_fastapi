@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 import os
@@ -20,6 +21,7 @@ from app.config.session import (
     JWT_SECRET_ENV,
     JWT_UNSAFE_SECRETS,
 )
+from app.services.email import send_deletion_scheduled_email
 from app.storage.db import IS_PG, open_db
 from app.utils import flog
 
@@ -61,6 +63,11 @@ def hash_password(plain: str) -> str:
     )
 
 
+async def hash_password_async(plain: str) -> str:
+    """Calcula bcrypt sin bloquear el event loop de FastAPI."""
+    return await asyncio.to_thread(hash_password, plain)
+
+
 def verify_password(plain: str, hashed: str) -> bool:
     try:
         return _bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
@@ -70,8 +77,6 @@ def verify_password(plain: str, hashed: str) -> bool:
 
 async def verify_password_async(plain: str, hashed: str) -> bool:
     """Wrapper no-bloqueante — delega bcrypt al thread pool."""
-    import asyncio
-
     return await asyncio.to_thread(verify_password, plain, hashed)
 
 
@@ -133,6 +138,7 @@ async def register_user(username: str, password: str, email: str = "") -> None:
     """Create a new local user. Raises ValueError if username or email already taken."""
     if not email:
         email = f"{username}@local"
+    password_hash = await hash_password_async(password)
     async with open_db() as conn:
         async with conn.transaction():
             if await conn.fetchone(
@@ -145,7 +151,7 @@ async def register_user(username: str, password: str, email: str = "") -> None:
             await conn.execute(
                 "INSERT INTO users (username, email, password_hash, role, is_active, created_at) "
                 "VALUES (?, ?, ?, ?, ?, ?)",
-                (username, email, hash_password(password), "standard", 1, now),
+                (username, email, password_hash, "standard", 1, now),
             )
     flog.ok(f"Nuevo usuario: {email}")
 
@@ -166,6 +172,7 @@ async def register_user_email(
     """
     username = email  # username IS the full email address
     token: Optional[str] = None
+    password_hash = await hash_password_async(password)
     async with open_db() as conn:
         async with conn.transaction():
             if await conn.fetchone("SELECT 1 FROM users WHERE email = ?", (email,)):
@@ -185,7 +192,7 @@ async def register_user_email(
                 (
                     username,
                     email,
-                    hash_password(password),
+                    password_hash,
                     display_name,
                     birth_date,
                     gender,
@@ -220,175 +227,6 @@ async def verify_email_token(token: str) -> Optional[str]:
         return username
 
 
-def _build_email_html(
-    title: str, heading: str, body_html: str, cta_url: str = "", cta_label: str = ""
-) -> str:
-    cta_block = ""
-    if cta_url and cta_label:
-        cta_block = (
-            f'<a href="{cta_url}" style="display:inline-block;background:#dc2626;color:#fff;text-decoration:none;'
-            f'padding:12px 28px;border-radius:8px;font-size:14px;font-weight:600">{cta_label}</a>'
-            f'<p style="margin:28px 0 0;font-size:11px;color:#555">O copia este enlace en tu navegador:<br>'
-            f'<span style="color:#888;word-break:break-all">{cta_url}</span></p>'
-        )
-    return f"""<!DOCTYPE html>
-<html lang="es">
-<head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"></head>
-<body style="margin:0;padding:0;background:#0f0f10;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif">
-  <table width="100%" cellpadding="0" cellspacing="0" style="background:#0f0f10;padding:40px 16px">
-    <tr><td align="center">
-      <table width="480" cellpadding="0" cellspacing="0" style="background:#1a1a1b;border-radius:12px;padding:40px 36px;max-width:480px">
-        <tr><td>
-          <p style="margin:0 0 4px;font-size:20px;font-weight:700;color:#fff">iAgents<span style="color:#dc2626">Hub</span></p>
-          <p style="margin:0 0 32px;font-size:13px;color:#666">{title}</p>
-          <h1 style="margin:0 0 12px;font-size:22px;font-weight:600;color:#e8e8e8">{heading}</h1>
-          <div style="font-size:14px;color:#aaa;line-height:1.6;margin-bottom:28px">{body_html}</div>
-          {cta_block}
-        </td></tr>
-      </table>
-    </td></tr>
-  </table>
-</body>
-</html>"""
-
-
-def _send_smtp(to: str, subject: str, html: str) -> None:
-    """Send an HTML email via the configured SMTP server. Runs synchronously."""
-    import smtplib
-    import threading
-    from email.mime.multipart import MIMEMultipart
-    from email.mime.text import MIMEText
-
-    from app.config.session import (
-        SMTP_FROM,
-        SMTP_HOST,
-        SMTP_PASS,
-        SMTP_PORT,
-        SMTP_TLS,
-        SMTP_USER,
-    )
-
-    if not SMTP_HOST:
-        return
-
-    msg = MIMEMultipart("alternative")
-    msg["Subject"] = subject
-    msg["From"] = SMTP_FROM or SMTP_USER
-    msg["To"] = to
-    msg.attach(MIMEText(html, "html", "utf-8"))
-
-    def _send() -> None:
-        try:
-            if SMTP_TLS == "ssl":
-                server = smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT, timeout=15)
-            else:
-                server = smtplib.SMTP(SMTP_HOST, SMTP_PORT, timeout=15)
-                if SMTP_TLS == "starttls":
-                    server.starttls()
-            if SMTP_USER and SMTP_PASS:
-                server.login(SMTP_USER, SMTP_PASS)
-            server.sendmail(msg["From"], [to], msg.as_string())
-            server.quit()
-            flog.ok(f"[email] Enviado a {to}: {subject}")
-        except Exception as exc:
-            flog.warning(f"[email] Error al enviar a {to}: {exc}")
-
-    threading.Thread(target=_send, daemon=True).start()
-
-
-def send_verification_email(email: str, token: str, base_url: str = "") -> None:
-    from app.config.session import SMTP_HOST
-
-    verify_url = f"{base_url}/verify/?token={token}"
-
-    if not SMTP_HOST:
-        flog.info(f"[email] SMTP no configurado — enlace de verificación: {verify_url}")
-        return
-
-    html = _build_email_html(
-        title="Verifica tu cuenta",
-        heading="Confirma tu dirección de email",
-        body_html="Haz clic en el botón para activar tu cuenta en iAgents Hub.<br>El enlace expira en <strong>24 horas</strong>.",
-        cta_url=verify_url,
-        cta_label="Verificar cuenta",
-    )
-    _send_smtp(email, "Verifica tu cuenta en iAgents Hub", html)
-
-
-def send_reset_email(email: str, token: str, base_url: str = "") -> None:
-    from app.config.session import SMTP_HOST
-
-    reset_url = f"{base_url}/reset-password/?token={token}"
-
-    if not SMTP_HOST:
-        flog.info(f"[email] SMTP no configurado — enlace de recuperación: {reset_url}")
-        return
-
-    html = _build_email_html(
-        title="Recuperar contraseña",
-        heading="Restablecer contraseña",
-        body_html="Recibimos una solicitud para restablecer la contraseña de tu cuenta.<br>El enlace expira en <strong>1 hora</strong>. Si no fuiste tú, ignora este mensaje.",
-        cta_url=reset_url,
-        cta_label="Restablecer contraseña",
-    )
-    _send_smtp(email, "Recupera el acceso a iAgents Hub", html)
-
-
-def send_deletion_scheduled_email(
-    email: str, cancel_token: str, deletion_at: str, base_url: str = ""
-) -> None:
-    from app.config.session import SMTP_HOST
-
-    cancel_url = f"{base_url}/profile/?deletion_token={cancel_token}"
-    try:
-        date_str = datetime.fromisoformat(deletion_at).strftime("%d/%m/%Y")
-    except Exception:
-        date_str = deletion_at[:10]
-
-    if not SMTP_HOST:
-        flog.info(f"[email] SMTP no configurado — enlace cancelación: {cancel_url}")
-        return
-
-    html = _build_email_html(
-        title="Eliminación de cuenta programada",
-        heading="Tu cuenta será eliminada el " + date_str,
-        body_html=(
-            "Hemos recibido una solicitud para eliminar tu cuenta de iAgents Hub.<br>"
-            f"Todos tus datos se borrarán permanentemente el <strong>{date_str}</strong>.<br><br>"
-            "Si cambiaste de opinión, cancela la eliminación antes de esa fecha."
-        ),
-        cta_url=cancel_url,
-        cta_label="Cancelar eliminación",
-    )
-    _send_smtp(email, "Eliminación de tu cuenta en iAgents Hub programada", html)
-
-
-def send_account_status_email(email: str, is_active: bool, base_url: str = "") -> None:
-    from app.config.session import SMTP_HOST
-
-    if not SMTP_HOST:
-        status = "reactivada" if is_active else "suspendida"
-        flog.info(f"[email] SMTP no configurado — cuenta {status}: {email}")
-        return
-
-    if is_active:
-        html = _build_email_html(
-            title="Estado de tu cuenta",
-            heading="Tu cuenta ha sido reactivada",
-            body_html="Un administrador ha reactivado tu acceso a iAgents Hub.<br>Ya puedes iniciar sesión con normalidad.",
-            cta_url=f"{base_url}/login/",
-            cta_label="Entrar",
-        )
-        _send_smtp(email, "Tu cuenta en iAgents Hub ha sido reactivada", html)
-    else:
-        html = _build_email_html(
-            title="Estado de tu cuenta",
-            heading="Tu cuenta ha sido suspendida",
-            body_html="Un administrador ha suspendido temporalmente tu acceso a iAgents Hub.<br>Si crees que es un error, contacta con el soporte.",
-        )
-        _send_smtp(email, "Tu cuenta en iAgents Hub ha sido suspendida", html)
-
-
 async def create_password_reset_token(email: str) -> Optional[str]:
     """Generate a reset token for the given email. Returns None if email not found."""
     from app.config.session import PASSWORD_RESET_EXPIRE_HOURS
@@ -412,31 +250,33 @@ async def create_password_reset_token(email: str) -> Optional[str]:
 
 async def consume_reset_token(token: str, new_password: str) -> bool:
     """Verify token, apply new password, and invalidate token. Returns False if invalid/expired."""
+    token_hash = _hash_token(token)
     async with open_db() as conn:
         row = await conn.fetchone(
-            "SELECT email, reset_token_expires FROM users WHERE reset_token = ?",
-            (_hash_token(token),),
+            "SELECT reset_token_expires FROM users WHERE reset_token = ?",
+            (token_hash,),
         )
         if not row:
             return False
-        email = row[0]
-        expires = row[1] or ""
+        expires = row[0] or ""
         if not expires or datetime.fromisoformat(expires) < datetime.now(timezone.utc):
             return False
-        row2 = await conn.fetchone(
-            "SELECT username FROM users WHERE email = ?", (email,)
-        )
-        await conn.execute(
+
+    password_hash = await hash_password_async(new_password)
+    now = datetime.now(timezone.utc).isoformat()
+    async with open_db() as conn, conn.transaction():
+        updated = await conn.fetchone(
             "UPDATE users SET password_hash = ?, reset_token = NULL, reset_token_expires = NULL "
-            "WHERE email = ?",
-            (hash_password(new_password), email),
+            "WHERE reset_token = ? AND reset_token_expires > ? "
+            "RETURNING username, email",
+            (password_hash, token_hash, now),
         )
-        # A2: invalidar tokens emitidos antes de este cambio de contraseña
-        if row2:
-            await _touch_password_changed_at(conn, row2[0])
-        await conn.commit()
-        flog.ok(f"[auth] Contraseña reseteada para {email}")
-        return True
+        if not updated:
+            return False
+        await _touch_password_changed_at(conn, updated[0])
+
+    flog.ok(f"[auth] Contraseña reseteada para {updated[1]}")
+    return True
 
 
 async def _touch_password_changed_at(conn: Any, username: str) -> None:
@@ -450,10 +290,11 @@ async def _touch_password_changed_at(conn: Any, username: str) -> None:
 
 async def set_own_password(username: str, new_password: str) -> None:
     """Actualiza el hash de contraseña de un usuario existente."""
+    password_hash = await hash_password_async(new_password)
     async with open_db() as conn:
         await conn.execute(
             "UPDATE users SET password_hash = ? WHERE username = ?",
-            (hash_password(new_password), username),
+            (password_hash, username),
         )
         await _touch_password_changed_at(conn, username)
         await conn.commit()
@@ -673,6 +514,7 @@ async def admin_update_user(username: str, **fields) -> bool:
 
 async def admin_set_password(username: str, new_password: str) -> bool:
     """Admin-only: set a new password for another user. Returns False if not found."""
+    password_hash = await hash_password_async(new_password)
     async with open_db() as conn:
         if not await conn.fetchone(
             "SELECT 1 FROM users WHERE username = ?", (username,)
@@ -680,7 +522,7 @@ async def admin_set_password(username: str, new_password: str) -> bool:
             return False
         await conn.execute(
             "UPDATE users SET password_hash = ? WHERE username = ?",
-            (hash_password(new_password), username),
+            (password_hash, username),
         )
         await _touch_password_changed_at(conn, username)  # A2
         await conn.commit()
@@ -854,9 +696,10 @@ async def ensure_admin_user() -> None:
 
             # reset_mode: cambiar contraseña de la cuenta con target_email
             password = secrets.token_urlsafe(12)
+            password_hash = await hash_password_async(password)
             await conn.execute(
                 "UPDATE users SET password_hash = ? WHERE email = ?",
-                (hash_password(password), target_email),
+                (password_hash, target_email),
             )
             await conn.commit()
             action = "contraseña reseteada"
@@ -869,6 +712,7 @@ async def ensure_admin_user() -> None:
                 return
 
             password = secrets.token_urlsafe(12)
+            password_hash = await hash_password_async(password)
             now = datetime.now(timezone.utc).isoformat()
             try:
                 await conn.execute(
@@ -878,7 +722,7 @@ async def ensure_admin_user() -> None:
                     (
                         target_email,
                         target_email,
-                        hash_password(password),
+                        password_hash,
                         "admin",
                         1,
                         1,

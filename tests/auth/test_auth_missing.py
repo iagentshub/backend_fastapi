@@ -25,6 +25,23 @@ def test_verify_password_async(patch_data_dir):
     assert result is True
 
 
+def test_hash_password_async_delegates_to_thread(monkeypatch):
+    from app.auth import auth
+
+    calls = []
+
+    async def fake_to_thread(func, *args):
+        calls.append((func, args))
+        return "threaded-hash"
+
+    monkeypatch.setattr(auth.asyncio, "to_thread", fake_to_thread)
+
+    result = asyncio.run(auth.hash_password_async("mi_clave"))
+
+    assert result == "threaded-hash"
+    assert calls == [(auth.hash_password, ("mi_clave",))]
+
+
 # ── _get_user_by — campo no permitido ─────────────────────────────────────────
 
 def test_get_user_by_invalid_field(patch_data_dir):
@@ -116,7 +133,7 @@ def test_admin_set_password_ok(patch_data_dir):
 # ── _build_email_html ─────────────────────────────────────────────────────────
 
 def test_build_email_html_sin_cta():
-    from app.auth.auth import _build_email_html
+    from app.services.email import _build_email_html
     html = _build_email_html("Título", "Encabezado", "<p>Cuerpo</p>")
     assert "Encabezado" in html
     assert "Cuerpo" in html
@@ -125,7 +142,7 @@ def test_build_email_html_sin_cta():
 
 
 def test_build_email_html_con_cta():
-    from app.auth.auth import _build_email_html
+    from app.services.email import _build_email_html
     html = _build_email_html("Título", "Encabezado", "<p>Cuerpo</p>", "https://example.com", "Acción")
     assert "https://example.com" in html
     assert "Acción" in html
@@ -137,10 +154,47 @@ def test_build_email_html_con_cta():
 def test_send_smtp_no_host():
     from unittest.mock import patch
 
-    from app.auth.auth import _send_smtp
+    from app.services.email import _send_smtp
     with patch("app.config.session.SMTP_HOST", ""):
         # Sin host → retorna sin enviar (no lanza)
         _send_smtp("a@b.com", "Asunto", "<p>test</p>")
+
+
+def test_missing_smtp_does_not_log_reset_token():
+    from unittest.mock import patch
+
+    from app.services import email as email_service
+
+    secret_token = "reset-token-muy-secreto"
+    with (
+        patch.object(email_service, "_smtp_available", return_value=False),
+        patch.object(email_service.flog, "warning") as warning,
+    ):
+        email_service.send_reset_email("a@b.com", secret_token, "https://app.test")
+
+    logged = " ".join(str(arg) for call in warning.call_args_list for arg in call.args)
+    assert secret_token not in logged
+    assert "https://app.test" not in logged
+
+
+def test_reset_token_is_atomic_under_concurrency(patch_data_dir):
+    from app.auth.auth import (
+        consume_reset_token,
+        create_password_reset_token,
+        register_user,
+    )
+
+    async def scenario():
+        await register_user("race_user", "old-password", email="race@test.com")
+        token = await create_password_reset_token("race@test.com")
+        assert token is not None
+        return await asyncio.gather(
+            consume_reset_token(token, "new-password-one"),
+            consume_reset_token(token, "new-password-two"),
+        )
+
+    results = asyncio.run(scenario())
+    assert sorted(results) == [False, True]
 
 
 # ── purge_user_data ────────────────────────────────────────────────────────────

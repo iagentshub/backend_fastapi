@@ -23,11 +23,11 @@ from app.connections import all_providers, get_provider
 from app.errors import APIError
 from app.middleware.ratelimit import RateLimiter
 from app.storage.db import IS_PG, open_db
+from app.storage.group_shares import GroupShareStorage
+from app.storage.groups import GroupStorage
 from app.storage.guest import get_session, is_guest
 from app.storage.knowledge import KnowledgeStorage
 from app.storage.storage import AgentStorage, ConnectionStorage, SkillStorage
-from app.storage.group_shares import GroupShareStorage
-from app.storage.groups import GroupStorage
 from app.utils.origin import compute_origin_type
 
 

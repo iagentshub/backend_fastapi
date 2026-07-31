@@ -12,11 +12,11 @@ from app.auth.auth import get_user_role
 from app.config.data import DB_FILE, SKILLS_DIR
 from app.errors import APIError
 from app.storage.folders import FolderStorage
+from app.storage.group_shares import GroupShareStorage
+from app.storage.groups import GroupStorage
 from app.storage.guest import get_session, is_guest
 from app.storage.resource_versions import ResourceVersionStorage
 from app.storage.storage import SkillStorage
-from app.storage.group_shares import GroupShareStorage
-from app.storage.groups import GroupStorage
 from app.utils.origin import compute_origin_type
 
 router = APIRouter(prefix="/api/skills", tags=["skills"])

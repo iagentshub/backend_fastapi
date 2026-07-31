@@ -54,6 +54,35 @@ def test_delete_nonexistent_user(admin_client):
     assert r.status_code == 404
 
 
+def test_create_user_rejects_invalid_email(admin_client):
+    response = admin_client.post(
+        "/api/admin/users",
+        json={"email": "invalid", "password": "pass1234"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["detail"] == {
+        "code": "invalid_field",
+        "message": "Email no válido",
+        "field": "email",
+    }
+
+
+def test_create_user_accepts_valid_email(admin_client):
+    response = admin_client.post(
+        "/api/admin/users",
+        json={"email": "created@example.com", "password": "pass1234"},
+    )
+
+    assert response.status_code == 200
+    assert response.json() == {
+        "ok": True,
+        "username": "created@example.com",
+        "email": "created@example.com",
+        "role": "standard",
+    }
+
+
 def _mock_tags_response(names):
     resp = MagicMock()
     resp.raise_for_status = lambda: None

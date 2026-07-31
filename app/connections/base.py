@@ -24,6 +24,8 @@ class FieldDef:
 
 @dataclass
 class TestResult:
+    __test__: ClassVar[bool] = False
+
     ok: bool
     message: str
     detail: str = ""

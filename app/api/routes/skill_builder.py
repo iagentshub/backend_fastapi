@@ -25,9 +25,9 @@ from app.services.skill_builder import (
     parse_builder_reply,
     should_force_ready,
 )
+from app.storage.groups import GroupStorage
 from app.storage.guest import get_session, is_guest
 from app.storage.storage import ConnectionStorage
-from app.storage.groups import GroupStorage
 
 router = APIRouter(prefix="/api/skill-builder", tags=["skill-builder"])
 logger = logging.getLogger(__name__)

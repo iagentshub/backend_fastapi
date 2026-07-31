@@ -13,16 +13,16 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Query
 
+import app.config.data as _cfg
 from app.api.routes.auth import require_auth
 from app.api.routes.social import _PUBLIC_VAL, _social_limiter
 from app.errors import APIError
-import app.config.data as _cfg
 from app.storage.db import IS_PG, open_db
+from app.storage.group_shares import GroupShareStorage
+from app.storage.groups import GroupStorage
 from app.storage.knowledge import KnowledgeStorage
 from app.storage.storage import AgentStorage, SkillStorage
 from app.storage.workflows import WorkflowStorage
-from app.storage.group_shares import GroupShareStorage
-from app.storage.groups import GroupStorage
 
 router = APIRouter(tags=["explore"])
 
@@ -59,7 +59,7 @@ async def explore(
             conditions.append(
                 "(" + " OR ".join(["labels LIKE ?"] * len(label)) + ")"
             )
-            params.extend(f'%"{l}"%' for l in label)
+            params.extend(f'%"{label_value}"%' for label_value in label)
         where = " AND ".join(conditions)
         params.extend([limit, offset])
         raw = await conn.fetchall(
@@ -422,5 +422,4 @@ async def get_feed(
             row["labels"] = ["private"]
         rows.append(row)
     return rows
-
 

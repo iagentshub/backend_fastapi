@@ -32,6 +32,9 @@ def test_blocks_over_limit():
     client.get("/test")
     r = client.get("/test")
     assert r.status_code == 429
+    assert r.json()["detail"]["code"] == "rate_limit_exceeded"
+    assert r.json()["detail"]["retry_after"] == 60
+    assert r.headers["retry-after"] == "60"
 
 
 def test_different_ips_independent(monkeypatch):
@@ -60,3 +63,12 @@ def test_different_ips_independent(monkeypatch):
     r2 = client.get("/test", headers={"x-forwarded-for": "5.6.7.8"})
     assert r2.status_code == 200
     assert call_count["n"] == 2
+
+
+def test_rejects_invalid_configuration():
+    for calls, window in ((0, 60), (1, 0), (-1, 60)):
+        try:
+            RateLimiter(calls=calls, window=window)
+        except ValueError:
+            continue
+        raise AssertionError("La configuración inválida debía rechazarse")

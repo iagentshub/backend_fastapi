@@ -27,19 +27,20 @@ from app.auth.auth import (
     create_token,
     delete_user,
     get_user_by_username,
-    hash_password,
+    hash_password_async,
     list_users,
-    send_account_status_email,
 )
 from app.config.data import AGENTS_DIR as _AGENTS_DIR
 from app.config.data import DB_FILE as _DB_FILE
 from app.config.session import SECURE_COOKIES
 from app.errors import APIError
+from app.services.email import send_account_status_email
 from app.storage.db import IS_PG, open_db
+from app.storage.groups import GroupStorage as _GroupStorage
 from app.storage.storage import AgentStorage as _AgentStorage
 from app.storage.workflows import WorkflowStorage as _WorkflowStorage
-from app.storage.groups import GroupStorage as _GroupStorage
 from app.utils import flog
+from app.utils.validation import is_valid_email
 
 _groups = _GroupStorage(_DB_FILE)
 _agents = _AgentStorage(_AGENTS_DIR)
@@ -542,7 +543,7 @@ async def admin_create_user(
 
     if not email:
         raise APIError(400, "email_required", "El email es obligatorio")
-    if not _EMAIL_RE.match(email):  # N1: misma regex estricta que en /register
+    if not is_valid_email(email):
         raise APIError(400, "invalid_field", "Email no válido", extra={"field": "email"})
     if not password:
         raise APIError(400, "password_required", "La contraseña es obligatoria")
@@ -556,6 +557,7 @@ async def admin_create_user(
 
     username = email  # username = email (igual que en el registro normal)
     now = datetime.now(_tz.utc).isoformat()
+    password_hash = await hash_password_async(password)
     try:
         async with open_db() as conn, conn.transaction():
             if await conn.fetchone("SELECT 1 FROM users WHERE email = ?", (email,)):
@@ -576,7 +578,7 @@ async def admin_create_user(
                 (
                     username,
                     email,
-                    hash_password(password),
+                    password_hash,
                     display_name or None,
                     role,
                     1,
@@ -584,7 +586,7 @@ async def admin_create_user(
                     now,
                 ),
             )
-    except HTTPException:
+    except APIError:
         raise
     except Exception as exc:
         raise APIError(500, "internal_error", "Error interno del servidor.") from exc

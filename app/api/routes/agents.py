@@ -27,6 +27,8 @@ from app.services.chat import stream_chat
 from app.storage.chat import ChatStorage
 from app.storage.db import IS_PG, PH, open_db
 from app.storage.folders import FolderStorage
+from app.storage.group_shares import GroupShareStorage
+from app.storage.groups import GroupStorage
 from app.storage.guest import (
     GuestKnowledgeAdapter,
     GuestMemoryAdapter,
@@ -41,8 +43,6 @@ from app.storage.storage import (
     MemoryStorage,
     SkillStorage,
 )
-from app.storage.group_shares import GroupShareStorage
-from app.storage.groups import GroupStorage
 from app.utils.origin import compute_origin_type
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])

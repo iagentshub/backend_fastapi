@@ -492,10 +492,10 @@ async def try_agent(
 
     # Step 4: Filter skills based on trial_missing_deps policy
     skills_storage = SkillStorage(_cfg.SKILLS_DIR)
-    warnings: List[str] = []
-    agent_skills: List[str] = list(agent_data.get("skills") or [])
+    warnings: list[str] = []
+    agent_skills: list[str] = list(agent_data.get("skills") or [])
 
-    accessible: List[str] = []
+    accessible: list[str] = []
     for skill_id in agent_skills:
         if await skills_storage.get("public", skill_id):
             accessible.append(skill_id)
@@ -509,7 +509,7 @@ async def try_agent(
     agent_data = {**agent_data, "skills": accessible}
 
     # Step 5: Stream chat and collect reply (no history saved)
-    reply_parts: List[str] = []
+    reply_parts: list[str] = []
     async for chunk in stream_chat(
         agent_data,
         conn_data,
@@ -527,4 +527,3 @@ async def try_agent(
                 pass
 
     return {"reply": "".join(reply_parts), "warnings": warnings}
-
