@@ -132,8 +132,10 @@ Las skills tienen tres estados de visibilidad: **pública** (accesible a todos),
 |---|---|---|
 | `GET` | `/api/skills` | Listar todas las skills disponibles (`?scope=all\|public\|private`); las skills compartidas con el usuario aparecen con `_shared: true` |
 | `GET` | `/api/skills/{scope}/{id}` | Obtener la definición de una skill concreta |
-| `POST` | `/api/skills/{scope}` | Guardar una skill (solo scope private); el campo `owner_id` se fija automáticamente al usuario autenticado |
-| `DELETE` | `/api/skills/{scope}/{id}` | Eliminar una skill (solo scope private) |
+| `POST` | `/api/skills/{scope}` | Guardar una skill propia con scope `private` o `public`; el campo `owner_id` se fija automáticamente al usuario autenticado |
+| `DELETE` | `/api/skills/{scope}/{id}` | Eliminar una skill propia; las skills públicas del sistema son de solo lectura |
+
+La categoría debe pertenecer al catálogo cerrado (`ai`, `messaging`, `notes`, `productivity`, `dev`, `security`, `media`, `data`, `company`). El editor no admite tags libres y las `labels` recibidas por API deben pertenecer al catálogo del sistema. Los invitados pueden consultar todas las skills públicas y crear skills privadas efímeras, aisladas en memoria durante su sesión; no pueden publicar ni persistirlas en la base de datos.
 
 ---
 

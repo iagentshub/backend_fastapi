@@ -1,11 +1,13 @@
 """Tests de skills: GET, POST, DELETE /api/skills."""
+
 from __future__ import annotations
+
+import asyncio
 
 _SKILL_PAYLOAD = {
     "name": "Test Skill",
     "description": "Una skill de prueba.",
     "content": "Este es el contenido de la skill.",
-    "tags": ["test"],
 }
 
 
@@ -21,6 +23,43 @@ def test_save_private_skill(admin_client):
     data = r.json()
     assert data["name"] == "Test Skill"
     assert "id" in data
+    assert "tags" not in data
+
+
+def test_save_public_skill(admin_client):
+    r = admin_client.post("/api/skills/public", json=_SKILL_PAYLOAD)
+    assert r.status_code == 200
+    data = r.json()
+    assert data["scope"] == "public"
+    assert data["labels"] == ["public"]
+    assert data["owner_id"]
+
+
+def test_save_skill_rejects_free_tags(admin_client):
+    r = admin_client.post(
+        "/api/skills/private",
+        json={**_SKILL_PAYLOAD, "tags": ["inventada"]},
+    )
+    assert r.status_code == 422
+    assert r.json()["detail"]["field"] == "tags"
+
+
+def test_save_skill_rejects_unknown_category(admin_client):
+    r = admin_client.post(
+        "/api/skills/private",
+        json={**_SKILL_PAYLOAD, "category": "inventada"},
+    )
+    assert r.status_code == 422
+    assert r.json()["detail"]["field"] == "category"
+
+
+def test_save_skill_rejects_labels_outside_catalog(admin_client):
+    r = admin_client.post(
+        "/api/skills/private",
+        json={**_SKILL_PAYLOAD, "labels": ["inventada"]},
+    )
+    assert r.status_code == 422
+    assert r.json()["detail"]["field"] == "labels"
 
 
 def test_save_skill_ignores_client_id(admin_client):
@@ -64,10 +103,26 @@ def test_delete_private_skill(admin_client):
     assert r.json()["ok"] is True
 
 
-def test_delete_public_skill_forbidden(admin_client):
-    """No se pueden eliminar skills públicas."""
-    r = admin_client.delete("/api/skills/public/some-public-skill")
-    assert r.status_code in (403, 404)
+def test_delete_owned_public_skill(admin_client):
+    created = admin_client.post("/api/skills/public", json=_SKILL_PAYLOAD).json()
+    r = admin_client.delete(f"/api/skills/public/{created['id']}")
+    assert r.status_code == 200
+
+
+def test_other_user_cannot_edit_or_delete_public_skill(admin_client):
+    from app.auth.auth import create_token, register_user
+
+    created = admin_client.post("/api/skills/public", json=_SKILL_PAYLOAD).json()
+    asyncio.run(register_user("skillother", "pass1234", email="skillother@example.com"))
+    admin_client.cookies.set("ga_token", create_token("skillother"))
+
+    edited = admin_client.post(
+        "/api/skills/public",
+        json={**_SKILL_PAYLOAD, "id": created["id"], "name": "Secuestrada"},
+    )
+    deleted = admin_client.delete(f"/api/skills/public/{created['id']}")
+    assert edited.status_code == 403
+    assert deleted.status_code == 403
 
 
 def test_skills_requires_auth(client):

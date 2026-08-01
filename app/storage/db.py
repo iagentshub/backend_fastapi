@@ -87,7 +87,9 @@ def _compact_resource_data(raw_data: Any) -> str:
     if not isinstance(data, dict):
         return str(raw_data)
     compact = {
-        key: value for key, value in data.items() if key not in _RESOURCE_BLOB_DUPLICATES
+        key: value
+        for key, value in data.items()
+        if key not in _RESOURCE_BLOB_DUPLICATES
     }
     return json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
 
@@ -225,11 +227,12 @@ async def _rename_legacy_group_schema_sqlite(conn: Any) -> None:
             cur = await conn.execute(f'PRAGMA table_info("{new_table}")')
             new_columns = {row[1] for row in await cur.fetchall()}
             source_columns = [
-                col for col in old_columns if col in new_columns or col == legacy_id_column
+                col
+                for col in old_columns
+                if col in new_columns or col == legacy_id_column
             ]
             target_columns = [
-                "group_id" if col == legacy_id_column else col
-                for col in source_columns
+                "group_id" if col == legacy_id_column else col for col in source_columns
             ]
             quoted_targets = ", ".join(f'"{col}"' for col in target_columns)
             quoted_sources = ", ".join(f'"{col}"' for col in source_columns)
@@ -292,8 +295,7 @@ async def _rename_legacy_group_schema_pg(conn: Any) -> None:
                 or row["column_name"] == legacy_id_column
             ]
             target_columns = [
-                "group_id" if col == legacy_id_column else col
-                for col in source_columns
+                "group_id" if col == legacy_id_column else col for col in source_columns
             ]
             quoted_targets = ", ".join(f'"{col}"' for col in target_columns)
             quoted_sources = ", ".join(f'"{col}"' for col in source_columns)
@@ -615,6 +617,15 @@ async def _migrate_sqlite(conn: Any) -> None:
     try:
         await conn.execute(
             "ALTER TABLE agent_workflows ADD COLUMN labels TEXT NOT NULL DEFAULT '[\"private\"]'"
+        )
+        await conn.commit()
+    except Exception:
+        pass
+    try:
+        await conn.execute(
+            "ALTER TABLE skills ADD COLUMN category TEXT "
+            "CHECK (category IS NULL OR category IN "
+            "('ai','messaging','notes','productivity','dev','security','media','data','company'))"
         )
         await conn.commit()
     except Exception:
@@ -1030,6 +1041,11 @@ async def _migrate_pg(conn: Any) -> None:
     )
     await conn.execute(
         "ALTER TABLE agent_workflows ADD COLUMN IF NOT EXISTS labels TEXT NOT NULL DEFAULT '[\"private\"]'"
+    )
+    await conn.execute(
+        "ALTER TABLE skills ADD COLUMN IF NOT EXISTS category TEXT "
+        "CHECK (category IS NULL OR category IN "
+        "('ai','messaging','notes','productivity','dev','security','media','data','company'))"
     )
     # 13. Limpiar tokens de email/borrado guardados en plano (pre-hash)
     await conn.execute(

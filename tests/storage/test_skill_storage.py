@@ -34,9 +34,41 @@ def test_save_private_skill(storage):
     assert sk["scope"] == "private"
 
 
-def test_save_public_raises(storage):
-    with pytest.raises(ValueError, match="solo lectura"):
+def test_save_public_requires_owner(storage):
+    with pytest.raises(ValueError, match="sistema"):
         asyncio.run(storage.save("public", _SKILL))
+
+
+def test_save_owned_public_skill(storage):
+    skill = asyncio.run(storage.save("public", _SKILL, owner_id="user-id"))
+    assert skill["scope"] == "public"
+    assert skill["owner_id"] == "user-id"
+    assert skill["labels"] == ["public"]
+
+
+def test_skill_tags_are_not_persisted(storage):
+    skill = asyncio.run(
+        storage.save(
+            "private",
+            {**_SKILL, "tags": ["arbitrary", "custom"]},
+            owner_id="user-id",
+        )
+    )
+    assert "tags" not in skill
+    found = asyncio.run(storage.get("private", skill["id"], owner_id="user-id"))
+    assert found is not None
+    assert "tags" not in found
+
+
+def test_skill_category_must_be_defined(storage):
+    with pytest.raises(ValueError, match="category"):
+        asyncio.run(
+            storage.save(
+                "private",
+                {**_SKILL, "category": "inventada"},
+                owner_id="user-id",
+            )
+        )
 
 
 def test_get_private_skill(storage):
@@ -85,9 +117,16 @@ def test_delete_private_skill(storage):
     assert asyncio.run(storage.get("private", sk["id"])) is None
 
 
-def test_delete_public_raises(storage):
-    with pytest.raises(ValueError, match="solo lectura"):
+def test_delete_system_public_raises(storage):
+    with pytest.raises(ValueError, match="sistema"):
         asyncio.run(storage.delete("public", "some-skill"))
+
+
+def test_delete_owned_public_skill(storage):
+    skill = asyncio.run(storage.save("public", _SKILL, owner_id="user-id"))
+    assert (
+        asyncio.run(storage.delete("public", skill["id"], owner_id="user-id")) is True
+    )
 
 
 def test_delete_nonexistent_skill(storage):

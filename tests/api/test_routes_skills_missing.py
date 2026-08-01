@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from app.auth.auth import create_token
 from app.storage.guest import new_guest_id
 
@@ -39,6 +41,16 @@ def test_guest_list_skills_public_only(client):
     _guest_client(client)
     r = client.get("/api/skills?scope=public")
     assert r.status_code == 200
+
+
+def test_guest_sees_user_created_public_skills(client, admin_client):
+    created = admin_client.post("/api/skills/public", json=_PAYLOAD)
+    assert created.status_code == 200
+
+    _guest_client(client)
+    public = client.get("/api/skills?scope=public")
+    assert public.status_code == 200
+    assert created.json()["id"] in {skill["id"] for skill in public.json()}
 
 
 def test_guest_list_skills_offset_limit(client):
@@ -93,6 +105,33 @@ def test_guest_save_private_skill(client):
     r = client.post("/api/skills/private", json=_PAYLOAD)
     assert r.status_code == 200
     assert r.json()["scope"] == "private"
+
+
+def test_guest_private_skills_are_isolated_by_session(client):
+    _guest_client(client)
+    created = client.post("/api/skills/private", json=_PAYLOAD)
+    assert created.status_code == 200
+
+    _guest_client(client)
+    private = client.get("/api/skills?scope=private")
+    assert private.status_code == 200
+    assert created.json()["id"] not in {skill["id"] for skill in private.json()}
+
+
+def test_guest_private_skill_is_not_written_to_database(client):
+    from app.storage.db import open_db
+
+    async def _count() -> int:
+        async with open_db() as conn:
+            return int(await conn.fetchval("SELECT COUNT(*) FROM skills"))
+
+    before = asyncio.run(_count())
+    _guest_client(client)
+    created = client.post("/api/skills/private", json=_PAYLOAD)
+    after = asyncio.run(_count())
+
+    assert created.status_code == 200
+    assert after == before
 
 
 def test_guest_save_public_skill_forbidden(client):

@@ -138,10 +138,7 @@ async def _assert_can_read_agent(
     if user_groups:
         group_ids = [g["id"] for g in user_groups]
         results = await asyncio.gather(
-            *[
-                _shares.get_group_shared_resource_ids(gid, "agent")
-                for gid in group_ids
-            ]
+            *[_shares.get_group_shared_resource_ids(gid, "agent") for gid in group_ids]
         )
         for shared_ids in results:
             if agent_id in shared_ids:
@@ -164,7 +161,9 @@ def _name_slug(name: str) -> str:
 
 def _check_scope(scope: str) -> None:
     if scope not in _VALID_SCOPES:
-        raise APIError(400, "invalid_field", "Scope no válido", extra={"field": "scope"})
+        raise APIError(
+            400, "invalid_field", "Scope no válido", extra={"field": "scope"}
+        )
 
 
 def _apply_locale(agent: Dict[str, Any], locale: str) -> Dict[str, Any]:
@@ -206,6 +205,8 @@ async def list_agents(
         public = await _agents.list("public") if scope in ("public", "all") else []
         private = s.agents if scope in ("private", "all") else []
         items = public + private
+        if not include_inactive:
+            items = [agent for agent in items if agent.get("is_active", True)]
         if label:
             items = [a for a in items if label in (a.get("labels") or [])]
         if offset:
@@ -224,9 +225,7 @@ async def list_agents(
         # Filtro por grupo: se aplica siempre, incluido admin
         if role != "admin" and not await _groups.can_access(group_id, user):
             raise APIError(403, "forbidden", "Sin acceso a este grupo")
-        shared_ids = set(
-            await _shares.get_group_shared_resource_ids(group_id, "agent")
-        )
+        shared_ids = set(await _shares.get_group_shared_resource_ids(group_id, "agent"))
         agents = [a for a in agents if a["id"] in shared_ids]
         for a in agents:
             a["_shared"] = True
@@ -294,7 +293,8 @@ async def list_agents(
         agents = [a for a in agents if a.get("is_active", True)]
     if ctx.group_id != user and role != "admin":
         agents = [
-            agent for agent in agents
+            agent
+            for agent in agents
             if await _groups.has_resource_permission(
                 ctx.group_id, user, "agents", agent["id"], "use"
             )
@@ -319,7 +319,9 @@ async def save_agent(
     payload = await request.json()
     scope = str(payload.pop("scope", "private") or "private")
     if scope not in ("public", "private"):
-        raise APIError(400, "invalid_field", "Scope no válido", extra={"field": "scope"})
+        raise APIError(
+            400, "invalid_field", "Scope no válido", extra={"field": "scope"}
+        )
     if is_guest(user):
         s = get_session(user)
         guest_id = payload.get("id")
@@ -384,13 +386,17 @@ async def get_agent(
             (a for a in s.agents if a.get("id") == agent_id), None
         ) or await _agents.get(agent_id, scope="public")
         if not a:
-            raise APIError(404, "not_found", "Agente no encontrado", extra={"resource": "agent"})
+            raise APIError(
+                404, "not_found", "Agente no encontrado", extra={"resource": "agent"}
+            )
         a = _apply_locale(a, get_locale())
         a["origin_type"] = compute_origin_type(a)
         return a
     a = await _agents.get(agent_id)
     if not a:
-        raise APIError(404, "not_found", "Agente no encontrado", extra={"resource": "agent"})
+        raise APIError(
+            404, "not_found", "Agente no encontrado", extra={"resource": "agent"}
+        )
     await _assert_can_read_agent(agent_id, a, ctx)
     if not await _groups.has_resource_permission(
         ctx.group_id, user, "agents", agent_id, "use"
@@ -411,7 +417,9 @@ async def delete_agent(
         before = len(s.agents)
         s.agents = [a for a in s.agents if a.get("id") != agent_id]
         if len(s.agents) == before:
-            raise APIError(404, "not_found", "Agente no encontrado", extra={"resource": "agent"})
+            raise APIError(
+                404, "not_found", "Agente no encontrado", extra={"resource": "agent"}
+            )
         return {"ok": True}
     a = await _agents.get(agent_id)
     role = await get_user_role(user)
@@ -420,7 +428,9 @@ async def delete_agent(
     try:
         delete_owner = None if role == "admin" else group_id
         if not await _agents.delete(agent_id, owner_id=delete_owner):
-            raise APIError(404, "not_found", "Agente no encontrado", extra={"resource": "agent"})
+            raise APIError(
+                404, "not_found", "Agente no encontrado", extra={"resource": "agent"}
+            )
     except ValueError as e:
         raise APIError(403, "agent_delete_forbidden", str(e))
     flog.info(
@@ -437,13 +447,17 @@ async def _set_agent_active(
         raise APIError(403, "forbidden", "Los invitados no pueden desactivar agentes")
     a = await _agents.get(agent_id)
     if not a:
-        raise APIError(404, "not_found", "Agente no encontrado", extra={"resource": "agent"})
+        raise APIError(
+            404, "not_found", "Agente no encontrado", extra={"resource": "agent"}
+        )
     role = await get_user_role(user)
     if role != "admin" and a.get("owner_id") != group_id:
         raise APIError(403, "forbidden", "Solo el propietario puede cambiar el estado")
     owner = None if role == "admin" else group_id
     if not await _agents.set_active(agent_id, owner, active):
-        raise APIError(404, "not_found", "Agente no encontrado", extra={"resource": "agent"})
+        raise APIError(
+            404, "not_found", "Agente no encontrado", extra={"resource": "agent"}
+        )
     estado = "activado" if active else "desactivado"
     flog.info(f"Agente {estado}: {agent_id} {a.get('name', '')!r}", username=user)
     return {"ok": True, "is_active": active}
@@ -523,7 +537,9 @@ async def export_agent(
         memory_store = _memory
         knowledge_store = _knowledge
     if not a:
-        raise APIError(404, "not_found", "Agente no encontrado", extra={"resource": "agent"})
+        raise APIError(
+            404, "not_found", "Agente no encontrado", extra={"resource": "agent"}
+        )
     if not is_guest(user):
         await _assert_can_read_agent(agent_id, a, ctx)
     a = _apply_locale(a, get_locale())
@@ -694,10 +710,14 @@ async def chat(
     else:
         a = await _agents.get(agent_id)
     if not a:
-        raise APIError(404, "not_found", "Agente no encontrado", extra={"resource": "agent"})
+        raise APIError(
+            404, "not_found", "Agente no encontrado", extra={"resource": "agent"}
+        )
     if not a.get("is_active", True):
         raise APIError(
-            409, "resource_inactive", "Este agente está desactivado",
+            409,
+            "resource_inactive",
+            "Este agente está desactivado",
             extra={"resource": "agent"},
         )
     role = await get_user_role(user)

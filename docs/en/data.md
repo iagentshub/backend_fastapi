@@ -45,4 +45,4 @@ None of the runtime data is committed to the repository. The database and data d
 
 ## Skills
 
-Skills are text files with a metadata header (name, description, icon, category) followed by the skill content. The content is injected into the agent's system prompt when the skill is enabled.
+Skills are stored in the database with a name, description, icon, a category from the closed catalog, and their content. They do not accept free-form tags; their labels are limited to the system catalog. System public skills are read-only; user-created skills retain their owner whether private or public. The content is injected into the agent's system prompt when the skill is enabled.

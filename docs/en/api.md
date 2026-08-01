@@ -132,8 +132,10 @@ Skills have three visibility states: **public** (accessible to everyone), **priv
 |---|---|---|
 | `GET` | `/api/skills` | List all available skills (`?scope=all\|public\|private`); skills shared with the user appear with `_shared: true` |
 | `GET` | `/api/skills/{scope}/{id}` | Get a specific skill definition |
-| `POST` | `/api/skills/{scope}` | Save a skill (private scope only); `owner_id` is automatically set to the authenticated user |
-| `DELETE` | `/api/skills/{scope}/{id}` | Delete a skill (private scope only) |
+| `POST` | `/api/skills/{scope}` | Save an owned skill with `private` or `public` scope; `owner_id` is automatically set to the authenticated user |
+| `DELETE` | `/api/skills/{scope}/{id}` | Delete an owned skill; system public skills are read-only |
+
+The category must belong to the closed catalog (`ai`, `messaging`, `notes`, `productivity`, `dev`, `security`, `media`, `data`, `company`). The editor does not accept free-form tags, and API `labels` must belong to the system catalog. Guests can browse every public skill and create ephemeral private skills isolated in session memory; they cannot publish or persist them in the database.
 
 ---
 

@@ -75,13 +75,18 @@ async def _inherit_resource_ids(
             # id propio (no derivado del nombre) para no colisionar con una skill
             # homónima de otro owner — GET /api/skills/{scope}/{id} no filtra por
             # owner_id, así que dos ids iguales de dueños distintos son ambiguos.
-            clone = {k: v for k, v in item.items() if k not in ("id", "scope", "owner_id")}
+            clone = {
+                k: v for k, v in item.items() if k not in ("id", "scope", "owner_id")
+            }
             clone["id"] = generate_id()
             clone["labels"] = [
-                lbl for lbl in (clone.get("labels") or ["private"])
+                lbl
+                for lbl in (clone.get("labels") or ["private"])
                 if lbl not in ("linked", "public")
             ] or ["private"]
-            saved = await _inherit_skills_store.save("private", clone, owner_id=target_owner_id)
+            saved = await _inherit_skills_store.save(
+                "private", clone, owner_id=target_owner_id
+            )
         else:
             saved = await _inherit_knowledge_store.save(
                 type=item.get("type", "url"),
@@ -106,7 +111,9 @@ async def _inherit_agent_memory(
     mem_name = source_agent.get("memory_file") or f"{source_agent.get('id')}.md"
     content = await _inherit_memory_store.get(mem_name, source_owner)
     if content:
-        await _inherit_memory_store.save(f"{new_agent_id}.md", content, owner_id=target_owner_id)
+        await _inherit_memory_store.save(
+            f"{new_agent_id}.md", content, owner_id=target_owner_id
+        )
 
 
 async def _inherit_workflow_agents(
@@ -125,7 +132,10 @@ async def _inherit_workflow_agents(
             agent = await agents_storage.get(old_agent_id)
             if not agent:
                 new_agent_id = old_agent_id
-            elif agent.get("owner_id") == target_owner_id or agent.get("scope") == "public":
+            elif (
+                agent.get("owner_id") == target_owner_id
+                or agent.get("scope") == "public"
+            ):
                 new_agent_id = old_agent_id
             else:
                 clone_payload = {
@@ -135,7 +145,8 @@ async def _inherit_workflow_agents(
                 }
                 clone_payload["id"] = generate_id()
                 clone_payload["labels"] = [
-                    lbl for lbl in (clone_payload.get("labels") or ["private"])
+                    lbl
+                    for lbl in (clone_payload.get("labels") or ["private"])
                     if lbl not in ("linked", "fork", "public")
                 ] or ["private"]
                 clone_payload["skills"] = await _inherit_resource_ids(
@@ -149,7 +160,10 @@ async def _inherit_workflow_agents(
                     clone_payload, "private", owner_id=target_owner_id
                 )
                 await _inherit_agent_memory(
-                    agent, str(agent.get("owner_id") or ""), saved["id"], target_owner_id
+                    agent,
+                    str(agent.get("owner_id") or ""),
+                    saved["id"],
+                    target_owner_id,
                 )
                 new_agent_id = saved["id"]
             id_map[old_agent_id] = new_agent_id
@@ -187,7 +201,7 @@ async def _publish_skill_cascade(
             skill.get("description", ""),
             "Other",
             "warn",
-            json.dumps(skill.get("tags") or []),
+            "[]",
             1,
             json.dumps(labels),
         )
@@ -231,7 +245,9 @@ async def _cascade_publish_workflow(
         if "public" not in labels:
             labels.append("public")
             agent = await agents_storage.save(
-                {**agent, "labels": labels}, agent.get("scope", "private"), owner_id=agent["owner_id"]
+                {**agent, "labels": labels},
+                agent.get("scope", "private"),
+                owner_id=agent["owner_id"],
             )
         async with open_db() as conn:
             await _upsert_social(
@@ -249,6 +265,7 @@ async def _cascade_publish_workflow(
             )
             await conn.commit()
         await _cascade_publish_agent(agent, username, group_id)
+
 
 CATEGORIES = [
     "Coding",
@@ -354,8 +371,6 @@ async def _upsert_social(
         )
 
 
-
-
 class _AgentVisibilityBody(BaseModel):
     is_public: bool
     category: str
@@ -390,7 +405,9 @@ async def set_agent_visibility(
     agents = AgentStorage(_cfg.AGENTS_DIR)
     agent = await agents.get(agent_id, scope)
     if not agent:
-        raise APIError(404, "not_found", "Agente no encontrado", extra={"resource": "agent"})
+        raise APIError(
+            404, "not_found", "Agente no encontrado", extra={"resource": "agent"}
+        )
     resource_labels = agent.get("labels") or ["private"]
     is_public_val = 1 if "public" in resource_labels else 0
 
@@ -431,7 +448,9 @@ async def set_skill_visibility(
     skills = SkillStorage(_cfg.SKILLS_DIR)
     skill = await skills.get(scope, skill_id)
     if not skill:
-        raise APIError(404, "not_found", "Skill no encontrada", extra={"resource": "skill"})
+        raise APIError(
+            404, "not_found", "Skill no encontrada", extra={"resource": "skill"}
+        )
     resource_labels = skill.get("labels") or ["private"]
     is_public_val = 1 if "public" in resource_labels else 0
 
@@ -447,7 +466,7 @@ async def set_skill_visibility(
                 skill.get("description", ""),
                 body.category,
                 "warn",
-                json.dumps(skill.get("tags") or []),
+                "[]",
                 is_public_val,
                 json.dumps(resource_labels),
             )
@@ -472,7 +491,10 @@ async def set_workflow_visibility(
     workflow = await workflows.get(workflow_id, ctx.group_id)
     if not workflow:
         raise APIError(
-            404, "not_found", "Orquestación no encontrada", extra={"resource": "workflow"}
+            404,
+            "not_found",
+            "Orquestación no encontrada",
+            extra={"resource": "workflow"},
         )
     resource_labels = workflow.get("labels") or ["private"]
     is_public_val = 1 if "public" in resource_labels else 0
@@ -505,7 +527,6 @@ async def set_workflow_visibility(
         await _cascade_publish_workflow(workflow, ctx.user, ctx.group_id)
 
     return {"ok": True}
-
 
 
 @router.post("/api/{resource_type}/{resource_id}/star")
@@ -551,8 +572,6 @@ async def star_resource(
             (resource_type, resource_id),
         )
     return {"ok": True, "stars": count or 0}
-
-
 
 
 @router.delete("/api/{resource_type}/{resource_id}/star")

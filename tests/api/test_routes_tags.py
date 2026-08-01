@@ -1,4 +1,5 @@
 """Tests de soporte de etiquetas (tags) en agentes, skills y explore."""
+
 from __future__ import annotations
 
 
@@ -6,6 +7,7 @@ def _login(client, username="tagstest", password="pass1234"):
     import asyncio
 
     from app.auth.auth import create_token, register_user
+
     asyncio.run(register_user(username, password, email=f"{username}@example.com"))
     client.cookies.set("ga_token", create_token(username))
     return username
@@ -14,11 +16,14 @@ def _login(client, username="tagstest", password="pass1234"):
 def test_agent_tags_persisted_and_returned(client):
     """Guardar un agente con tags y verificar que aparecen en GET."""
     _login(client, "taguser1")
-    r = client.post("/api/agents", json={
-        "name": "Tagged Agent",
-        "description": "agente con etiquetas",
-        "tags": ["python", "bot", "nlp"],
-    })
+    r = client.post(
+        "/api/agents",
+        json={
+            "name": "Tagged Agent",
+            "description": "agente con etiquetas",
+            "tags": ["python", "bot", "nlp"],
+        },
+    )
     assert r.status_code == 200
     agent_id = r.json()["id"]
 
@@ -31,20 +36,26 @@ def test_agent_tags_persisted_and_returned(client):
 def test_agent_tags_go_to_resource_social(client):
     """Marcar un agente con tags como público y verificar que tags van a resource_social."""
     _login(client, "taguser2")
-    r = client.post("/api/agents", json={
-        "name": "Public Tagged Agent",
-        "description": "agente público con etiquetas",
-        "tags": ["python", "automation"],
-        "labels": ["public"],
-    })
+    r = client.post(
+        "/api/agents",
+        json={
+            "name": "Public Tagged Agent",
+            "description": "agente público con etiquetas",
+            "tags": ["python", "automation"],
+            "labels": ["public"],
+        },
+    )
     assert r.status_code == 200
     agent_id = r.json()["id"]
 
-    r2 = client.put(f"/api/agents/private/{agent_id}/visibility", json={
-        "is_public": True,
-        "category": "Coding",
-        "trial_missing_deps": "warn",
-    })
+    r2 = client.put(
+        f"/api/agents/private/{agent_id}/visibility",
+        json={
+            "is_public": True,
+            "category": "Coding",
+            "trial_missing_deps": "warn",
+        },
+    )
     assert r2.status_code == 200
 
     import asyncio
@@ -71,34 +82,46 @@ def test_explore_filter_by_tag(client):
     _login(client, "taguser3")
 
     # Agente con tag python
-    r = client.post("/api/agents", json={
-        "name": "Python Agent",
-        "description": "agente python",
-        "tags": ["python"],
-        "labels": ["public"],
-    })
+    r = client.post(
+        "/api/agents",
+        json={
+            "name": "Python Agent",
+            "description": "agente python",
+            "tags": ["python"],
+            "labels": ["public"],
+        },
+    )
     assert r.status_code == 200
     python_id = r.json()["id"]
-    client.put(f"/api/agents/private/{python_id}/visibility", json={
-        "is_public": True,
-        "category": "Coding",
-        "trial_missing_deps": "warn",
-    })
+    client.put(
+        f"/api/agents/private/{python_id}/visibility",
+        json={
+            "is_public": True,
+            "category": "Coding",
+            "trial_missing_deps": "warn",
+        },
+    )
 
     # Agente SIN tag python
-    r2 = client.post("/api/agents", json={
-        "name": "Java Agent",
-        "description": "agente java",
-        "tags": ["java"],
-        "labels": ["public"],
-    })
+    r2 = client.post(
+        "/api/agents",
+        json={
+            "name": "Java Agent",
+            "description": "agente java",
+            "tags": ["java"],
+            "labels": ["public"],
+        },
+    )
     assert r2.status_code == 200
     java_id = r2.json()["id"]
-    client.put(f"/api/agents/private/{java_id}/visibility", json={
-        "is_public": True,
-        "category": "Coding",
-        "trial_missing_deps": "warn",
-    })
+    client.put(
+        f"/api/agents/private/{java_id}/visibility",
+        json={
+            "is_public": True,
+            "category": "Coding",
+            "trial_missing_deps": "warn",
+        },
+    )
 
     # Explore excluye los recursos propios del solicitante — se consulta como otro usuario
     _login(client, "taguser3_viewer")
@@ -115,19 +138,17 @@ def test_explore_filter_by_tag(client):
     assert "python" in python_entry["tags"]
 
 
-def test_skill_tags_persisted(client):
-    """Guardar una skill con tags y verificar que se persisten."""
+def test_skill_free_tags_rejected(client):
+    """Las skills solo usan el catálogo de labels; no admiten tags libres."""
     _login(client, "taguser4")
-    r = client.post("/api/skills/private", json={
-        "name": "Tagged Skill",
-        "description": "skill con etiquetas",
-        "content": "# instrucciones de la skill",
-        "tags": ["nlp", "text", "ml"],
-    })
-    assert r.status_code == 200
-    skill_id = r.json()["id"]
-
-    r2 = client.get(f"/api/skills/private/{skill_id}")
-    assert r2.status_code == 200
-    data = r2.json()
-    assert set(data.get("tags", [])) == {"nlp", "text", "ml"}
+    r = client.post(
+        "/api/skills/private",
+        json={
+            "name": "Tagged Skill",
+            "description": "skill con etiquetas",
+            "content": "# instrucciones de la skill",
+            "tags": ["nlp", "text", "ml"],
+        },
+    )
+    assert r.status_code == 422
+    assert r.json()["detail"]["field"] == "tags"

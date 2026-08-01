@@ -661,6 +661,43 @@ class AgentStorage(ResourceStorage):
 # ─── SkillStorage ─────────────────────────────────────────────────────────────
 # DB-backed. owner_id='__public__' para skills de sistema/públicas.
 
+SKILL_CATEGORIES = frozenset(
+    {
+        "ai",
+        "messaging",
+        "notes",
+        "productivity",
+        "dev",
+        "security",
+        "media",
+        "data",
+        "company",
+    }
+)
+
+# Labels are selected from the shared system catalog. ``linked`` and ``fork``
+# are internal provenance labels used by linking/copy flows, not user tags.
+SKILL_LABELS = frozenset(
+    {
+        "private",
+        "public",
+        "production",
+        "staging",
+        "development",
+        "test",
+        "favorite",
+        "draft",
+        "review",
+        "deprecated",
+        "quarantine",
+        "archived",
+        "delete",
+        "linked",
+        "fork",
+    }
+)
+SKILL_ASSIGNABLE_LABELS = SKILL_LABELS - {"linked", "fork"}
+
 
 def _parse_skill_md(raw: str, default_id: str = "") -> Dict[str, Any]:
     """Parsea SKILL.md con frontmatter YAML."""
@@ -737,20 +774,25 @@ class SkillStorage(ResourceStorage):
         updated_at = str(data.get("updated_at") or now)
         is_active = 1 if data.get("is_active", True) else 0
         deactivated_at = data.get("deactivated_at")
-        meta = {k: v for k, v in data.items() if k != "content"}
+        # Skill tags are centrally defined metadata, not user-authored data.
+        # Never persist arbitrary tags received from clients or legacy files.
+        meta = {
+            k: v for k, v in data.items() if k not in ("content", "tags", "category")
+        }
         meta_json = _compact_resource_data(meta)
         if IS_PG:
             await conn.execute(
-                "INSERT INTO skills (id, owner_id, name, scope, data, content, "
+                "INSERT INTO skills (id, owner_id, name, category, scope, data, content, "
                 "is_active, deactivated_at, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-                "ON CONFLICT (id, owner_id) DO UPDATE SET name=EXCLUDED.name, scope=EXCLUDED.scope, data=EXCLUDED.data, "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT (id, owner_id) DO UPDATE SET name=EXCLUDED.name, category=EXCLUDED.category, scope=EXCLUDED.scope, data=EXCLUDED.data, "
                 "content=EXCLUDED.content, is_active=EXCLUDED.is_active, "
                 "deactivated_at=EXCLUDED.deactivated_at, updated_at=EXCLUDED.updated_at",
                 (
                     skill_id,
                     owner_id,
                     name,
+                    data.get("category"),
                     scope,
                     meta_json,
                     content,
@@ -763,13 +805,14 @@ class SkillStorage(ResourceStorage):
         else:
             await conn.execute(
                 "INSERT OR REPLACE INTO skills "
-                "(id, owner_id, name, scope, data, content, "
+                "(id, owner_id, name, category, scope, data, content, "
                 "is_active, deactivated_at, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     skill_id,
                     owner_id,
                     name,
+                    data.get("category"),
                     scope,
                     meta_json,
                     content,
@@ -782,6 +825,8 @@ class SkillStorage(ResourceStorage):
 
     def _row_to_dict(self, row: Any, include_content: bool = True) -> Dict[str, Any]:
         d: Dict[str, Any] = json.loads(row["data"])
+        d.pop("tags", None)
+        d["category"] = row["category"]
         if include_content:
             d["content"] = row["content"]
         d.update(
@@ -811,27 +856,27 @@ class SkillStorage(ResourceStorage):
         async with open_db() as conn:
             if scope == "public":
                 rows = await conn.fetchall(
-                    "SELECT id, owner_id, name, scope, data, content, is_active, "
+                    "SELECT id, owner_id, name, category, scope, data, content, is_active, "
                     "deactivated_at, created_at, updated_at "
                     "FROM skills WHERE scope='public' ORDER BY created_at ASC"
                 )
             elif scope == "private":
                 if owner_id:
                     rows = await conn.fetchall(
-                        "SELECT id, owner_id, name, scope, data, content, is_active, "
+                        "SELECT id, owner_id, name, category, scope, data, content, is_active, "
                         "deactivated_at, created_at, updated_at "
                         "FROM skills WHERE scope='private' AND owner_id=? ORDER BY created_at ASC",
                         (owner_id,),
                     )
                 else:
                     rows = await conn.fetchall(
-                        "SELECT id, owner_id, name, scope, data, content, is_active, "
+                        "SELECT id, owner_id, name, category, scope, data, content, is_active, "
                         "deactivated_at, created_at, updated_at "
                         "FROM skills WHERE scope='private' ORDER BY created_at ASC"
                     )
             else:  # all
                 rows = await conn.fetchall(
-                    "SELECT id, owner_id, name, scope, data, content, is_active, "
+                    "SELECT id, owner_id, name, category, scope, data, content, is_active, "
                     "deactivated_at, created_at, updated_at "
                     "FROM skills ORDER BY created_at ASC"
                 )
@@ -844,19 +889,30 @@ class SkillStorage(ResourceStorage):
         from app.storage.db import open_db
 
         async with open_db() as conn:
+            owner_filter = " AND owner_id=?" if owner_id is not None else ""
+            params: tuple[Any, ...] = (
+                (skill_id, scope, owner_id)
+                if owner_id is not None
+                else (skill_id, scope)
+            )
             row = await conn.fetchone(
-                "SELECT id, owner_id, name, scope, data, content, is_active, "
+                "SELECT id, owner_id, name, category, scope, data, content, is_active, "
                 "deactivated_at, created_at, updated_at "
-                "FROM skills WHERE id=? AND scope=? LIMIT 1",
-                (skill_id, scope),
+                f"FROM skills WHERE id=? AND scope=?{owner_filter} LIMIT 1",
+                params,
             )
             if not row:
                 # try slug variant
+                slug_params: tuple[Any, ...] = (
+                    (_slug(skill_id), scope, owner_id)
+                    if owner_id is not None
+                    else (_slug(skill_id), scope)
+                )
                 row = await conn.fetchone(
-                    "SELECT id, owner_id, name, scope, data, content, is_active, "
+                    "SELECT id, owner_id, name, category, scope, data, content, is_active, "
                     "deactivated_at, created_at, updated_at "
-                    "FROM skills WHERE id=? AND scope=? LIMIT 1",
-                    (_slug(skill_id), scope),
+                    f"FROM skills WHERE id=? AND scope=?{owner_filter} LIMIT 1",
+                    slug_params,
                 )
         return self._row_to_dict(row) if row else None
 
@@ -865,7 +921,7 @@ class SkillStorage(ResourceStorage):
     ) -> Optional[Dict[str, Any]]:
         """Fetch a skill from any scope — public first, then private."""
         for scope in ("public", "private"):
-            result = await self.get(scope, skill_id)
+            result = await self.get(scope, skill_id, owner_id=owner_id)
             if result:
                 return result
         return None
@@ -873,34 +929,46 @@ class SkillStorage(ResourceStorage):
     async def save(
         self, scope: str, payload: Dict[str, Any], owner_id: Optional[str] = None
     ) -> Dict[str, Any]:
-        if scope == "public":
-            raise ValueError("Las skills públicas son de solo lectura")
+        if scope not in ("private", "public"):
+            raise ValueError("scope must be private or public")
+        if scope == "public" and not owner_id:
+            raise ValueError("Las skills públicas de sistema son de solo lectura")
         await self._ensure_migrated()
         from app.storage.db import open_db
 
         name = str(payload.get("name") or "").strip()
         if not name:
             raise ValueError("name required")
+        category = str(payload.get("category") or "").strip()
+        if category and category not in SKILL_CATEGORIES:
+            raise ValueError("invalid skill category")
         skill_id = payload.get("id") or generate_id()
         actual_owner = owner_id or "admin"
         now = _now()
-        existing = await self.get(scope, skill_id)
+        existing = await self.get_any(skill_id, owner_id=actual_owner)
+        if "labels" in payload:
+            labels = [str(label) for label in (payload.get("labels") or []) if label]
+        elif existing:
+            labels = [str(label) for label in (existing.get("labels") or []) if label]
+            if existing.get("scope") != scope:
+                labels = [
+                    label for label in labels if label not in ("private", "public")
+                ]
+                labels.append(scope)
+        else:
+            labels = [scope]
+        invalid_labels = [label for label in labels if label not in SKILL_LABELS]
+        if invalid_labels:
+            raise ValueError("invalid skill labels")
         data: Dict[str, Any] = {
             "id": skill_id,
             "name": name,
             "resource_type": "skill",
             "description": str(payload.get("description") or "").strip(),
             "icon": str(payload.get("icon") or "🔧").strip(),
-            "category": str(payload.get("category") or "").strip() or None,
+            "category": category or None,
             "content": str(payload.get("content") or "").strip(),
-            "tags": [
-                str(t).strip().lower()
-                for t in (payload.get("tags") or [])
-                if str(t).strip()
-            ],
-            "labels": [
-                str(lbl) for lbl in (payload.get("labels") or ["private"]) if lbl
-            ],
+            "labels": labels,
             "scope": scope,
             "owner_id": actual_owner,
             "created_at": existing.get("created_at", now) if existing else now,
@@ -922,8 +990,8 @@ class SkillStorage(ResourceStorage):
         owner_id: Optional[str] = None,
         allow_public: bool = False,
     ) -> bool:
-        if scope == "public" and not allow_public:
-            raise ValueError("Las skills públicas son de solo lectura")
+        if scope == "public" and owner_id is None and not allow_public:
+            raise ValueError("Las skills públicas de sistema son de solo lectura")
         await self._ensure_migrated()
         from app.storage.db import open_db
 

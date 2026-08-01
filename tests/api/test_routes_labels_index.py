@@ -20,14 +20,19 @@ def _login(client, username: str) -> str:
 def test_label_links_agent_and_skill_across_types(client):
     _login(client, "lblidx_owner")
     agent = client.post(
-        "/api/agents", json={"name": "Agente Etiquetado", "labels": ["marketing"]}
+        "/api/agents",
+        json={"name": "Agente Etiquetado", "labels": ["development"]},
     ).json()
     skill = client.post(
         "/api/skills/private",
-        json={"name": "Skill Etiquetada", "content": "x", "labels": ["marketing"]},
+        json={
+            "name": "Skill Etiquetada",
+            "content": "x",
+            "labels": ["development"],
+        },
     ).json()
 
-    r = client.get("/api/labels/marketing")
+    r = client.get("/api/labels/development")
     assert r.status_code == 200
     found = {(x["resource_type"], x["resource_id"]) for x in r.json()}
     assert ("agent", agent["id"]) in found
@@ -40,8 +45,7 @@ def test_label_index_updated_on_relabel(client):
         "/api/agents", json={"name": "Recategorizable", "labels": ["viejo"]}
     ).json()
     assert any(
-        x["resource_id"] == agent["id"]
-        for x in client.get("/api/labels/viejo").json()
+        x["resource_id"] == agent["id"] for x in client.get("/api/labels/viejo").json()
     )
 
     client.post(
@@ -50,8 +54,7 @@ def test_label_index_updated_on_relabel(client):
     )
     assert client.get("/api/labels/viejo").json() == []
     assert any(
-        x["resource_id"] == agent["id"]
-        for x in client.get("/api/labels/nuevo").json()
+        x["resource_id"] == agent["id"] for x in client.get("/api/labels/nuevo").json()
     )
 
 

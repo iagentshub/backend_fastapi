@@ -14,7 +14,11 @@ from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
 from app.storage.guest import get_session, is_guest
 from app.storage.resource_versions import ResourceVersionStorage
-from app.storage.storage import SkillStorage
+from app.storage.storage import (
+    SKILL_ASSIGNABLE_LABELS,
+    SKILL_CATEGORIES,
+    SkillStorage,
+)
 from app.utils import flog
 from app.utils.generators import generate_id
 from app.utils.origin import compute_origin_type
@@ -31,7 +35,9 @@ _VALID_SCOPES = {"public", "private", "all"}
 
 def _check_scope(scope: str) -> None:
     if scope not in _VALID_SCOPES:
-        raise APIError(400, "invalid_field", "Scope no válido", extra={"field": "scope"})
+        raise APIError(
+            400, "invalid_field", "Scope no válido", extra={"field": "scope"}
+        )
 
 
 def _mark_origin(sk: Dict[str, Any], user: str, group_id: str) -> None:
@@ -59,6 +65,8 @@ async def list_skills(
         public = await _storage.list("public") if scope in ("public", "all") else []
         private = s_obj.skills if scope in ("private", "all") else []
         items = public + private
+        if not include_inactive:
+            items = [sk for sk in items if sk.get("is_active", True)]
         for sk in items:
             _mark_origin(sk, user, ctx.group_id)
         if offset:
@@ -72,9 +80,7 @@ async def list_skills(
         # Filtro por grupo: se aplica siempre, incluido admin
         if role != "admin" and not await _groups.can_access(group_id, user):
             raise APIError(403, "forbidden", "Sin acceso a este grupo")
-        shared_ids = set(
-            await _shares.get_group_shared_resource_ids(group_id, "skill")
-        )
+        shared_ids = set(await _shares.get_group_shared_resource_ids(group_id, "skill"))
         items = [sk for sk in items if sk["id"] in shared_ids]
         for sk in items:
             sk["_shared"] = True
@@ -130,12 +136,16 @@ async def get_skill(
             (s for s in get_session(user).skills if s.get("id") == skill_id), None
         )
         if not sk:
-            raise APIError(404, "not_found", "Skill no encontrada", extra={"resource": "skill"})
+            raise APIError(
+                404, "not_found", "Skill no encontrada", extra={"resource": "skill"}
+            )
         _mark_origin(sk, user, ctx.group_id)
         return sk
     sk = await _storage.get(scope, skill_id)
     if not sk:
-        raise APIError(404, "not_found", "Skill no encontrada", extra={"resource": "skill"})
+        raise APIError(
+            404, "not_found", "Skill no encontrada", extra={"resource": "skill"}
+        )
 
     # Control de acceso: skills privadas solo para su propietario, admin o
     # miembros de un group al que la skill está compartida.
@@ -148,9 +158,7 @@ async def get_skill(
             if user_groups:
                 group_ids = [g["id"] for g in user_groups]
                 for gid in group_ids:
-                    shared = await _shares.get_group_shared_resource_ids(
-                        gid, "skill"
-                    )
+                    shared = await _shares.get_group_shared_resource_ids(gid, "skill")
                     if skill_id in shared:
                         allowed = True
                         break
@@ -169,6 +177,62 @@ async def save_skill(
     user, group_id = ctx.user, ctx.group_id
     _check_scope(scope)
     payload = await request.json()
+    if payload.get("tags") not in (None, [], ""):
+        raise APIError(
+            422,
+            "invalid_field",
+            "Las skills no admiten tags libres",
+            extra={"field": "tags"},
+        )
+    payload.pop("tags", None)
+    raw_labels = payload.get("labels")
+    if raw_labels is not None:
+        if not isinstance(raw_labels, list):
+            raise APIError(
+                422,
+                "invalid_field",
+                "Las labels deben ser una lista del catálogo del sistema",
+                extra={"field": "labels"},
+            )
+        labels = list(
+            dict.fromkeys(
+                str(label).strip() for label in raw_labels if str(label).strip()
+            )
+        )
+        invalid_labels = [
+            label for label in labels if label not in SKILL_ASSIGNABLE_LABELS
+        ]
+        if invalid_labels:
+            raise APIError(
+                422,
+                "invalid_field",
+                "La skill contiene labels que no existen en el catálogo del sistema",
+                extra={"field": "labels", "invalid": invalid_labels},
+            )
+        visibility = [label for label in labels if label in {"private", "public"}]
+        environments = [
+            label
+            for label in labels
+            if label in {"production", "staging", "development", "test"}
+        ]
+        if len(visibility) > 1 or len(environments) > 1:
+            raise APIError(
+                422,
+                "invalid_field",
+                "La skill contiene labels mutuamente excluyentes",
+                extra={"field": "labels"},
+            )
+        if not visibility:
+            labels.insert(0, scope if scope in {"private", "public"} else "private")
+        payload["labels"] = labels
+    category = str(payload.get("category") or "").strip()
+    if category and category not in SKILL_CATEGORIES:
+        raise APIError(
+            422,
+            "invalid_field",
+            "Categoría de skill no válida",
+            extra={"field": "category"},
+        )
     if is_guest(user):
         if scope == "public":
             raise APIError(
@@ -191,9 +255,16 @@ async def save_skill(
         s.skills.append(skill)
         return skill
     skill_id_in_payload = payload.get("id")
-    existing = (
-        await _storage.get_any(skill_id_in_payload) if skill_id_in_payload else None
-    )
+    existing = None
+    if skill_id_in_payload:
+        existing = await _storage.get_any(skill_id_in_payload, owner_id=group_id)
+        if not existing and await _storage.get_any(skill_id_in_payload):
+            raise APIError(
+                403,
+                "forbidden",
+                "No tienes permiso para editar esta skill",
+                extra={"resource": "skill"},
+            )
     if skill_id_in_payload and not existing:
         # Un id entrante solo es válido para editar una fila existente;
         # en altas el id lo genera siempre el servidor.
@@ -230,20 +301,36 @@ async def delete_skill(
         before = len(s.skills)
         s.skills = [sk for sk in s.skills if sk.get("id") != skill_id]
         if len(s.skills) == before:
-            raise APIError(404, "not_found", "Skill no encontrada", extra={"resource": "skill"})
+            raise APIError(
+                404, "not_found", "Skill no encontrada", extra={"resource": "skill"}
+            )
         return {"ok": True}
     # Ownership check before delete
     sk = await _storage.get_any(skill_id)
     role = await get_user_role(user)
-    if sk and role != "admin" and sk.get("owner_id") not in (group_id, None):
+    if sk and sk.get("scope") == "public" and sk.get("owner_id") is None:
+        raise APIError(
+            403,
+            "public_skill_readonly",
+            "Las skills públicas de sistema son de solo lectura",
+        )
+    if sk and role != "admin" and sk.get("owner_id") != group_id:
         raise APIError(403, "forbidden", "No tienes permiso para eliminar esta skill")
     try:
-        delete_owner = None if role == "admin" else group_id
+        delete_owner = (
+            sk.get("owner_id")
+            if scope == "public" and sk
+            else (None if role == "admin" else group_id)
+        )
         if not await _storage.delete(scope, skill_id, owner_id=delete_owner):
-            raise APIError(404, "not_found", "Skill no encontrada", extra={"resource": "skill"})
+            raise APIError(
+                404, "not_found", "Skill no encontrada", extra={"resource": "skill"}
+            )
     except ValueError as e:
         raise APIError(403, "public_skill_readonly", str(e))
-    flog.info(f"Skill borrada: {skill_id} {(sk or {}).get('name', '')!r}", username=user)
+    flog.info(
+        f"Skill borrada: {skill_id} {(sk or {}).get('name', '')!r}", username=user
+    )
     return {"ok": True}
 
 
@@ -255,13 +342,17 @@ async def _set_skill_active(
         raise APIError(403, "forbidden", "Los invitados no pueden desactivar skills")
     sk = await _storage.get_any(skill_id)
     if not sk:
-        raise APIError(404, "not_found", "Skill no encontrada", extra={"resource": "skill"})
+        raise APIError(
+            404, "not_found", "Skill no encontrada", extra={"resource": "skill"}
+        )
     role = await get_user_role(user)
     if role != "admin" and sk.get("owner_id") not in (group_id, None):
         raise APIError(403, "forbidden", "Solo el propietario puede cambiar el estado")
     owner = None if role == "admin" else group_id
     if not await _storage.set_active(skill_id, owner, active):
-        raise APIError(404, "not_found", "Skill no encontrada", extra={"resource": "skill"})
+        raise APIError(
+            404, "not_found", "Skill no encontrada", extra={"resource": "skill"}
+        )
     estado = "activada" if active else "desactivada"
     flog.info(f"Skill {estado}: {skill_id} {sk.get('name', '')!r}", username=user)
     return {"ok": True, "is_active": active}

@@ -45,4 +45,4 @@ Ningún dato de runtime se incluye en el repositorio. La base de datos y el dire
 
 ## Skills
 
-Las skills son ficheros de texto con una cabecera de metadatos (nombre, descripción, icono, categoría) seguida del contenido de la skill. El contenido se inyecta en el system prompt del agente cuando la skill está activada.
+Las skills se almacenan en la base de datos con nombre, descripción, icono, una categoría del catálogo cerrado y su contenido. No admiten tags libres; sus labels se limitan al catálogo del sistema. Las skills públicas del sistema son de solo lectura; las creadas por usuarios conservan su propietario tanto si son privadas como públicas. El contenido se inyecta en el system prompt del agente cuando la skill está activada.

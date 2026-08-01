@@ -41,6 +41,7 @@ class _AgentTryBody(BaseModel):
     connection_id: str
     message: str
 
+
 @router.post("/api/knowledge/{source_id}/link")
 async def link_knowledge(
     source_id: str,
@@ -49,7 +50,9 @@ async def link_knowledge(
     knowledge = KnowledgeStorage(_cfg.DB_FILE)
     source = await knowledge.get(source_id)
     if not source:
-        raise APIError(404, "not_found", "Knowledge no encontrado", extra={"resource": "knowledge"})
+        raise APIError(
+            404, "not_found", "Knowledge no encontrado", extra={"resource": "knowledge"}
+        )
 
     source_owner = source.get("owner_id") or ""
     await _assert_public("knowledge", source_id)
@@ -113,7 +116,9 @@ async def link_agent(
     agents = AgentStorage(_cfg.AGENTS_DIR)
     source = await agents.get(source_id, scope)
     if not source:
-        raise APIError(404, "not_found", "Agente no encontrado", extra={"resource": "agent"})
+        raise APIError(
+            404, "not_found", "Agente no encontrado", extra={"resource": "agent"}
+        )
 
     source_owner = source.get("owner_id") or ""
     if scope != "public":
@@ -207,7 +212,9 @@ async def link_skill(
     skills = SkillStorage(_cfg.SKILLS_DIR)
     source = await skills.get(scope, source_id)
     if not source:
-        raise APIError(404, "not_found", "Skill no encontrada", extra={"resource": "skill"})
+        raise APIError(
+            404, "not_found", "Skill no encontrada", extra={"resource": "skill"}
+        )
 
     source_owner = source.get("owner_id") or ""
     if scope != "public":
@@ -236,7 +243,7 @@ async def link_skill(
 
     new_id = result["id"]
     link_name = result["name"]
-    link_tags = json.dumps(source.get("tags") or [])
+    link_tags = "[]"
 
     async with open_db() as conn:
         if IS_PG:
@@ -289,7 +296,10 @@ async def _duplicate_workflow(source_id: str, username: str) -> Dict[str, Any]:
     source = await workflows.get_any(source_id)
     if not source:
         raise APIError(
-            404, "not_found", "Orquestación no encontrada", extra={"resource": "workflow"}
+            404,
+            "not_found",
+            "Orquestación no encontrada",
+            extra={"resource": "workflow"},
         )
     source_owner = source.get("owner_id") or ""
     await _assert_public("workflow", source_id)
@@ -299,10 +309,14 @@ async def _duplicate_workflow(source_id: str, username: str) -> Dict[str, Any]:
     nodes = source.get("definition", {}).get("nodes", [])
     if username != source_owner:
         nodes = await _inherit_workflow_agents(nodes, username)
-    definition = {"nodes": nodes, "edges": source.get("definition", {}).get("edges", [])}
+    definition = {
+        "nodes": nodes,
+        "edges": source.get("definition", {}).get("edges", []),
+    }
 
     labels = [
-        lbl for lbl in (source.get("labels") or ["private"])
+        lbl
+        for lbl in (source.get("labels") or ["private"])
         if lbl not in ("linked", "fork", "public")
     ]
     labels.append("linked")
@@ -375,7 +389,9 @@ async def sync_linked_agent(
     agents = AgentStorage(_cfg.AGENTS_DIR)
     local = await agents.get(agent_id, "private")
     if not local or local.get("owner_id") != username:
-        raise APIError(404, "not_found", "Agente no encontrado", extra={"resource": "agent"})
+        raise APIError(
+            404, "not_found", "Agente no encontrado", extra={"resource": "agent"}
+        )
 
     async with open_db() as conn:
         row = await conn.fetchone(
@@ -385,13 +401,18 @@ async def sync_linked_agent(
         )
 
     if not row or not row[0]:
-        raise APIError(400, "agent_not_linked", "El agente no tiene enlace a un original")
+        raise APIError(
+            400, "agent_not_linked", "El agente no tiene enlace a un original"
+        )
 
     original_id = row[0]
     original = await agents.get(original_id)
     if not original:
         raise APIError(
-            404, "not_found", "El agente original ya no existe", extra={"resource": "agent"}
+            404,
+            "not_found",
+            "El agente original ya no existe",
+            extra={"resource": "agent"},
         )
     try:
         if original.get("scope") != "public":
@@ -418,7 +439,9 @@ async def sync_linked_skill(
     skills = SkillStorage(_cfg.SKILLS_DIR)
     local = await skills.get("private", skill_id)
     if not local or local.get("owner_id") != username:
-        raise APIError(404, "not_found", "Skill no encontrada", extra={"resource": "skill"})
+        raise APIError(
+            404, "not_found", "Skill no encontrada", extra={"resource": "skill"}
+        )
 
     async with open_db() as conn:
         row = await conn.fetchone(
@@ -428,13 +451,18 @@ async def sync_linked_skill(
         )
 
     if not row or not row[0]:
-        raise APIError(400, "skill_not_linked", "La skill no tiene enlace a un original")
+        raise APIError(
+            400, "skill_not_linked", "La skill no tiene enlace a un original"
+        )
 
     original_id = row[0]
     original = await skills.get_any(original_id)
     if not original:
         raise APIError(
-            404, "not_found", "La skill original ya no existe", extra={"resource": "skill"}
+            404,
+            "not_found",
+            "La skill original ya no existe",
+            extra={"resource": "skill"},
         )
     try:
         if original.get("scope") != "public":
@@ -471,7 +499,10 @@ async def try_agent(
         )
     if not row:
         raise APIError(
-            404, "not_found", "Agente no encontrado o no es público", extra={"resource": "agent"}
+            404,
+            "not_found",
+            "Agente no encontrado o no es público",
+            extra={"resource": "agent"},
         )
 
     trial_missing_deps: str = row["trial_missing_deps"] or "warn"
@@ -480,7 +511,9 @@ async def try_agent(
     agents = AgentStorage(_cfg.AGENTS_DIR)
     agent_data = await agents.get(agent_id, scope)
     if not agent_data:
-        raise APIError(404, "not_found", "Agente no encontrado", extra={"resource": "agent"})
+        raise APIError(
+            404, "not_found", "Agente no encontrado", extra={"resource": "agent"}
+        )
 
     # Step 3: Resolve caller's connection (group first, then personal fallback)
     conn_storage = ConnectionStorage(_cfg.DB_FILE)
@@ -488,7 +521,12 @@ async def try_agent(
     if conn_data is None and ctx.group_id != ctx.user:
         conn_data = await conn_storage.get(body.connection_id, ctx.user)
     if conn_data is None:
-        raise APIError(400, "not_found", "Connection no encontrada", extra={"resource": "connection"})
+        raise APIError(
+            400,
+            "not_found",
+            "Connection no encontrada",
+            extra={"resource": "connection"},
+        )
 
     # Step 4: Filter skills based on trial_missing_deps policy
     skills_storage = SkillStorage(_cfg.SKILLS_DIR)
