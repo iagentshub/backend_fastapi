@@ -105,7 +105,7 @@ def test_check_update_available(admin_client, monkeypatch):
 
     async def fake_get(*args, **kwargs):
         return _mock_tags_response(
-            ["latest", "vanilla", "react-20260101000000", "react-20260601120000"]
+            ["latest", "legacy", "react-20260101000000", "react-20260601120000"]
         )
 
     with patch.object(httpx.AsyncClient, "get", new=fake_get):
@@ -119,14 +119,13 @@ def test_check_update_available(admin_client, monkeypatch):
     assert data["update_available"] is True
 
 
-def test_check_update_ignores_other_variant(admin_client, monkeypatch):
-    """Un tag `vanilla-*` más nuevo no debe disparar 'update_available' para
-    una instalación react (bug real que motivó el prefijo de variante)."""
+def test_check_update_ignores_other_tag_family(admin_client, monkeypatch):
+    """Un tag de otra familia no debe disparar una actualización React."""
     monkeypatch.setenv("GAIA_VERSION", "20260101000000")
 
     async def fake_get(*args, **kwargs):
         return _mock_tags_response(
-            ["latest", "vanilla", "react-20260101000000", "vanilla-20260601120000"]
+            ["latest", "legacy-20260601120000", "react-20260101000000"]
         )
 
     with patch.object(httpx.AsyncClient, "get", new=fake_get):
@@ -156,7 +155,7 @@ def test_check_update_no_remote_versions(admin_client, monkeypatch):
     monkeypatch.setenv("GAIA_VERSION", "20260101000000")
 
     async def fake_get(*args, **kwargs):
-        return _mock_tags_response(["latest", "vanilla"])
+        return _mock_tags_response(["latest", "legacy"])
 
     with patch.object(httpx.AsyncClient, "get", new=fake_get):
         r = admin_client.get("/api/admin/check-update")
@@ -164,24 +163,6 @@ def test_check_update_no_remote_versions(admin_client, monkeypatch):
     data = r.json()
     assert data["checked"] is False
     assert data["reason"] == "no_remote_versions"
-
-
-def test_check_update_vanilla_variant(admin_client, monkeypatch):
-    monkeypatch.setenv("GAIA_VERSION", "20260101000000")
-    monkeypatch.setenv("IMAGE_TAG", "vanilla")
-
-    async def fake_get(*args, **kwargs):
-        return _mock_tags_response(
-            ["latest", "vanilla", "react-20260601120000", "vanilla-20260101000000"]
-        )
-
-    with patch.object(httpx.AsyncClient, "get", new=fake_get):
-        r = admin_client.get("/api/admin/check-update")
-
-    data = r.json()
-    assert data["checked"] is True
-    assert data["latest_version"] == "20260101000000"
-    assert data["update_available"] is False
 
 
 def test_check_update_docker_hub_error(admin_client, monkeypatch):
@@ -240,7 +221,6 @@ def test_check_update_backend_frontend_commits_up_to_date(admin_client, monkeypa
     assert data["frontend_commit"] == "def5678"
     assert data["frontend_commit_latest"] == "def5678"
     assert data["frontend_up_to_date"] is True
-    assert data["frontend_variant"] == "react"
 
 
 def test_check_update_backend_commit_outdated(admin_client, monkeypatch):
@@ -261,27 +241,6 @@ def test_check_update_backend_commit_outdated(admin_client, monkeypatch):
     data = r.json()
     assert data["backend_commit_latest"] == "9999999"
     assert data["backend_up_to_date"] is False
-    assert data["frontend_up_to_date"] is True
-
-
-def test_check_update_vanilla_variant_checks_frontend_vanilla_repo(admin_client, monkeypatch):
-    monkeypatch.setenv("GAIA_VERSION", "20260101000000")
-    monkeypatch.setenv("IMAGE_TAG", "vanilla")
-    monkeypatch.setenv("BACKEND_COMMIT", "abc1234")
-    monkeypatch.setenv("FRONTEND_COMMIT", "def5678")
-
-    fake_get = _routed_fake_get(
-        ["vanilla", "vanilla-20260101000000"],
-        {
-            "iagentshub/backend_fastapi": "abc1234567890abcdef",
-            "iagentshub/frontend_vanilla": "def5678901234abcdef",
-        },
-    )
-    with patch.object(httpx.AsyncClient, "get", new=fake_get):
-        r = admin_client.get("/api/admin/check-update")
-
-    data = r.json()
-    assert data["frontend_variant"] == "vanilla"
     assert data["frontend_up_to_date"] is True
 
 

@@ -38,7 +38,7 @@ def _make_old_db(path: Path) -> None:
             updated_at TEXT NOT NULL DEFAULT (datetime('now'))
         );
         INSERT INTO users (username, email, role)
-        VALUES ('admin', 'admin@localhost', 'admin');
+        VALUES ('admin', 'admin@example.com', 'admin');
     """)
     conn.commit()
     conn.close()

@@ -208,6 +208,20 @@ def test_purge_user_data(patch_data_dir):
 
 # ── ensure_admin_user ─────────────────────────────────────────────────────────
 
+def test_ensure_admin_user_uses_valid_default_email(patch_data_dir, monkeypatch):
+    from app.auth.auth import ensure_admin_user, get_user_by_email
+
+    monkeypatch.delenv("GAIA_ADMIN_EMAIL", raising=False)
+    monkeypatch.setenv("GAIA_ADMIN_RESET", "")
+
+    asyncio.run(ensure_admin_user())
+
+    user = asyncio.run(get_user_by_email("admin@localhost.com"))
+    assert user is not None
+    assert user["username"] == "admin@localhost.com"
+    assert user["role"] == "admin"
+
+
 def test_ensure_admin_user_creates_when_none_exists(patch_data_dir):
     from unittest.mock import patch
 

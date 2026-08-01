@@ -639,7 +639,7 @@ async def ensure_admin_user() -> None:
        sin reset_mode → no tocar nada.
     """
     reset_mode = os.environ.get("GAIA_ADMIN_RESET", "").lower() in ("1", "true", "yes")
-    target_email = os.environ.get("GAIA_ADMIN_EMAIL", "admin@localhost")
+    target_email = os.environ.get("GAIA_ADMIN_EMAIL", "admin@localhost.com")
 
     # If .admin_pass doesn't exist yet, force a one-time reset so gaia.py can always display it
     # DATA_DIR, no GAIA_DATA_DIR: sin la env var la contraseña se generaba y se

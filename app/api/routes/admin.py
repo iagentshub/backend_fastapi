@@ -55,14 +55,10 @@ def _version_re(variant: str) -> re.Pattern:
 
 async def _latest_docker_hub_version(repo: str, variant: str) -> str | None:
     """Versión (tag `<variant>-YYYYMMDDHHMMSS`) más reciente publicada en Docker
-    Hub para `repo`, restringida a `variant` ("react" o "vanilla").
+    Hub para `repo`, restringida a la familia indicada.
 
-    `iagenthub/app` recibe pushes desde 3 workflows distintos (iAgents,
-    frontend_react, frontend_vanilla) que generan cada uno su propio timestamp
-    de build para react y para vanilla — sin el prefijo de variante, comparar
-    el máximo global mezclaría ambas familias de tags y detectaría "update
-    available" con solo que la OTRA variante se hubiese publicado un segundo
-    antes, aunque la que está desplegada siga totalmente al día.
+    El prefijo evita mezclar tags históricos o ajenos con las versiones React
+    soportadas actualmente.
 
     Usa la API pública de Docker Hub (hub.docker.com/v2), no el registry — sin
     autenticación y sin el rate-limit estricto de docker.io/pulls. None si el
@@ -124,9 +120,8 @@ async def admin_check_update(_: str = Depends(require_admin)) -> dict:
 
     hub_user = os.environ.get("DOCKER_HUB_USER", "iagenthub")
     repo = f"{hub_user}/app"
-    variant = "vanilla" if os.environ.get("IMAGE_TAG") == "vanilla" else "react"
     try:
-        latest_version = await _latest_docker_hub_version(repo, variant)
+        latest_version = await _latest_docker_hub_version(repo, "react")
     except httpx.HTTPError as exc:
         raise APIError(
             502, "check_update_failed", "No se pudo consultar Docker Hub"
@@ -134,7 +129,7 @@ async def admin_check_update(_: str = Depends(require_admin)) -> dict:
 
     backend_commit = os.environ.get("BACKEND_COMMIT", "dev")
     frontend_commit = os.environ.get("FRONTEND_COMMIT", "dev")
-    frontend_repo = f"iagentshub/frontend_{variant}"
+    frontend_repo = "iagentshub/frontend_react"
     backend_latest, frontend_latest = None, None
     if backend_commit != "dev":
         backend_latest = await _latest_github_commit_sha("iagentshub/backend_fastapi")
@@ -152,7 +147,6 @@ async def admin_check_update(_: str = Depends(require_admin)) -> dict:
         "frontend_up_to_date": (
             frontend_latest.startswith(frontend_commit) if frontend_latest else None
         ),
-        "frontend_variant": variant,
     }
 
     if latest_version is None:

@@ -7,9 +7,7 @@ on:
 
 jobs:
   # Imagen standalone del backend — iagenthub/backend, tag 'fastapi' (única
-  # implementación por ahora) + 'latest' como alias mientras lo sea. Deja
-  # espacio para futuras implementaciones alternativas bajo otros tags,
-  # igual que iagenthub/frontend con react/vanilla.
+  # implementación por ahora) + 'latest' como alias mientras lo sea.
   publish:
     runs-on: ubuntu-latest
     steps:
@@ -42,8 +40,7 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # Cambios en el backend afectan a ambas variantes de la imagen unificada —
-  # se reconstruyen y publican las dos.
+  # Los cambios en el backend reconstruyen la imagen unificada React.
   docker-react:
     runs-on: ubuntu-latest
 
@@ -108,72 +105,5 @@ jobs:
           tags: |
             iagenthub/app:latest
             iagenthub/app:react-${{ steps.version.outputs.value }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-  docker-vanilla:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout iagentshub (Dockerfile + scripts)
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          repository: iagentshub/iAgents
-          path: iagentshub
-
-      - name: Checkout backend
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          repository: iagentshub/backend_fastapi
-          path: backend
-
-      - name: Checkout frontend
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          repository: iagentshub/frontend_vanilla
-          path: frontend
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-
-      - name: Log in to Docker Hub
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
-
-      - name: Preparar contexto de build
-        run: |
-          mkdir -p build-ctx
-          cp -r backend/ build-ctx/backend
-          cp -r frontend/ build-ctx/frontend
-          D=iagentshub/docker
-          cp $D/Dockerfile.unified.vanilla build-ctx/Dockerfile
-          cp $D/supervisord.conf build-ctx/supervisord.conf
-          cp $D/entrypoint-unified-vanilla.sh build-ctx/entrypoint-unified.sh
-
-      - name: Generar versión de build
-        id: version
-        run: echo "value=$(date -u +%Y%m%d%H%M%S)" >> "$GITHUB_OUTPUT"
-
-      - name: Obtener SHAs de backend y frontend
-        id: shas
-        run: |
-          echo "backend=$(git -C backend rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
-          echo "frontend=$(git -C frontend rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
-
-      - name: Build y push imagen multi-plataforma
-        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
-        with:
-          context: build-ctx
-          platforms: linux/amd64,linux/arm64
-          push: true
-          build-args: |
-            GAIA_VERSION=${{ steps.version.outputs.value }}
-            BACKEND_COMMIT=${{ steps.shas.outputs.backend }}
-            FRONTEND_COMMIT=${{ steps.shas.outputs.frontend }}
-          tags: |
-            iagenthub/app:vanilla
-            iagenthub/app:vanilla-${{ steps.version.outputs.value }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
