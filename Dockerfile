@@ -13,6 +13,7 @@ FROM python:3.12-slim
 ARG GAIA_VERSION=dev
 ENV GAIA_VERSION=$GAIA_VERSION
 LABEL org.iagentshub.version=$GAIA_VERSION
+LABEL org.opencontainers.image.source="https://github.com/iagentshub/backend_fastapi"
 
 WORKDIR /app
 

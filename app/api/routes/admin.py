@@ -154,8 +154,9 @@ async def admin_check_update(_: str = Depends(require_admin)) -> dict:
         }
 
     image_repository = os.environ.get("IMAGE_REPOSITORY", "ghcr.io/iagentshub/app")
+    image_variant = os.environ.get("IMAGE_VARIANT", "react")
     try:
-        latest_version = await _latest_ghcr_version(image_repository, "react")
+        latest_version = await _latest_ghcr_version(image_repository, image_variant)
     except httpx.HTTPError as exc:
         raise APIError(502, "check_update_failed", "No se pudo consultar GHCR") from exc
 

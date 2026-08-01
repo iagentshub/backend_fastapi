@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
 
@@ -206,6 +206,19 @@ def test_check_update_ghcr_error(admin_client, monkeypatch):
         r = admin_client.get("/api/admin/check-update")
 
     assert r.status_code == 502
+
+
+def test_check_update_uses_configured_image_variant(admin_client, monkeypatch):
+    monkeypatch.setenv("GAIA_VERSION", "20260101000000")
+    monkeypatch.setenv("IMAGE_REPOSITORY", "ghcr.io/iagentshub/backend")
+    monkeypatch.setenv("IMAGE_VARIANT", "fastapi")
+    latest = AsyncMock(return_value="20260101000000")
+
+    with patch("app.api.routes.admin._latest_ghcr_version", latest):
+        r = admin_client.get("/api/admin/check-update")
+
+    assert r.status_code == 200
+    latest.assert_awaited_once_with("ghcr.io/iagentshub/backend", "fastapi")
 
 
 def _mock_github_commit_response(sha):
