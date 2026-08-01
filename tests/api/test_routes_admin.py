@@ -1,4 +1,5 @@
 """Tests de GET /api/admin/users y DELETE /api/admin/users/{username}."""
+
 from __future__ import annotations
 
 from unittest.mock import MagicMock, patch
@@ -11,6 +12,7 @@ def _register(username, password="pass1234"):
     import asyncio
 
     from app.auth.auth import register_user
+
     asyncio.run(register_user(username, password, email=f"{username}@example.com"))
 
 
@@ -31,7 +33,14 @@ def test_list_users_no_password_hash(admin_client, reset_rate_limiter):
 
 
 def test_list_users_forbidden_for_standard(client, reset_rate_limiter):
-    client.post("/api/auth/register", json={"username": "stduser2", "email": "stduser2@example.com", "password": "pass1234"})
+    client.post(
+        "/api/auth/register",
+        json={
+            "username": "stduser2",
+            "email": "stduser2@example.com",
+            "password": "pass1234",
+        },
+    )
     r = client.get("/api/admin/users")
     assert r.status_code == 403
 
@@ -71,7 +80,11 @@ def test_create_user_rejects_invalid_email(admin_client):
 def test_create_user_accepts_valid_email(admin_client):
     response = admin_client.post(
         "/api/admin/users",
-        json={"username": "createduser", "email": "created@example.com", "password": "pass1234"},
+        json={
+            "username": "createduser",
+            "email": "created@example.com",
+            "password": "pass1234",
+        },
     )
 
     assert response.status_code == 200
@@ -141,7 +154,9 @@ def test_check_update_up_to_date(admin_client, monkeypatch):
     monkeypatch.setenv("GAIA_VERSION", "20260601120000")
 
     async def fake_get(*args, **kwargs):
-        return _mock_tags_response(["latest", "react-20260101000000", "react-20260601120000"])
+        return _mock_tags_response(
+            ["latest", "react-20260101000000", "react-20260601120000"]
+        )
 
     with patch.object(httpx.AsyncClient, "get", new=fake_get):
         r = admin_client.get("/api/admin/check-update")
@@ -286,7 +301,14 @@ def test_check_update_github_api_failure_is_not_fatal(admin_client, monkeypatch)
 
 
 def test_check_update_forbidden_for_standard(client, reset_rate_limiter):
-    client.post("/api/auth/register", json={"username": "checkupdate", "email": "checkupdate@example.com", "password": "pass1234"})
+    client.post(
+        "/api/auth/register",
+        json={
+            "username": "checkupdate",
+            "email": "checkupdate@example.com",
+            "password": "pass1234",
+        },
+    )
     r = client.get("/api/admin/check-update")
     assert r.status_code == 403
 
@@ -391,7 +413,14 @@ def test_auto_update_invalid_body(admin_client, monkeypatch):
 
 
 def test_auto_update_forbidden_for_standard(client, reset_rate_limiter):
-    client.post("/api/auth/register", json={"username": "autoupdate", "email": "autoupdate@example.com", "password": "pass1234"})
+    client.post(
+        "/api/auth/register",
+        json={
+            "username": "autoupdate",
+            "email": "autoupdate@example.com",
+            "password": "pass1234",
+        },
+    )
     r = client.put("/api/admin/auto-update", json={"enabled": False})
     assert r.status_code == 403
 
@@ -407,7 +436,9 @@ def test_generic_platform_put_cannot_change_auto_update(admin_client, monkeypatc
     PUT /api/admin/auto-update, que sí aplica el cambio de verdad)."""
     monkeypatch.setenv("DOCKER_PROXY_URL", "http://docker-proxy:2375")
     before = admin_client.get("/api/settings/platform").json()["auto_update_enabled"]
-    r = admin_client.put("/api/settings/platform", json={"auto_update_enabled": not before})
+    r = admin_client.put(
+        "/api/settings/platform", json={"auto_update_enabled": not before}
+    )
     assert r.status_code == 200
     after = admin_client.get("/api/settings/platform").json()["auto_update_enabled"]
     assert after == before
@@ -421,7 +452,14 @@ def test_admin_cannot_self_delete(admin_client):
 def test_delete_user_forbidden_for_standard(client, reset_rate_limiter):
     _register("victim_user")
     # autenticarse como otro usuario estándar
-    client.post("/api/auth/register", json={"username": "attacker", "email": "attacker@example.com", "password": "pass1234"})
+    client.post(
+        "/api/auth/register",
+        json={
+            "username": "attacker",
+            "email": "attacker@example.com",
+            "password": "pass1234",
+        },
+    )
     r = client.delete("/api/admin/users/victim_user")
     assert r.status_code == 403
 
@@ -493,6 +531,7 @@ def test_admin_set_agent_owner(admin_client):
     import asyncio
 
     from app.auth.auth import get_user_by_username
+
     assert moved["owner_id"] == asyncio.run(get_user_by_username("new_owner_a1"))["id"]
 
 
@@ -507,9 +546,7 @@ def test_admin_set_owner_unknown_user_returns_404(admin_client):
 
 def test_admin_set_owner_inactive_user_returns_400(admin_client):
     _register("new_owner_a3")
-    admin_client.patch(
-        "/api/admin/users/new_owner_a3", json={"is_active": False}
-    )
+    admin_client.patch("/api/admin/users/new_owner_a3", json={"is_active": False})
     created = admin_client.post("/api/agents", json=_AGENT_PAYLOAD).json()
     r = admin_client.put(
         f"/api/admin/resources/agent/{created['id']}/owner",
@@ -528,7 +565,14 @@ def test_admin_set_owner_invalid_resource_type_returns_422(admin_client):
 
 
 def test_admin_agents_forbidden_for_standard(client, reset_rate_limiter):
-    client.post("/api/auth/register", json={"username": "stduser", "email": "std@example.com", "password": "pass1234"})
+    client.post(
+        "/api/auth/register",
+        json={
+            "username": "stduser",
+            "email": "std@example.com",
+            "password": "pass1234",
+        },
+    )
     r = client.get("/api/admin/agents")
     assert r.status_code == 403
 
@@ -537,15 +581,24 @@ def test_admin_agents_forbidden_for_standard(client, reset_rate_limiter):
 # Se inserta directamente en la BD (misma ruta que usa el endpoint admin) para
 # evitar la divergencia con el _storage de module-level de connections.py.
 
+
 def _insert_connection(owner_id: str = "testadmin") -> str:
     import asyncio
 
     from app.config.data import DB_FILE
     from app.storage.storage import ConnectionStorage
-    c = asyncio.run(ConnectionStorage(DB_FILE).save(
-        {"type": "openai", "label": "test-conn", "api_key": "sk-test", "model": "gpt-4o"},
-        owner_id=owner_id,
-    ))
+
+    c = asyncio.run(
+        ConnectionStorage(DB_FILE).save(
+            {
+                "type": "openai",
+                "label": "test-conn",
+                "api_key": "sk-test",
+                "model": "gpt-4o",
+            },
+            owner_id=owner_id,
+        )
+    )
     return c["id"]
 
 
@@ -579,12 +632,20 @@ def test_admin_delete_connection_not_found(admin_client):
 
 
 def test_admin_connections_forbidden_for_standard(client, reset_rate_limiter):
-    client.post("/api/auth/register", json={"username": "stduser2", "email": "std2@example.com", "password": "pass1234"})
+    client.post(
+        "/api/auth/register",
+        json={
+            "username": "stduser2",
+            "email": "std2@example.com",
+            "password": "pass1234",
+        },
+    )
     r = client.get("/api/admin/connections")
     assert r.status_code == 403
 
 
 # ── Admin knowledge ───────────────────────────────────────────────────────────
+
 
 def test_admin_list_knowledge(admin_client):
     r = admin_client.get("/api/admin/knowledge")
@@ -593,12 +654,141 @@ def test_admin_list_knowledge(admin_client):
 
 
 def test_admin_knowledge_forbidden_for_standard(client, reset_rate_limiter):
-    client.post("/api/auth/register", json={"username": "stduser3", "email": "std3@example.com", "password": "pass1234"})
+    client.post(
+        "/api/auth/register",
+        json={
+            "username": "stduser3",
+            "email": "std3@example.com",
+            "password": "pass1234",
+        },
+    )
     r = client.get("/api/admin/knowledge")
     assert r.status_code == 403
 
 
+# ── Admin explore y grafo relacional ─────────────────────────────────────────
+
+
+def test_admin_explore_unifies_and_filters_resource_types(admin_client):
+    created = admin_client.post(
+        "/api/agents", json={**_AGENT_PAYLOAD, "name": "Explore Agent Unique"}
+    ).json()
+
+    response = admin_client.get("/api/admin/explore?type=agent&q=unique")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["total"] == 1
+    assert payload["items"][0]["id"] == created["id"]
+    assert payload["items"][0]["resource_type"] == "agent"
+    assert set(payload["counts"]) == {
+        "user",
+        "group",
+        "agent",
+        "connection",
+        "knowledge",
+        "workflow",
+    }
+
+
+def test_admin_explore_rejects_unknown_type(admin_client):
+    response = admin_client.get("/api/admin/explore?type=folder")
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["field"] == "type"
+
+
+def test_admin_explore_forbidden_for_standard(client, reset_rate_limiter):
+    client.post(
+        "/api/auth/register",
+        json={
+            "username": "explorestandard",
+            "email": "explorestandard@example.com",
+            "password": "pass1234",
+        },
+    )
+
+    assert client.get("/api/admin/explore").status_code == 403
+
+
+def test_admin_agent_graph_contains_owner_connection_and_workflow(admin_client):
+    import asyncio
+
+    from app.config.data import DB_FILE
+    from app.storage.storage import ConnectionStorage
+
+    admin_user = next(
+        user
+        for user in admin_client.get("/api/admin/users").json()
+        if user["username"] == "testadmin"
+    )
+    connection = asyncio.run(
+        ConnectionStorage(DB_FILE).save(
+            {
+                "type": "openai",
+                "label": "graph-connection",
+                "api_key": "sk-test",
+                "model": "gpt-4o",
+            },
+            owner_id=admin_user["id"],
+        )
+    )
+    agent = admin_client.post(
+        "/api/agents",
+        json={**_AGENT_PAYLOAD, "connection_id": connection["id"]},
+    ).json()
+    workflow = admin_client.post(
+        "/api/workflows",
+        json={
+            "name": "Graph workflow",
+            "definition": {
+                "nodes": [{"id": "step-one", "agent_id": agent["id"]}],
+                "edges": [],
+            },
+        },
+    )
+    assert workflow.status_code in (200, 201)
+    group = admin_client.post("/api/groups", json={"name": "Graph test group"}).json()
+    knowledge = admin_client.post(
+        "/api/knowledge/text",
+        json={"title": "Graph knowledge", "content": "Graph content"},
+    ).json()
+
+    response = admin_client.get(f"/api/admin/resources/agent/{agent['id']}/graph")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["root_id"] == f"agent:{agent['id']}"
+    node_types = {node["type"] for node in payload["nodes"]}
+    assert {"agent", "user", "connection", "workflow"}.issubset(node_types)
+    assert {edge["relation"] for edge in payload["edges"]} >= {
+        "owns",
+        "uses",
+        "orchestrates",
+    }
+
+    for resource_type, resource_id in (
+        ("user", admin_user["id"]),
+        ("group", group["id"]),
+        ("connection", connection["id"]),
+        ("knowledge", knowledge["id"]),
+        ("workflow", workflow.json()["id"]),
+    ):
+        related = admin_client.get(
+            f"/api/admin/resources/{resource_type}/{resource_id}/graph"
+        )
+        assert related.status_code == 200
+        assert related.json()["root_id"] == f"{resource_type}:{resource_id}"
+
+
+def test_admin_resource_graph_not_found(admin_client):
+    response = admin_client.get("/api/admin/resources/agent/missing/graph")
+
+    assert response.status_code == 404
+
+
 # ── Admin stats ───────────────────────────────────────────────────────────────
+
 
 def test_admin_stats(admin_client):
     r = admin_client.get("/api/admin/stats")
@@ -609,9 +799,12 @@ def test_admin_stats(admin_client):
 
 # ── Admin PATCH password ───────────────────────────────────────────────────────
 
+
 def test_admin_patch_password(admin_client):
     _register("pw_target")
-    r = admin_client.patch("/api/admin/users/pw_target", json={"password": "newpass123"})
+    r = admin_client.patch(
+        "/api/admin/users/pw_target", json={"password": "newpass123"}
+    )
     assert r.status_code == 200
 
 

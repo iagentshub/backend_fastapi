@@ -29,6 +29,17 @@ El registro recibe `username`, `email` y `password`. El login recibe `identifier
 
 Todos los endpoints de admin requieren el rol `admin`.
 
+### Explorar recursos
+
+| Método | Endpoint | Descripción |
+|---|---|---|
+| `GET` | `/api/admin/explore` | Inventario unificado de usuarios, grupos, agentes, conexiones, conocimiento y orquestaciones |
+| `GET` | `/api/admin/resources/{type}/{id}/graph` | Grafo relacional del objeto, cargado bajo demanda |
+
+`/api/admin/explore` admite `type` repetido, `q`, `owner`, `limit` y `offset`. Cada elemento incluye el discriminador `resource_type`; la respuesta también devuelve `total` y contadores por tipo. Los tipos válidos son `user`, `group`, `agent`, `connection`, `knowledge` y `workflow`.
+
+El grafo devuelve `root_id`, `nodes` y `edges`. Incluye relaciones de propiedad, pertenencia a grupos, compartición, uso de conexiones/conocimiento y participación en orquestaciones.
+
 ### Usuarios
 
 | Método | Endpoint | Descripción |

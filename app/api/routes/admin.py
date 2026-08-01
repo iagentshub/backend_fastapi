@@ -12,6 +12,7 @@ alto riesgo sin beneficio real.
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
 from typing import Any
@@ -48,6 +49,15 @@ _agents = _AgentStorage(_AGENTS_DIR)
 _workflows = _WorkflowStorage()
 
 admin_router = APIRouter(prefix="/api/admin", tags=["admin"])
+
+_ADMIN_EXPLORE_TYPES = (
+    "user",
+    "group",
+    "agent",
+    "connection",
+    "knowledge",
+    "workflow",
+)
 
 
 def _version_re(variant: str) -> re.Pattern:
@@ -93,7 +103,9 @@ async def _latest_github_commit_sha(repo: str, branch: str = "main") -> str | No
     url = f"https://api.github.com/repos/{repo}/commits/{branch}"
     try:
         async with httpx.AsyncClient(timeout=10) as client:
-            resp = await client.get(url, headers={"Accept": "application/vnd.github+json"})
+            resp = await client.get(
+                url, headers={"Accept": "application/vnd.github+json"}
+            )
             resp.raise_for_status()
             return resp.json().get("sha")
     except httpx.HTTPError:
@@ -298,7 +310,9 @@ async def admin_metadata_table_data(
             )
         }
         if table_name not in valid:
-            raise APIError(404, "not_found", "Tabla no encontrada", extra={"resource": "table"})
+            raise APIError(
+                404, "not_found", "Tabla no encontrada", extra={"resource": "table"}
+            )
 
         if IS_PG:
             col_rows = await conn.fetchall(
@@ -489,14 +503,18 @@ async def admin_patch_user(
 ) -> dict[str, Any]:
     target = await get_user_by_username(username)
     if target and target["id"] == admin:
-        raise APIError(400, "cannot_modify_own_account", "No puedes modificar tu propia cuenta")
+        raise APIError(
+            400, "cannot_modify_own_account", "No puedes modificar tu propia cuenta"
+        )
     body = await request.json()
     updates: dict[str, Any] = {}
     if "is_active" in body:
         updates["is_active"] = 1 if body["is_active"] else 0
     if "role" in body:
         if body["role"] not in ("admin", "gestor", "standard"):
-            raise APIError(400, "invalid_field", "Rol inválido", extra={"field": "role"})
+            raise APIError(
+                400, "invalid_field", "Rol inválido", extra={"field": "role"}
+            )
         updates["role"] = body["role"]
     new_pw = str(body.get("password") or "").strip()
     if new_pw and len(new_pw) < 8:  # N4: mínimo coherente con el registro
@@ -506,9 +524,13 @@ async def admin_patch_user(
     if not updates and not new_pw:
         raise APIError(400, "no_changes", "Sin cambios")
     if updates and not await admin_update_user(username, **updates):
-        raise APIError(404, "not_found", "Usuario no encontrado", extra={"resource": "user"})
+        raise APIError(
+            404, "not_found", "Usuario no encontrado", extra={"resource": "user"}
+        )
     if new_pw and not await admin_set_password(username, new_pw):
-        raise APIError(404, "not_found", "Usuario no encontrado", extra={"resource": "user"})
+        raise APIError(
+            404, "not_found", "Usuario no encontrado", extra={"resource": "user"}
+        )
     if "is_active" in updates:
         user = await get_user_by_username(username)
         email = user.get("email") if user else None
@@ -529,6 +551,7 @@ async def admin_create_user(
     """
     from datetime import datetime
     from datetime import timezone as _tz
+
     body = await request.json()
     username = normalize_username(str(body.get("username") or ""))
     email = str(body.get("email") or "").strip().lower()
@@ -538,21 +561,28 @@ async def admin_create_user(
 
     if not is_valid_username(username):
         raise APIError(
-            400, "invalid_field",
+            400,
+            "invalid_field",
             "El usuario debe tener entre 5 y 32 caracteres: a-z, 0-9, punto, guion o guion bajo",
             extra={"field": "username"},
         )
     if not email:
         raise APIError(400, "email_required", "El email es obligatorio")
     if not is_valid_email(email):
-        raise APIError(400, "invalid_field", "Email no válido", extra={"field": "email"})
+        raise APIError(
+            400, "invalid_field", "Email no válido", extra={"field": "email"}
+        )
     if not password:
         raise APIError(400, "password_required", "La contraseña es obligatoria")
     if len(password) < 8:  # N4: mínimo coherente con el registro
-        raise APIError(400, "password_too_short", "La contraseña debe tener al menos 8 caracteres")
+        raise APIError(
+            400, "password_too_short", "La contraseña debe tener al menos 8 caracteres"
+        )
     if role not in ("standard", "admin"):
         raise APIError(
-            422, "invalid_field", "role debe ser 'standard' o 'admin'",
+            422,
+            "invalid_field",
+            "role debe ser 'standard' o 'admin'",
             extra={"field": "role"},
         )
 
@@ -562,12 +592,18 @@ async def admin_create_user(
         async with open_db() as conn, conn.transaction():
             if await conn.fetchone("SELECT 1 FROM users WHERE email = ?", (email,)):
                 raise APIError(
-                    409, "already_exists", "El email ya está registrado",
+                    409,
+                    "already_exists",
+                    "El email ya está registrado",
                     extra={"resource": "email"},
                 )
-            if await conn.fetchone("SELECT 1 FROM users WHERE username = ?", (username,)):
+            if await conn.fetchone(
+                "SELECT 1 FROM users WHERE username = ?", (username,)
+            ):
                 raise APIError(
-                    409, "already_exists", "El usuario ya existe",
+                    409,
+                    "already_exists",
+                    "El usuario ya existe",
                     extra={"resource": "user"},
                 )
             await conn.execute(
@@ -583,7 +619,7 @@ async def admin_create_user(
                     display_name or None,
                     role,
                     1,
-                    1,   # verificado — el admin crea la cuenta directamente
+                    1,  # verificado — el admin crea la cuenta directamente
                     now,
                 ),
             )
@@ -602,9 +638,13 @@ async def admin_delete_user(
 ) -> dict[str, Any]:
     target = await get_user_by_username(username)
     if target and target["id"] == admin:
-        raise APIError(400, "cannot_delete_own_account", "No puedes eliminar tu propia cuenta")
+        raise APIError(
+            400, "cannot_delete_own_account", "No puedes eliminar tu propia cuenta"
+        )
     if not await delete_user(username):
-        raise APIError(404, "not_found", "Usuario no encontrado", extra={"resource": "user"})
+        raise APIError(
+            404, "not_found", "Usuario no encontrado", extra={"resource": "user"}
+        )
     return {"ok": True}
 
 
@@ -663,7 +703,9 @@ async def admin_delete_connection(
     from app.storage.storage import ConnectionStorage
 
     if not await ConnectionStorage(DB_FILE).delete(conn_id, owner_id=None):
-        raise APIError(404, "not_found", "Conexión no encontrada", extra={"resource": "connection"})
+        raise APIError(
+            404, "not_found", "Conexión no encontrada", extra={"resource": "connection"}
+        )
     return {"ok": True}
 
 
@@ -704,7 +746,9 @@ async def admin_update_agent(
 ) -> dict[str, Any]:
     agent = await _agents.get(agent_id, scope="private")
     if not agent:
-        raise APIError(404, "not_found", "Agente no encontrado", extra={"resource": "agent"})
+        raise APIError(
+            404, "not_found", "Agente no encontrado", extra={"resource": "agent"}
+        )
     payload = await request.json()
     protected = {"id", "owner_id", "created_at", "scope"}
     updated = {**agent, **{k: v for k, v in payload.items() if k not in protected}}
@@ -722,12 +766,16 @@ async def admin_delete_agent(
 ) -> dict[str, Any]:
     if scope not in ("public", "private"):
         raise APIError(
-            400, "invalid_field", "scope debe ser 'public' o 'private'",
+            400,
+            "invalid_field",
+            "scope debe ser 'public' o 'private'",
             extra={"field": "scope"},
         )
     deleted = await _agents.delete(agent_id, scope=scope, allow_public=True)
     if not deleted:
-        raise APIError(404, "not_found", "Agente no encontrado", extra={"resource": "agent"})
+        raise APIError(
+            404, "not_found", "Agente no encontrado", extra={"resource": "agent"}
+        )
     return {"ok": True}
 
 
@@ -756,7 +804,9 @@ async def admin_delete_knowledge(
     from app.storage.knowledge import KnowledgeStorage
 
     if not await KnowledgeStorage(DB_FILE).delete(item_id, owner_id=None):
-        raise APIError(404, "not_found", "Elemento no encontrado", extra={"resource": "item"})
+        raise APIError(
+            404, "not_found", "Elemento no encontrado", extra={"resource": "item"}
+        )
     return {"ok": True}
 
 
@@ -767,7 +817,9 @@ async def admin_list_workflows(_: str = Depends(require_admin)) -> list[dict[str
         user_rows = await conn.fetchall("SELECT id, username FROM users")
     username_map = {r[0]: r[1] for r in user_rows}
     for item in items:
-        item["owner_username"] = username_map.get(item.get("owner_id", ""), item.get("owner_id", ""))
+        item["owner_username"] = username_map.get(
+            item.get("owner_id", ""), item.get("owner_id", "")
+        )
         definition = item.pop("definition", None) or {}
         item["steps"] = len(definition.get("nodes") or [])
     return items
@@ -778,7 +830,12 @@ async def admin_delete_workflow(
     workflow_id: str, _: str = Depends(require_admin)
 ) -> dict[str, Any]:
     if not await _workflows.delete_any(workflow_id):
-        raise APIError(404, "not_found", "Orquestación no encontrada", extra={"resource": "workflow"})
+        raise APIError(
+            404,
+            "not_found",
+            "Orquestación no encontrada",
+            extra={"resource": "workflow"},
+        )
     return {"ok": True}
 
 
@@ -858,7 +915,9 @@ async def admin_delete_group(
     group_id: str, _: str = Depends(require_admin)
 ) -> dict[str, Any]:
     if not await _groups.get(group_id):
-        raise APIError(404, "not_found", "Grupo no encontrado", extra={"resource": "group"})
+        raise APIError(
+            404, "not_found", "Grupo no encontrado", extra={"resource": "group"}
+        )
     await _groups.delete(group_id)
     return {"ok": True}
 
@@ -871,13 +930,355 @@ async def admin_set_group_status(
     status = str(body.get("status") or "").strip()
     if status not in ("active", "disabled"):
         raise APIError(
-            422, "invalid_field", "status debe ser 'active' o 'disabled'",
+            422,
+            "invalid_field",
+            "status debe ser 'active' o 'disabled'",
             extra={"field": "status"},
         )
     if not await _groups.get(group_id):
-        raise APIError(404, "not_found", "Grupo no encontrado", extra={"resource": "group"})
+        raise APIError(
+            404, "not_found", "Grupo no encontrado", extra={"resource": "group"}
+        )
     await _groups.set_status(group_id, status)
     return {"ok": True, "status": status}
+
+
+def _explore_search_text(resource_type: str, item: dict[str, Any]) -> str:
+    fields = {
+        "user": ("username", "email", "display_name"),
+        "group": ("name", "created_by_username"),
+        "agent": ("name", "id", "owner_username", "description"),
+        "connection": ("name", "id", "owner_username", "type"),
+        "knowledge": ("title", "id", "owner_username", "type"),
+        "workflow": ("name", "id", "owner_username", "description"),
+    }[resource_type]
+    return " ".join(str(item.get(field) or "") for field in fields).lower()
+
+
+async def _admin_inventory() -> dict[str, list[dict[str, Any]]]:
+    users, groups, agents, connections, knowledge, workflows = await asyncio.gather(
+        admin_list_users(_=""),
+        admin_list_groups(_=""),
+        admin_list_agents(_=""),
+        admin_list_connections(_=""),
+        admin_list_knowledge(_=""),
+        admin_list_workflows(_=""),
+    )
+    return {
+        "user": users,
+        "group": groups,
+        "agent": agents,
+        "connection": connections,
+        "knowledge": knowledge,
+        "workflow": workflows,
+    }
+
+
+@admin_router.get("/explore")
+async def admin_explore(
+    resource_types: list[str] | None = Query(None, alias="type"),
+    q: str | None = None,
+    owner: str | None = None,
+    limit: int = Query(200, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    _: str = Depends(require_admin),
+) -> dict[str, Any]:
+    """Inventario administrativo unificado con discriminador por tipo."""
+    requested = set(resource_types or _ADMIN_EXPLORE_TYPES)
+    invalid = requested.difference(_ADMIN_EXPLORE_TYPES)
+    if invalid:
+        raise APIError(
+            422,
+            "invalid_field",
+            "Tipo de recurso no válido",
+            extra={"field": "type"},
+        )
+
+    inventory = await _admin_inventory()
+    query = (q or "").strip().lower()
+    owner_filter = (owner or "").strip().lower()
+    counts = {resource_type: len(values) for resource_type, values in inventory.items()}
+    items: list[dict[str, Any]] = []
+    for resource_type in _ADMIN_EXPLORE_TYPES:
+        if resource_type not in requested:
+            continue
+        for raw in inventory[resource_type]:
+            if query and query not in _explore_search_text(resource_type, raw):
+                continue
+            item_owner = str(
+                raw.get("owner_username")
+                or raw.get("created_by_username")
+                or raw.get("username")
+                or ""
+            ).lower()
+            if owner_filter and item_owner != owner_filter:
+                continue
+            item = dict(raw)
+            item["resource_type"] = resource_type
+            items.append(item)
+
+    def sort_key(item: dict[str, Any]) -> str:
+        return str(item.get("updated_at") or item.get("created_at") or "")
+
+    items.sort(key=sort_key, reverse=True)
+    return {
+        "items": items[offset : offset + limit],
+        "total": len(items),
+        "counts": counts,
+        "limit": limit,
+        "offset": offset,
+    }
+
+
+def _graph_node(
+    resource_type: str,
+    resource_id: str,
+    label: str,
+    description: str = "",
+) -> dict[str, str]:
+    return {
+        "id": f"{resource_type}:{resource_id}",
+        "resource_id": resource_id,
+        "label": label or resource_id,
+        "type": resource_type,
+        "description": description,
+    }
+
+
+@admin_router.get("/resources/{resource_type}/{resource_id}/graph")
+async def admin_resource_graph(
+    resource_type: str,
+    resource_id: str,
+    _: str = Depends(require_admin),
+) -> dict[str, Any]:
+    """Devuelve el vecindario relacional inmediato de un recurso de admin."""
+    if resource_type not in _ADMIN_EXPLORE_TYPES:
+        raise APIError(
+            422,
+            "invalid_field",
+            "Tipo de recurso no válido",
+            extra={"field": "resource_type"},
+        )
+
+    inventory = await _admin_inventory()
+    workflows_full = await _workflows.list_all()
+    workflows_by_id = {str(item.get("id")): item for item in workflows_full}
+    users_by_id = {str(item.get("id")): item for item in inventory["user"]}
+    users_by_username = {str(item.get("username")): item for item in inventory["user"]}
+    groups_by_id = {str(item.get("id")): item for item in inventory["group"]}
+    resources_by_type = {
+        kind: {str(item.get("id")): item for item in values}
+        for kind, values in inventory.items()
+        if kind not in ("user", "group")
+    }
+
+    if resource_type == "user":
+        root = users_by_id.get(resource_id) or users_by_username.get(resource_id)
+    elif resource_type == "group":
+        root = groups_by_id.get(resource_id)
+    else:
+        root = resources_by_type[resource_type].get(resource_id)
+    if not root:
+        raise APIError(
+            404,
+            "not_found",
+            "Recurso no encontrado",
+            extra={"resource": resource_type},
+        )
+
+    canonical_resource_id = str(root.get("id") or resource_id)
+    nodes: dict[str, dict[str, str]] = {}
+    edges: dict[tuple[str, str, str], dict[str, Any]] = {}
+
+    def add_node(kind: str, item_id: str, label: str, description: str = "") -> str:
+        node = _graph_node(kind, item_id, label, description)
+        nodes[node["id"]] = node
+        return node["id"]
+
+    def add_edge(
+        source: str, target: str, relation: str, *, dashed: bool = False
+    ) -> None:
+        edges[(source, target, relation)] = {
+            "source_id": source,
+            "target_id": target,
+            "relation": relation,
+            "dashed": dashed,
+        }
+
+    def resource_label(kind: str, item: dict[str, Any]) -> str:
+        return str(
+            item.get("name")
+            or item.get("title")
+            or item.get("username")
+            or item.get("id")
+            or kind
+        )
+
+    root_id = add_node(
+        resource_type,
+        canonical_resource_id,
+        resource_label(resource_type, root),
+        str(root.get("description") or root.get("email") or ""),
+    )
+
+    def connect_owner(kind: str, item: dict[str, Any]) -> None:
+        owner_id = str(item.get("owner_id") or "")
+        if not owner_id:
+            return
+        if owner_id in users_by_id:
+            owner = users_by_id[owner_id]
+            owner_node = add_node("user", owner_id, resource_label("user", owner))
+        elif owner_id in groups_by_id:
+            owner = groups_by_id[owner_id]
+            owner_node = add_node("group", owner_id, resource_label("group", owner))
+        else:
+            return
+        item_node = add_node(kind, str(item["id"]), resource_label(kind, item))
+        add_edge(owner_node, item_node, "owns")
+
+    if resource_type in resources_by_type:
+        connect_owner(resource_type, root)
+
+    async with open_db() as conn:
+        member_rows = await conn.fetchall(
+            "SELECT group_id, username, role FROM group_members"
+        )
+        share_rows = await conn.fetchall(
+            "SELECT group_id, resource_type, resource_id FROM resource_group_shares"
+        )
+
+    if resource_type == "user":
+        username = str(root.get("username") or "")
+        user_id = str(root.get("id") or "")
+        for row in member_rows:
+            if str(row["username"]) != username:
+                continue
+            group = groups_by_id.get(str(row["group_id"]))
+            if group:
+                group_node = add_node(
+                    "group", str(group["id"]), resource_label("group", group)
+                )
+                add_edge(root_id, group_node, f"member:{row['role']}")
+        for kind, by_id in resources_by_type.items():
+            for item in by_id.values():
+                if str(item.get("owner_id") or "") == user_id:
+                    item_node = add_node(
+                        kind, str(item["id"]), resource_label(kind, item)
+                    )
+                    add_edge(root_id, item_node, "owns")
+
+    if resource_type == "group":
+        for row in member_rows:
+            if str(row["group_id"]) != canonical_resource_id:
+                continue
+            user = users_by_username.get(str(row["username"]))
+            if user:
+                user_node = add_node(
+                    "user", str(user["id"]), resource_label("user", user)
+                )
+                add_edge(user_node, root_id, f"member:{row['role']}")
+        for kind, by_id in resources_by_type.items():
+            for item in by_id.values():
+                if str(item.get("owner_id") or "") == canonical_resource_id:
+                    item_node = add_node(
+                        kind, str(item["id"]), resource_label(kind, item)
+                    )
+                    add_edge(root_id, item_node, "owns")
+
+    for row in share_rows:
+        kind = str(row["resource_type"])
+        item_id = str(row["resource_id"])
+        group_id = str(row["group_id"])
+        if kind not in resources_by_type or item_id not in resources_by_type[kind]:
+            continue
+        if not (
+            (resource_type == "group" and canonical_resource_id == group_id)
+            or (resource_type == kind and canonical_resource_id == item_id)
+        ):
+            continue
+        group = groups_by_id.get(group_id)
+        item = resources_by_type[kind][item_id]
+        if group:
+            group_node = add_node("group", group_id, resource_label("group", group))
+            item_node = add_node(kind, item_id, resource_label(kind, item))
+            add_edge(group_node, item_node, "shared", dashed=True)
+
+    agents = resources_by_type["agent"]
+    if resource_type == "agent":
+        connection_ids = [str(root.get("connection_id") or "")]
+        connection_ids.extend(
+            str(value).split("::", 1)[0] for value in (root.get("op_connections") or [])
+        )
+        for connection_id in {value for value in connection_ids if value}:
+            connection = resources_by_type["connection"].get(connection_id)
+            if connection:
+                connection_node = add_node(
+                    "connection",
+                    connection_id,
+                    resource_label("connection", connection),
+                )
+                add_edge(root_id, connection_node, "uses")
+        for knowledge_id in root.get("knowledge") or []:
+            knowledge = resources_by_type["knowledge"].get(str(knowledge_id))
+            if knowledge:
+                knowledge_node = add_node(
+                    "knowledge",
+                    str(knowledge_id),
+                    resource_label("knowledge", knowledge),
+                )
+                add_edge(root_id, knowledge_node, "uses")
+        for skill_id in root.get("skills") or []:
+            skill_node = add_node("skill", str(skill_id), str(skill_id))
+            add_edge(root_id, skill_node, "uses")
+
+    if resource_type in ("connection", "knowledge"):
+        field = "connection_id" if resource_type == "connection" else "knowledge"
+        for agent in agents.values():
+            if field == "connection_id":
+                operation_connections = {
+                    str(value).split("::", 1)[0]
+                    for value in (agent.get("op_connections") or [])
+                }
+                related = (
+                    str(agent.get(field) or "") == canonical_resource_id
+                    or canonical_resource_id in operation_connections
+                )
+            else:
+                related = canonical_resource_id in {
+                    str(value) for value in (agent.get(field) or [])
+                }
+            if related:
+                agent_node = add_node(
+                    "agent", str(agent["id"]), resource_label("agent", agent)
+                )
+                add_edge(agent_node, root_id, "uses")
+
+    for workflow_id, workflow in workflows_by_id.items():
+        agent_ids = {
+            str(node.get("agent_id") or "")
+            for node in (workflow.get("definition") or {}).get("nodes", [])
+        } - {""}
+        if resource_type == "workflow" and workflow_id == canonical_resource_id:
+            for agent_id in agent_ids:
+                agent = agents.get(agent_id)
+                agent_node = add_node(
+                    "agent",
+                    agent_id,
+                    resource_label("agent", agent) if agent else agent_id,
+                )
+                add_edge(root_id, agent_node, "orchestrates")
+        elif resource_type == "agent" and canonical_resource_id in agent_ids:
+            workflow_item = resources_by_type["workflow"].get(workflow_id, workflow)
+            workflow_node = add_node(
+                "workflow", workflow_id, resource_label("workflow", workflow_item)
+            )
+            add_edge(workflow_node, root_id, "orchestrates")
+
+    return {
+        "root_id": root_id,
+        "nodes": list(nodes.values()),
+        "edges": list(edges.values()),
+    }
 
 
 @admin_router.put("/resources/{resource_type}/{resource_id}/verify")
@@ -906,7 +1307,9 @@ async def admin_verify_resource(
         )
         if not row:
             raise APIError(
-                404, "not_found", "Recurso no encontrado en el catálogo social",
+                404,
+                "not_found",
+                "Recurso no encontrado en el catálogo social",
                 extra={"resource": "resource"},
             )
         await conn.execute(
@@ -943,7 +1346,9 @@ async def admin_set_resource_owner(
     body = await request.json()
     new_owner = str(body.get("username") or body.get("owner_id") or "").strip().lower()
     if not new_owner:
-        raise APIError(400, "invalid_field", "owner_id es obligatorio", extra={"field": "owner_id"})
+        raise APIError(
+            400, "invalid_field", "owner_id es obligatorio", extra={"field": "owner_id"}
+        )
 
     async with open_db() as conn:
         user_row = await conn.fetchone(
@@ -951,18 +1356,25 @@ async def admin_set_resource_owner(
         )
         if not user_row:
             raise APIError(
-                404, "not_found", "El usuario propietario no existe",
+                404,
+                "not_found",
+                "El usuario propietario no existe",
                 extra={"resource": "user"},
             )
         if not user_row["is_active"]:
             raise APIError(
-                400, "invalid_field", "El usuario propietario no está activo",
+                400,
+                "invalid_field",
+                "El usuario propietario no está activo",
                 extra={"field": "owner_id"},
             )
         row = await conn.fetchone(f"SELECT id FROM {table} WHERE id=?", (resource_id,))
         if not row:
             raise APIError(
-                404, "not_found", "Recurso no encontrado", extra={"resource": resource_type},
+                404,
+                "not_found",
+                "Recurso no encontrado",
+                extra={"resource": resource_type},
             )
         await conn.execute(
             f"UPDATE {table} SET owner_id=? WHERE id=?",
@@ -980,14 +1392,18 @@ async def admin_impersonate(
 ) -> dict[str, Any]:
     target_user = await get_user_by_username(username)
     if not target_user:
-        raise APIError(404, "not_found", "Usuario no encontrado", extra={"resource": "user"})
+        raise APIError(
+            404, "not_found", "Usuario no encontrado", extra={"resource": "user"}
+        )
     if target_user["id"] == admin:
         raise APIError(400, "already_own_user", "Ya eres este usuario")
 
     # Verificar que la cuenta del usuario objetivo esté activa
     if not target_user.get("is_active", 1):
         raise APIError(
-            400, "cannot_impersonate_disabled", "No se puede impersonar una cuenta desactivada"
+            400,
+            "cannot_impersonate_disabled",
+            "No se puede impersonar una cuenta desactivada",
         )
 
     # N3: registrar la impersonación para auditoría de seguridad

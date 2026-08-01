@@ -29,6 +29,17 @@ Registration accepts `username`, `email`, and `password`. Login accepts `identif
 
 All admin endpoints require the `admin` role.
 
+### Explore resources
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/admin/explore` | Unified inventory of users, groups, agents, connections, knowledge and orchestrations |
+| `GET` | `/api/admin/resources/{type}/{id}/graph` | Relationship graph for an object, loaded on demand |
+
+`/api/admin/explore` accepts repeated `type`, `q`, `owner`, `limit`, and `offset` parameters. Every item includes the `resource_type` discriminator; the response also returns `total` and per-type counts. Valid types are `user`, `group`, `agent`, `connection`, `knowledge`, and `workflow`.
+
+The graph response contains `root_id`, `nodes`, and `edges`, covering ownership, group membership, sharing, connection/knowledge usage, and orchestration participation.
+
 ### Users
 
 | Method | Endpoint | Description |
