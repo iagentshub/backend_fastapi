@@ -15,7 +15,6 @@ from app.utils import flog
 
 router = APIRouter(prefix="/api/settings", tags=["settings"])
 
-_PUBLIC_KEYS = {"theme", "language"}
 _DEFAULTS = {"theme": "dark-red", "language": "es"}
 _KNOWN_WIDGETS = {
     "summary",
@@ -51,6 +50,30 @@ VALID_THEMES = {
     "dusk",
 }
 VALID_LANGUAGES = {"es", "en"}
+
+
+def _theme_policy() -> tuple[bool, str]:
+    cfg = _read_platform_cfg()
+    default_theme = str(cfg.get("default_theme") or _DEFAULTS["theme"])
+    if default_theme not in VALID_THEMES:
+        default_theme = _DEFAULTS["theme"]
+    return bool(cfg.get("users_can_configure_theme", True)), default_theme
+
+
+def _settings_response(prefs: dict) -> dict:
+    configurable, default_theme = _theme_policy()
+    preferred_theme = str(prefs.get("theme") or "")
+    effective_theme = (
+        preferred_theme
+        if configurable and preferred_theme in VALID_THEMES
+        else default_theme
+    )
+    return {
+        "theme": effective_theme,
+        "language": prefs.get("language", _DEFAULTS["language"]),
+        "theme_configurable": configurable,
+        "default_theme": default_theme,
+    }
 
 
 async def _get_prefs(user_id: str) -> dict:
@@ -114,7 +137,7 @@ class DashboardLayoutV2Update(BaseModel):
 @router.get("")
 async def get_settings(username: str = Depends(require_auth)) -> dict:
     prefs = await _get_prefs(username)
-    return {k: prefs.get(k, _DEFAULTS[k]) for k in _PUBLIC_KEYS}
+    return _settings_response(prefs)
 
 
 @router.put("")
@@ -124,6 +147,14 @@ async def update_settings(
 ) -> dict:
     prefs = await _get_prefs(username)
     if body.theme is not None:
+        configurable, _ = _theme_policy()
+        if not configurable:
+            raise APIError(
+                403,
+                "forbidden",
+                "El administrador ha desactivado la personalización del tema",
+                extra={"field": "theme"},
+            )
         if body.theme not in VALID_THEMES:
             raise APIError(
                 422,
@@ -142,7 +173,7 @@ async def update_settings(
             )
         prefs["language"] = body.language
     await _save_prefs(username, prefs)
-    return {k: prefs.get(k, _DEFAULTS[k]) for k in _PUBLIC_KEYS}
+    return _settings_response(prefs)
 
 
 @router.get("/dashboard-layout")
@@ -252,6 +283,8 @@ _PLATFORM_DEFAULTS: dict = {
     "max_concurrent_sessions": 0,  # 0 = sin límite
     "guest_enabled": True,
     "email_verify": False,
+    "users_can_configure_theme": True,
+    "default_theme": "dark-red",
     "log_retention_days": 30,
     "stress_max_concurrency": 0,  # máx peticiones en vuelo simultáneo en Centinel (0=sin límite)
     # Si está activo, "/" muestra una landing de presentación del proyecto en
@@ -315,6 +348,8 @@ class PlatformConfigUpdate(BaseModel):
     max_concurrent_sessions: Optional[int] = None
     guest_enabled: Optional[bool] = None
     email_verify: Optional[bool] = None
+    users_can_configure_theme: Optional[bool] = None
+    default_theme: Optional[str] = None
     log_retention_days: Optional[int] = None
     landing_enabled: Optional[bool] = None
     stress_max_concurrency: Optional[int] = None
@@ -332,6 +367,8 @@ async def get_platform_config_public() -> dict:
         "billing_enabled": cfg.get("billing_enabled", False),
         "guest_enabled": cfg.get("guest_enabled", True),
         "registration": cfg.get("registration", "open"),
+        "users_can_configure_theme": cfg.get("users_can_configure_theme", True),
+        "default_theme": cfg.get("default_theme", "dark-red"),
         "landing_enabled": cfg.get("landing_enabled", False),
         "oauth_google_enabled": cfg.get("oauth_google_enabled", True),
         "oauth_apple_enabled": cfg.get("oauth_apple_enabled", True),
@@ -360,6 +397,13 @@ async def update_platform_config(
             "invalid_field",
             "registration debe ser 'open' o 'closed'",
             extra={"field": "registration"},
+        )
+    if "default_theme" in update and update["default_theme"] not in VALID_THEMES:
+        raise APIError(
+            422,
+            "invalid_field",
+            f"Tema no válido: {update['default_theme']}",
+            extra={"field": "default_theme"},
         )
     if "max_users" in update and update["max_users"] < 0:
         raise APIError(

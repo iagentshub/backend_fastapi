@@ -156,7 +156,7 @@ Preferencias y configuración del dashboard por usuario. Todos los endpoints req
 
 | Método | Endpoint | Descripción |
 |---|---|---|
-| `GET` | `/api/settings` | Obtener las preferencias del usuario actual (`theme`, `language`) |
+| `GET` | `/api/settings` | Obtener preferencias efectivas (`theme`, `language`, `theme_configurable`, `default_theme`) |
 | `PUT` | `/api/settings` | Actualizar una o ambas preferencias |
 | `GET` | `/api/settings/dashboard-layout` | Obtener el orden de paneles del dashboard (`{"layout": ["summary","token-usage",…]}`) |
 | `PUT` | `/api/settings/dashboard-layout` | Guardar el orden de paneles; valida que los IDs correspondan a widgets conocidos |
@@ -165,10 +165,12 @@ Preferencias y configuración del dashboard por usuario. Todos los endpoints req
 
 **Cuerpo del PUT `/api/settings`** (todos los campos son opcionales):
 ```json
-{ "theme": "dark-red", "language": "es" }
+{ "theme": "dark-red", "language": "es", "theme_configurable": true, "default_theme": "dark-red" }
 ```
 
-Valores válidos de `theme`: `dark-red`, `dark-blue`, `dark-orange`, `dark-purple`, `light-red`, `light-blue`, `light-orange`, `light-purple`. Los nombres legacy `noir`, `marble`, `ember`, `ocean`, `forest`, `dusk` siguen siendo válidos por compatibilidad. Valores válidos de `language`: `es`, `en`.
+Valores válidos de `theme`: `dark-red`, `dark-blue`, `dark-orange`, `dark-purple`, `light-red`, `light-blue`, `light-orange`, `light-purple`. Los nombres legacy `noir`, `marble`, `ember`, `ocean`, `forest`, `dusk` siguen siendo válidos por compatibilidad. Valores válidos de `language`: `es`, `en`. Si `theme_configurable` es `false`, el backend rechaza cambios de tema y devuelve siempre el `default_theme` definido por administración; la preferencia anterior del usuario se conserva para una posible reactivación.
+
+La configuración global se administra mediante `GET/PUT /api/settings/platform` con `users_can_configure_theme` y `default_theme`. Ambos campos también se exponen en `/api/settings/platform/public` para aplicar el tema administrado antes del login y a sesiones invitadas.
 
 **Ejemplo de cuerpo del PUT `/api/settings/dashboard-layout`**:
 ```json

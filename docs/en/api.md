@@ -156,7 +156,7 @@ Per-user preferences and dashboard configuration. All endpoints require authenti
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/settings` | Get the current user's preferences (`theme`, `language`) |
+| `GET` | `/api/settings` | Get effective preferences (`theme`, `language`, `theme_configurable`, `default_theme`) |
 | `PUT` | `/api/settings` | Update one or both preferences |
 | `GET` | `/api/settings/dashboard-layout` | Get the dashboard panel order (`{"layout": ["summary","token-usage",…]}`) |
 | `PUT` | `/api/settings/dashboard-layout` | Save the panel order; validates that IDs correspond to known widgets |
@@ -165,10 +165,12 @@ Per-user preferences and dashboard configuration. All endpoints require authenti
 
 **PUT `/api/settings` body** (all fields optional):
 ```json
-{ "theme": "dark-red", "language": "es" }
+{ "theme": "dark-red", "language": "es", "theme_configurable": true, "default_theme": "dark-red" }
 ```
 
-Valid `theme` values: `dark-red`, `dark-blue`, `dark-orange`, `dark-purple`, `light-red`, `light-blue`, `light-orange`, `light-purple`. Legacy names `noir`, `marble`, `ember`, `ocean`, `forest`, `dusk` remain valid for backward compatibility. Valid `language` values: `es`, `en`.
+Valid `theme` values: `dark-red`, `dark-blue`, `dark-orange`, `dark-purple`, `light-red`, `light-blue`, `light-orange`, `light-purple`. Legacy names `noir`, `marble`, `ember`, `ocean`, `forest`, `dusk` remain valid for backward compatibility. Valid `language` values: `es`, `en`. When `theme_configurable` is `false`, the backend rejects theme changes and always returns the admin-defined `default_theme`; the previous user preference is retained in case customization is enabled again.
+
+Global policy is managed through `GET/PUT /api/settings/platform` using `users_can_configure_theme` and `default_theme`. Both fields are also exposed by `/api/settings/platform/public` so the managed theme can be applied before login and to guest sessions.
 
 **Example PUT `/api/settings/dashboard-layout` body**:
 ```json

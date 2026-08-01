@@ -34,6 +34,8 @@ def test_get_settings_defaults(client):
     data = r.json()
     assert data["theme"] == "dark-red"
     assert data["language"] == "es"
+    assert data["theme_configurable"] is True
+    assert data["default_theme"] == "dark-red"
 
 
 # ---------------------------------------------------------------------------
@@ -312,7 +314,11 @@ def test_get_admin_settings_forbidden_non_admin(client, reset_rate_limiter):
     """Usuario estándar devuelve 403."""
     client.post(
         "/api/auth/register",
-        json={"username": "stdsettings", "email": "std_set@example.com", "password": "pass1234"},
+        json={
+            "username": "stdsettings",
+            "email": "std_set@example.com",
+            "password": "pass1234",
+        },
     )
     client.post(
         "/api/auth/login", json={"email": "std_set@example.com", "password": "pass1234"}
@@ -376,7 +382,11 @@ def test_put_admin_settings_forbidden_non_admin(client, reset_rate_limiter):
     """Usuario estándar no puede modificar ajustes admin."""
     client.post(
         "/api/auth/register",
-        json={"username": "stdsettings2", "email": "std_set2@example.com", "password": "pass1234"},
+        json={
+            "username": "stdsettings2",
+            "email": "std_set2@example.com",
+            "password": "pass1234",
+        },
     )
     client.post(
         "/api/auth/login",
@@ -424,7 +434,14 @@ def test_get_platform_config_unauthenticated(client):
 
 
 def test_get_platform_config_forbidden_for_standard(client, reset_rate_limiter):
-    client.post("/api/auth/register", json={"username": "platformcfg", "email": "platformcfg@example.com", "password": "pass1234"})
+    client.post(
+        "/api/auth/register",
+        json={
+            "username": "platformcfg",
+            "email": "platformcfg@example.com",
+            "password": "pass1234",
+        },
+    )
     r = client.get("/api/settings/platform")
     assert r.status_code == 403
 
@@ -455,3 +472,81 @@ def test_platform_public_reflects_admin_oauth_toggle(admin_client, client):
     admin_client.put("/api/settings/platform", json={"oauth_microsoft_enabled": False})
     r = client.get("/api/settings/platform/public")
     assert r.json()["oauth_microsoft_enabled"] is False
+
+
+def test_admin_can_force_platform_theme(admin_client, client):
+    r = admin_client.put(
+        "/api/settings/platform",
+        json={
+            "users_can_configure_theme": False,
+            "default_theme": "light-purple",
+        },
+    )
+    assert r.status_code == 200
+
+    public = client.get("/api/settings/platform/public")
+    assert public.status_code == 200
+    assert public.json()["users_can_configure_theme"] is False
+    assert public.json()["default_theme"] == "light-purple"
+
+    _auth_client(client)
+    settings = client.get("/api/settings")
+    assert settings.status_code == 200
+    assert settings.json()["theme"] == "light-purple"
+    assert settings.json()["theme_configurable"] is False
+    assert settings.json()["default_theme"] == "light-purple"
+
+
+def test_forced_theme_rejects_user_theme_but_allows_language(admin_client, client):
+    admin_client.put(
+        "/api/settings/platform",
+        json={
+            "users_can_configure_theme": False,
+            "default_theme": "dark-blue",
+        },
+    )
+    _auth_client(client)
+
+    theme = client.put("/api/settings", json={"theme": "light-red"})
+    language = client.put("/api/settings", json={"language": "en"})
+
+    assert theme.status_code == 403
+    assert language.status_code == 200
+    assert language.json()["language"] == "en"
+    assert language.json()["theme"] == "dark-blue"
+
+
+def test_reenabling_theme_restores_user_preference(admin_client, client):
+    from app.auth.auth import create_token
+
+    _auth_client(client)
+    chosen = client.put("/api/settings", json={"theme": "light-orange"})
+    assert chosen.status_code == 200
+
+    client.cookies.set("ga_token", create_token("testadmin"))
+    admin_client.put(
+        "/api/settings/platform",
+        json={
+            "users_can_configure_theme": False,
+            "default_theme": "dark-purple",
+        },
+    )
+    client.cookies.set("ga_token", create_token("alice"))
+    assert client.get("/api/settings").json()["theme"] == "dark-purple"
+
+    client.cookies.set("ga_token", create_token("testadmin"))
+    admin_client.put(
+        "/api/settings/platform",
+        json={"users_can_configure_theme": True},
+    )
+    client.cookies.set("ga_token", create_token("alice"))
+    assert client.get("/api/settings").json()["theme"] == "light-orange"
+
+
+def test_platform_rejects_invalid_default_theme(admin_client):
+    r = admin_client.put(
+        "/api/settings/platform",
+        json={"default_theme": "rainbow"},
+    )
+    assert r.status_code == 422
+    assert r.json()["detail"]["field"] == "default_theme"

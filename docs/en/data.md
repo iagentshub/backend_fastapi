@@ -17,7 +17,7 @@ The SQLite database (`hub.db`) stores all structured data:
 
 | Table | Contents |
 |---|---|
-| `users` | User accounts — credentials, role, and per-user preferences (theme, language) |
+| `users` | User accounts — credentials, role, and per-user preferences (theme, language); global policy may override the effective theme without deleting the personal preference |
 | `accounts` | Provider API keys linked per user (Anthropic, OpenAI, GitHub, Ollama, NVIDIA, Google) — keys encrypted at rest |
 | `connections` | Named AI connections with model selection and cumulative token usage — API keys encrypted at rest |
 | `knowledge_items` | Knowledge base entries |
