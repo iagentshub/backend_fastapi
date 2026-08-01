@@ -9,7 +9,6 @@ import re
 import zipfile
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
-from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.responses import StreamingResponse
@@ -43,6 +42,8 @@ from app.storage.storage import (
     MemoryStorage,
     SkillStorage,
 )
+from app.utils import flog
+from app.utils.generators import generate_id
 from app.utils.origin import compute_origin_type
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
@@ -194,6 +195,7 @@ async def list_agents(
     label: Optional[str] = None,
     owner_scope: str = "group",
     group_id: Optional[str] = None,
+    include_inactive: bool = False,
     limit: int = Query(0, ge=0, description="Máx. items. 0 = sin límite"),
     offset: int = Query(0, ge=0),
     ctx: GroupContext = Depends(require_group),
@@ -288,6 +290,10 @@ async def list_agents(
         agents = own + extra
     if label:
         agents = [a for a in agents if label in (a.get("labels") or [])]
+    if not include_inactive:
+        # Ocultar recursos desactivados salvo que se pidan explícitamente.
+        # Los compartidos ajenos nunca se muestran inactivos.
+        agents = [a for a in agents if a.get("is_active", True)]
     if ctx.group_id != user and role != "admin":
         agents = [
             agent for agent in agents
@@ -323,7 +329,7 @@ async def save_agent(
         s = get_session(user)
         agent: Dict[str, Any] = {
             **payload,
-            "id": payload.get("id") or uuid4().hex[:12],
+            "id": payload.get("id") or generate_id(),
             "scope": "private",
         }
         s.agents = [a for a in s.agents if a.get("id") != agent["id"]]
@@ -332,6 +338,7 @@ async def save_agent(
     role = await get_user_role(user)
     # Restrict editing to owner: if payload has an existing ID owned by someone else, block it
     agent_id_in_payload = payload.get("id")
+    existing = None
     if agent_id_in_payload:
         existing = await _agents.get(agent_id_in_payload)
         if (
@@ -358,6 +365,11 @@ async def save_agent(
         saved["folder_id"] = await _folders.folder_for(group_id, "agents", saved["id"])
         await _versions.create(
             "agent", saved["id"], group_id, saved, user, reason="save"
+        )
+        action = "actualizado" if existing else "creado"
+        flog.info(
+            f"Agente {action}: {saved['id']} {saved.get('name', '')!r}",
+            username=user,
         )
         return saved
     except ValueError as e:
@@ -427,18 +439,57 @@ async def delete_agent(
             raise APIError(404, "not_found", "Agente no encontrado", extra={"resource": "agent"})
         return {"ok": True}
     a = await _agents.get(agent_id)
-    if a and await get_user_role(user) != "admin" and a.get("owner_id") != group_id:
+    role = await get_user_role(user)
+    if a and role != "admin" and a.get("owner_id") != group_id:
         raise APIError(403, "forbidden", "No tienes permiso para eliminar este agente")
     try:
-        if not await _agents.delete(agent_id):
+        delete_owner = None if role == "admin" else group_id
+        if not await _agents.delete(agent_id, owner_id=delete_owner):
             raise APIError(404, "not_found", "Agente no encontrado", extra={"resource": "agent"})
     except ValueError as e:
         raise APIError(403, "agent_delete_forbidden", str(e))
+    flog.info(
+        f"Agente borrado: {agent_id} {(a or {}).get('name', '')!r}", username=user
+    )
     if a:
         await _folders.remove_resource(
             str(a.get("owner_id") or group_id), "agents", agent_id
         )
     return {"ok": True}
+
+
+async def _set_agent_active(
+    agent_id: str, active: bool, ctx: GroupContext
+) -> Dict[str, Any]:
+    user, group_id = ctx.user, ctx.group_id
+    if is_guest(user):
+        raise APIError(403, "forbidden", "Los invitados no pueden desactivar agentes")
+    a = await _agents.get(agent_id)
+    if not a:
+        raise APIError(404, "not_found", "Agente no encontrado", extra={"resource": "agent"})
+    role = await get_user_role(user)
+    if role != "admin" and a.get("owner_id") != group_id:
+        raise APIError(403, "forbidden", "Solo el propietario puede cambiar el estado")
+    owner = None if role == "admin" else group_id
+    if not await _agents.set_active(agent_id, owner, active):
+        raise APIError(404, "not_found", "Agente no encontrado", extra={"resource": "agent"})
+    estado = "activado" if active else "desactivado"
+    flog.info(f"Agente {estado}: {agent_id} {a.get('name', '')!r}", username=user)
+    return {"ok": True, "is_active": active}
+
+
+@router.post("/{agent_id}/activate")
+async def activate_agent(
+    agent_id: str, ctx: GroupContext = Depends(require_group)
+) -> Dict[str, Any]:
+    return await _set_agent_active(agent_id, True, ctx)
+
+
+@router.post("/{agent_id}/deactivate")
+async def deactivate_agent(
+    agent_id: str, ctx: GroupContext = Depends(require_group)
+) -> Dict[str, Any]:
+    return await _set_agent_active(agent_id, False, ctx)
 
 
 @router.get("/{agent_id}/preferences")
@@ -673,6 +724,11 @@ async def chat(
         a = await _agents.get(agent_id)
     if not a:
         raise APIError(404, "not_found", "Agente no encontrado", extra={"resource": "agent"})
+    if not a.get("is_active", True):
+        raise APIError(
+            409, "resource_inactive", "Este agente está desactivado",
+            extra={"resource": "agent"},
+        )
     role = await get_user_role(user)
     if not is_guest(user):
         await _assert_can_read_agent(agent_id, a, ctx)
@@ -799,7 +855,9 @@ async def chat(
             if base_conn_id and (tok_in or tok_out):
                 await _conns.add_tokens(base_conn_id, tok_in, tok_out)
             if (tok_in or tok_out) and a.get("scope", "private") == "private":
-                await _agents.add_tokens(agent_id, tok_in, tok_out)
+                await _agents.add_tokens(
+                    agent_id, tok_in, tok_out, owner_id=a.get("owner_id")
+                )
             if conversation_id:
                 reply = ev.get("reply", "")
                 user_msg = next(

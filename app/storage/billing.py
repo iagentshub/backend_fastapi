@@ -4,10 +4,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any, Dict, Optional
-from uuid import uuid4
 
 from app.storage.db import IS_PG, open_db
 from app.utils import now_iso as _now
+from app.utils.generators import generate_id
 
 _ACTIVE_STATUSES_EXCLUDED = ("canceled", "incomplete_expired")
 
@@ -92,7 +92,7 @@ class BillingStorage:
                 await conn.commit()
                 row_id = existing["id"]
             else:
-                row_id = uuid4().hex[:16]
+                row_id = generate_id(16)
                 await conn.execute(
                     "INSERT INTO subscriptions (id, username, stripe_customer_id, "
                     "stripe_subscription_id, tier, seats, self_hosted, interval, "

@@ -18,10 +18,10 @@ import hashlib
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
-from uuid import uuid4
 
 from app.storage.db import open_db
 from app.utils import now_iso as _now
+from app.utils.generators import generate_id
 
 # Prefijo visible del token. Permite reconocerlo de un vistazo y que los
 # escáneres de secretos (GitHub, gitleaks) puedan detectar una fuga.
@@ -181,7 +181,7 @@ class TokenStorage:
             else None
         )
         row = {
-            "id": uuid4().hex[:16],
+            "id": generate_id(16),
             "username": username,
             "name": name,
             "token_hash": hash_token(token),

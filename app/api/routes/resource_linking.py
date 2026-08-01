@@ -9,7 +9,6 @@ from __future__ import annotations
 
 import json
 from typing import Any, Dict
-from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
@@ -33,6 +32,7 @@ from app.storage.storage import (
     SkillStorage,
 )
 from app.storage.workflows import WorkflowStorage
+from app.utils.generators import generate_id
 
 router = APIRouter(tags=["resource-linking"])
 
@@ -129,7 +129,7 @@ async def link_agent(
     # id propio (no derivado del nombre): al no renombrar la copia, un id basado en
     # el nombre colisionaría con el original (misma slug) y una lectura por id sin
     # filtro de owner devolvería cualquiera de los dos.
-    link_payload["id"] = uuid4().hex[:12]
+    link_payload["id"] = generate_id()
     link_labels = list(link_payload.get("labels") or ["private"])
     for ol in ("fork", "linked", "public"):
         if ol in link_labels:
@@ -221,7 +221,7 @@ async def link_skill(
     # id propio (no derivado del nombre): al no renombrar la copia, un id basado en
     # el nombre colisionaría con el original (misma slug) y una lectura por id sin
     # filtro de owner devolvería cualquiera de los dos.
-    link_payload["id"] = uuid4().hex[:12]
+    link_payload["id"] = generate_id()
     link_labels = list(link_payload.get("labels") or ["private"])
     for ol in ("fork", "linked", "public"):
         if ol in link_labels:
@@ -310,7 +310,7 @@ async def _duplicate_workflow(source_id: str, username: str) -> Dict[str, Any]:
     result = await workflows.save(
         username,
         {
-            "id": uuid4().hex[:12],
+            "id": generate_id(),
             "name": source["name"],
             "description": source.get("description", ""),
             "definition": definition,

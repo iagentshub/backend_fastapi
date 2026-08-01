@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
-from uuid import uuid4
 
 from fastapi import APIRouter, Depends, Query, Request
 
@@ -17,6 +16,8 @@ from app.storage.groups import GroupStorage
 from app.storage.guest import get_session, is_guest
 from app.storage.resource_versions import ResourceVersionStorage
 from app.storage.storage import SkillStorage
+from app.utils import flog
+from app.utils.generators import generate_id
 from app.utils.origin import compute_origin_type
 
 router = APIRouter(prefix="/api/skills", tags=["skills"])
@@ -48,6 +49,7 @@ async def list_skills(
     scope: str = "all",
     owner_scope: str = "group",
     group_id: Optional[str] = None,
+    include_inactive: bool = False,
     limit: int = Query(0, ge=0, description="Máx. items. 0 = sin límite"),
     offset: int = Query(0, ge=0),
     ctx: GroupContext = Depends(require_group),
@@ -108,6 +110,8 @@ async def list_skills(
                 sk["_shared"] = True
                 sk["_group_id"] = shared_map[sid]
                 items.append(sk)
+    if not include_inactive:
+        items = [sk for sk in items if sk.get("is_active", True)]
     if offset:
         items = items[offset:]
     if limit:
@@ -187,12 +191,13 @@ async def save_skill(
         s = get_session(user)
         skill: Dict[str, Any] = {
             **payload,
-            "id": payload.get("id") or uuid4().hex[:12],
+            "id": payload.get("id") or generate_id(),
             "scope": "private",
         }
         s.skills = [sk for sk in s.skills if sk.get("id") != skill["id"]]
         s.skills.append(skill)
         return skill
+    was_update = bool(payload.get("id"))
     try:
         folder_id = payload.pop("folder_id", None)
         saved = await _storage.save(scope, payload, owner_id=group_id)
@@ -204,6 +209,10 @@ async def save_skill(
         saved["folder_id"] = await _folders.folder_for(group_id, "skill", saved["id"])
         await _versions.create(
             "skill", saved["id"], group_id, saved, user, reason="save"
+        )
+        action = "actualizada" if was_update else "creada"
+        flog.info(
+            f"Skill {action}: {saved['id']} {saved.get('name', '')!r}", username=user
         )
         return saved
     except ValueError as e:
@@ -231,22 +240,55 @@ async def delete_skill(
         return {"ok": True}
     # Ownership check before delete
     sk = await _storage.get_any(skill_id)
-    if (
-        sk
-        and await get_user_role(user) != "admin"
-        and sk.get("owner_id") not in (group_id, None)
-    ):
+    role = await get_user_role(user)
+    if sk and role != "admin" and sk.get("owner_id") not in (group_id, None):
         raise APIError(403, "forbidden", "No tienes permiso para eliminar esta skill")
     try:
-        if not await _storage.delete(scope, skill_id):
+        delete_owner = None if role == "admin" else group_id
+        if not await _storage.delete(scope, skill_id, owner_id=delete_owner):
             raise APIError(404, "not_found", "Skill no encontrada", extra={"resource": "skill"})
     except ValueError as e:
         raise APIError(403, "public_skill_readonly", str(e))
+    flog.info(f"Skill borrada: {skill_id} {(sk or {}).get('name', '')!r}", username=user)
     if sk:
         await _folders.remove_resource(
             str(sk.get("owner_id") or group_id), "skill", skill_id
         )
     return {"ok": True}
+
+
+async def _set_skill_active(
+    skill_id: str, active: bool, ctx: GroupContext
+) -> Dict[str, Any]:
+    user, group_id = ctx.user, ctx.group_id
+    if is_guest(user):
+        raise APIError(403, "forbidden", "Los invitados no pueden desactivar skills")
+    sk = await _storage.get_any(skill_id)
+    if not sk:
+        raise APIError(404, "not_found", "Skill no encontrada", extra={"resource": "skill"})
+    role = await get_user_role(user)
+    if role != "admin" and sk.get("owner_id") not in (group_id, None):
+        raise APIError(403, "forbidden", "Solo el propietario puede cambiar el estado")
+    owner = None if role == "admin" else group_id
+    if not await _storage.set_active(skill_id, owner, active):
+        raise APIError(404, "not_found", "Skill no encontrada", extra={"resource": "skill"})
+    estado = "activada" if active else "desactivada"
+    flog.info(f"Skill {estado}: {skill_id} {sk.get('name', '')!r}", username=user)
+    return {"ok": True, "is_active": active}
+
+
+@router.post("/{skill_id}/activate")
+async def activate_skill(
+    skill_id: str, ctx: GroupContext = Depends(require_group)
+) -> Dict[str, Any]:
+    return await _set_skill_active(skill_id, True, ctx)
+
+
+@router.post("/{skill_id}/deactivate")
+async def deactivate_skill(
+    skill_id: str, ctx: GroupContext = Depends(require_group)
+) -> Dict[str, Any]:
+    return await _set_skill_active(skill_id, False, ctx)
 
 
 @router.patch("/private/{skill_id}/folder")

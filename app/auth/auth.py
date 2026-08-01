@@ -24,6 +24,7 @@ from app.config.session import (
 from app.services.email import send_deletion_scheduled_email
 from app.storage.db import IS_PG, open_db
 from app.utils import flog
+from app.utils.generators import generate_date
 
 # ── Settings ───────────────────────────────────────────────────────────────────
 
@@ -147,7 +148,7 @@ async def register_user(username: str, password: str, email: str = "") -> None:
                 raise ValueError("El nombre de usuario ya está en uso")
             if await conn.fetchone("SELECT 1 FROM users WHERE email = ?", (email,)):
                 raise ValueError("El correo electrónico ya está registrado")
-            now = datetime.now(timezone.utc).isoformat()
+            now = generate_date()
             await conn.execute(
                 "INSERT INTO users (username, email, password_hash, role, is_active, created_at) "
                 "VALUES (?, ?, ?, ?, ?, ?)",
@@ -177,7 +178,7 @@ async def register_user_email(
         async with conn.transaction():
             if await conn.fetchone("SELECT 1 FROM users WHERE email = ?", (email,)):
                 raise ValueError("El correo electrónico ya está registrado")
-            now = datetime.now(timezone.utc).isoformat()
+            now = generate_date()
             is_verified = 1
             token_hash: Optional[str] = None
             if EMAIL_VERIFY_ENABLED:
@@ -263,7 +264,7 @@ async def consume_reset_token(token: str, new_password: str) -> bool:
             return False
 
     password_hash = await hash_password_async(new_password)
-    now = datetime.now(timezone.utc).isoformat()
+    now = generate_date()
     async with open_db() as conn, conn.transaction():
         updated = await conn.fetchone(
             "UPDATE users SET password_hash = ?, reset_token = NULL, reset_token_expires = NULL "
@@ -281,7 +282,7 @@ async def consume_reset_token(token: str, new_password: str) -> bool:
 
 async def _touch_password_changed_at(conn: Any, username: str) -> None:
     """Marca el instante de cambio de contraseña para invalidar tokens anteriores (A2)."""
-    now = datetime.now(timezone.utc).isoformat()
+    now = generate_date()
     await conn.execute(
         "UPDATE users SET password_changed_at = ? WHERE username = ?",
         (now, username),
@@ -446,7 +447,7 @@ async def purge_user_data(username: str) -> None:
 
 async def purge_expired_deletions() -> int:
     """Hard-delete accounts whose 30-day grace period has passed. Returns count."""
-    now = datetime.now(timezone.utc).isoformat()
+    now = generate_date()
     async with open_db() as conn:
         rows = await conn.fetchall(
             "SELECT username FROM users WHERE deletion_requested_at IS NOT NULL AND deletion_requested_at <= ?",
@@ -713,7 +714,7 @@ async def ensure_admin_user() -> None:
 
             password = secrets.token_urlsafe(12)
             password_hash = await hash_password_async(password)
-            now = datetime.now(timezone.utc).isoformat()
+            now = generate_date()
             try:
                 await conn.execute(
                     "INSERT INTO users "

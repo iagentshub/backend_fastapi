@@ -2,14 +2,14 @@
 
 from __future__ import annotations
 
-import uuid
-from datetime import datetime, timezone
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from app.config.security import assert_safe_url
 from app.storage.db import open_db
+from app.storage.resource_base import ResourceStorage
+from app.utils.generators import generate_date, generate_id
 
 
 def _owner_filter(item_id: str, owner_id: Optional[str]) -> tuple[str, tuple]:
@@ -17,6 +17,13 @@ def _owner_filter(item_id: str, owner_id: Optional[str]) -> tuple[str, tuple]:
     if owner_id is not None:
         return "id = ? AND owner_id = ?", (item_id, owner_id)
     return "id = ?", (item_id,)
+
+
+def _coerce_active(d: Dict[str, Any]) -> Dict[str, Any]:
+    """is_active llega como int 1/0; exponerlo como bool en la API."""
+    if "is_active" in d:
+        d["is_active"] = bool(d["is_active"])
+    return d
 
 
 # ── HTML text extractor ────────────────────────────────────────────────────────
@@ -114,15 +121,20 @@ def extract_document_text(content_bytes: bytes, filename: str, mime: str = "") -
 # ── Storage ────────────────────────────────────────────────────────────────────
 
 
-class KnowledgeStorage:
+class KnowledgeStorage(ResourceStorage):
+    table = "knowledge_items"
+    resource_type = "knowledge"
+
     def __init__(self, db_path: Path) -> None:
+        super().__init__()
         self._db_path = db_path
 
     async def list(
         self, owner_id: Optional[str], type: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         query = (
-            "SELECT id, owner_id, type, title, source, char_count, created_at, updated_at "
+            "SELECT id, owner_id, type, title, source, char_count, "
+            "is_active, deactivated_at, created_at, updated_at "
             "FROM knowledge_items"
         )
         params: list = []
@@ -138,7 +150,7 @@ class KnowledgeStorage:
         query += " ORDER BY created_at DESC"
         async with open_db() as conn:
             rows = await conn.fetchall(query, params)
-            return [dict(r) for r in rows]
+            return [_coerce_active(dict(r)) for r in rows]
 
     async def get(
         self, item_id: str, owner_id: Optional[str] = None
@@ -146,11 +158,12 @@ class KnowledgeStorage:
         cond, params = _owner_filter(item_id, owner_id)
         async with open_db() as conn:
             row = await conn.fetchone(
-                f"SELECT id, owner_id, type, title, source, content, char_count, created_at, updated_at "
+                f"SELECT id, owner_id, type, title, source, content, char_count, "
+                f"is_active, deactivated_at, created_at, updated_at "
                 f"FROM knowledge_items WHERE {cond}",
                 params,
             )
-            return dict(row) if row else None
+            return _coerce_active(dict(row)) if row else None
 
     async def save(
         self,
@@ -161,8 +174,8 @@ class KnowledgeStorage:
         content: str,
         owner_id: str,
     ) -> Dict[str, Any]:
-        now = datetime.now(timezone.utc).isoformat()
-        item_id = uuid.uuid4().hex[:16]
+        now = generate_date()
+        item_id = generate_id(16)
         async with open_db() as conn:
             await conn.execute(
                 "INSERT INTO knowledge_items "

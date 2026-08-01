@@ -3,18 +3,19 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
-from uuid import uuid4
 
 from app.storage.db import open_db
+from app.storage.resource_base import ResourceStorage
+from app.utils.generators import generate_date as _now
+from app.utils.generators import generate_id
 
 
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+class WorkflowStorage(ResourceStorage):
+    # La tabla se llama agent_workflows; el resource_type canónico es "workflow".
+    table = "agent_workflows"
+    resource_type = "workflow"
 
-
-class WorkflowStorage:
     async def list(self, owner_id: str) -> List[Dict[str, Any]]:
         async with open_db() as conn:
             rows = await conn.fetchall(
@@ -61,7 +62,7 @@ class WorkflowStorage:
     async def save(
         self, owner_id: str, payload: Dict[str, Any]
     ) -> Dict[str, Any]:
-        workflow_id = str(payload.get("id") or uuid4().hex[:12])
+        workflow_id = str(payload.get("id") or generate_id())
         existing = await self.get(workflow_id, owner_id)
         now = _now()
         labels = [str(lbl) for lbl in (payload.get("labels") or ["private"]) if lbl]
@@ -75,6 +76,7 @@ class WorkflowStorage:
             "labels": labels,
             "created_at": existing["created_at"] if existing else now,
             "updated_at": now,
+            "is_active": bool(existing.get("is_active", True)) if existing else True,
         }
         async with open_db() as conn:
             await conn.execute(
@@ -98,6 +100,7 @@ class WorkflowStorage:
                 ),
             )
             await conn.commit()
+        await self.sync_labels(workflow_id, owner_id, labels)
         return item
 
     async def delete(self, workflow_id: str, owner_id: str) -> bool:
@@ -118,6 +121,7 @@ class WorkflowStorage:
                 (workflow_id,),
             )
             await conn.commit()
+        await self.clear_labels(workflow_id)
         return True
 
     async def delete_any(self, workflow_id: str) -> bool:
@@ -136,6 +140,7 @@ class WorkflowStorage:
                 (workflow_id,),
             )
             await conn.commit()
+        await self.clear_labels(workflow_id)
         return True
 
     @staticmethod
@@ -146,4 +151,6 @@ class WorkflowStorage:
             item["labels"] = json.loads(item.get("labels") or '["private"]')
         except (json.JSONDecodeError, TypeError):
             item["labels"] = ["private"]
+        if "is_active" in item:
+            item["is_active"] = bool(item["is_active"])
         return item

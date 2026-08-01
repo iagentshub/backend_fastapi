@@ -545,7 +545,7 @@ def test_chat_guest_agent_not_found(client):
 # otro usuario a su propio agente y leer su contenido completo vía chat/export.
 
 def test_save_agent_rejects_foreign_private_skill(client):
-    victim = _register_and_login(client, "idor_skill_victim")
+    _register_and_login(client, "idor_skill_victim")
     skill = client.post(
         "/api/skills/private",
         json={"name": "Victim Skill", "description": "d", "content": "secret content"},

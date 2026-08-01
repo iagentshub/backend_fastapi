@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import json
 from typing import Any, Dict, List
-from uuid import uuid4
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
@@ -19,6 +18,7 @@ import app.config.data as _cfg
 from app.api.routes.auth import GroupContext, require_auth, require_group
 from app.errors import APIError
 from app.middleware.ratelimit import RateLimiter
+from app.models.resource_types import SOCIAL_RESOURCE_TYPES
 from app.storage.db import IS_PG, open_db
 from app.storage.knowledge import KnowledgeStorage
 from app.storage.storage import (
@@ -27,11 +27,12 @@ from app.storage.storage import (
     SkillStorage,
 )
 from app.storage.workflows import WorkflowStorage
+from app.utils.generators import generate_id
 
 router = APIRouter(tags=["social"])
 
 # A4: tipos de recurso válidos para star/unstar y endpoints sociales
-_VALID_SOCIAL_RESOURCE_TYPES: frozenset[str] = frozenset({"agent", "skill", "knowledge", "workflow"})
+_VALID_SOCIAL_RESOURCE_TYPES = SOCIAL_RESOURCE_TYPES
 
 # N2: rate limiting para endpoints sociales (star, follow)
 _social_limiter = RateLimiter(calls=30, window=60)
@@ -75,7 +76,7 @@ async def _inherit_resource_ids(
             # homónima de otro owner — GET /api/skills/{scope}/{id} no filtra por
             # owner_id, así que dos ids iguales de dueños distintos son ambiguos.
             clone = {k: v for k, v in item.items() if k not in ("id", "scope", "owner_id")}
-            clone["id"] = uuid4().hex[:12]
+            clone["id"] = generate_id()
             clone["labels"] = [
                 lbl for lbl in (clone.get("labels") or ["private"])
                 if lbl not in ("linked", "public")
@@ -132,7 +133,7 @@ async def _inherit_workflow_agents(
                     for k, v in agent.items()
                     if k not in ("id", "scope", "owner_id", "created_at", "updated_at")
                 }
-                clone_payload["id"] = uuid4().hex[:12]
+                clone_payload["id"] = generate_id()
                 clone_payload["labels"] = [
                     lbl for lbl in (clone_payload.get("labels") or ["private"])
                     if lbl not in ("linked", "fork", "public")

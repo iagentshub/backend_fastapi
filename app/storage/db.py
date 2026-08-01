@@ -34,6 +34,17 @@ _SCHEMA_INDEX_DEPS: list[tuple[str, str, str]] = [
     ("users", "stripe_customer_id", "TEXT"),
 ]
 
+# Tablas de recursos que reciben el borrado suave (is_active + deactivated_at)
+_RESOURCE_TABLES: tuple[str, ...] = (
+    "agents",
+    "skills",
+    "connections",
+    "knowledge_items",
+    "agent_workflows",
+    "resource_folders",
+    "groups",
+)
+
 
 def _legacy_group_schema() -> tuple[dict[str, str], str]:
     """Return the former group table names without retaining that term in code."""
@@ -672,6 +683,56 @@ async def _migrate_sqlite(conn: Any) -> None:
             );
         """)
 
+    # 18. Borrado suave: is_active + deactivated_at en todos los recursos.
+    for table in _RESOURCE_TABLES:
+        cur = await conn.execute(f"PRAGMA table_info({table})")
+        cols = {row[1] for row in await cur.fetchall()}
+        if "is_active" not in cols:
+            try:
+                await conn.execute(
+                    f"ALTER TABLE {table} ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1"
+                )
+                await conn.commit()
+            except Exception:
+                pass
+        if "deactivated_at" not in cols:
+            try:
+                await conn.execute(
+                    f"ALTER TABLE {table} ADD COLUMN deactivated_at TEXT"
+                )
+                await conn.commit()
+            except Exception:
+                pass
+
+    # Arreglos menores de fechas
+    cur = await conn.execute("PRAGMA table_info(groups)")
+    if "updated_at" not in {row[1] for row in await cur.fetchall()}:
+        try:
+            await conn.execute("ALTER TABLE groups ADD COLUMN updated_at TEXT")
+            await conn.commit()
+        except Exception:
+            pass
+    cur = await conn.execute("PRAGMA table_info(memory_files)")
+    if "created_at" not in {row[1] for row in await cur.fetchall()}:
+        try:
+            await conn.execute("ALTER TABLE memory_files ADD COLUMN created_at TEXT")
+            await conn.commit()
+        except Exception:
+            pass
+
+    # 19. Índice transversal de etiquetas (labels) para enlaces entre objetos.
+    await conn.executescript("""
+        CREATE TABLE IF NOT EXISTS resource_labels (
+            resource_type TEXT NOT NULL,
+            resource_id   TEXT NOT NULL,
+            owner_id      TEXT NOT NULL DEFAULT '',
+            label         TEXT NOT NULL,
+            PRIMARY KEY (resource_type, resource_id, label)
+        );
+        CREATE INDEX IF NOT EXISTS idx_resource_labels_label
+            ON resource_labels(label, owner_id);
+    """)
+
 
 async def _migrate_users_json_sqlite(conn: Any) -> None:
     """Import users.json into the users table if it exists and the table is empty."""
@@ -1113,6 +1174,37 @@ async def _migrate_pg(conn: Any) -> None:
             PRIMARY KEY (username, agent_id)
         )
     """)
+
+    # 18. Borrado suave: is_active + deactivated_at en todos los recursos.
+    for table in _RESOURCE_TABLES:
+        # SMALLINT 1/0 (no BOOLEAN) para igualar users.is_active y las
+        # comparaciones `is_active = 1` que ya usa el resto del código.
+        await conn.execute(
+            f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS "
+            "is_active SMALLINT NOT NULL DEFAULT 1"
+        )
+        await conn.execute(
+            f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS deactivated_at TEXT"
+        )
+    await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS updated_at TEXT")
+    await conn.execute(
+        "ALTER TABLE memory_files ADD COLUMN IF NOT EXISTS created_at TEXT"
+    )
+
+    # 19. Índice transversal de etiquetas (labels) para enlaces entre objetos.
+    await conn.execute("""
+        CREATE TABLE IF NOT EXISTS resource_labels (
+            resource_type TEXT NOT NULL,
+            resource_id   TEXT NOT NULL,
+            owner_id      TEXT NOT NULL DEFAULT '',
+            label         TEXT NOT NULL,
+            PRIMARY KEY (resource_type, resource_id, label)
+        )
+    """)
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_resource_labels_label "
+        "ON resource_labels(label, owner_id)"
+    )
 
 
 async def _migrate_users_json_pg(conn: Any) -> None:

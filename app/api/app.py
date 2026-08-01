@@ -22,6 +22,7 @@ from app.api.routes import (
     explore,
     groups,
     knowledge,
+    labels,
     logs,
     memory,
     resource_linking,
@@ -150,6 +151,7 @@ def create_app() -> FastAPI:
     app.include_router(accounts.router)
     app.include_router(chats.router)
     app.include_router(knowledge.router)
+    app.include_router(labels.router)
     app.include_router(logs.router)
     app.include_router(sharing.router)
     app.include_router(groups.router)

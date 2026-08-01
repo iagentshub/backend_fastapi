@@ -15,6 +15,7 @@ from app.api.routes.auth import GroupContext, require_group
 from app.auth.auth import get_user_role
 from app.config.data import DB_FILE
 from app.errors import APIError
+from app.models.resource_types import RESOURCE_TYPES
 from app.storage.db import open_db
 from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
@@ -27,7 +28,7 @@ router = APIRouter(prefix="/api/sharing", tags=["sharing"])
 _shares = GroupShareStorage(DB_FILE)
 _groups = GroupStorage(DB_FILE)
 
-_VALID_TYPES = {"agent", "connection", "knowledge", "skill", "workflow"}
+_VALID_TYPES = RESOURCE_TYPES
 
 
 def _assert_valid_type(resource_type: str) -> None:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 
 import pytest
 
@@ -46,12 +47,25 @@ def test_get_private_skill(storage):
     assert "content" in found
 
 
+def test_save_generates_unique_alphanumeric_id(storage):
+    """El id no debe derivar del nombre: dos skills con el mismo nombre
+    (de dueños distintos) deben recibir ids distintos."""
+    s1 = asyncio.run(storage.save("private", _SKILL, owner_id="alice"))
+    s2 = asyncio.run(storage.save("private", _SKILL, owner_id="bob"))
+    assert s1["id"] != s2["id"]
+    assert s1["id"] != "mi-skill"
+    assert re.fullmatch(r"[0-9a-f]{12}", s1["id"])
+
+
 def test_get_skill_slug_fallback(storage):
-    """get() debe encontrar la skill por slug aunque se pase el nombre original."""
-    sk = asyncio.run(storage.save("private", _SKILL))
-    found = asyncio.run(storage.get("private", "Mi Skill"))
+    """El fallback por slug sigue funcionando para contenido heredado con id
+    explícito tipo slug; los ids nuevos ya no derivan del nombre, así que
+    este camino solo aplica cuando el id se fija a mano."""
+    payload = {"id": "mi-skill-legacy", "name": "Mi Skill Legacy", "content": "x"}
+    asyncio.run(storage.save("private", payload))
+    found = asyncio.run(storage.get("private", "Mi Skill Legacy"))
     assert found is not None
-    assert found["id"] == sk["id"]
+    assert found["id"] == "mi-skill-legacy"
 
 
 def test_get_nonexistent_skill(storage):
@@ -160,3 +174,29 @@ def test_get_any_finds_public_skill(storage):
 
 def test_get_any_returns_none_for_missing(storage):
     assert asyncio.run(storage.get_any("ghost-skill-xyz")) is None
+
+
+def test_delete_with_owner_id_does_not_touch_other_owner_same_id(storage):
+    """Reproduce el hallazgo del bloque 0.2 aplicado a skills: borrar la
+    propia no debe borrar la de otro dueño con el mismo id."""
+    shared_id = "legacy-shared-id"
+    asyncio.run(
+        storage.save("private", {"name": "Skill", "id": shared_id}, owner_id="alice")
+    )
+    asyncio.run(
+        storage.save("private", {"name": "Skill", "id": shared_id}, owner_id="bob")
+    )
+
+    deleted = asyncio.run(storage.delete("private", shared_id, owner_id="alice"))
+    assert deleted is True
+
+    bob_skill = asyncio.run(storage.get("private", shared_id))
+    assert bob_skill is not None
+    assert bob_skill["owner_id"] == "bob"
+
+
+def test_delete_with_owner_id_rejects_non_owner(storage):
+    sk = asyncio.run(storage.save("private", _SKILL, owner_id="alice"))
+    deleted = asyncio.run(storage.delete("private", sk["id"], owner_id="bob"))
+    assert deleted is False
+    assert asyncio.run(storage.get("private", sk["id"])) is not None

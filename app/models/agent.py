@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 from dataclasses import dataclass, field
-from typing import List, Literal, Optional
+from typing import ClassVar, List, Optional
+
+from app.models.base import BaseResource
 
 
 def _cron_to_schedule_hint(cron: str) -> Optional[str]:
@@ -78,19 +80,16 @@ def _routines_guide(routines: List[dict]) -> List[str]:
     return lines
 
 
-@dataclass
-class Agent:
-    # ── Minimum required ──────────────────────────────────────────────────────
-    id: str
-    name: str
+@dataclass(kw_only=True)
+class Agent(BaseResource):
+    # id, name, description, icon, owner_id, scope, labels, is_active,
+    # created_at, updated_at… vienen de BaseResource/BaseEntity.
+    resource_type: ClassVar[str] = "agent"
 
     # ── Discriminator ─────────────────────────────────────────────────────────
     agent_type: str = "generic"
-    scope: Literal["public", "private"] = "private"
 
     # ── Display ───────────────────────────────────────────────────────────────
-    description: str = ""
-    icon: str = ""
     tags: List[str] = field(default_factory=list)
     language: str = ""
 
@@ -114,15 +113,11 @@ class Agent:
     routines: List[dict] = field(default_factory=list)
 
     # ── Semantic labels ───────────────────────────────────────────────────────
+    # Redeclarado sobre la base solo para conservar el default ["private"]
     labels: List[str] = field(default_factory=lambda: ["private"])
 
     # ── Runtime-only (not persisted) ──────────────────────────────────────────
     resolved_skills: List[dict] = field(default_factory=list)
-
-    # ── Audit ─────────────────────────────────────────────────────────────────
-    created_at: str = ""
-    updated_at: str = ""
-    owner_id: Optional[str] = None
 
     # ── Factory ───────────────────────────────────────────────────────────────
 
@@ -172,6 +167,11 @@ class Agent:
             owner_id=str(data["owner_id"]).strip() or None
             if data.get("owner_id")
             else None,
+            created_by=str(data["created_by"]).strip() or None
+            if data.get("created_by")
+            else None,
+            is_active=bool(data.get("is_active", True)),
+            deactivated_at=str(data.get("deactivated_at") or "") or None,
             resolved_skills=[
                 r for r in (data.get("_resolved_skills") or []) if isinstance(r, dict)
             ],
@@ -184,8 +184,11 @@ class Agent:
         return {
             "id": self.id,
             "name": self.name,
+            "resource_type": self.resource_type,
             "agent_type": self.agent_type,
             "scope": self.scope,
+            "is_active": self.is_active,
+            "deactivated_at": self.deactivated_at,
             "description": self.description,
             "icon": self.icon,
             "tags": self.tags,
@@ -207,6 +210,7 @@ class Agent:
             "created_at": self.created_at,
             "updated_at": self.updated_at,
             "owner_id": self.owner_id,
+            "created_by": self.created_by,
         }
 
     # ── Export ────────────────────────────────────────────────────────────────

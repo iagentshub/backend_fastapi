@@ -3,15 +3,11 @@
 from __future__ import annotations
 
 import json
-from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
-from uuid import uuid4
 
 from app.storage.db import open_db
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
+from app.utils.generators import generate_date as _now
+from app.utils.generators import generate_id
 
 
 class ResourceVersionStorage:
@@ -32,7 +28,7 @@ class ResourceVersionStorage:
             )
             version = int(latest or 0) + 1
             item = {
-                "id": uuid4().hex,
+                "id": generate_id(32),
                 "resource_type": resource_type,
                 "resource_id": resource_id,
                 "owner_id": owner_id,

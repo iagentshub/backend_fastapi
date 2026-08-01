@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from app.api.routes.auth import GroupContext, require_group
 from app.config.data import AGENTS_DIR, DB_FILE
+from app.errors import APIError
 from app.services.workflow_runner import run_workflow
 from app.services.workflow_validator import validate_workflow
 from app.storage.group_shares import GroupShareStorage
@@ -18,6 +19,7 @@ from app.storage.groups import GroupStorage
 from app.storage.resource_versions import ResourceVersionStorage
 from app.storage.storage import AgentStorage, SkillStorage
 from app.storage.workflows import WorkflowStorage
+from app.utils import flog
 from app.utils.origin import compute_origin_type
 
 router = APIRouter(prefix="/api", tags=["resource-management"])
@@ -120,6 +122,7 @@ async def restore_version(
 
 @router.get("/workflows")
 async def list_workflows(
+    include_inactive: bool = False,
     ctx: GroupContext = Depends(require_group),
 ) -> list[Dict[str, Any]]:
     owner_ids = {ctx.user, ctx.group_id}
@@ -151,6 +154,8 @@ async def list_workflows(
         item["_group_id"] = shared_map[item["id"]][0]
         shared.append(item)
     result = own + shared
+    if not include_inactive:
+        result = [item for item in result if item.get("is_active", True)]
     for item in result:
         item["origin_type"] = compute_origin_type(item)
     return sorted(result, key=lambda item: item["updated_at"], reverse=True)
@@ -225,6 +230,30 @@ async def delete_workflow(
     return {"ok": True}
 
 
+async def _set_workflow_active(
+    workflow_id: str, active: bool, ctx: GroupContext
+) -> Dict[str, Any]:
+    if not await _workflows.set_active(workflow_id, ctx.group_id, active):
+        raise HTTPException(status_code=404, detail="Orquestación no encontrada")
+    estado = "activada" if active else "desactivada"
+    flog.info(f"Orquestación {estado}: {workflow_id}", username=ctx.user)
+    return {"ok": True, "is_active": active}
+
+
+@router.post("/workflows/{workflow_id}/activate")
+async def activate_workflow(
+    workflow_id: str, ctx: GroupContext = Depends(require_group)
+) -> Dict[str, Any]:
+    return await _set_workflow_active(workflow_id, True, ctx)
+
+
+@router.post("/workflows/{workflow_id}/deactivate")
+async def deactivate_workflow(
+    workflow_id: str, ctx: GroupContext = Depends(require_group)
+) -> Dict[str, Any]:
+    return await _set_workflow_active(workflow_id, False, ctx)
+
+
 @router.post("/workflows/{workflow_id}/run")
 async def run_saved_workflow(
     workflow_id: str,
@@ -234,6 +263,11 @@ async def run_saved_workflow(
     workflow = await _accessible_workflow(workflow_id, ctx)
     if not workflow:
         raise HTTPException(status_code=404, detail="Orquestación no encontrada")
+    if not workflow.get("is_active", True):
+        raise APIError(
+            409, "resource_inactive", "Esta orquestación está desactivada",
+            extra={"resource": "workflow"},
+        )
     try:
         definition = validate_workflow(workflow["definition"])
     except ValueError as exc:

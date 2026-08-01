@@ -2,23 +2,21 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
-from uuid import uuid4
 
+from app.models.resource_types import ALIASES, RESOURCE_TYPES
 from app.storage.db import IS_PG, open_db
+from app.utils.generators import generate_date as _now
+from app.utils.generators import generate_id
 
+# Secciones de UI (pestañas de carpetas); "memory" no es un resource_type
 VALID_SECTIONS = {"agents", "skill", "url", "document", "memory"}
+# Mapeo sección → resource_type canónico, derivado del registro único
 _SHARED_RESOURCE_TYPES = {
-    "agents": "agent",
-    "skill": "skill",
-    "url": "knowledge",
-    "document": "knowledge",
+    section: ALIASES.get(section, section)
+    for section in VALID_SECTIONS
+    if ALIASES.get(section, section) in RESOURCE_TYPES
 }
-
-
-def _now() -> str:
-    return datetime.now(timezone.utc).isoformat()
 
 
 def _folder_dict(row: Any) -> Dict[str, Any]:
@@ -48,7 +46,7 @@ class FolderStorage:
         return _folder_dict(row) if row else None
 
     async def create(self, owner_id: str, section: str, name: str) -> Dict[str, Any]:
-        folder_id, now = uuid4().hex[:16], _now()
+        folder_id, now = generate_id(16), _now()
         async with open_db() as conn:
             await conn.execute(
                 "INSERT INTO resource_folders "

@@ -6,7 +6,8 @@ import os
 import time
 from dataclasses import dataclass, field
 from typing import Any, Dict, List
-from uuid import uuid4
+
+from app.utils.generators import generate_id
 
 TTL = 43200  # 12 h — igual que max_age del cookie de sesión
 MAX_SESSIONS = int(os.getenv("GAIA_MAX_GUEST_SESSIONS", "200"))
@@ -73,4 +74,4 @@ def get_session(guest_id: str) -> GuestSession:
 
 
 def new_guest_id() -> str:
-    return f"guest:{uuid4().hex[:12]}"
+    return f"guest:{generate_id()}"

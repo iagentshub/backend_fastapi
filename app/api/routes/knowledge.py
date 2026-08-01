@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
-from uuid import uuid4
 
 from fastapi import APIRouter, Depends, File, Query, Request, UploadFile
 
@@ -23,6 +22,8 @@ from app.storage.knowledge import (
     fetch_url_text,
 )
 from app.storage.storage import AgentStorage
+from app.utils import flog
+from app.utils.generators import generate_id
 
 router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
 
@@ -42,7 +43,7 @@ async def _owner(user: str, group_id: str) -> Optional[str]:
 def _guest_item(*, type: str, title: str, source: str, content: str) -> Dict[str, Any]:
     now = datetime.now(timezone.utc).isoformat()
     return {
-        "id": uuid4().hex[:16],
+        "id": generate_id(16),
         "type": type,
         "title": title,
         "source": source,
@@ -61,6 +62,7 @@ async def list_items(
     type: Optional[str] = None,
     owner_scope: str = "group",
     requested_group_id: Optional[str] = Query(None, alias="group_id"),
+    include_inactive: bool = False,
     limit: int = Query(0, ge=0, description="Máx. items. 0 = sin límite"),
     offset: int = Query(0, ge=0),
     ctx: GroupContext = Depends(require_group),
@@ -133,6 +135,8 @@ async def list_items(
                 permission_group_id, user, "knowledge", item["id"], "view"
             )
         ]
+    if not include_inactive:
+        items = [i for i in items if i.get("is_active", True)]
     if offset:
         items = items[offset:]
     if limit:
@@ -361,3 +365,33 @@ async def delete_item(
         item_id,
     )
     return {"ok": True}
+
+
+async def _set_knowledge_active(
+    item_id: str, active: bool, ctx: GroupContext
+) -> Dict[str, Any]:
+    user, group_id = ctx.user, ctx.group_id
+    if is_guest(user):
+        raise APIError(
+            403, "forbidden", "Los invitados no pueden desactivar conocimiento"
+        )
+    owner = await _owner(user, group_id)
+    if not await _storage.set_active(item_id, owner, active):
+        raise APIError(404, "not_found", "Item no encontrado", extra={"resource": "item"})
+    estado = "activado" if active else "desactivado"
+    flog.info(f"Conocimiento {estado}: {item_id}", username=user)
+    return {"ok": True, "is_active": active}
+
+
+@router.post("/{item_id}/activate")
+async def activate_item(
+    item_id: str, ctx: GroupContext = Depends(require_group)
+) -> Dict[str, Any]:
+    return await _set_knowledge_active(item_id, True, ctx)
+
+
+@router.post("/{item_id}/deactivate")
+async def deactivate_item(
+    item_id: str, ctx: GroupContext = Depends(require_group)
+) -> Dict[str, Any]:
+    return await _set_knowledge_active(item_id, False, ctx)

@@ -708,9 +708,6 @@ async def admin_update_agent(
     new_name = str(updated.get("name") or "").strip()
     if not new_name:
         raise APIError(400, "agent_name_required", "El nombre es obligatorio")
-    new_id = re.sub(r"[^a-z0-9_\-]", "-", new_name.lower()).strip("-")
-    if new_id != agent_id:
-        await _agents.delete(agent_id, scope="private")
     return await _agents.save(updated, "private", owner_id=agent.get("owner_id"))
 
 

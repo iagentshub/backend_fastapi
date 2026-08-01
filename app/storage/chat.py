@@ -3,10 +3,10 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from uuid import uuid4
 
 from app.storage.db import open_db
 from app.utils import now_iso as _now
+from app.utils.generators import generate_id
 
 
 class ChatStorage:
@@ -42,7 +42,7 @@ class ChatStorage:
     async def new_conversation(
         self, user_id: str, agent_id: str, title: str = ""
     ) -> Dict[str, Any]:
-        conv_id = uuid4().hex
+        conv_id = generate_id(32)
         now = _now()
         async with open_db() as conn:
             await conn.execute(
@@ -109,7 +109,7 @@ class ChatStorage:
     async def add_message(
         self, conv_id: str, role: str, content: str
     ) -> Dict[str, Any]:
-        msg_id = uuid4().hex
+        msg_id = generate_id(32)
         now = _now()
         async with open_db() as conn:
             await conn.execute(

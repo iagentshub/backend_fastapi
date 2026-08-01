@@ -7,15 +7,16 @@ import re
 from datetime import date
 from pathlib import Path
 from typing import Any, Dict, List, Optional, TypedDict
-from uuid import uuid4
 
 import yaml
 
 from app.models.agent import Agent
 from app.storage.crypto import decrypt, encrypt
 from app.storage.migration import LegacyMigrationStorage
+from app.storage.resource_base import ResourceStorage
 from app.utils import flog
 from app.utils import now_iso as _now
+from app.utils.generators import generate_id
 
 # ─── helpers ──────────────────────────────────────────────────────────────────
 
@@ -50,7 +51,7 @@ class AgentSummary(TypedDict, total=False):
 
 def _slug(value: str) -> str:
     s = re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-")
-    return s or f"item-{uuid4().hex[:8]}"
+    return s or f"item-{generate_id(8)}"
 
 
 # ─── ConnectionStorage ────────────────────────────────────────────────────────
@@ -60,8 +61,11 @@ def _slug(value: str) -> str:
 _ENCRYPTED_FIELDS = ("api_key", "password", "ssh_key")
 
 
-class ConnectionStorage(LegacyMigrationStorage):
+class ConnectionStorage(ResourceStorage):
     """DB-backed async connection storage."""
+
+    table = "connections"
+    resource_type = "connection"
 
     def __init__(self, db_path: Path) -> None:
         super().__init__()
@@ -97,20 +101,27 @@ class ConnectionStorage(LegacyMigrationStorage):
         """Insert or replace a connection row (uses AsyncConn, ? placeholders)."""
         from app.storage.db import IS_PG
 
-        conn_id = str(payload.get("id") or "").strip() or uuid4().hex[:12]
+        conn_id = str(payload.get("id") or "").strip() or generate_id()
         payload["id"] = conn_id
+        is_active = 1 if payload.get("is_active", True) else 0
+        deactivated_at = payload.get("deactivated_at")
         if IS_PG:
             await conn.execute(
-                "INSERT INTO connections (id, owner_id, data, tokens_in, tokens_out, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?) "
+                "INSERT INTO connections (id, owner_id, data, tokens_in, tokens_out, "
+                "is_active, deactivated_at, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT (id) DO UPDATE SET owner_id=EXCLUDED.owner_id, data=EXCLUDED.data, "
-                "tokens_in=EXCLUDED.tokens_in, tokens_out=EXCLUDED.tokens_out, updated_at=EXCLUDED.updated_at",
+                "tokens_in=EXCLUDED.tokens_in, tokens_out=EXCLUDED.tokens_out, "
+                "is_active=EXCLUDED.is_active, deactivated_at=EXCLUDED.deactivated_at, "
+                "updated_at=EXCLUDED.updated_at",
                 (
                     conn_id,
                     owner_id,
                     json.dumps(payload, ensure_ascii=False),
                     int(payload.get("tokens_in") or 0),
                     int(payload.get("tokens_out") or 0),
+                    is_active,
+                    deactivated_at,
                     str(payload.get("created_at") or _now()),
                     str(payload.get("updated_at") or _now()),
                 ),
@@ -118,14 +129,17 @@ class ConnectionStorage(LegacyMigrationStorage):
         else:
             await conn.execute(
                 "INSERT OR REPLACE INTO connections "
-                "(id, owner_id, data, tokens_in, tokens_out, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "(id, owner_id, data, tokens_in, tokens_out, "
+                "is_active, deactivated_at, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     conn_id,
                     owner_id,
                     json.dumps(payload, ensure_ascii=False),
                     int(payload.get("tokens_in") or 0),
                     int(payload.get("tokens_out") or 0),
+                    is_active,
+                    deactivated_at,
                     str(payload.get("created_at") or _now()),
                     str(payload.get("updated_at") or _now()),
                 ),
@@ -138,6 +152,8 @@ class ConnectionStorage(LegacyMigrationStorage):
                 d[field] = decrypt(d[field])
         d["tokens_in"] = row["tokens_in"]
         d["tokens_out"] = row["tokens_out"]
+        d["is_active"] = bool(row["is_active"])
+        d["deactivated_at"] = row["deactivated_at"]
         return d
 
     async def list(self, owner_id: Optional[str] = None) -> List[Dict[str, Any]]:
@@ -148,11 +164,11 @@ class ConnectionStorage(LegacyMigrationStorage):
         async with open_db() as conn:
             if owner_id is None:
                 rows = await conn.fetchall(
-                    "SELECT id, owner_id, data, tokens_in, tokens_out FROM connections ORDER BY created_at ASC"
+                    "SELECT id, owner_id, data, tokens_in, tokens_out, is_active, deactivated_at FROM connections ORDER BY created_at ASC"
                 )
             else:
                 rows = await conn.fetchall(
-                    "SELECT id, owner_id, data, tokens_in, tokens_out FROM connections "
+                    "SELECT id, owner_id, data, tokens_in, tokens_out, is_active, deactivated_at FROM connections "
                     "WHERE owner_id = ? ORDER BY created_at ASC",
                     (owner_id,),
                 )
@@ -166,12 +182,12 @@ class ConnectionStorage(LegacyMigrationStorage):
         async with open_db() as conn:
             if owner_id is None:
                 row = await conn.fetchone(
-                    "SELECT id, owner_id, data, tokens_in, tokens_out FROM connections WHERE id = ?",
+                    "SELECT id, owner_id, data, tokens_in, tokens_out, is_active, deactivated_at FROM connections WHERE id = ?",
                     (conn_id,),
                 )
             else:
                 row = await conn.fetchone(
-                    "SELECT id, owner_id, data, tokens_in, tokens_out FROM connections "
+                    "SELECT id, owner_id, data, tokens_in, tokens_out, is_active, deactivated_at FROM connections "
                     "WHERE id = ? AND owner_id = ?",
                     (conn_id, owner_id),
                 )
@@ -182,7 +198,7 @@ class ConnectionStorage(LegacyMigrationStorage):
     ) -> Dict[str, Any]:
         from app.storage.db import open_db
 
-        conn_id = str(payload.get("id") or "").strip() or uuid4().hex[:12]
+        conn_id = str(payload.get("id") or "").strip() or generate_id()
         payload["id"] = conn_id
         existing = await self.get(conn_id, owner_id)
         if existing:
@@ -191,8 +207,12 @@ class ConnectionStorage(LegacyMigrationStorage):
             for field in _ENCRYPTED_FIELDS:
                 if not payload.get(field) and existing.get(field):
                     payload[field] = existing[field]
+            # Conservar el borrado suave a través de las ediciones.
+            payload["is_active"] = existing.get("is_active", True)
+            payload["deactivated_at"] = existing.get("deactivated_at")
         else:
             payload.setdefault("created_at", _now())
+            payload.setdefault("is_active", True)
         payload["updated_at"] = _now()
         stored = dict(payload)
         for field in _ENCRYPTED_FIELDS:
@@ -201,6 +221,7 @@ class ConnectionStorage(LegacyMigrationStorage):
         async with open_db() as conn:
             await self._upsert(conn, stored, owner_id)
             await conn.commit()
+        await self.sync_labels(conn_id, owner_id, payload.get("labels") or [])
         return payload
 
     async def delete(self, conn_id: str, owner_id: Optional[str] = None) -> bool:
@@ -226,6 +247,7 @@ class ConnectionStorage(LegacyMigrationStorage):
                     (conn_id, owner_id),
                 )
             await conn.commit()
+        await self.clear_labels(conn_id)
         return True
 
     async def add_tokens(
@@ -265,8 +287,11 @@ class ConnectionStorage(LegacyMigrationStorage):
 # DB-backed. owner_id='__public__' para agentes de sistema/públicos.
 
 
-class AgentStorage(LegacyMigrationStorage):
+class AgentStorage(ResourceStorage):
     """Async DB-backed agent storage (SQLite / PostgreSQL)."""
+
+    table = "agents"
+    resource_type = "agent"
 
     def __init__(self, root_dir: Path) -> None:
         super().__init__()
@@ -319,12 +344,16 @@ class AgentStorage(LegacyMigrationStorage):
         now = _now()
         created_at = str(data.get("created_at") or now)
         updated_at = str(data.get("updated_at") or now)
+        is_active = 1 if data.get("is_active", True) else 0
+        deactivated_at = data.get("deactivated_at")
         if IS_PG:
             await conn.execute(
-                "INSERT INTO agents (id, owner_id, scope, data, tokens_in, tokens_out, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?) "
+                "INSERT INTO agents (id, owner_id, scope, data, tokens_in, tokens_out, "
+                "is_active, deactivated_at, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT (id, owner_id) DO UPDATE SET scope=EXCLUDED.scope, data=EXCLUDED.data, "
                 "tokens_in=EXCLUDED.tokens_in, tokens_out=EXCLUDED.tokens_out, "
+                "is_active=EXCLUDED.is_active, deactivated_at=EXCLUDED.deactivated_at, "
                 "updated_at=EXCLUDED.updated_at",
                 (
                     agent_id,
@@ -333,6 +362,8 @@ class AgentStorage(LegacyMigrationStorage):
                     data_json,
                     tokens_in,
                     tokens_out,
+                    is_active,
+                    deactivated_at,
                     created_at,
                     updated_at,
                 ),
@@ -340,8 +371,9 @@ class AgentStorage(LegacyMigrationStorage):
         else:
             await conn.execute(
                 "INSERT OR REPLACE INTO agents "
-                "(id, owner_id, scope, data, tokens_in, tokens_out, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "(id, owner_id, scope, data, tokens_in, tokens_out, "
+                "is_active, deactivated_at, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     agent_id,
                     owner_id,
@@ -349,6 +381,8 @@ class AgentStorage(LegacyMigrationStorage):
                     data_json,
                     tokens_in,
                     tokens_out,
+                    is_active,
+                    deactivated_at,
                     created_at,
                     updated_at,
                 ),
@@ -359,6 +393,8 @@ class AgentStorage(LegacyMigrationStorage):
         d["tokens_in"] = row["tokens_in"]
         d["tokens_out"] = row["tokens_out"]
         d["scope"] = row["scope"]
+        d["is_active"] = bool(row["is_active"])
+        d["deactivated_at"] = row["deactivated_at"]
         owner = row["owner_id"]
         d["owner_id"] = None if owner == _PUBLIC_OWNER else owner
         return d
@@ -374,24 +410,24 @@ class AgentStorage(LegacyMigrationStorage):
         async with open_db() as conn:
             if scope == "public":
                 rows = await conn.fetchall(
-                    "SELECT id, owner_id, scope, data, tokens_in, tokens_out "
+                    "SELECT id, owner_id, scope, data, tokens_in, tokens_out, is_active, deactivated_at "
                     "FROM agents WHERE scope='public' ORDER BY created_at ASC"
                 )
             elif scope == "private":
                 if owner_id:
                     rows = await conn.fetchall(
-                        "SELECT id, owner_id, scope, data, tokens_in, tokens_out "
+                        "SELECT id, owner_id, scope, data, tokens_in, tokens_out, is_active, deactivated_at "
                         "FROM agents WHERE scope='private' AND owner_id=? ORDER BY created_at ASC",
                         (owner_id,),
                     )
                 else:
                     rows = await conn.fetchall(
-                        "SELECT id, owner_id, scope, data, tokens_in, tokens_out "
+                        "SELECT id, owner_id, scope, data, tokens_in, tokens_out, is_active, deactivated_at "
                         "FROM agents WHERE scope='private' ORDER BY created_at ASC"
                     )
             else:  # all
                 rows = await conn.fetchall(
-                    "SELECT id, owner_id, scope, data, tokens_in, tokens_out "
+                    "SELECT id, owner_id, scope, data, tokens_in, tokens_out, is_active, deactivated_at "
                     "FROM agents ORDER BY created_at ASC"
                 )
         return [self._row_to_dict(r) for r in rows]
@@ -405,20 +441,20 @@ class AgentStorage(LegacyMigrationStorage):
         async with open_db() as conn:
             if scope == "public":
                 row = await conn.fetchone(
-                    "SELECT id, owner_id, scope, data, tokens_in, tokens_out "
+                    "SELECT id, owner_id, scope, data, tokens_in, tokens_out, is_active, deactivated_at "
                     "FROM agents WHERE id=? AND scope='public' LIMIT 1",
                     (agent_id,),
                 )
             elif scope == "private":
                 row = await conn.fetchone(
-                    "SELECT id, owner_id, scope, data, tokens_in, tokens_out "
+                    "SELECT id, owner_id, scope, data, tokens_in, tokens_out, is_active, deactivated_at "
                     "FROM agents WHERE id=? AND scope='private' LIMIT 1",
                     (agent_id,),
                 )
             else:
                 # prefer private, fall back to public
                 row = await conn.fetchone(
-                    "SELECT id, owner_id, scope, data, tokens_in, tokens_out "
+                    "SELECT id, owner_id, scope, data, tokens_in, tokens_out, is_active, deactivated_at "
                     "FROM agents WHERE id=? ORDER BY CASE scope WHEN 'private' THEN 0 ELSE 1 END LIMIT 1",
                     (agent_id,),
                 )
@@ -436,7 +472,7 @@ class AgentStorage(LegacyMigrationStorage):
         name = str(payload.get("name") or "").strip()
         if not name:
             raise ValueError("name required")
-        agent_id = payload.get("id") or _slug(name)
+        agent_id = payload.get("id") or generate_id()
         actual_owner = owner_id or "admin"
         existing = await self.get(agent_id, scope="private")
         now = _now()
@@ -448,12 +484,17 @@ class AgentStorage(LegacyMigrationStorage):
                 "owner_id": actual_owner,
                 "created_at": existing.get("created_at", now) if existing else now,
                 "updated_at": now,
+                # Conservar el estado de borrado suave a través de las ediciones:
+                # editar un agente desactivado no debe reactivarlo.
+                "is_active": existing.get("is_active", True) if existing else True,
+                "deactivated_at": existing.get("deactivated_at") if existing else None,
             }
         )
         data = agent.to_dict()
         async with open_db() as conn:
             await self._upsert(conn, agent_id, actual_owner, scope, data)
             await conn.commit()
+        await self.sync_labels(agent_id, actual_owner, data.get("labels") or [])
         return data
 
     async def add_tokens(
@@ -466,11 +507,18 @@ class AgentStorage(LegacyMigrationStorage):
         from app.storage.db import open_db
 
         async with open_db() as conn:
-            await conn.execute(
-                "UPDATE agents SET tokens_in=tokens_in+?, tokens_out=tokens_out+? "
-                "WHERE id=? AND scope='private'",
-                (tokens_in, tokens_out, agent_id),
-            )
+            if owner_id is not None:
+                await conn.execute(
+                    "UPDATE agents SET tokens_in=tokens_in+?, tokens_out=tokens_out+? "
+                    "WHERE id=? AND scope='private' AND owner_id=?",
+                    (tokens_in, tokens_out, agent_id, owner_id),
+                )
+            else:
+                await conn.execute(
+                    "UPDATE agents SET tokens_in=tokens_in+?, tokens_out=tokens_out+? "
+                    "WHERE id=? AND scope='private'",
+                    (tokens_in, tokens_out, agent_id),
+                )
             await conn.commit()
 
     async def delete(
@@ -493,6 +541,17 @@ class AgentStorage(LegacyMigrationStorage):
                 if not row:
                     return False
                 await conn.execute("DELETE FROM agents WHERE id=?", (agent_id,))
+            elif owner_id is not None:
+                row = await conn.fetchone(
+                    "SELECT id FROM agents WHERE id=? AND scope!='public' AND owner_id=? LIMIT 1",
+                    (agent_id, owner_id),
+                )
+                if not row:
+                    return False
+                await conn.execute(
+                    "DELETE FROM agents WHERE id=? AND scope!='public' AND owner_id=?",
+                    (agent_id, owner_id),
+                )
             else:
                 row = await conn.fetchone(
                     "SELECT id FROM agents WHERE id=? AND scope!='public' LIMIT 1",
@@ -505,6 +564,7 @@ class AgentStorage(LegacyMigrationStorage):
                     (agent_id,),
                 )
             await conn.commit()
+        await self.clear_labels(agent_id)
         return True
 
     def _summary(self, a: Dict[str, Any]) -> AgentSummary:
@@ -556,8 +616,11 @@ def _parse_skill_md(raw: str, default_id: str = "") -> Dict[str, Any]:
     return meta
 
 
-class SkillStorage(LegacyMigrationStorage):
+class SkillStorage(ResourceStorage):
     """Async DB-backed skill storage (SQLite / PostgreSQL)."""
+
+    table = "skills"
+    resource_type = "skill"
 
     def __init__(self, root_dir: Path) -> None:
         super().__init__()
@@ -610,20 +673,26 @@ class SkillStorage(LegacyMigrationStorage):
         now = _now()
         created_at = str(data.get("created_at") or now)
         updated_at = str(data.get("updated_at") or now)
+        is_active = 1 if data.get("is_active", True) else 0
+        deactivated_at = data.get("deactivated_at")
         meta = {k: v for k, v in data.items() if k not in ("content",)}
         meta_json = json.dumps(meta, ensure_ascii=False)
         if IS_PG:
             await conn.execute(
-                "INSERT INTO skills (id, owner_id, scope, data, content, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?) "
+                "INSERT INTO skills (id, owner_id, scope, data, content, "
+                "is_active, deactivated_at, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
                 "ON CONFLICT (id, owner_id) DO UPDATE SET scope=EXCLUDED.scope, data=EXCLUDED.data, "
-                "content=EXCLUDED.content, updated_at=EXCLUDED.updated_at",
+                "content=EXCLUDED.content, is_active=EXCLUDED.is_active, "
+                "deactivated_at=EXCLUDED.deactivated_at, updated_at=EXCLUDED.updated_at",
                 (
                     skill_id,
                     owner_id,
                     scope,
                     meta_json,
                     content,
+                    is_active,
+                    deactivated_at,
                     created_at,
                     updated_at,
                 ),
@@ -631,14 +700,17 @@ class SkillStorage(LegacyMigrationStorage):
         else:
             await conn.execute(
                 "INSERT OR REPLACE INTO skills "
-                "(id, owner_id, scope, data, content, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                "(id, owner_id, scope, data, content, "
+                "is_active, deactivated_at, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     skill_id,
                     owner_id,
                     scope,
                     meta_json,
                     content,
+                    is_active,
+                    deactivated_at,
                     created_at,
                     updated_at,
                 ),
@@ -649,6 +721,8 @@ class SkillStorage(LegacyMigrationStorage):
         if include_content:
             d["content"] = row["content"]
         d["scope"] = row["scope"]
+        d["is_active"] = bool(row["is_active"])
+        d["deactivated_at"] = row["deactivated_at"]
         owner = row["owner_id"]
         d["owner_id"] = None if owner == _PUBLIC_OWNER else owner
         return d
@@ -664,24 +738,24 @@ class SkillStorage(LegacyMigrationStorage):
         async with open_db() as conn:
             if scope == "public":
                 rows = await conn.fetchall(
-                    "SELECT id, owner_id, scope, data, content "
+                    "SELECT id, owner_id, scope, data, content, is_active, deactivated_at "
                     "FROM skills WHERE scope='public' ORDER BY created_at ASC"
                 )
             elif scope == "private":
                 if owner_id:
                     rows = await conn.fetchall(
-                        "SELECT id, owner_id, scope, data, content "
+                        "SELECT id, owner_id, scope, data, content, is_active, deactivated_at "
                         "FROM skills WHERE scope='private' AND owner_id=? ORDER BY created_at ASC",
                         (owner_id,),
                     )
                 else:
                     rows = await conn.fetchall(
-                        "SELECT id, owner_id, scope, data, content "
+                        "SELECT id, owner_id, scope, data, content, is_active, deactivated_at "
                         "FROM skills WHERE scope='private' ORDER BY created_at ASC"
                     )
             else:  # all
                 rows = await conn.fetchall(
-                    "SELECT id, owner_id, scope, data, content "
+                    "SELECT id, owner_id, scope, data, content, is_active, deactivated_at "
                     "FROM skills ORDER BY created_at ASC"
                 )
         return [self._row_to_dict(r, include_content=False) for r in rows]
@@ -694,14 +768,14 @@ class SkillStorage(LegacyMigrationStorage):
 
         async with open_db() as conn:
             row = await conn.fetchone(
-                "SELECT id, owner_id, scope, data, content "
+                "SELECT id, owner_id, scope, data, content, is_active, deactivated_at "
                 "FROM skills WHERE id=? AND scope=? LIMIT 1",
                 (skill_id, scope),
             )
             if not row:
                 # try slug variant
                 row = await conn.fetchone(
-                    "SELECT id, owner_id, scope, data, content "
+                    "SELECT id, owner_id, scope, data, content, is_active, deactivated_at "
                     "FROM skills WHERE id=? AND scope=? LIMIT 1",
                     (_slug(skill_id), scope),
                 )
@@ -728,7 +802,7 @@ class SkillStorage(LegacyMigrationStorage):
         name = str(payload.get("name") or "").strip()
         if not name:
             raise ValueError("name required")
-        skill_id = payload.get("id") or _slug(name)
+        skill_id = payload.get("id") or generate_id()
         actual_owner = owner_id or "admin"
         now = _now()
         existing = await self.get(scope, skill_id)
@@ -751,10 +825,14 @@ class SkillStorage(LegacyMigrationStorage):
             "owner_id": actual_owner,
             "created_at": existing.get("created_at", now) if existing else now,
             "updated_at": now,
+            # Conservar el borrado suave a través de las ediciones.
+            "is_active": existing.get("is_active", True) if existing else True,
+            "deactivated_at": existing.get("deactivated_at") if existing else None,
         }
         async with open_db() as conn:
             await self._upsert(conn, skill_id, actual_owner, scope, data)
             await conn.commit()
+        await self.sync_labels(skill_id, actual_owner, data.get("labels") or [])
         return data
 
     async def delete(
@@ -770,16 +848,29 @@ class SkillStorage(LegacyMigrationStorage):
         from app.storage.db import open_db
 
         async with open_db() as conn:
-            row = await conn.fetchone(
-                "SELECT id FROM skills WHERE id=? AND scope=? LIMIT 1",
-                (skill_id, scope),
-            )
-            if not row:
-                return False
-            await conn.execute(
-                "DELETE FROM skills WHERE id=? AND scope=?", (skill_id, scope)
-            )
+            if owner_id is not None:
+                row = await conn.fetchone(
+                    "SELECT id FROM skills WHERE id=? AND scope=? AND owner_id=? LIMIT 1",
+                    (skill_id, scope, owner_id),
+                )
+                if not row:
+                    return False
+                await conn.execute(
+                    "DELETE FROM skills WHERE id=? AND scope=? AND owner_id=?",
+                    (skill_id, scope, owner_id),
+                )
+            else:
+                row = await conn.fetchone(
+                    "SELECT id FROM skills WHERE id=? AND scope=? LIMIT 1",
+                    (skill_id, scope),
+                )
+                if not row:
+                    return False
+                await conn.execute(
+                    "DELETE FROM skills WHERE id=? AND scope=?", (skill_id, scope)
+                )
             await conn.commit()
+        await self.clear_labels(skill_id)
         return True
 
 

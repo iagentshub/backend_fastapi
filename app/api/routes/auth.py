@@ -730,7 +730,9 @@ async def create_pat(
         )
 
     token, meta = await _tokens.create(username, name, expires)
-    flog.info(f"PAT creado: {name!r} ({meta['prefix']}…)", username=username)
+    flog.info(
+        f"PAT creado: {meta['id']} {name!r} ({meta['prefix']}…)", username=username
+    )
     return {**meta, "token": token}
 
 

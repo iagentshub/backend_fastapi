@@ -9,10 +9,10 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any, Dict, List, Optional
-from uuid import uuid4
 
 from app.storage.db import IS_PG, open_db
 from app.utils import now_iso as _now
+from app.utils.generators import generate_id
 
 _VALID_ROLES: frozenset[str] = frozenset({"owner", "admin", "member"})
 
@@ -48,7 +48,7 @@ class GroupStorage:
             return [dict(r) for r in rows]
 
     async def create(self, name: str, created_by: str) -> Dict[str, Any]:
-        group_id = uuid4().hex[:16]
+        group_id = generate_id(16)
         now = _now()
         async with open_db() as conn:
             async with conn.transaction():
@@ -358,7 +358,7 @@ class GroupStorage:
     async def invite_user(
         self, group_id: str, username: str, invited_by: str
     ) -> Optional[Dict[str, Any]]:
-        inv_id = uuid4().hex[:16]
+        inv_id = generate_id(16)
         now = _now()
         async with open_db() as conn:
             if IS_PG:

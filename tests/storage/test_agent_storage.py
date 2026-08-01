@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 
 import pytest
 
@@ -34,9 +35,15 @@ def test_save_and_list(storage):
     assert len(items) == 1
 
 
-def test_save_generates_slug_id(storage):
-    agent = asyncio.run(storage.save({"name": "Mi Agente Test"}))
-    assert agent["id"] == "mi-agente-test"
+def test_save_generates_unique_alphanumeric_id(storage):
+    """El id no debe derivar del nombre: dos agentes con el mismo nombre
+    (incluso de dueños distintos) deben recibir ids distintos, para que
+    no puedan colisionar en la clave primaria (id, owner_id)."""
+    a1 = asyncio.run(storage.save({"name": "Mi Agente Test"}, owner_id="alice"))
+    a2 = asyncio.run(storage.save({"name": "Mi Agente Test"}, owner_id="bob"))
+    assert a1["id"] != a2["id"]
+    assert a1["id"] != "mi-agente-test"
+    assert re.fullmatch(r"[0-9a-f]{12}", a1["id"])
 
 
 def test_save_requires_name(storage):
@@ -107,3 +114,40 @@ def test_summary_includes_owner_id(storage):
     asyncio.run(storage.save(_AGENT, owner_id="alice"))
     listed = asyncio.run(storage.list())
     assert listed[0]["owner_id"] == "alice"
+
+
+def test_delete_with_owner_id_does_not_touch_other_owner_same_id(storage):
+    """Reproduce el hallazgo crítico: si dos dueños llegaran a compartir id
+    (p.ej. datos heredados de la generación por slug), borrar el propio no
+    debe borrar el ajeno cuando se pasa owner_id."""
+    shared_id = "legacy-shared-id"
+    asyncio.run(storage.save({"name": "Asistente", "id": shared_id}, owner_id="alice"))
+    asyncio.run(storage.save({"name": "Asistente", "id": shared_id}, owner_id="bob"))
+
+    deleted = asyncio.run(storage.delete(shared_id, owner_id="alice"))
+    assert deleted is True
+
+    bob_agent = asyncio.run(storage.get(shared_id, owner_id="bob"))
+    assert bob_agent is not None
+    assert bob_agent["owner_id"] == "bob"
+
+
+def test_delete_with_owner_id_rejects_non_owner(storage):
+    agent = asyncio.run(storage.save(_AGENT, owner_id="alice"))
+    deleted = asyncio.run(storage.delete(agent["id"], owner_id="bob"))
+    assert deleted is False
+    assert asyncio.run(storage.get(agent["id"])) is not None
+
+
+def test_delete_without_owner_id_keeps_admin_bypass(storage):
+    """Sin owner_id (camino admin) se conserva el comportamiento actual."""
+    agent = asyncio.run(storage.save(_AGENT, owner_id="alice"))
+    assert asyncio.run(storage.delete(agent["id"])) is True
+
+
+def test_add_tokens_with_owner_id_rejects_non_owner(storage):
+    agent = asyncio.run(storage.save(_AGENT, owner_id="alice"))
+    asyncio.run(storage.add_tokens(agent["id"], 10, 20, owner_id="bob"))
+    unchanged = asyncio.run(storage.get(agent["id"]))
+    assert unchanged["tokens_in"] == 0
+    assert unchanged["tokens_out"] == 0

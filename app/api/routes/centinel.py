@@ -22,7 +22,6 @@ import re
 import statistics
 import sys
 import time
-import uuid
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, BackgroundTasks, Depends
@@ -32,6 +31,7 @@ from pydantic import BaseModel
 from app.api.routes.auth import require_admin
 from app.errors import APIError
 from app.utils import flog
+from app.utils.generators import generate_id
 
 router = APIRouter(prefix="/api/admin/centinel", tags=["centinel"])
 
@@ -201,7 +201,7 @@ async def start_run(
     if body.rerun_failed and _run["failed_ids"]:
         target = " ".join(_run["failed_ids"])
 
-    run_id = str(uuid.uuid4())
+    run_id = generate_id(32)
     _run.update(
         {
             "run_id": run_id,
@@ -642,7 +642,7 @@ async def stress_run(
             "Ya hay una prueba de estrés en curso.",
             extra={"resource": "stress_test"},
         )
-    run_id = str(uuid.uuid4())
+    run_id = generate_id(32)
     _stress.update(
         {
             "run_id": run_id,

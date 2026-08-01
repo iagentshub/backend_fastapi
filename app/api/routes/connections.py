@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import asyncio
 from typing import Any, Dict, List, Optional, Set
-from uuid import uuid4
 
 import httpx
 from fastapi import APIRouter, Depends, Query, Request
@@ -28,6 +27,8 @@ from app.storage.groups import GroupStorage
 from app.storage.guest import get_session, is_guest
 from app.storage.knowledge import KnowledgeStorage
 from app.storage.storage import AgentStorage, ConnectionStorage, SkillStorage
+from app.utils import flog
+from app.utils.generators import generate_id
 from app.utils.origin import compute_origin_type
 
 
@@ -305,6 +306,7 @@ async def test_all_connections(
 @router.get("")
 async def list_connections(
     requested_group_id: Optional[str] = Query(None, alias="group_id"),
+    include_inactive: bool = False,
     limit: int = Query(0, ge=0, description="Máx. items. 0 = sin límite"),
     offset: int = Query(0, ge=0),
     ctx: GroupContext = Depends(require_group),
@@ -356,6 +358,9 @@ async def list_connections(
                     c["_shared"] = True
                     c["_group_id"] = shared_map[rid]
                     raw.append(c)
+
+    if not include_inactive:
+        raw = [c for c in raw if c.get("is_active", True)]
 
     for c in raw:
         if c.get("_shared") or c.get("owner_id") in (user, active_group_id):
@@ -422,12 +427,18 @@ async def save_connection(
 
     if is_guest(user):
         s = get_session(user)
-        conn: Dict[str, Any] = {**payload, "id": payload.get("id") or uuid4().hex[:12]}
+        conn: Dict[str, Any] = {**payload, "id": payload.get("id") or generate_id()}
         s.connections = [c for c in s.connections if c.get("id") != conn["id"]]
         s.connections.append(conn)
         return {k: v for k, v in conn.items() if k != "api_key"}
+    was_update = bool(payload.get("id"))
     owner = user if scope == "personal" else group_id
     conn = await _storage.save(payload, owner_id=owner)
+    action = "actualizada" if was_update else "creada"
+    flog.info(
+        f"Conexión {action}: {conn['id']} {conn.get('name', conn.get('type', ''))!r}",
+        username=user,
+    )
     return {k: v for k, v in conn.items() if k != "api_key"}
 
 
@@ -527,7 +538,41 @@ async def delete_connection(
         deleted = await _storage.delete(conn_id, user)
     if not deleted:
         raise APIError(404, "not_found", "Conexión no encontrada", extra={"resource": "connection"})
+    flog.info(f"Conexión borrada: {conn_id}", username=user)
     return {"ok": True}
+
+
+async def _set_connection_active(
+    conn_id: str, active: bool, ctx: GroupContext
+) -> Dict[str, Any]:
+    user, group_id = ctx.user, ctx.group_id
+    if is_guest(user):
+        raise APIError(
+            403, "forbidden", "Los invitados no pueden desactivar conexiones"
+        )
+    owner_id = await _owner(user, group_id)
+    ok = await _storage.set_active(conn_id, owner_id, active)
+    if not ok and group_id != user:
+        ok = await _storage.set_active(conn_id, user, active)
+    if not ok:
+        raise APIError(404, "not_found", "Conexión no encontrada", extra={"resource": "connection"})
+    estado = "activada" if active else "desactivada"
+    flog.info(f"Conexión {estado}: {conn_id}", username=user)
+    return {"ok": True, "is_active": active}
+
+
+@router.post("/{conn_id}/activate")
+async def activate_connection(
+    conn_id: str, ctx: GroupContext = Depends(require_group)
+) -> Dict[str, Any]:
+    return await _set_connection_active(conn_id, True, ctx)
+
+
+@router.post("/{conn_id}/deactivate")
+async def deactivate_connection(
+    conn_id: str, ctx: GroupContext = Depends(require_group)
+) -> Dict[str, Any]:
+    return await _set_connection_active(conn_id, False, ctx)
 
 
 @router.post("/{conn_id}/hub-sync")
