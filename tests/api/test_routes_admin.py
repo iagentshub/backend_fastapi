@@ -96,11 +96,31 @@ def test_create_user_accepts_valid_email(admin_client):
     }
 
 
-def _mock_tags_response(names):
+def _mock_ghcr_token_response():
     resp = MagicMock()
     resp.raise_for_status = lambda: None
-    resp.json.return_value = {"results": [{"name": n} for n in names], "next": None}
+    resp.json.return_value = {"token": "test-read-token"}
     return resp
+
+
+def _mock_ghcr_tags_response(names):
+    resp = MagicMock()
+    resp.raise_for_status = lambda: None
+    resp.headers = {}
+    resp.json.return_value = {"name": "iagentshub/app", "tags": names}
+    return resp
+
+
+def _ghcr_fake_get(tags_names):
+    async def fake_get(*args, **kwargs):
+        url = args[-1]
+        if url == "https://ghcr.io/token":
+            return _mock_ghcr_token_response()
+        if "ghcr.io/v2/iagentshub/app/tags/list" in url:
+            return _mock_ghcr_tags_response(tags_names)
+        raise httpx.ConnectError(f"URL no esperada en el test: {url}")
+
+    return fake_get
 
 
 def test_check_update_no_version_baked(admin_client, monkeypatch):
@@ -116,10 +136,9 @@ def test_check_update_no_version_baked(admin_client, monkeypatch):
 def test_check_update_available(admin_client, monkeypatch):
     monkeypatch.setenv("GAIA_VERSION", "20260101000000")
 
-    async def fake_get(*args, **kwargs):
-        return _mock_tags_response(
-            ["latest", "legacy", "react-20260101000000", "react-20260601120000"]
-        )
+    fake_get = _ghcr_fake_get(
+        ["latest", "legacy", "react-20260101000000", "react-20260601120000"]
+    )
 
     with patch.object(httpx.AsyncClient, "get", new=fake_get):
         r = admin_client.get("/api/admin/check-update")
@@ -136,10 +155,9 @@ def test_check_update_ignores_other_tag_family(admin_client, monkeypatch):
     """Un tag de otra familia no debe disparar una actualización React."""
     monkeypatch.setenv("GAIA_VERSION", "20260101000000")
 
-    async def fake_get(*args, **kwargs):
-        return _mock_tags_response(
-            ["latest", "legacy-20260601120000", "react-20260101000000"]
-        )
+    fake_get = _ghcr_fake_get(
+        ["latest", "legacy-20260601120000", "react-20260101000000"]
+    )
 
     with patch.object(httpx.AsyncClient, "get", new=fake_get):
         r = admin_client.get("/api/admin/check-update")
@@ -153,10 +171,9 @@ def test_check_update_ignores_other_tag_family(admin_client, monkeypatch):
 def test_check_update_up_to_date(admin_client, monkeypatch):
     monkeypatch.setenv("GAIA_VERSION", "20260601120000")
 
-    async def fake_get(*args, **kwargs):
-        return _mock_tags_response(
-            ["latest", "react-20260101000000", "react-20260601120000"]
-        )
+    fake_get = _ghcr_fake_get(
+        ["latest", "react-20260101000000", "react-20260601120000"]
+    )
 
     with patch.object(httpx.AsyncClient, "get", new=fake_get):
         r = admin_client.get("/api/admin/check-update")
@@ -169,8 +186,7 @@ def test_check_update_up_to_date(admin_client, monkeypatch):
 def test_check_update_no_remote_versions(admin_client, monkeypatch):
     monkeypatch.setenv("GAIA_VERSION", "20260101000000")
 
-    async def fake_get(*args, **kwargs):
-        return _mock_tags_response(["latest", "legacy"])
+    fake_get = _ghcr_fake_get(["latest", "legacy"])
 
     with patch.object(httpx.AsyncClient, "get", new=fake_get):
         r = admin_client.get("/api/admin/check-update")
@@ -180,7 +196,7 @@ def test_check_update_no_remote_versions(admin_client, monkeypatch):
     assert data["reason"] == "no_remote_versions"
 
 
-def test_check_update_docker_hub_error(admin_client, monkeypatch):
+def test_check_update_ghcr_error(admin_client, monkeypatch):
     monkeypatch.setenv("GAIA_VERSION", "20260101000000")
 
     async def fake_get(*args, **kwargs):
@@ -200,12 +216,14 @@ def _mock_github_commit_response(sha):
 
 
 def _routed_fake_get(tags_names, github_shas):
-    """Enruta según la URL: hub.docker.com -> tags, api.github.com -> commit."""
+    """Enruta según la URL: GHCR -> token/tags, api.github.com -> commit."""
 
     async def fake_get(*args, **kwargs):
         url = args[-1]
-        if "hub.docker.com" in url:
-            return _mock_tags_response(tags_names)
+        if url == "https://ghcr.io/token":
+            return _mock_ghcr_token_response()
+        if "ghcr.io/v2/iagentshub/app/tags/list" in url:
+            return _mock_ghcr_tags_response(tags_names)
         for repo, sha in github_shas.items():
             if repo in url:
                 return _mock_github_commit_response(sha)
@@ -266,8 +284,7 @@ def test_check_update_commits_not_baked_are_omitted(admin_client, monkeypatch):
     monkeypatch.delenv("BACKEND_COMMIT", raising=False)
     monkeypatch.delenv("FRONTEND_COMMIT", raising=False)
 
-    async def fake_get(*args, **kwargs):
-        return _mock_tags_response(["latest", "react-20260101000000"])
+    fake_get = _ghcr_fake_get(["latest", "react-20260101000000"])
 
     with patch.object(httpx.AsyncClient, "get", new=fake_get):
         r = admin_client.get("/api/admin/check-update")
@@ -286,8 +303,10 @@ def test_check_update_github_api_failure_is_not_fatal(admin_client, monkeypatch)
 
     async def fake_get(*args, **kwargs):
         url = args[-1]
-        if "hub.docker.com" in url:
-            return _mock_tags_response(["latest", "react-20260101000000"])
+        if url == "https://ghcr.io/token":
+            return _mock_ghcr_token_response()
+        if "ghcr.io/v2/iagentshub/app/tags/list" in url:
+            return _mock_ghcr_tags_response(["latest", "react-20260101000000"])
         raise httpx.ConnectError("GitHub no disponible")
 
     with patch.object(httpx.AsyncClient, "get", new=fake_get):

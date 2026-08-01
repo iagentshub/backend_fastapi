@@ -1,12 +1,16 @@
 name: Build & Push Docker image
 
+permissions:
+  contents: read
+  packages: write
+
 on:
   push:
     branches: [main]
   workflow_dispatch:
 
 jobs:
-  # Imagen standalone del backend — iagenthub/backend, tag 'fastapi' (única
+  # Imagen standalone del backend — ghcr.io/iagentshub/backend, tag 'fastapi' (única
   # implementación por ahora) + 'latest' como alias mientras lo sea.
   publish:
     runs-on: ubuntu-latest
@@ -15,15 +19,16 @@ jobs:
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
       - name: Generar versión de build
         id: version
         run: echo "value=$(date -u +%Y%m%d%H%M%S)" >> "$GITHUB_OUTPUT"
       - id: meta
         uses: docker/metadata-action@c299e40c65443455700f0fdfc63efafe5b349051 # v5
         with:
-          images: iagenthub/backend
+          images: ghcr.io/iagentshub/backend
           tags: |
             type=raw,value=latest,enable={{is_default_branch}}
             type=raw,value=fastapi,enable={{is_default_branch}}
@@ -63,20 +68,41 @@ jobs:
           repository: iagentshub/frontend_react
           path: frontend
 
+      - name: Checkout Flutter app
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          repository: iagentshub/app_flutter
+          path: app_flutter
+
+      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Compilar Flutter Web bajo /app/
+        working-directory: app_flutter
+        run: |
+          flutter pub get
+          flutter analyze --no-fatal-infos
+          flutter test
+          flutter build web --release --base-href /app/
+
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
 
-      - name: Log in to Docker Hub
+      - name: Log in to GitHub Container Registry
         uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
-          username: ${{ secrets.DOCKERHUB_USERNAME }}
-          password: ${{ secrets.DOCKERHUB_TOKEN }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
       - name: Preparar contexto de build
         run: |
           mkdir -p build-ctx
           cp -r backend/ build-ctx/backend
           cp -r frontend/ build-ctx/frontend
+          cp -r app_flutter/build/web build-ctx/flutter-web
           D=iagentshub/docker
           cp $D/Dockerfile.unified build-ctx/Dockerfile
           cp $D/supervisord.conf build-ctx/supervisord.conf
@@ -103,7 +129,7 @@ jobs:
             BACKEND_COMMIT=${{ steps.shas.outputs.backend }}
             FRONTEND_COMMIT=${{ steps.shas.outputs.frontend }}
           tags: |
-            iagenthub/app:latest
-            iagenthub/app:react-${{ steps.version.outputs.value }}
+            ghcr.io/iagentshub/app:latest
+            ghcr.io/iagentshub/app:react-${{ steps.version.outputs.value }}
           cache-from: type=gha
           cache-to: type=gha,mode=max

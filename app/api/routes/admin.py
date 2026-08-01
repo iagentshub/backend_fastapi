@@ -64,39 +64,61 @@ def _version_re(variant: str) -> re.Pattern:
     return re.compile(rf"^{re.escape(variant)}-(\d{{14}})$")
 
 
-async def _latest_docker_hub_version(repo: str, variant: str) -> str | None:
-    """Versión (tag `<variant>-YYYYMMDDHHMMSS`) más reciente publicada en Docker
-    Hub para `repo`, restringida a la familia indicada.
+async def _latest_ghcr_version(image: str, variant: str) -> str | None:
+    """Versión (tag `<variant>-YYYYMMDDHHMMSS`) más reciente publicada en
+    GHCR para `image`, restringida a la familia indicada.
 
     El prefijo evita mezclar tags históricos o ajenos con las versiones React
     soportadas actualmente.
-
-    Usa la API pública de Docker Hub (hub.docker.com/v2), no el registry — sin
-    autenticación y sin el rate-limit estricto de docker.io/pulls. None si el
-    repo no tiene ningún tag de esa variante todavía.
     """
+    prefix = "ghcr.io/"
+    if not image.startswith(prefix):
+        raise APIError(
+            500,
+            "invalid_field",
+            "IMAGE_REPOSITORY debe apuntar a ghcr.io",
+            extra={"field": "IMAGE_REPOSITORY"},
+        )
+    repository = image.removeprefix(prefix).strip("/")
     pattern = _version_re(variant)
-    versions: list[str] = []
-    url = f"https://hub.docker.com/v2/repositories/{repo}/tags?page_size=100"
     async with httpx.AsyncClient(timeout=10) as client:
-        for _ in range(10):  # límite de páginas por seguridad, no debería hacer falta
-            resp = await client.get(url)
-            resp.raise_for_status()
-            data = resp.json()
-            for t in data.get("results", []):
-                match = pattern.match(t.get("name", ""))
-                if match:
-                    versions.append(match.group(1))
-            url = data.get("next")
-            if not url:
+        token_response = await client.get(
+            "https://ghcr.io/token",
+            params={
+                "service": "ghcr.io",
+                "scope": f"repository:{repository}:pull",
+            },
+        )
+        token_response.raise_for_status()
+        token = str(token_response.json().get("token") or "")
+        if not token:
+            raise httpx.HTTPError("GHCR no devolvió un token de lectura")
+        tags: list[str] = []
+        tags_url: str | None = f"https://ghcr.io/v2/{repository}/tags/list?n=1000"
+        for _ in range(10):
+            if tags_url is None:
                 break
+            tags_response = await client.get(
+                tags_url,
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            tags_response.raise_for_status()
+            tags.extend(tags_response.json().get("tags") or [])
+            link = tags_response.headers.get("link", "")
+            next_link = re.search(r'<([^>]+)>;\s*rel="next"', link)
+            tags_url = next_link.group(1) if next_link else None
+            if tags_url and tags_url.startswith("/"):
+                tags_url = f"https://ghcr.io{tags_url}"
+    versions = [
+        match.group(1) for tag in tags if (match := pattern.match(str(tag))) is not None
+    ]
     return max(versions) if versions else None
 
 
 async def _latest_github_commit_sha(repo: str, branch: str = "main") -> str | None:
     """SHA completo del último commit en `branch` de `repo` (API pública de
     GitHub, sin autenticación). None si la consulta falla por cualquier motivo
-    — a diferencia de Docker Hub, esta comprobación es solo informativa
+    — a diferencia de GHCR, esta comprobación es solo informativa
     (distingue si lo desactualizado es el backend o el frontend) y nunca debe
     tumbar el resto de /check-update.
     """
@@ -115,7 +137,7 @@ async def _latest_github_commit_sha(repo: str, branch: str = "main") -> str | No
 @admin_router.get("/check-update")
 async def admin_check_update(_: str = Depends(require_admin)) -> dict:
     """Compara la versión de la imagen en ejecución (GAIA_VERSION) contra la
-    más reciente publicada en Docker Hub. Solo informa — no aplica el update
+    más reciente publicada en GHCR. Solo informa — no aplica el update
     (eso lo hace Watchtower, o `docker compose pull && up -d` manual).
 
     GAIA_VERSION solo dice "cuándo" se construyó la imagen, no "qué" código de
@@ -131,14 +153,11 @@ async def admin_check_update(_: str = Depends(require_admin)) -> dict:
             "current_version": current_version,
         }
 
-    hub_user = os.environ.get("DOCKER_HUB_USER", "iagenthub")
-    repo = f"{hub_user}/app"
+    image_repository = os.environ.get("IMAGE_REPOSITORY", "ghcr.io/iagentshub/app")
     try:
-        latest_version = await _latest_docker_hub_version(repo, "react")
+        latest_version = await _latest_ghcr_version(image_repository, "react")
     except httpx.HTTPError as exc:
-        raise APIError(
-            502, "check_update_failed", "No se pudo consultar Docker Hub"
-        ) from exc
+        raise APIError(502, "check_update_failed", "No se pudo consultar GHCR") from exc
 
     backend_commit = os.environ.get("BACKEND_COMMIT", "dev")
     frontend_commit = os.environ.get("FRONTEND_COMMIT", "dev")
