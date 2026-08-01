@@ -290,12 +290,46 @@ def test_check_update_backend_commit_outdated(admin_client, monkeypatch):
     assert data["frontend_up_to_date"] is True
 
 
+def test_check_update_app_commit_up_to_date(admin_client, monkeypatch):
+    monkeypatch.setenv("GAIA_VERSION", "20260101000000")
+    monkeypatch.setenv("APP_COMMIT", "aaa1111")
+
+    fake_get = _routed_fake_get(
+        ["latest", "react-20260101000000"],
+        {"iagentshub/app_flutter": "aaa1111222333444555"},
+    )
+    with patch.object(httpx.AsyncClient, "get", new=fake_get):
+        r = admin_client.get("/api/admin/check-update")
+
+    data = r.json()
+    assert data["app_commit"] == "aaa1111"
+    assert data["app_commit_latest"] == "aaa1111"
+    assert data["app_up_to_date"] is True
+
+
+def test_check_update_app_commit_outdated(admin_client, monkeypatch):
+    monkeypatch.setenv("GAIA_VERSION", "20260101000000")
+    monkeypatch.setenv("APP_COMMIT", "aaa1111")
+
+    fake_get = _routed_fake_get(
+        ["latest", "react-20260101000000"],
+        {"iagentshub/app_flutter": "9999999999999999999"},
+    )
+    with patch.object(httpx.AsyncClient, "get", new=fake_get):
+        r = admin_client.get("/api/admin/check-update")
+
+    data = r.json()
+    assert data["app_commit_latest"] == "9999999"
+    assert data["app_up_to_date"] is False
+
+
 def test_check_update_commits_not_baked_are_omitted(admin_client, monkeypatch):
-    """Sin BACKEND_COMMIT/FRONTEND_COMMIT (instalaciones previas a este
-    cambio) no debe intentarse ninguna llamada a la API de GitHub."""
+    """Sin BACKEND_COMMIT/FRONTEND_COMMIT/APP_COMMIT (instalaciones previas a
+    este cambio) no debe intentarse ninguna llamada a la API de GitHub."""
     monkeypatch.setenv("GAIA_VERSION", "20260101000000")
     monkeypatch.delenv("BACKEND_COMMIT", raising=False)
     monkeypatch.delenv("FRONTEND_COMMIT", raising=False)
+    monkeypatch.delenv("APP_COMMIT", raising=False)
 
     fake_get = _ghcr_fake_get(["latest", "react-20260101000000"])
 
@@ -307,6 +341,9 @@ def test_check_update_commits_not_baked_are_omitted(admin_client, monkeypatch):
     assert data["backend_commit_latest"] is None
     assert data["backend_up_to_date"] is None
     assert data["frontend_up_to_date"] is None
+    assert data["app_commit"] == "dev"
+    assert data["app_commit_latest"] is None
+    assert data["app_up_to_date"] is None
 
 
 def test_check_update_github_api_failure_is_not_fatal(admin_client, monkeypatch):

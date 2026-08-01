@@ -141,9 +141,10 @@ async def admin_check_update(_: str = Depends(require_admin)) -> dict:
     (eso lo hace Watchtower, o `docker compose pull && up -d` manual).
 
     GAIA_VERSION solo dice "cuándo" se construyó la imagen, no "qué" código de
-    backend_fastapi ni del frontend lleva dentro — así que además se compara
-    el commit horneado de cada repo (BACKEND_COMMIT/FRONTEND_COMMIT) contra el
-    HEAD de main en GitHub, para saber cuál de los dos está desactualizado.
+    backend_fastapi, frontend_react ni app_flutter lleva dentro — así que
+    además se compara el commit horneado de cada uno de los tres repos
+    (BACKEND_COMMIT/FRONTEND_COMMIT/APP_COMMIT) contra el HEAD de main en
+    GitHub, para saber cuál está desactualizado.
     """
     current_version = os.environ.get("GAIA_VERSION", "dev")
     if current_version == "dev":
@@ -162,12 +163,16 @@ async def admin_check_update(_: str = Depends(require_admin)) -> dict:
 
     backend_commit = os.environ.get("BACKEND_COMMIT", "dev")
     frontend_commit = os.environ.get("FRONTEND_COMMIT", "dev")
+    app_commit = os.environ.get("APP_COMMIT", "dev")
     frontend_repo = "iagentshub/frontend_react"
-    backend_latest, frontend_latest = None, None
+    app_repo = "iagentshub/app_flutter"
+    backend_latest, frontend_latest, app_latest = None, None, None
     if backend_commit != "dev":
         backend_latest = await _latest_github_commit_sha("iagentshub/backend_fastapi")
     if frontend_commit != "dev":
         frontend_latest = await _latest_github_commit_sha(frontend_repo)
+    if app_commit != "dev":
+        app_latest = await _latest_github_commit_sha(app_repo)
 
     commits = {
         "backend_commit": backend_commit,
@@ -180,6 +185,9 @@ async def admin_check_update(_: str = Depends(require_admin)) -> dict:
         "frontend_up_to_date": (
             frontend_latest.startswith(frontend_commit) if frontend_latest else None
         ),
+        "app_commit": app_commit,
+        "app_commit_latest": app_latest[:7] if app_latest else None,
+        "app_up_to_date": (app_latest.startswith(app_commit) if app_latest else None),
     }
 
     if latest_version is None:
