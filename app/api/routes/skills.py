@@ -10,7 +10,6 @@ from app.api.routes.auth import GroupContext, require_group
 from app.auth.auth import get_user_role
 from app.config.data import DB_FILE, SKILLS_DIR
 from app.errors import APIError
-from app.storage.folders import FolderStorage
 from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
 from app.storage.guest import get_session, is_guest
@@ -25,7 +24,6 @@ router = APIRouter(prefix="/api/skills", tags=["skills"])
 _storage = SkillStorage(SKILLS_DIR)
 _shares = GroupShareStorage(DB_FILE)
 _groups = GroupStorage(DB_FILE)
-_folders = FolderStorage()
 _versions = ResourceVersionStorage()
 
 _VALID_SCOPES = {"public", "private", "all"}
@@ -118,17 +116,7 @@ async def list_skills(
         items = items[:limit]
     for sk in items:
         _mark_origin(sk, user, ctx.group_id)
-    private_items = [item for item in items if item.get("scope") != "public"]
-    enriched = await _folders.enrich_items(
-        private_items, default_owner=ctx.group_id, resource_type="skill"
-    )
-    folders = {item["id"]: item.get("folder_id") for item in enriched}
-    return [
-        {**item, "folder_id": folders.get(item["id"])}
-        if item.get("scope") != "public"
-        else item
-        for item in items
-    ]
+    return items
 
 
 @router.get("/{scope}/{skill_id}")
@@ -189,24 +177,28 @@ async def save_skill(
                 "Los invitados no pueden modificar skills públicas",
             )
         s = get_session(user)
+        guest_id = payload.get("id")
+        if guest_id and not any(sk.get("id") == guest_id for sk in s.skills):
+            guest_id = None
         skill: Dict[str, Any] = {
             **payload,
-            "id": payload.get("id") or generate_id(),
+            "id": guest_id or generate_id(),
             "scope": "private",
         }
         s.skills = [sk for sk in s.skills if sk.get("id") != skill["id"]]
         s.skills.append(skill)
         return skill
-    was_update = bool(payload.get("id"))
+    skill_id_in_payload = payload.get("id")
+    existing = (
+        await _storage.get_any(skill_id_in_payload) if skill_id_in_payload else None
+    )
+    if skill_id_in_payload and not existing:
+        # Un id entrante solo es válido para editar una fila existente;
+        # en altas el id lo genera siempre el servidor.
+        payload.pop("id", None)
+    was_update = existing is not None
     try:
-        folder_id = payload.pop("folder_id", None)
         saved = await _storage.save(scope, payload, owner_id=group_id)
-        if scope == "private" and folder_id is not None:
-            try:
-                await _folders.assign(group_id, "skill", saved["id"], folder_id or None)
-            except ValueError as exc:
-                raise APIError(422, "incompatible_folder", str(exc)) from exc
-        saved["folder_id"] = await _folders.folder_for(group_id, "skill", saved["id"])
         await _versions.create(
             "skill", saved["id"], group_id, saved, user, reason="save"
         )
@@ -250,10 +242,6 @@ async def delete_skill(
     except ValueError as e:
         raise APIError(403, "public_skill_readonly", str(e))
     flog.info(f"Skill borrada: {skill_id} {(sk or {}).get('name', '')!r}", username=user)
-    if sk:
-        await _folders.remove_resource(
-            str(sk.get("owner_id") or group_id), "skill", skill_id
-        )
     return {"ok": True}
 
 
@@ -289,23 +277,3 @@ async def deactivate_skill(
     skill_id: str, ctx: GroupContext = Depends(require_group)
 ) -> Dict[str, Any]:
     return await _set_skill_active(skill_id, False, ctx)
-
-
-@router.patch("/private/{skill_id}/folder")
-async def move_skill_to_folder(
-    skill_id: str, request: Request, ctx: GroupContext = Depends(require_group)
-) -> Dict[str, Any]:
-    skill = await _storage.get("private", skill_id)
-    if not skill:
-        raise APIError(404, "not_found", "Skill no encontrada", extra={"resource": "skill"})
-    if await get_user_role(ctx.user) != "admin" and skill.get("owner_id") != ctx.group_id:
-        raise APIError(403, "forbidden", "Solo el propietario puede mover la skill")
-    body = await request.json()
-    try:
-        await _folders.assign(
-            ctx.group_id, "skill", skill_id,
-            str(body["folder_id"]) if body.get("folder_id") else None,
-        )
-    except ValueError as exc:
-        raise APIError(422, "incompatible_folder", str(exc)) from exc
-    return {**skill, "folder_id": body.get("folder_id")}

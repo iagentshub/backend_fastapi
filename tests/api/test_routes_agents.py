@@ -23,6 +23,25 @@ def test_create_agent(admin_client):
     assert "id" in data
 
 
+def test_create_agent_ignores_client_id(admin_client):
+    """Un id fabricado por el cliente se ignora en el alta: lo genera el servidor."""
+    r = admin_client.post("/api/agents", json={**_AGENT_PAYLOAD, "id": "mi-agente"})
+    assert r.status_code == 200
+    data = r.json()
+    assert data["id"] and data["id"] != "mi-agente"
+
+
+def test_update_agent_keeps_existing_id(admin_client):
+    created = admin_client.post("/api/agents", json=_AGENT_PAYLOAD).json()
+    r = admin_client.post(
+        "/api/agents", json={**_AGENT_PAYLOAD, "id": created["id"], "name": "Editado"}
+    )
+    assert r.status_code == 200
+    data = r.json()
+    assert data["id"] == created["id"]
+    assert data["name"] == "Editado"
+
+
 def test_list_agents_after_create(admin_client):
     admin_client.post("/api/agents", json=_AGENT_PAYLOAD)
     r = admin_client.get("/api/agents")

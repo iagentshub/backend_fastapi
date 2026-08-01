@@ -69,20 +69,22 @@ def test_save_connection_scope_personal(client):
 # ── 3. Sesión guest — save / get / delete / test ─────────────────────────────
 
 def test_guest_save_connection(client):
+    """Un id fabricado por el cliente se ignora: el servidor genera el id."""
     client.post("/api/auth/guest")
     r = client.post("/api/connections", json={**_CONN_OPENAI, "id": "g-save-1"})
     assert r.status_code == 200
     data = r.json()
-    assert data["id"] == "g-save-1"
+    assert data["id"] and data["id"] != "g-save-1"
     assert "api_key" not in data
 
 
 def test_guest_get_connection_found(client):
     client.post("/api/auth/guest")
-    client.post("/api/connections", json={**_CONN_OPENAI, "id": "g-get-1"})
-    r = client.get("/api/connections/g-get-1")
+    r = client.post("/api/connections", json=_CONN_OPENAI)
+    conn_id = r.json()["id"]
+    r = client.get(f"/api/connections/{conn_id}")
     assert r.status_code == 200
-    assert r.json()["id"] == "g-get-1"
+    assert r.json()["id"] == conn_id
 
 
 def test_guest_get_connection_not_found(client):
@@ -93,8 +95,9 @@ def test_guest_get_connection_not_found(client):
 
 def test_guest_delete_connection_ok(client):
     client.post("/api/auth/guest")
-    client.post("/api/connections", json={**_CONN_OPENAI, "id": "g-del-1"})
-    r = client.delete("/api/connections/g-del-1")
+    r = client.post("/api/connections", json=_CONN_OPENAI)
+    conn_id = r.json()["id"]
+    r = client.delete(f"/api/connections/{conn_id}")
     assert r.status_code == 200
     assert r.json()["ok"] is True
 
@@ -108,7 +111,8 @@ def test_guest_delete_connection_not_found(client):
 def test_guest_test_connection(client):
     """Guest puede testear una conexión guardada en su sesión efímera."""
     client.post("/api/auth/guest")
-    client.post("/api/connections", json={**_CONN_OPENAI, "id": "g-test-1"})
+    r = client.post("/api/connections", json=_CONN_OPENAI)
+    conn_id = r.json()["id"]
 
     mock_result = MagicMock()
     mock_result.ok = True
@@ -116,7 +120,7 @@ def test_guest_test_connection(client):
     mock_result.detail = ""
 
     with patch("app.connections.openai.OpenAIProvider.test", return_value=mock_result):
-        r = client.post("/api/connections/g-test-1/test")
+        r = client.post(f"/api/connections/{conn_id}/test")
 
     assert r.status_code == 200
     assert r.json()["ok"] is True

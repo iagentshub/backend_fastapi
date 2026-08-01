@@ -2,11 +2,15 @@
 
 from __future__ import annotations
 
+import http.client
+import socket
+import ssl
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote, urljoin, urlsplit
 
-from app.config.security import assert_safe_url
+from app.config.security import assert_safe_url, resolve_safe_host
 from app.storage.db import open_db
 from app.storage.resource_base import ResourceStorage
 from app.utils.generators import generate_date, generate_id
@@ -60,22 +64,101 @@ class _TextParser(HTMLParser):
 # ── Public helpers ─────────────────────────────────────────────────────────────
 
 MAX_CONTENT = 500_000  # max characters stored per item
+_MAX_DOWNLOAD_BYTES = 2 * 1024 * 1024
+_MAX_REDIRECTS = 5
+_REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+
+
+class _PinnedHTTPConnection(http.client.HTTPConnection):
+    """HTTP conectado a una IP validada, conservando el Host original."""
+
+    def __init__(self, hostname: str, connect_ip: str, port: int) -> None:
+        super().__init__(hostname, port=port, timeout=20)
+        self._connect_ip = connect_ip
+
+    def connect(self) -> None:
+        self.sock = socket.create_connection(
+            (self._connect_ip, self.port), self.timeout, self.source_address
+        )
+
+
+class _PinnedHTTPSConnection(http.client.HTTPSConnection):
+    """HTTPS fijado a una IP, con certificado y SNI del hostname original."""
+
+    def __init__(self, hostname: str, connect_ip: str, port: int) -> None:
+        super().__init__(
+            hostname,
+            port=port,
+            timeout=20,
+            context=ssl.create_default_context(),
+        )
+        self._connect_ip = connect_ip
+
+    def connect(self) -> None:
+        raw_socket = socket.create_connection(
+            (self._connect_ip, self.port), self.timeout, self.source_address
+        )
+        try:
+            self.sock = self._context.wrap_socket(raw_socket, server_hostname=self.host)
+        except Exception:
+            raw_socket.close()
+            raise
+
+
+def _download_safe_url(url: str) -> tuple[bytes, str]:
+    """Descarga con DNS fijado y valida de nuevo cada redirección."""
+    current_url = url
+    visited: set[str] = set()
+    for _redirect_count in range(_MAX_REDIRECTS + 1):
+        if current_url in visited:
+            raise ValueError("Bucle de redirecciones al descargar la URL")
+        visited.add(current_url)
+        assert_safe_url(current_url)
+        parts = urlsplit(current_url)
+        hostname = (parts.hostname or "").encode("idna").decode("ascii")
+        try:
+            port = parts.port or (443 if parts.scheme == "https" else 80)
+        except ValueError as exc:
+            raise ValueError("Puerto inválido en la URL") from exc
+        connect_ip = resolve_safe_host(hostname, port)
+        connection_class = (
+            _PinnedHTTPSConnection if parts.scheme == "https" else _PinnedHTTPConnection
+        )
+        connection = connection_class(hostname, connect_ip, port)
+        path = quote(parts.path or "/", safe="/%:@!$&'()*+,;=-._~")
+        if parts.query:
+            path += "?" + quote(parts.query, safe="=&?/:;+,%@!$'()*-._~")
+        default_port = 443 if parts.scheme == "https" else 80
+        display_host = f"[{hostname}]" if ":" in hostname else hostname
+        host_header = display_host if port == default_port else f"{display_host}:{port}"
+        try:
+            connection.request(
+                "GET",
+                path,
+                headers={
+                    "Host": host_header,
+                    "User-Agent": "iAgentsHub/1.0 (+knowledge-fetch)",
+                    "Accept-Encoding": "identity",
+                },
+            )
+            response = connection.getresponse()
+            if response.status in _REDIRECT_STATUSES:
+                location = response.headers.get("Location")
+                response.read(1)
+                if not location:
+                    raise ValueError("Redirección sin cabecera Location")
+                current_url = urljoin(current_url, location)
+                continue
+            content_type = response.headers.get("Content-Type", "text/html")
+            return response.read(_MAX_DOWNLOAD_BYTES), content_type
+        finally:
+            connection.close()
+    raise ValueError("Demasiadas redirecciones al descargar la URL")
 
 
 def fetch_url_text(url: str) -> str:
     """Download a URL and return its plain text (max 2 MB)."""
-    import urllib.request
-
-    # Validar que la URL no apunte a redes privadas o endpoints de metadata (SSRF)
-    assert_safe_url(url)
-
-    req = urllib.request.Request(
-        url,
-        headers={"User-Agent": "iAgentsHub/1.0 (+knowledge-fetch)"},
-    )
-    with urllib.request.urlopen(req, timeout=20) as resp:
-        content_type: str = resp.headers.get("Content-Type", "text/html")
-        raw = resp.read(2 * 1024 * 1024)
+    raw, content_type = _download_safe_url(url)
 
     charset = "utf-8"
     if "charset=" in content_type:

@@ -1,8 +1,7 @@
 """Registro único de tipos de recurso del sistema.
 
 Única fuente de verdad para los valores de `resource_type`. Los routers y
-storages importan de aquí en vez de mantener listas propias (antes había tres
-listas divergentes en sharing.py, social.py y folders.py).
+storages importan de aquí en vez de mantener listas propias divergentes.
 """
 
 from __future__ import annotations

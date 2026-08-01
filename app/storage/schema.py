@@ -135,27 +135,6 @@ CREATE TABLE IF NOT EXISTS group_members (
     PRIMARY KEY (group_id, username)
 );
 CREATE INDEX IF NOT EXISTS idx_group_members_user ON group_members(username);
-CREATE TABLE IF NOT EXISTS resource_folders (
-    id          TEXT PRIMARY KEY,
-    owner_id    TEXT NOT NULL,
-    section     TEXT NOT NULL,
-    name        TEXT NOT NULL,
-    is_public   INTEGER NOT NULL DEFAULT 0,
-    created_at  TEXT NOT NULL,
-    updated_at  TEXT NOT NULL,
-    UNIQUE(owner_id, section, name)
-);
-CREATE INDEX IF NOT EXISTS idx_resource_folders_owner
-    ON resource_folders(owner_id, section, name);
-CREATE TABLE IF NOT EXISTS resource_folder_items (
-    owner_id      TEXT NOT NULL,
-    resource_type TEXT NOT NULL,
-    resource_id   TEXT NOT NULL,
-    folder_id     TEXT,
-    PRIMARY KEY (owner_id, resource_type, resource_id)
-);
-CREATE INDEX IF NOT EXISTS idx_resource_folder_items_folder
-    ON resource_folder_items(folder_id, resource_type);
 CREATE TABLE IF NOT EXISTS token_daily (
     day      TEXT NOT NULL,
     owner_id TEXT NOT NULL,
@@ -413,27 +392,6 @@ CREATE TABLE IF NOT EXISTS group_members (
     PRIMARY KEY (group_id, username)
 );
 CREATE INDEX IF NOT EXISTS idx_group_members_user ON group_members(username);
-CREATE TABLE IF NOT EXISTS resource_folders (
-    id          TEXT PRIMARY KEY,
-    owner_id    TEXT NOT NULL,
-    section     TEXT NOT NULL,
-    name        TEXT NOT NULL,
-    is_public   BOOLEAN NOT NULL DEFAULT FALSE,
-    created_at  TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
-    updated_at  TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
-    UNIQUE(owner_id, section, name)
-);
-CREATE INDEX IF NOT EXISTS idx_resource_folders_owner
-    ON resource_folders(owner_id, section, name);
-CREATE TABLE IF NOT EXISTS resource_folder_items (
-    owner_id      TEXT NOT NULL,
-    resource_type TEXT NOT NULL,
-    resource_id   TEXT NOT NULL,
-    folder_id     TEXT,
-    PRIMARY KEY (owner_id, resource_type, resource_id)
-);
-CREATE INDEX IF NOT EXISTS idx_resource_folder_items_folder
-    ON resource_folder_items(folder_id, resource_type);
 CREATE TABLE IF NOT EXISTS token_daily (
     day      TEXT NOT NULL,
     owner_id TEXT NOT NULL,

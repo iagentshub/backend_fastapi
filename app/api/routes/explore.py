@@ -178,23 +178,6 @@ async def explore_preview(
             base["type"] = item.get("type", "")
             base["source"] = item.get("source", "")
             base["char_count"] = item.get("char_count", 0)
-        else:
-            async with open_db() as conn:
-                folder = await conn.fetchone(
-                    "SELECT id, name, section FROM resource_folders "
-                    "WHERE id=? AND is_public=?",
-                    (resource_id, _PUBLIC_VAL),
-                )
-                rows = await conn.fetchall(
-                    "SELECT resource_type, resource_id "
-                    "FROM resource_folder_items WHERE folder_id=?",
-                    (resource_id,),
-                )
-            if folder:
-                base["type"] = "folder"
-                base["section"] = folder["section"]
-                base["items"] = [dict(row) for row in rows]
-                base["item_count"] = len(rows)
 
     elif resource_type == "workflow":
         workflow = await WorkflowStorage().get_any(resource_id)
@@ -422,4 +405,3 @@ async def get_feed(
             row["labels"] = ["private"]
         rows.append(row)
     return rows
-

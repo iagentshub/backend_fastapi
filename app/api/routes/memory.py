@@ -9,14 +9,12 @@ from fastapi import APIRouter, Depends, Request
 from app.api.routes.auth import require_auth
 from app.config.data import MEMORY_DIR
 from app.errors import APIError
-from app.storage.folders import FolderStorage
 from app.storage.guest import get_session, is_guest
 from app.storage.storage import MemoryStorage
 
 router = APIRouter(prefix="/api/memory", tags=["memory"])
 
 _storage = MemoryStorage(MEMORY_DIR)
-_folders = FolderStorage()
 
 
 @router.get("")
@@ -27,7 +25,7 @@ async def list_memory(user: str = Depends(require_auth)) -> List[Dict[str, Any]]
             {"filename": k, "size": len(v), "updated_at": None}
             for k, v in s.memory.items()
         ]
-    return await _folders.enrich(await _storage.list(owner_id=user), user, "memory")
+    return await _storage.list(owner_id=user)
 
 
 @router.get("/{filename}")
@@ -63,22 +61,6 @@ async def save_memory(
     return await _storage.save(filename, content, owner_id=user)
 
 
-@router.patch("/{filename}")
-async def patch_memory(
-    filename: str, request: Request, user: str = Depends(require_auth)
-) -> Dict[str, Any]:
-    body = await request.json()
-    if "folder_id" in body and not is_guest(user):
-        try:
-            await _folders.assign(
-                user, "memory", filename,
-                str(body["folder_id"]) if body.get("folder_id") else None,
-            )
-        except ValueError as exc:
-            raise APIError(422, "folder_resource_mismatch", str(exc)) from exc
-    return {"ok": True, "folder_id": body.get("folder_id")}
-
-
 @router.delete("/{filename}")
 async def delete_memory(
     filename: str, user: str = Depends(require_auth)
@@ -97,5 +79,4 @@ async def delete_memory(
             404, "not_found", "Archivo de memoria no encontrado",
             extra={"resource": "memory_file"},
         )
-    await _folders.remove_resource(user, "memory", filename)
     return {"ok": True}

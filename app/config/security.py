@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import ipaddress
+import socket
 from urllib.parse import urlparse
 
 # Prefijos de hostname/IP bloqueados para prevenir SSRF hacia redes privadas,
@@ -76,3 +77,38 @@ def assert_safe_url(url: str) -> None:
 
     if is_dangerous:
         raise ValueError(_SSRF_ERROR)
+
+
+def resolve_safe_host(host: str, port: int) -> str:
+    """Resuelve ``host`` y devuelve una IP pública fijada para la conexión.
+
+    Se validan *todas* las respuestas DNS: aceptar un conjunto mixto público/
+    privado permitiría que otra resolución posterior eligiese la dirección
+    privada. El llamador debe conectarse directamente a la IP devuelta para
+    evitar una segunda resolución vulnerable a DNS rebinding.
+    """
+    try:
+        addresses = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise ValueError("No se pudo resolver el hostname de la URL") from exc
+    if not addresses:
+        raise ValueError("El hostname de la URL no tiene direcciones")
+
+    public_ips: list[str] = []
+    for _family, _socktype, _proto, _canonname, sockaddr in addresses:
+        raw_ip = str(sockaddr[0]).split("%", 1)[0]
+        try:
+            addr = ipaddress.ip_address(raw_ip)
+        except ValueError as exc:
+            raise ValueError("La resolución DNS devolvió una dirección inválida") from exc
+        if (
+            addr.is_private
+            or addr.is_loopback
+            or addr.is_link_local
+            or addr.is_reserved
+            or addr.is_unspecified
+            or addr.is_multicast
+        ):
+            raise ValueError(_SSRF_ERROR)
+        public_ips.append(raw_ip)
+    return public_ips[0]

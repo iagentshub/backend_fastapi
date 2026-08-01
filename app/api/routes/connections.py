@@ -427,12 +427,23 @@ async def save_connection(
 
     if is_guest(user):
         s = get_session(user)
-        conn: Dict[str, Any] = {**payload, "id": payload.get("id") or generate_id()}
+        guest_id = payload.get("id")
+        if guest_id and not any(c.get("id") == guest_id for c in s.connections):
+            guest_id = None
+        conn: Dict[str, Any] = {**payload, "id": guest_id or generate_id()}
         s.connections = [c for c in s.connections if c.get("id") != conn["id"]]
         s.connections.append(conn)
         return {k: v for k, v in conn.items() if k != "api_key"}
-    was_update = bool(payload.get("id"))
     owner = user if scope == "personal" else group_id
+    conn_id_in_payload = payload.get("id")
+    existing = (
+        await _storage.get(conn_id_in_payload, owner) if conn_id_in_payload else None
+    )
+    if conn_id_in_payload and not existing:
+        # Un id entrante solo es válido para editar una fila existente;
+        # en altas el id lo genera siempre el servidor.
+        payload.pop("id", None)
+    was_update = existing is not None
     conn = await _storage.save(payload, owner_id=owner)
     action = "actualizada" if was_update else "creada"
     flog.info(

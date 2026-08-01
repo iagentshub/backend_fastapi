@@ -12,7 +12,6 @@ from app.api.routes.auth import GroupContext, require_group
 from app.auth.auth import get_user_role
 from app.config.data import AGENTS_DIR, DB_FILE
 from app.errors import APIError
-from app.storage.folders import VALID_SECTIONS, FolderStorage
 from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
 from app.storage.guest import get_session, is_guest
@@ -31,7 +30,6 @@ _storage = KnowledgeStorage(DB_FILE)
 _agents = AgentStorage(AGENTS_DIR)
 _shares = GroupShareStorage(DB_FILE)
 _groups = GroupStorage(DB_FILE)
-_folders = FolderStorage()
 
 _ALLOWED_EXTS = {".txt", ".md", ".pdf"}
 
@@ -141,7 +139,7 @@ async def list_items(
         items = items[offset:]
     if limit:
         items = items[:limit]
-    return await _folders.enrich_items(items, default_owner=owner_id)
+    return items
 
 
 @router.post("/text")
@@ -250,98 +248,6 @@ async def upload_document(
     )
 
 
-# ── Folders ────────────────────────────────────────────────────────────────
-
-
-@router.get("/folders")
-async def list_folders(
-    section: str = Query(...),
-    ctx: GroupContext = Depends(require_group),
-) -> List[Dict[str, Any]]:
-    if section not in VALID_SECTIONS:
-        raise APIError(422, "invalid_field", "Sección de carpeta no válida", extra={"field": "section"})
-    if is_guest(ctx.user):
-        return []
-    return await _folders.list(ctx.group_id, section)
-
-
-@router.post("/folders")
-async def create_folder(
-    request: Request,
-    ctx: GroupContext = Depends(require_group),
-) -> Dict[str, Any]:
-    if is_guest(ctx.user):
-        raise APIError(403, "forbidden", "Los invitados no pueden crear carpetas")
-    body = await request.json()
-    section = str(body.get("section") or "").strip()
-    name = str(body.get("name") or "").strip()
-    if section not in VALID_SECTIONS or not name:
-        raise APIError(422, "folder_fields_required", "Sección y nombre son obligatorios")
-    try:
-        return await _folders.create(ctx.group_id, section, name[:80])
-    except Exception as exc:
-        if "unique" in str(exc).lower():
-            raise APIError(
-                409, "already_exists", "Ya existe una carpeta con ese nombre",
-                extra={"resource": "folder"},
-            ) from exc
-        raise
-
-
-@router.patch("/folders/{folder_id}")
-async def update_folder(
-    folder_id: str,
-    request: Request,
-    ctx: GroupContext = Depends(require_group),
-) -> Dict[str, Any]:
-    body = await request.json()
-    name = body.get("name")
-    if name is not None:
-        name = str(name).strip()[:80]
-        if not name:
-            raise APIError(422, "invalid_field", "Nombre obligatorio", extra={"field": "name"})
-    folder = await _folders.update(folder_id, ctx.group_id, name=name)
-    if not folder:
-        raise APIError(404, "not_found", "Carpeta no encontrada", extra={"resource": "folder"})
-    return folder
-
-
-@router.delete("/folders/{folder_id}")
-async def delete_folder(
-    folder_id: str,
-    cascade: bool = Query(False),
-    ctx: GroupContext = Depends(require_group),
-) -> Dict[str, bool]:
-    if not await _folders.delete(folder_id, ctx.group_id, cascade):
-        raise APIError(404, "not_found", "Carpeta no encontrada", extra={"resource": "folder"})
-    return {"ok": True}
-
-
-@router.patch("/{item_id}")
-async def update_item_folder(
-    item_id: str,
-    request: Request,
-    ctx: GroupContext = Depends(require_group),
-) -> Dict[str, Any]:
-    item = await _storage.get(item_id, await _owner(ctx.user, ctx.group_id))
-    if not item:
-        raise APIError(404, "not_found", "Item no encontrado", extra={"resource": "item"})
-    body = await request.json()
-    try:
-        await _folders.assign(
-            ctx.group_id, str(item.get("type") or "document"), item_id,
-            str(body["folder_id"]) if body.get("folder_id") else None,
-        )
-    except ValueError as exc:
-        raise APIError(422, "folder_resource_mismatch", str(exc)) from exc
-    return {
-        **item,
-        "folder_id": await _folders.folder_for(
-            ctx.group_id, str(item.get("type") or "document"), item_id
-        ),
-    }
-
-
 @router.delete("/{item_id}")
 async def delete_item(
     item_id: str,
@@ -356,14 +262,8 @@ async def delete_item(
             raise APIError(404, "not_found", "Item no encontrado", extra={"resource": "item"})
         return {"ok": True}
     owner = await _owner(user, group_id)
-    item = await _storage.get(item_id, owner)
-    if not item or not await _storage.delete(item_id, owner):
+    if not await _storage.delete(item_id, owner):
         raise APIError(404, "not_found", "Item no encontrado", extra={"resource": "item"})
-    await _folders.remove_resource(
-        str(item.get("owner_id") or group_id),
-        str(item.get("type") or "document"),
-        item_id,
-    )
     return {"ok": True}
 
 

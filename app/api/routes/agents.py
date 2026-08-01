@@ -25,7 +25,6 @@ from app.models.agent import Agent
 from app.services.chat import stream_chat
 from app.storage.chat import ChatStorage
 from app.storage.db import IS_PG, PH, open_db
-from app.storage.folders import FolderStorage
 from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
 from app.storage.guest import (
@@ -56,7 +55,6 @@ _shares = GroupShareStorage(DB_FILE)
 _groups = GroupStorage(DB_FILE)
 _chat = ChatStorage(DB_FILE)
 _knowledge = KnowledgeStorage(DB_FILE)
-_folders = FolderStorage()
 _versions = ResourceVersionStorage()
 _chat_limiter = RateLimiter(calls=RATE_CHAT_CALLS, window=RATE_CHAT_WINDOW)
 
@@ -305,9 +303,6 @@ async def list_agents(
         agents = agents[offset:]
     if limit:
         agents = agents[:limit]
-    agents = await _folders.enrich_items(
-        agents, default_owner=ctx.group_id, resource_type="agents"
-    )
     enriched: List[Dict[str, Any]] = []
     for a in agents:
         a = _apply_locale(a, locale)
@@ -327,9 +322,12 @@ async def save_agent(
         raise APIError(400, "invalid_field", "Scope no válido", extra={"field": "scope"})
     if is_guest(user):
         s = get_session(user)
+        guest_id = payload.get("id")
+        if guest_id and not any(a.get("id") == guest_id for a in s.agents):
+            guest_id = None
         agent: Dict[str, Any] = {
             **payload,
-            "id": payload.get("id") or generate_id(),
+            "id": guest_id or generate_id(),
             "scope": "private",
         }
         s.agents = [a for a in s.agents if a.get("id") != agent["id"]]
@@ -352,17 +350,14 @@ async def save_agent(
                     "forbidden",
                     "Solo el propietario puede editar este agente",
                 )
+    if agent_id_in_payload and not existing:
+        # Un id entrante solo es válido para editar una fila existente;
+        # en altas el id lo genera siempre el servidor.
+        payload.pop("id", None)
     if role != "admin":
         await _validate_resource_refs(payload, user, group_id)
     try:
-        folder_id = payload.pop("folder_id", None)
         saved = await _agents.save(payload, scope, owner_id=group_id)
-        if folder_id is not None:
-            try:
-                await _folders.assign(group_id, "agents", saved["id"], folder_id or None)
-            except ValueError as exc:
-                raise APIError(422, "folder_resource_mismatch", str(exc)) from exc
-        saved["folder_id"] = await _folders.folder_for(group_id, "agents", saved["id"])
         await _versions.create(
             "agent", saved["id"], group_id, saved, user, reason="save"
         )
@@ -401,29 +396,7 @@ async def get_agent(
         raise APIError(403, "forbidden", "Sin permiso para usar este agente")
     a = _apply_locale(a, get_locale())
     a["origin_type"] = compute_origin_type(a)
-    owner = str(a.get("owner_id") or ctx.group_id)
-    a["folder_id"] = await _folders.folder_for(owner, "agents", agent_id)
     return a
-
-
-@router.patch("/{agent_id}/folder")
-async def move_agent_to_folder(
-    agent_id: str, request: Request, ctx: GroupContext = Depends(require_group)
-) -> Dict[str, Any]:
-    agent = await _agents.get(agent_id)
-    if not agent:
-        raise APIError(404, "not_found", "Agente no encontrado", extra={"resource": "agent"})
-    if await get_user_role(ctx.user) != "admin" and agent.get("owner_id") != ctx.group_id:
-        raise APIError(403, "forbidden", "Solo el propietario puede mover el agente")
-    body = await request.json()
-    try:
-        await _folders.assign(
-            ctx.group_id, "agents", agent_id,
-            str(body["folder_id"]) if body.get("folder_id") else None,
-        )
-    except ValueError as exc:
-        raise APIError(422, "folder_resource_mismatch", str(exc)) from exc
-    return {**agent, "folder_id": body.get("folder_id")}
 
 
 @router.delete("/{agent_id}")
@@ -451,10 +424,6 @@ async def delete_agent(
     flog.info(
         f"Agente borrado: {agent_id} {(a or {}).get('name', '')!r}", username=user
     )
-    if a:
-        await _folders.remove_resource(
-            str(a.get("owner_id") or group_id), "agents", agent_id
-        )
     return {"ok": True}
 
 

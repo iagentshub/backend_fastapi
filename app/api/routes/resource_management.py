@@ -197,13 +197,18 @@ async def save_workflow(
     body: WorkflowBody,
     ctx: GroupContext = Depends(require_group),
 ) -> Dict[str, Any]:
-    if body.id:
-        existing = await _workflows.get_any(body.id)
+    workflow_id = body.id
+    if workflow_id:
+        existing = await _workflows.get_any(workflow_id)
         if existing and existing["owner_id"] != ctx.group_id:
             raise HTTPException(
                 status_code=403,
                 detail="Las orquestaciones compartidas son de solo lectura",
             )
+        if not existing:
+            # Un id entrante solo es válido para editar una fila existente;
+            # en altas el id lo genera siempre el servidor.
+            workflow_id = None
     try:
         definition = validate_workflow(body.definition)
     except ValueError as exc:
@@ -211,7 +216,7 @@ async def save_workflow(
     return await _workflows.save(
         ctx.group_id,
         {
-            "id": body.id,
+            "id": workflow_id,
             "name": body.name,
             "description": body.description,
             "definition": definition,

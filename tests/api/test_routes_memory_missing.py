@@ -62,15 +62,6 @@ def test_guest_save_memory_empty_content(client):
     assert r.status_code == 200
 
 
-# ── Guest — PATCH (devuelve ok sin hacer nada) ─────────────────────────────────
-
-def test_guest_patch_memory_returns_ok(client):
-    _guest_client(client)
-    r = client.patch("/api/memory/cualquier.md", json={"folder_id": "xyz"})
-    assert r.status_code == 200
-    assert r.json()["ok"] is True
-
-
 # ── Guest — DELETE ─────────────────────────────────────────────────────────────
 
 def test_guest_delete_memory(client):

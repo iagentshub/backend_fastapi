@@ -134,10 +134,7 @@ def test_save_agent_public_scope_raises_422(admin_client):
 
 
 def test_save_agent_scan_import_payload(admin_client):
-    """Payload exacto que envía agents-scan.js _importAgent para un agente Claude.
-
-    Cubre el bug donde folder_id faltaba en la migración PG → 500 en producción.
-    """
+    """Payload exacto que envía agents-scan.js _importAgent para un agente Claude."""
     payload = {
         "name": "Scan Import Agent",
         "description": "Importado desde carpeta .claude",

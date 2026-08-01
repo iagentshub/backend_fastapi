@@ -14,7 +14,9 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from app.config.security import resolve_safe_host
 from app.storage.knowledge import (
+    _download_safe_url,
     _TextParser,
     extract_document_text,
     fetch_url_text,
@@ -82,31 +84,25 @@ def test_textparser_text_joins_parts():
 # ── fetch_url_text() ──────────────────────────────────────────────────────────
 
 
-def _mock_urlopen_resp(body: bytes, content_type: str = "text/html; charset=utf-8"):
-    resp = MagicMock()
-    resp.headers = MagicMock()
-    resp.headers.get = MagicMock(return_value=content_type)
-    resp.read.return_value = body
-    resp.__enter__ = lambda s: s
-    resp.__exit__ = MagicMock(return_value=False)
-    return resp
-
-
 def test_fetch_url_text_invalid_scheme():
     with pytest.raises(ValueError, match="http/https"):
         fetch_url_text("ftp://example.com/file.txt")
 
 
 def test_fetch_url_text_html_content():
-    resp = _mock_urlopen_resp(b"<p>Contenido de prueba</p>")
-    with patch("urllib.request.urlopen", return_value=resp):
+    with patch(
+        "app.storage.knowledge._download_safe_url",
+        return_value=(b"<p>Contenido de prueba</p>", "text/html; charset=utf-8"),
+    ):
         result = fetch_url_text("https://example.com")
     assert "Contenido" in result
 
 
 def test_fetch_url_text_plain_content():
-    resp = _mock_urlopen_resp(b"Texto plano sin HTML", "text/plain; charset=utf-8")
-    with patch("urllib.request.urlopen", return_value=resp):
+    with patch(
+        "app.storage.knowledge._download_safe_url",
+        return_value=(b"Texto plano sin HTML", "text/plain; charset=utf-8"),
+    ):
         result = fetch_url_text("https://example.com/file.txt")
     assert "Texto plano" in result
 
@@ -114,18 +110,59 @@ def test_fetch_url_text_plain_content():
 def test_fetch_url_text_charset_extraction():
     """El charset del Content-Type debe usarse para decodificar."""
     body = "<p>Ñoño</p>".encode("latin-1")
-    resp = _mock_urlopen_resp(body, "text/html; charset=latin-1")
-    with patch("urllib.request.urlopen", return_value=resp):
+    with patch(
+        "app.storage.knowledge._download_safe_url",
+        return_value=(body, "text/html; charset=latin-1"),
+    ):
         result = fetch_url_text("https://example.com")
     assert "Ñoño" in result
 
 
 def test_fetch_url_text_no_charset_defaults_utf8():
     """Sin charset en Content-Type debe usarse utf-8 por defecto."""
-    resp = _mock_urlopen_resp(b"<p>OK</p>", "text/html")
-    with patch("urllib.request.urlopen", return_value=resp):
+    with patch(
+        "app.storage.knowledge._download_safe_url",
+        return_value=(b"<p>OK</p>", "text/html"),
+    ):
         result = fetch_url_text("https://example.com")
     assert "OK" in result
+
+
+def test_resolve_safe_host_rejects_private_dns_result():
+    answers = [(2, 1, 6, "", ("127.0.0.1", 80))]
+    with patch("app.config.security.socket.getaddrinfo", return_value=answers):
+        with pytest.raises(ValueError, match="privada"):
+            resolve_safe_host("attacker.example", 80)
+
+
+def test_download_connects_to_the_validated_ip():
+    response = MagicMock(status=200)
+    response.headers.get.return_value = "text/plain; charset=utf-8"
+    response.read.return_value = b"seguro"
+    connection = MagicMock()
+    connection.getresponse.return_value = response
+    with (
+        patch("app.storage.knowledge.resolve_safe_host", return_value="93.184.216.34"),
+        patch("app.storage.knowledge._PinnedHTTPConnection", return_value=connection) as cls,
+    ):
+        body, _content_type = _download_safe_url("http://example.com/data")
+    cls.assert_called_once_with("example.com", "93.184.216.34", 80)
+    assert body == b"seguro"
+
+
+def test_download_revalidates_redirect_target():
+    response = MagicMock(status=302)
+    response.headers.get.side_effect = lambda name, default=None: (
+        "http://127.0.0.1/admin" if name == "Location" else default
+    )
+    connection = MagicMock()
+    connection.getresponse.return_value = response
+    with (
+        patch("app.storage.knowledge.resolve_safe_host", return_value="93.184.216.34"),
+        patch("app.storage.knowledge._PinnedHTTPConnection", return_value=connection),
+    ):
+        with pytest.raises(ValueError, match="privada"):
+            _download_safe_url("http://example.com/redirect")
 
 
 # ── extract_document_text() ───────────────────────────────────────────────────

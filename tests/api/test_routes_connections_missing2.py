@@ -110,11 +110,12 @@ def test_list_connections_raw_non_admin_with_data(client):
 def test_list_connections_guest_uses_session_resolve(client):
     """GET /api/connections para guest usa _resolve_connections rama guest (línea 81)."""
     client.post("/api/auth/guest")
-    client.post("/api/connections", json={**_CONN_OPENAI, "id": "guest-list-m2-1"})
+    r = client.post("/api/connections", json=_CONN_OPENAI)
+    conn_id = r.json()["id"]
     r = client.get("/api/connections")
     assert r.status_code == 200
     data = r.json()
-    assert any(c["id"] == "guest-list-m2-1" for c in data)
+    assert any(c["id"] == conn_id for c in data)
 
 
 # ── 3. test_all sin proveedor (línea 211) ────────────────────────────────────

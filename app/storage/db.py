@@ -41,7 +41,6 @@ _RESOURCE_TABLES: tuple[str, ...] = (
     "connections",
     "knowledge_items",
     "agent_workflows",
-    "resource_folders",
     "groups",
 )
 
@@ -226,6 +225,21 @@ async def _pre_migrate_sqlite(conn: Any) -> None:
 
 async def _migrate_sqlite(conn: Any) -> None:
     """Incremental migrations for pre-existing SQLite databases."""
+    cur = await conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
+    existing_tables = {row[0] for row in await cur.fetchall()}
+    if "resource_folders" in existing_tables and "resource_stars" in existing_tables:
+        await conn.execute(
+            "DELETE FROM resource_stars WHERE resource_type='knowledge' "
+            "AND resource_id IN (SELECT id FROM resource_folders)"
+        )
+    if "resource_folders" in existing_tables and "resource_social" in existing_tables:
+        await conn.execute(
+            "DELETE FROM resource_social WHERE resource_type='knowledge' "
+            "AND resource_id IN (SELECT id FROM resource_folders)"
+        )
+    await conn.execute("DROP TABLE IF EXISTS resource_folder_items")
+    await conn.execute("DROP TABLE IF EXISTS resource_folders")
+
     # 1. Add owner_id to connections if missing
     cur = await conn.execute("PRAGMA table_info(connections)")
     existing_cols = {row[1] for row in await cur.fetchall()}
@@ -790,6 +804,28 @@ async def _migrate_users_json_sqlite(conn: Any) -> None:
 
 async def _migrate_pg(conn: Any) -> None:
     """Incremental migrations for pre-existing PostgreSQL databases."""
+    has_folders = await conn.fetchval(
+        "SELECT to_regclass('public.resource_folders') IS NOT NULL"
+    )
+    has_stars = await conn.fetchval(
+        "SELECT to_regclass('public.resource_stars') IS NOT NULL"
+    )
+    has_social = await conn.fetchval(
+        "SELECT to_regclass('public.resource_social') IS NOT NULL"
+    )
+    if has_folders and has_stars:
+        await conn.execute(
+            "DELETE FROM resource_stars WHERE resource_type='knowledge' "
+            "AND resource_id IN (SELECT id FROM resource_folders)"
+        )
+    if has_folders and has_social:
+        await conn.execute(
+            "DELETE FROM resource_social WHERE resource_type='knowledge' "
+            "AND resource_id IN (SELECT id FROM resource_folders)"
+        )
+    await conn.execute("DROP TABLE IF EXISTS resource_folder_items")
+    await conn.execute("DROP TABLE IF EXISTS resource_folders")
+
     await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token TEXT")
     await conn.execute(
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token_expires TEXT"
@@ -904,33 +940,6 @@ async def _migrate_pg(conn: Any) -> None:
     )
     await conn.execute(
         "ALTER TABLE group_members ADD COLUMN IF NOT EXISTS permissions TEXT NOT NULL DEFAULT '{}'"
-    )
-    await conn.execute("""
-        CREATE TABLE IF NOT EXISTS resource_folders (
-            id          TEXT PRIMARY KEY,
-            owner_id    TEXT NOT NULL,
-            section     TEXT NOT NULL,
-            name        TEXT NOT NULL,
-            is_public   BOOLEAN NOT NULL DEFAULT FALSE,
-            created_at  TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
-            updated_at  TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT now(),
-            UNIQUE(owner_id, section, name)
-        )
-    """)
-    await conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_resource_folders_owner ON resource_folders(owner_id, section, name)"
-    )
-    await conn.execute("""
-        CREATE TABLE IF NOT EXISTS resource_folder_items (
-            owner_id      TEXT NOT NULL,
-            resource_type TEXT NOT NULL,
-            resource_id   TEXT NOT NULL,
-            folder_id     TEXT,
-            PRIMARY KEY (owner_id, resource_type, resource_id)
-        )
-    """)
-    await conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_resource_folder_items_folder ON resource_folder_items(folder_id, resource_type)"
     )
     await conn.execute("""
         CREATE TABLE IF NOT EXISTS token_daily (

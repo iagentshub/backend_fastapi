@@ -194,52 +194,6 @@ async def _publish_skill_cascade(
         await conn.commit()
 
 
-async def _publish_knowledge_item_cascade(
-    know_id: str, username: str, owner_ids: set[str]
-) -> None:
-    """El conocimiento se publica a nivel de carpeta, no de item individual —
-    localiza la carpeta que contiene este item y la publica si es del mismo dueño."""
-    async with open_db() as conn:
-        item_owner_row = await conn.fetchone(
-            "SELECT owner_id FROM knowledge_items WHERE id=?", (know_id,)
-        )
-        if not item_owner_row or item_owner_row[0] not in owner_ids:
-            return
-        folder_row = await conn.fetchone(
-            "SELECT folder_id FROM resource_folder_items "
-            "WHERE resource_type='knowledge' AND resource_id=?",
-            (know_id,),
-        )
-        folder_id = folder_row[0] if folder_row else None
-        if not folder_id:
-            return
-        folder = await conn.fetchone(
-            "SELECT id, name, owner_id, is_public FROM resource_folders WHERE id=?",
-            (folder_id,),
-        )
-        if not folder or folder["owner_id"] not in owner_ids:
-            return
-        if folder["is_public"]:
-            return
-        await _upsert_social(
-            conn,
-            "knowledge",
-            folder_id,
-            username,
-            folder["name"],
-            "",
-            "Other",
-            "warn",
-            "[]",
-            1,
-            '["private"]',
-        )
-        await conn.execute(
-            "UPDATE resource_folders SET is_public=1 WHERE id=?", (folder_id,)
-        )
-        await conn.commit()
-
-
 async def _cascade_publish_agent(
     agent: Dict[str, Any], username: str, group_id: str = ""
 ) -> None:
@@ -247,8 +201,6 @@ async def _cascade_publish_agent(
     owner_ids = {username, group_id} - {""}
     for skill_id in agent.get("skills") or []:
         await _publish_skill_cascade(skill_id, username, owner_ids)
-    for know_id in agent.get("knowledge") or []:
-        await _publish_knowledge_item_cascade(know_id, username, owner_ids)
 
 
 async def _cascade_publish_workflow(
@@ -415,11 +367,6 @@ class _SkillVisibilityBody(BaseModel):
     category: str
 
 
-class _KnowledgeVisibilityBody(BaseModel):
-    is_public: bool
-    category: str
-
-
 class _WorkflowVisibilityBody(BaseModel):
     is_public: bool
     category: str
@@ -512,56 +459,6 @@ async def set_skill_visibility(
             )
         await conn.commit()
     return {"ok": True}
-
-
-@router.put("/api/knowledge/folders/{folder_id}/visibility")
-async def set_knowledge_visibility(
-    folder_id: str,
-    body: _KnowledgeVisibilityBody,
-    username: str = Depends(require_auth),
-) -> Dict[str, Any]:
-    _check_category(body.category)
-
-    async with open_db() as conn:
-        row = await conn.fetchone(
-            "SELECT name, section FROM resource_folders WHERE id=? AND owner_id=?",
-            (folder_id, username),
-        )
-        if not row:
-            raise APIError(404, "not_found", "Carpeta no encontrada", extra={"resource": "folder"})
-        if row["section"] == "agents":
-            raise APIError(
-                422,
-                "agent_folder_not_publishable",
-                "Las carpetas de agentes no se publican como conocimiento",
-            )
-        folder_name = row["name"]
-        if body.is_public:
-            await _upsert_social(
-                conn,
-                "knowledge",
-                folder_id,
-                username,
-                folder_name,
-                "",
-                body.category,
-                "warn",
-                "[]",
-                1,
-                '["private"]',
-            )
-        else:
-            await conn.execute(
-                "DELETE FROM resource_social "
-                "WHERE resource_type=? AND resource_id=? AND owner=?",
-                ("knowledge", folder_id, username),
-            )
-        await conn.execute(
-            "UPDATE resource_folders SET is_public=? WHERE id=? AND owner_id=?",
-            (body.is_public, folder_id, username),
-        )
-        await conn.commit()
-    return {"ok": True, "is_public": body.is_public}
 
 
 @router.put("/api/workflows/{workflow_id}/visibility")

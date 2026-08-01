@@ -132,6 +132,88 @@ async def test_pre_migrate_ok_when_column_already_exists(tmp_path):
         await conn.commit()
 
 
+async def test_migration_removes_legacy_resource_folders(tmp_path):
+    """The removed folder model and its catalog metadata do not survive upgrade."""
+    import app.storage.db as db_mod
+
+    db = tmp_path / "legacy-folders.db"
+    await db_mod.migrate_schema(db)
+
+    conn = sqlite3.connect(str(db))
+    conn.executescript("""
+        CREATE TABLE resource_folders (
+            id TEXT PRIMARY KEY,
+            owner_id TEXT NOT NULL,
+            section TEXT NOT NULL,
+            name TEXT NOT NULL
+        );
+        CREATE TABLE resource_folder_items (
+            folder_id TEXT NOT NULL,
+            resource_type TEXT NOT NULL,
+            resource_id TEXT NOT NULL
+        );
+        INSERT INTO resource_folders VALUES ('old-folder', 'alice', 'document', 'Old');
+        INSERT INTO resource_folder_items VALUES ('old-folder', 'knowledge', 'doc-1');
+        INSERT INTO resource_stars (username, resource_type, resource_id)
+            VALUES ('alice', 'knowledge', 'old-folder');
+        INSERT INTO resource_social (resource_type, resource_id, owner, name)
+            VALUES ('knowledge', 'old-folder', 'alice', 'Old');
+    """)
+    conn.commit()
+    conn.close()
+
+    await db_mod.migrate_schema(db)
+
+    migrated = sqlite3.connect(str(db))
+    tables = {
+        row[0]
+        for row in migrated.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+    stars = migrated.execute(
+        "SELECT COUNT(*) FROM resource_stars WHERE resource_id='old-folder'"
+    ).fetchone()[0]
+    social = migrated.execute(
+        "SELECT COUNT(*) FROM resource_social WHERE resource_id='old-folder'"
+    ).fetchone()[0]
+    migrated.close()
+
+    assert "resource_folders" not in tables
+    assert "resource_folder_items" not in tables
+    assert stars == 0
+    assert social == 0
+
+
+async def test_migration_removes_folders_from_database_without_social_tables(tmp_path):
+    """Folder removal also works for databases older than the social catalog."""
+    import app.storage.db as db_mod
+
+    db = tmp_path / "very-old-folders.db"
+    conn = sqlite3.connect(str(db))
+    conn.executescript("""
+        CREATE TABLE resource_folders (id TEXT PRIMARY KEY);
+        CREATE TABLE resource_folder_items (folder_id TEXT NOT NULL);
+        INSERT INTO resource_folders VALUES ('old-folder');
+        INSERT INTO resource_folder_items VALUES ('old-folder');
+    """)
+    conn.commit()
+    conn.close()
+
+    await db_mod.migrate_schema(db)
+
+    migrated = sqlite3.connect(str(db))
+    tables = {
+        row[0]
+        for row in migrated.execute(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        ).fetchall()
+    }
+    migrated.close()
+    assert "resource_folders" not in tables
+    assert "resource_folder_items" not in tables
+
+
 async def test_future_dep_in_schema_index_deps_applied(tmp_path, monkeypatch):
     """Nuevas entradas en _SCHEMA_INDEX_DEPS se aplican en DBs existentes."""
     import app.storage.db as db_mod
