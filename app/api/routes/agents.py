@@ -328,7 +328,9 @@ async def save_agent(
         agent: Dict[str, Any] = {
             **payload,
             "id": guest_id or generate_id(),
+            "resource_type": "agent",
             "scope": "private",
+            "is_active": True,
         }
         s.agents = [a for a in s.agents if a.get("id") != agent["id"]]
         s.agents.append(agent)

@@ -7,10 +7,13 @@ SCHEMA_SQLITE = """
 CREATE TABLE IF NOT EXISTS agents (
     id          TEXT NOT NULL,
     owner_id    TEXT NOT NULL DEFAULT '__public__',
+    name        TEXT NOT NULL DEFAULT '',
     scope       TEXT NOT NULL DEFAULT 'private',
     data        TEXT NOT NULL,
     tokens_in   INTEGER NOT NULL DEFAULT 0,
     tokens_out  INTEGER NOT NULL DEFAULT 0,
+    is_active   INTEGER NOT NULL DEFAULT 1,
+    deactivated_at TEXT,
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL,
     PRIMARY KEY (id, owner_id)
@@ -19,9 +22,12 @@ CREATE INDEX IF NOT EXISTS idx_agents_owner ON agents(owner_id, scope, updated_a
 CREATE TABLE IF NOT EXISTS skills (
     id          TEXT NOT NULL,
     owner_id    TEXT NOT NULL DEFAULT '__public__',
+    name        TEXT NOT NULL DEFAULT '',
     scope       TEXT NOT NULL DEFAULT 'private',
     data        TEXT NOT NULL,
     content     TEXT NOT NULL DEFAULT '',
+    is_active   INTEGER NOT NULL DEFAULT 1,
+    deactivated_at TEXT,
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL,
     PRIMARY KEY (id, owner_id)
@@ -38,9 +44,12 @@ CREATE INDEX IF NOT EXISTS idx_memory_owner ON memory_files(owner_id, updated_at
 CREATE TABLE IF NOT EXISTS connections (
     id          TEXT PRIMARY KEY,
     owner_id    TEXT NOT NULL DEFAULT 'admin',
+    name        TEXT NOT NULL DEFAULT '',
     data        TEXT NOT NULL,
     tokens_in   INTEGER NOT NULL DEFAULT 0,
     tokens_out  INTEGER NOT NULL DEFAULT 0,
+    is_active   INTEGER NOT NULL DEFAULT 1,
+    deactivated_at TEXT,
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL
 );
@@ -78,6 +87,8 @@ CREATE TABLE IF NOT EXISTS knowledge_items (
     source     TEXT NOT NULL,
     content    TEXT NOT NULL,
     char_count INTEGER NOT NULL DEFAULT 0,
+    is_active  INTEGER NOT NULL DEFAULT 1,
+    deactivated_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -124,7 +135,7 @@ CREATE TABLE IF NOT EXISTS groups (
     name        TEXT NOT NULL,
     created_by  TEXT NOT NULL,
     created_at  TEXT NOT NULL,
-    status      TEXT NOT NULL DEFAULT 'active'
+    is_active   INTEGER NOT NULL DEFAULT 1
 );
 CREATE TABLE IF NOT EXISTS group_members (
     group_id TEXT NOT NULL,
@@ -252,6 +263,8 @@ CREATE TABLE IF NOT EXISTS agent_workflows (
     definition  TEXT NOT NULL,
     scope       TEXT NOT NULL DEFAULT 'private',
     labels      TEXT NOT NULL DEFAULT '["private"]',
+    is_active   INTEGER NOT NULL DEFAULT 1,
+    deactivated_at TEXT,
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL,
     PRIMARY KEY(id, owner_id)
@@ -264,10 +277,13 @@ SCHEMA_PG = """
 CREATE TABLE IF NOT EXISTS agents (
     id          TEXT NOT NULL,
     owner_id    TEXT NOT NULL DEFAULT '__public__',
+    name        TEXT NOT NULL DEFAULT '',
     scope       TEXT NOT NULL DEFAULT 'private',
     data        TEXT NOT NULL,
     tokens_in   INTEGER NOT NULL DEFAULT 0,
     tokens_out  INTEGER NOT NULL DEFAULT 0,
+    is_active   SMALLINT NOT NULL DEFAULT 1,
+    deactivated_at TEXT,
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL,
     PRIMARY KEY (id, owner_id)
@@ -276,9 +292,12 @@ CREATE INDEX IF NOT EXISTS idx_agents_owner ON agents(owner_id, scope, updated_a
 CREATE TABLE IF NOT EXISTS skills (
     id          TEXT NOT NULL,
     owner_id    TEXT NOT NULL DEFAULT '__public__',
+    name        TEXT NOT NULL DEFAULT '',
     scope       TEXT NOT NULL DEFAULT 'private',
     data        TEXT NOT NULL,
     content     TEXT NOT NULL DEFAULT '',
+    is_active   SMALLINT NOT NULL DEFAULT 1,
+    deactivated_at TEXT,
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL,
     PRIMARY KEY (id, owner_id)
@@ -295,9 +314,12 @@ CREATE INDEX IF NOT EXISTS idx_memory_owner ON memory_files(owner_id, updated_at
 CREATE TABLE IF NOT EXISTS connections (
     id          TEXT PRIMARY KEY,
     owner_id    TEXT NOT NULL DEFAULT 'admin',
+    name        TEXT NOT NULL DEFAULT '',
     data        TEXT NOT NULL,
     tokens_in   INTEGER NOT NULL DEFAULT 0,
     tokens_out  INTEGER NOT NULL DEFAULT 0,
+    is_active   SMALLINT NOT NULL DEFAULT 1,
+    deactivated_at TEXT,
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL
 );
@@ -335,6 +357,8 @@ CREATE TABLE IF NOT EXISTS knowledge_items (
     source     TEXT NOT NULL,
     content    TEXT NOT NULL,
     char_count INTEGER NOT NULL DEFAULT 0,
+    is_active  SMALLINT NOT NULL DEFAULT 1,
+    deactivated_at TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
@@ -381,7 +405,7 @@ CREATE TABLE IF NOT EXISTS groups (
     name        TEXT NOT NULL,
     created_by  TEXT NOT NULL,
     created_at  TEXT NOT NULL,
-    status      TEXT NOT NULL DEFAULT 'active'
+    is_active   SMALLINT NOT NULL DEFAULT 1
 );
 CREATE TABLE IF NOT EXISTS group_members (
     group_id TEXT NOT NULL,
@@ -509,6 +533,8 @@ CREATE TABLE IF NOT EXISTS agent_workflows (
     definition  TEXT NOT NULL,
     scope       TEXT NOT NULL DEFAULT 'private',
     labels      TEXT NOT NULL DEFAULT '["private"]',
+    is_active   SMALLINT NOT NULL DEFAULT 1,
+    deactivated_at TEXT,
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL,
     PRIMARY KEY(id, owner_id)

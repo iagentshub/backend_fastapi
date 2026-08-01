@@ -11,6 +11,7 @@ Public API:
 
 from __future__ import annotations
 
+import json
 import os
 import re
 from contextlib import asynccontextmanager
@@ -41,8 +42,141 @@ _RESOURCE_TABLES: tuple[str, ...] = (
     "connections",
     "knowledge_items",
     "agent_workflows",
-    "groups",
 )
+
+_NAMED_RESOURCE_TABLES: tuple[str, ...] = ("agents", "skills", "connections")
+_RESOURCE_BLOB_DUPLICATES = frozenset(
+    {
+        "id",
+        "name",
+        "owner_id",
+        "resource_type",
+        "scope",
+        "tokens_in",
+        "tokens_out",
+        "is_active",
+        "deactivated_at",
+        "created_at",
+        "updated_at",
+    }
+)
+
+
+def _resource_name_from_data(raw_data: Any, resource_id: str) -> str:
+    """Return the canonical display name stored in a legacy resource blob."""
+    try:
+        data = json.loads(raw_data) if isinstance(raw_data, str) else raw_data
+    except (json.JSONDecodeError, TypeError):
+        data = {}
+    if not isinstance(data, dict):
+        data = {}
+    for key in ("name", "label", "type"):
+        value = str(data.get(key) or "").strip()
+        if value:
+            return value
+    return resource_id
+
+
+def _compact_resource_data(raw_data: Any) -> str:
+    """Remove fields whose canonical value lives in relational columns."""
+    try:
+        data = json.loads(raw_data) if isinstance(raw_data, str) else raw_data
+    except (json.JSONDecodeError, TypeError):
+        return str(raw_data)
+    if not isinstance(data, dict):
+        return str(raw_data)
+    compact = {
+        key: value for key, value in data.items() if key not in _RESOURCE_BLOB_DUPLICATES
+    }
+    return json.dumps(compact, ensure_ascii=False, separators=(",", ":"))
+
+
+async def _migrate_named_resources_sqlite(conn: Any) -> None:
+    """Add and backfill SQL names for resources formerly stored as JSON only."""
+    for table in _NAMED_RESOURCE_TABLES:
+        cur = await conn.execute(f"PRAGMA table_info({table})")
+        columns = {row[1] for row in await cur.fetchall()}
+        if "name" not in columns:
+            await conn.execute(
+                f"ALTER TABLE {table} ADD COLUMN name TEXT NOT NULL DEFAULT ''"
+            )
+        cur = await conn.execute(f"SELECT id, owner_id, name, data FROM {table}")
+        for resource_id, owner_id, stored_name, raw_data in await cur.fetchall():
+            name = str(stored_name or "").strip() or _resource_name_from_data(
+                raw_data, resource_id
+            )
+            compact_data = _compact_resource_data(raw_data)
+            if name != stored_name or compact_data != raw_data:
+                await conn.execute(
+                    f"UPDATE {table} SET name=?, data=? WHERE id=? AND owner_id=?",
+                    (name, compact_data, resource_id, owner_id),
+                )
+        await conn.execute(
+            f"CREATE INDEX IF NOT EXISTS idx_{table}_owner_name "
+            f"ON {table}(owner_id, name)"
+        )
+
+
+async def _migrate_named_resources_pg(conn: Any) -> None:
+    """PostgreSQL counterpart of :func:`_migrate_named_resources_sqlite`."""
+    for table in _NAMED_RESOURCE_TABLES:
+        await conn.execute(
+            f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS "
+            "name TEXT NOT NULL DEFAULT ''"
+        )
+        rows = await conn.fetch(f"SELECT id, owner_id, name, data FROM {table}")
+        for row in rows:
+            name = str(row["name"] or "").strip() or _resource_name_from_data(
+                row["data"], row["id"]
+            )
+            compact_data = _compact_resource_data(row["data"])
+            if name != row["name"] or compact_data != row["data"]:
+                await conn.execute(
+                    f"UPDATE {table} SET name=$1, data=$2 WHERE id=$3 AND owner_id=$4",
+                    name,
+                    compact_data,
+                    row["id"],
+                    row["owner_id"],
+                )
+        await conn.execute(
+            f"CREATE INDEX IF NOT EXISTS idx_{table}_owner_name "
+            f"ON {table}(owner_id, name)"
+        )
+
+
+async def _migrate_group_active_flag_sqlite(conn: Any) -> None:
+    """Replace the binary group status string with one integer flag."""
+    cur = await conn.execute("PRAGMA table_info(groups)")
+    columns = {row[1] for row in await cur.fetchall()}
+    if "is_active" not in columns:
+        await conn.execute(
+            "ALTER TABLE groups ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1"
+        )
+    if "status" in columns:
+        await conn.execute(
+            "UPDATE groups SET is_active=CASE WHEN status='active' THEN 1 ELSE 0 END"
+        )
+        await conn.execute("ALTER TABLE groups DROP COLUMN status")
+    if "deactivated_at" in columns:
+        await conn.execute("ALTER TABLE groups DROP COLUMN deactivated_at")
+
+
+async def _migrate_group_active_flag_pg(conn: Any) -> None:
+    """PostgreSQL counterpart of :func:`_migrate_group_active_flag_sqlite`."""
+    await conn.execute(
+        "ALTER TABLE groups ADD COLUMN IF NOT EXISTS "
+        "is_active SMALLINT NOT NULL DEFAULT 1"
+    )
+    has_status = await conn.fetchval(
+        "SELECT EXISTS (SELECT 1 FROM information_schema.columns "
+        "WHERE table_schema='public' AND table_name='groups' AND column_name='status')"
+    )
+    if has_status:
+        await conn.execute(
+            "UPDATE groups SET is_active=CASE WHEN status='active' THEN 1 ELSE 0 END"
+        )
+        await conn.execute("ALTER TABLE groups DROP COLUMN status")
+    await conn.execute("ALTER TABLE groups DROP COLUMN IF EXISTS deactivated_at")
 
 
 def _legacy_group_schema() -> tuple[dict[str, str], str]:
@@ -248,6 +382,8 @@ async def _migrate_sqlite(conn: Any) -> None:
             "ALTER TABLE connections ADD COLUMN owner_id TEXT NOT NULL DEFAULT 'admin'"
         )
         await conn.commit()
+    await _migrate_named_resources_sqlite(conn)
+    await _migrate_group_active_flag_sqlite(conn)
 
     # Group granular permissions (empty object keeps legacy allow-all semantics).
     cur = await conn.execute("PRAGMA table_info(group_members)")
@@ -276,39 +412,7 @@ async def _migrate_sqlite(conn: Any) -> None:
             DROP TABLE _accounts_old;
         """)
 
-    # 4. Create team tables if missing
-    cur = await conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
-    existing_tables = {row[0] for row in await cur.fetchall()}
-    if "teams" not in existing_tables:
-        await conn.executescript("""
-            CREATE TABLE IF NOT EXISTS teams (
-                id          TEXT PRIMARY KEY,
-                name        TEXT NOT NULL,
-                created_by  TEXT NOT NULL,
-                created_at  TEXT NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS team_members (
-                team_id     TEXT NOT NULL,
-                username    TEXT NOT NULL,
-                is_manager  INTEGER NOT NULL DEFAULT 0,
-                permissions TEXT NOT NULL DEFAULT '{}',
-                joined_at   TEXT NOT NULL,
-                PRIMARY KEY (team_id, username)
-            );
-            CREATE INDEX IF NOT EXISTS idx_team_members_username ON team_members(username);
-            CREATE TABLE IF NOT EXISTS team_invitations (
-                id              TEXT PRIMARY KEY,
-                team_id         TEXT NOT NULL,
-                invited_email   TEXT NOT NULL,
-                invited_by      TEXT NOT NULL,
-                status          TEXT NOT NULL DEFAULT 'pending',
-                expires_at      TEXT NOT NULL,
-                created_at      TEXT NOT NULL
-            );
-            CREATE INDEX IF NOT EXISTS idx_team_inv_email ON team_invitations(invited_email, status);
-        """)
-
-    # 5. Add users table columns that may be missing in older DBs
+    # Add users table columns that may be missing in older DBs
     cur = await conn.execute("PRAGMA table_info(users)")
     user_cols = {row[1] for row in await cur.fetchall()}
     for col, definition in [
@@ -340,62 +444,7 @@ async def _migrate_sqlite(conn: Any) -> None:
             except Exception as exc:
                 flog.warning(f"[db] No se pudo añadir columna {col}: {exc}")
 
-    # 6. Create resource_teams if missing
-    cur = await conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
-    existing_tables = {row[0] for row in await cur.fetchall()}
-    if "resource_teams" not in existing_tables:
-        await conn.executescript("""
-            CREATE TABLE IF NOT EXISTS resource_teams (
-                resource_type TEXT NOT NULL,
-                resource_id   TEXT NOT NULL,
-                team_id       TEXT NOT NULL,
-                shared_by     TEXT NOT NULL,
-                shared_at     TEXT NOT NULL,
-                PRIMARY KEY (resource_type, resource_id, team_id)
-            );
-            CREATE INDEX IF NOT EXISTS idx_rt_team ON resource_teams(team_id, resource_type);
-            CREATE INDEX IF NOT EXISTS idx_rt_resource ON resource_teams(resource_type, resource_id);
-        """)
-
-    # 7. Create groups tables if missing
-    cur = await conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
-    existing_tables = {row[0] for row in await cur.fetchall()}
-    if "groups" not in existing_tables:
-        await conn.executescript("""
-            CREATE TABLE IF NOT EXISTS groups (
-                id          TEXT PRIMARY KEY,
-                name        TEXT NOT NULL,
-                created_by  TEXT NOT NULL,
-                created_at  TEXT NOT NULL,
-                status      TEXT NOT NULL DEFAULT 'active'
-            );
-            CREATE TABLE IF NOT EXISTS group_members (
-                group_id TEXT NOT NULL,
-                username     TEXT NOT NULL,
-                role         TEXT NOT NULL DEFAULT 'member',
-                joined_at    TEXT NOT NULL,
-                PRIMARY KEY (group_id, username)
-            );
-            CREATE INDEX IF NOT EXISTS idx_group_members_user ON group_members(username);
-        """)
-
-    try:
-        await conn.execute(
-            "CREATE UNIQUE INDEX IF NOT EXISTS idx_teams_name_creator ON teams(name, created_by)"
-        )
-        await conn.commit()
-    except Exception:
-        pass
-
-    try:
-        await conn.execute(
-            "ALTER TABLE groups ADD COLUMN status TEXT NOT NULL DEFAULT 'active'"
-        )
-        await conn.commit()
-    except Exception:
-        pass
-
-    # 8. Create token_daily table if missing
+    # Create token_daily table if missing
     cur = await conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
     existing_tables = {row[0] for row in await cur.fetchall()}
     if "token_daily" not in existing_tables:
@@ -578,42 +627,10 @@ async def _migrate_sqlite(conn: Any) -> None:
     except Exception:
         pass
 
-    # 14. Create agents, skills, memory_files tables if missing
+    # Las tablas base de recursos pertenecen exclusivamente a schema.py.
     cur = await conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
     existing_tables = {row[0] for row in await cur.fetchall()}
-    if "agents" not in existing_tables:
-        await conn.executescript("""
-            CREATE TABLE IF NOT EXISTS agents (
-                id TEXT NOT NULL, owner_id TEXT NOT NULL DEFAULT '__public__',
-                scope TEXT NOT NULL DEFAULT 'private', data TEXT NOT NULL,
-                tokens_in INTEGER NOT NULL DEFAULT 0, tokens_out INTEGER NOT NULL DEFAULT 0,
-                created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-                PRIMARY KEY (id, owner_id)
-            );
-            CREATE INDEX IF NOT EXISTS idx_agents_owner ON agents(owner_id, scope, updated_at DESC);
-        """)
-    if "skills" not in existing_tables:
-        await conn.executescript("""
-            CREATE TABLE IF NOT EXISTS skills (
-                id TEXT NOT NULL, owner_id TEXT NOT NULL DEFAULT '__public__',
-                scope TEXT NOT NULL DEFAULT 'private', data TEXT NOT NULL,
-                content TEXT NOT NULL DEFAULT '',
-                created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-                PRIMARY KEY (id, owner_id)
-            );
-            CREATE INDEX IF NOT EXISTS idx_skills_owner ON skills(owner_id, scope, updated_at DESC);
-        """)
-    if "memory_files" not in existing_tables:
-        await conn.executescript("""
-            CREATE TABLE IF NOT EXISTS memory_files (
-                id TEXT NOT NULL, owner_id TEXT NOT NULL DEFAULT 'admin',
-                content TEXT NOT NULL DEFAULT '',
-                updated_at TEXT NOT NULL, PRIMARY KEY (id, owner_id)
-            );
-            CREATE INDEX IF NOT EXISTS idx_memory_owner ON memory_files(owner_id, updated_at DESC);
-        """)
-
-    # 15. Create subscriptions / stripe_events tables if missing (Stripe billing)
+    # Create subscriptions / stripe_events tables if missing (Stripe billing)
     if "subscriptions" not in existing_tables:
         await conn.executescript("""
             CREATE TABLE IF NOT EXISTS subscriptions (
@@ -825,6 +842,12 @@ async def _migrate_pg(conn: Any) -> None:
         )
     await conn.execute("DROP TABLE IF EXISTS resource_folder_items")
     await conn.execute("DROP TABLE IF EXISTS resource_folders")
+    await conn.execute(
+        "ALTER TABLE connections ADD COLUMN IF NOT EXISTS "
+        "owner_id TEXT NOT NULL DEFAULT 'admin'"
+    )
+    await _migrate_named_resources_pg(conn)
+    await _migrate_group_active_flag_pg(conn)
 
     await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token TEXT")
     await conn.execute(
@@ -834,110 +857,7 @@ async def _migrate_pg(conn: Any) -> None:
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS deletion_requested_at TEXT"
     )
     await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS deletion_token TEXT")
-    # agents / skills / memory_files
-    await conn.execute("""CREATE TABLE IF NOT EXISTS agents (
-        id TEXT NOT NULL, owner_id TEXT NOT NULL DEFAULT '__public__',
-        scope TEXT NOT NULL DEFAULT 'private', data TEXT NOT NULL,
-        tokens_in INTEGER NOT NULL DEFAULT 0, tokens_out INTEGER NOT NULL DEFAULT 0,
-        created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-        PRIMARY KEY (id, owner_id))""")
-    await conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_agents_owner ON agents(owner_id, scope, updated_at DESC)"
-    )
-    await conn.execute("""CREATE TABLE IF NOT EXISTS skills (
-        id TEXT NOT NULL, owner_id TEXT NOT NULL DEFAULT '__public__',
-        scope TEXT NOT NULL DEFAULT 'private', data TEXT NOT NULL,
-        content TEXT NOT NULL DEFAULT '',
-        created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
-        PRIMARY KEY (id, owner_id))""")
-    await conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_skills_owner ON skills(owner_id, scope, updated_at DESC)"
-    )
-    await conn.execute("""CREATE TABLE IF NOT EXISTS memory_files (
-        id TEXT NOT NULL, owner_id TEXT NOT NULL DEFAULT 'admin',
-        content TEXT NOT NULL DEFAULT '',
-        updated_at TEXT NOT NULL, PRIMARY KEY (id, owner_id))""")
-    await conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_memory_owner ON memory_files(owner_id, updated_at DESC)"
-    )
-    await conn.execute("""
-        CREATE TABLE IF NOT EXISTS teams (
-            id          TEXT PRIMARY KEY,
-            name        TEXT NOT NULL,
-            created_by  TEXT NOT NULL,
-            created_at  TEXT NOT NULL
-        )
-    """)
-    await conn.execute("""
-        CREATE TABLE IF NOT EXISTS team_members (
-            team_id     TEXT NOT NULL,
-            username    TEXT NOT NULL,
-            is_manager  SMALLINT NOT NULL DEFAULT 0,
-            permissions TEXT NOT NULL DEFAULT '{}',
-            joined_at   TEXT NOT NULL,
-            PRIMARY KEY (team_id, username)
-        )
-    """)
-    await conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_team_members_username ON team_members(username)"
-    )
-    await conn.execute("""
-        CREATE TABLE IF NOT EXISTS team_invitations (
-            id              TEXT PRIMARY KEY,
-            team_id         TEXT NOT NULL,
-            invited_email   TEXT NOT NULL,
-            invited_by      TEXT NOT NULL,
-            status          TEXT NOT NULL DEFAULT 'pending',
-            expires_at      TEXT NOT NULL,
-            created_at      TEXT NOT NULL
-        )
-    """)
-    await conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_team_inv_email ON team_invitations(invited_email, status)"
-    )
-    await conn.execute("""
-        CREATE TABLE IF NOT EXISTS resource_teams (
-            resource_type TEXT NOT NULL,
-            resource_id   TEXT NOT NULL,
-            team_id       TEXT NOT NULL,
-            shared_by     TEXT NOT NULL,
-            shared_at     TEXT NOT NULL,
-            PRIMARY KEY (resource_type, resource_id, team_id)
-        )
-    """)
-    await conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_rt_team ON resource_teams(team_id, resource_type)"
-    )
-    await conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_rt_resource ON resource_teams(resource_type, resource_id)"
-    )
-    await conn.execute(
-        "CREATE UNIQUE INDEX IF NOT EXISTS idx_teams_name_creator ON teams(name, created_by)"
-    )
-    await conn.execute("""
-        CREATE TABLE IF NOT EXISTS groups (
-            id          TEXT PRIMARY KEY,
-            name        TEXT NOT NULL,
-            created_by  TEXT NOT NULL,
-            created_at  TEXT NOT NULL,
-            status      TEXT NOT NULL DEFAULT 'active'
-        )
-    """)
-    await conn.execute(
-        "ALTER TABLE groups ADD COLUMN IF NOT EXISTS status TEXT NOT NULL DEFAULT 'active'"
-    )
-    await conn.execute("""
-        CREATE TABLE IF NOT EXISTS group_members (
-            group_id TEXT NOT NULL,
-            username     TEXT NOT NULL,
-            role         TEXT NOT NULL DEFAULT 'member',
-            joined_at    TEXT NOT NULL,
-            PRIMARY KEY (group_id, username)
-        )
-    """)
-    await conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_group_members_user ON group_members(username)"
-    )
+    # Las tablas base de recursos pertenecen exclusivamente a schema.py.
     await conn.execute(
         "ALTER TABLE group_members ADD COLUMN IF NOT EXISTS permissions TEXT NOT NULL DEFAULT '{}'"
     )
@@ -1036,7 +956,7 @@ async def _migrate_pg(conn: Any) -> None:
             owner              TEXT NOT NULL,
             name               TEXT NOT NULL DEFAULT '',
             description        TEXT NOT NULL DEFAULT '',
-            is_public          BOOLEAN NOT NULL DEFAULT FALSE,
+            is_public          SMALLINT NOT NULL DEFAULT 0,
             category           TEXT NOT NULL DEFAULT 'Other',
             trial_missing_deps TEXT NOT NULL DEFAULT 'warn',
             fork_of_user       TEXT,
@@ -1046,7 +966,7 @@ async def _migrate_pg(conn: Any) -> None:
             stars_count        INTEGER NOT NULL DEFAULT 0,
             tags               TEXT NOT NULL DEFAULT '[]',
             labels             TEXT NOT NULL DEFAULT '["private"]',
-            verified           BOOLEAN NOT NULL DEFAULT FALSE,
+            verified           SMALLINT NOT NULL DEFAULT 0,
             updated_at         TIMESTAMP WITH TIME ZONE DEFAULT now(),
             PRIMARY KEY (resource_type, resource_id, owner)
         )
@@ -1064,8 +984,26 @@ async def _migrate_pg(conn: Any) -> None:
         "ALTER TABLE resource_social ADD COLUMN IF NOT EXISTS labels TEXT NOT NULL DEFAULT '[\"private\"]'"
     )
     await conn.execute(
-        "ALTER TABLE resource_social ADD COLUMN IF NOT EXISTS verified BOOLEAN NOT NULL DEFAULT FALSE"
+        "ALTER TABLE resource_social ADD COLUMN IF NOT EXISTS verified SMALLINT NOT NULL DEFAULT 0"
     )
+    for column in ("is_public", "verified"):
+        data_type = await conn.fetchval(
+            "SELECT data_type FROM information_schema.columns "
+            "WHERE table_schema='public' AND table_name='resource_social' "
+            "AND column_name=$1",
+            column,
+        )
+        if data_type == "boolean":
+            await conn.execute(
+                f"ALTER TABLE resource_social ALTER COLUMN {column} DROP DEFAULT"
+            )
+            await conn.execute(
+                f"ALTER TABLE resource_social ALTER COLUMN {column} TYPE SMALLINT "
+                f"USING CASE WHEN {column} THEN 1 ELSE 0 END"
+            )
+            await conn.execute(
+                f"ALTER TABLE resource_social ALTER COLUMN {column} SET DEFAULT 0"
+            )
     await conn.execute(
         "ALTER TABLE agent_workflows ADD COLUMN IF NOT EXISTS scope TEXT NOT NULL DEFAULT 'private'"
     )

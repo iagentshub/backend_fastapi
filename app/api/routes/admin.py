@@ -614,7 +614,7 @@ async def admin_list_connections(
 
     async with open_db() as conn:
         rows = await conn.fetchall(
-            "SELECT id, owner_id, data, tokens_in, tokens_out, created_at "
+            "SELECT id, owner_id, name, data, tokens_in, tokens_out, created_at "
             "FROM connections ORDER BY created_at DESC"
         )
         email_rows = await conn.fetchall("SELECT username, email FROM users")
@@ -627,10 +627,11 @@ async def admin_list_connections(
             else {
                 "id": row[0],
                 "owner_id": row[1],
-                "data": row[2],
-                "tokens_in": row[3],
-                "tokens_out": row[4],
-                "created_at": row[5],
+                "name": row[2],
+                "data": row[3],
+                "tokens_in": row[4],
+                "tokens_out": row[5],
+                "created_at": row[6],
             }
         )
         try:
@@ -642,7 +643,7 @@ async def admin_list_connections(
                 "id": d["id"],
                 "owner_id": d["owner_id"],
                 "owner_email": email_map.get(d["owner_id"], d["owner_id"]),
-                "name": data.get("name", d["id"]),
+                "name": d["name"],
                 "type": data.get("type", ""),
                 "tokens_in": d["tokens_in"],
                 "tokens_out": d["tokens_out"],
@@ -790,10 +791,18 @@ async def admin_list_groups(
 
     async with open_db() as conn:
         group_rows = await conn.fetchall(
-            "SELECT id, name, created_by, created_at, status FROM groups ORDER BY created_at DESC"
+            "SELECT id, name, created_by, created_at, is_active "
+            "FROM groups ORDER BY created_at DESC"
         )
         groups = [
-            {"id": r[0], "name": r[1], "created_by": r[2], "created_at": r[3], "status": r[4]}
+            {
+                "id": r[0],
+                "name": r[1],
+                "created_by": r[2],
+                "created_at": r[3],
+                "is_active": bool(r[4]),
+                "status": "active" if r[4] else "disabled",
+            }
             for r in group_rows
         ]
         mc_rows = await conn.fetchall(
@@ -884,7 +893,7 @@ async def admin_verify_resource(
         )
     body = await request.json()
     verified_val = bool(body.get("verified", False))
-    db_val = verified_val if IS_PG else (1 if verified_val else 0)
+    db_val = 1 if verified_val else 0
 
     async with open_db() as conn:
         row = await conn.fetchone(

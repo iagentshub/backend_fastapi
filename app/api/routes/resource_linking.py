@@ -72,7 +72,7 @@ async def link_knowledge(
                 "INSERT INTO resource_social "
                 "(resource_type, resource_id, owner, name, description, is_public, category, "
                 "trial_missing_deps, linked_to_user, linked_to_id) "
-                "VALUES (?, ?, ?, ?, ?, FALSE, 'Other', 'warn', ?, ?) "
+                "VALUES (?, ?, ?, ?, ?, 0, 'Other', 'warn', ?, ?) "
                 "ON CONFLICT DO NOTHING",
                 (
                     "knowledge",
@@ -164,7 +164,7 @@ async def link_agent(
                 "INSERT INTO resource_social "
                 "(resource_type, resource_id, owner, name, description, is_public, category, "
                 "trial_missing_deps, linked_to_user, linked_to_id, tags) "
-                "VALUES (?, ?, ?, ?, ?, FALSE, 'Other', 'warn', ?, ?, ?) "
+                "VALUES (?, ?, ?, ?, ?, 0, 'Other', 'warn', ?, ?, ?) "
                 "ON CONFLICT DO NOTHING",
                 (
                     "agent",
@@ -244,7 +244,7 @@ async def link_skill(
                 "INSERT INTO resource_social "
                 "(resource_type, resource_id, owner, name, description, is_public, category, "
                 "trial_missing_deps, linked_to_user, linked_to_id, tags) "
-                "VALUES (?, ?, ?, ?, ?, FALSE, 'Other', 'warn', ?, ?, ?) "
+                "VALUES (?, ?, ?, ?, ?, 0, 'Other', 'warn', ?, ?, ?) "
                 "ON CONFLICT DO NOTHING",
                 (
                     "skill",
@@ -326,7 +326,7 @@ async def _duplicate_workflow(source_id: str, username: str) -> Dict[str, Any]:
                 "INSERT INTO resource_social "
                 "(resource_type, resource_id, owner, name, description, is_public, category, "
                 "trial_missing_deps, linked_to_user, linked_to_id, tags) "
-                "VALUES (?, ?, ?, ?, ?, FALSE, 'Other', 'warn', ?, ?, ?) "
+                "VALUES (?, ?, ?, ?, ?, 0, 'Other', 'warn', ?, ?, ?) "
                 "ON CONFLICT DO NOTHING",
                 (
                     "workflow",

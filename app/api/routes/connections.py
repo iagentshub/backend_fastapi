@@ -430,7 +430,20 @@ async def save_connection(
         guest_id = payload.get("id")
         if guest_id and not any(c.get("id") == guest_id for c in s.connections):
             guest_id = None
-        conn: Dict[str, Any] = {**payload, "id": guest_id or generate_id()}
+        conn_id = guest_id or generate_id()
+        conn: Dict[str, Any] = {
+            **payload,
+            "id": conn_id,
+            "name": str(
+                payload.get("name")
+                or payload.get("label")
+                or payload.get("type")
+                or conn_id
+            ).strip(),
+            "resource_type": "connection",
+            "scope": "private",
+            "is_active": True,
+        }
         s.connections = [c for c in s.connections if c.get("id") != conn["id"]]
         s.connections.append(conn)
         return {k: v for k, v in conn.items() if k != "api_key"}

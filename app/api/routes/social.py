@@ -264,7 +264,7 @@ CATEGORIES = [
     "Other",
 ]
 
-_PUBLIC_VAL = True if IS_PG else 1
+_PUBLIC_VAL = 1
 
 
 def _check_category(cat: str) -> None:
@@ -323,7 +323,7 @@ async def _upsert_social(
                 owner,
                 name,
                 description,
-                bool(is_public),
+                1 if is_public else 0,
                 category,
                 trial_missing_deps,
                 tags,

@@ -24,7 +24,13 @@ def _owner_filter(item_id: str, owner_id: Optional[str]) -> tuple[str, tuple]:
 
 
 def _coerce_active(d: Dict[str, Any]) -> Dict[str, Any]:
-    """is_active llega como int 1/0; exponerlo como bool en la API."""
+    """Expose the common resource contract while keeping ``title`` compatible."""
+    d["name"] = str(d.get("title") or d.get("name") or "")
+    d["resource_type"] = "knowledge"
+    d.setdefault("description", "")
+    d.setdefault("icon", "")
+    d.setdefault("scope", "private")
+    d.setdefault("labels", ["private"])
     if "is_active" in d:
         d["is_active"] = bool(d["is_active"])
     return d

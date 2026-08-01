@@ -20,7 +20,12 @@ _VALID_ROLES: frozenset[str] = frozenset({"owner", "admin", "member"})
 def _row(row: Any) -> Optional[Dict[str, Any]]:
     if row is None:
         return None
-    return dict(row)
+    data = dict(row)
+    if "is_active" in data:
+        active = bool(data["is_active"])
+        data["is_active"] = active
+        data["status"] = "active" if active else "disabled"
+    return data
 
 
 class GroupStorage:
@@ -45,7 +50,12 @@ class GroupStorage:
                 "WHERE wm.username = ? ORDER BY w.created_at ASC",
                 (username,),
             )
-            return [dict(r) for r in rows]
+            result: List[Dict[str, Any]] = []
+            for row in rows:
+                item = _row(row)
+                if item is not None:
+                    result.append(item)
+            return result
 
     async def create(self, name: str, created_by: str) -> Dict[str, Any]:
         group_id = generate_id(16)
@@ -67,6 +77,8 @@ class GroupStorage:
             "name": name.strip(),
             "created_by": created_by,
             "created_at": now,
+            "is_active": True,
+            "status": "active",
             "role": "owner",
         }
 
@@ -169,10 +181,11 @@ class GroupStorage:
             return row is not None
 
     async def set_status(self, group_id: str, status: str) -> bool:
+        active = 1 if status == "active" else 0
         async with open_db() as conn:
             row = await conn.fetchone(
-                "UPDATE groups SET status = ? WHERE id = ? RETURNING id",
-                (status, group_id),
+                "UPDATE groups SET is_active = ? WHERE id = ? RETURNING id",
+                (active, group_id),
             )
             await conn.commit()
             return row is not None
@@ -182,7 +195,7 @@ class GroupStorage:
         if group_id == username:
             return True
         group = await self.get(group_id)
-        return bool(group) and group.get("status", "active") == "active"
+        return bool(group) and bool(group.get("is_active", True))
 
     async def owner_is_active(self, owner_id: str) -> bool:
         """True si owner_id es un espacio personal (no hay fila en groups) o un
@@ -191,7 +204,7 @@ class GroupStorage:
         group = await self.get(owner_id)
         if not group:
             return True
-        return group.get("status", "active") == "active"
+        return bool(group.get("is_active", True))
 
     async def transfer_ownership(self, group_id: str, new_owner: str) -> bool:
         """Transfer ownership to an existing member. Returns False if not a member."""

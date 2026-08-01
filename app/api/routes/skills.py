@@ -183,7 +183,9 @@ async def save_skill(
         skill: Dict[str, Any] = {
             **payload,
             "id": guest_id or generate_id(),
+            "resource_type": "skill",
             "scope": "private",
+            "is_active": True,
         }
         s.skills = [sk for sk in s.skills if sk.get("id") != skill["id"]]
         s.skills.append(skill)

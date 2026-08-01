@@ -68,6 +68,7 @@ class WorkflowStorage(ResourceStorage):
         labels = [str(lbl) for lbl in (payload.get("labels") or ["private"]) if lbl]
         item = {
             "id": workflow_id,
+            "resource_type": "workflow",
             "owner_id": owner_id,
             "name": str(payload["name"]).strip(),
             "description": str(payload.get("description") or "").strip(),
@@ -146,6 +147,7 @@ class WorkflowStorage(ResourceStorage):
     @staticmethod
     def _decode(row: Any) -> Dict[str, Any]:
         item = dict(row)
+        item["resource_type"] = "workflow"
         item["definition"] = json.loads(item["definition"])
         try:
             item["labels"] = json.loads(item.get("labels") or '["private"]')

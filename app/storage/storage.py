@@ -54,6 +54,15 @@ def _slug(value: str) -> str:
     return s or f"item-{generate_id(8)}"
 
 
+def _display_name(data: Dict[str, Any], resource_id: str) -> str:
+    """Canonical name, with legacy connection fields as compatibility fallbacks."""
+    for key in ("name", "label", "type"):
+        value = str(data.get(key) or "").strip()
+        if value:
+            return value
+    return resource_id
+
+
 # ─── ConnectionStorage ────────────────────────────────────────────────────────
 
 
@@ -99,25 +108,28 @@ class ConnectionStorage(ResourceStorage):
         self, conn: Any, payload: Dict[str, Any], owner_id: str = "admin"
     ) -> None:
         """Insert or replace a connection row (uses AsyncConn, ? placeholders)."""
-        from app.storage.db import IS_PG
+        from app.storage.db import IS_PG, _compact_resource_data
 
         conn_id = str(payload.get("id") or "").strip() or generate_id()
         payload["id"] = conn_id
+        name = _display_name(payload, conn_id)
         is_active = 1 if payload.get("is_active", True) else 0
         deactivated_at = payload.get("deactivated_at")
+        data_json = _compact_resource_data(payload)
         if IS_PG:
             await conn.execute(
-                "INSERT INTO connections (id, owner_id, data, tokens_in, tokens_out, "
+                "INSERT INTO connections (id, owner_id, name, data, tokens_in, tokens_out, "
                 "is_active, deactivated_at, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
-                "ON CONFLICT (id) DO UPDATE SET owner_id=EXCLUDED.owner_id, data=EXCLUDED.data, "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT (id) DO UPDATE SET owner_id=EXCLUDED.owner_id, name=EXCLUDED.name, data=EXCLUDED.data, "
                 "tokens_in=EXCLUDED.tokens_in, tokens_out=EXCLUDED.tokens_out, "
                 "is_active=EXCLUDED.is_active, deactivated_at=EXCLUDED.deactivated_at, "
                 "updated_at=EXCLUDED.updated_at",
                 (
                     conn_id,
                     owner_id,
-                    json.dumps(payload, ensure_ascii=False),
+                    name,
+                    data_json,
                     int(payload.get("tokens_in") or 0),
                     int(payload.get("tokens_out") or 0),
                     is_active,
@@ -129,13 +141,14 @@ class ConnectionStorage(ResourceStorage):
         else:
             await conn.execute(
                 "INSERT OR REPLACE INTO connections "
-                "(id, owner_id, data, tokens_in, tokens_out, "
+                "(id, owner_id, name, data, tokens_in, tokens_out, "
                 "is_active, deactivated_at, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     conn_id,
                     owner_id,
-                    json.dumps(payload, ensure_ascii=False),
+                    name,
+                    data_json,
                     int(payload.get("tokens_in") or 0),
                     int(payload.get("tokens_out") or 0),
                     is_active,
@@ -150,8 +163,22 @@ class ConnectionStorage(ResourceStorage):
         for field in _ENCRYPTED_FIELDS:
             if d.get(field):
                 d[field] = decrypt(d[field])
-        d["tokens_in"] = row["tokens_in"]
-        d["tokens_out"] = row["tokens_out"]
+        d.update(
+            {
+                "id": row["id"],
+                "name": row["name"],
+                "resource_type": "connection",
+                "scope": "private",
+                "owner_id": row["owner_id"],
+                "tokens_in": row["tokens_in"],
+                "tokens_out": row["tokens_out"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+        )
+        d.setdefault("description", "")
+        d.setdefault("icon", "")
+        d.setdefault("labels", ["private"])
         d["is_active"] = bool(row["is_active"])
         d["deactivated_at"] = row["deactivated_at"]
         return d
@@ -164,11 +191,13 @@ class ConnectionStorage(ResourceStorage):
         async with open_db() as conn:
             if owner_id is None:
                 rows = await conn.fetchall(
-                    "SELECT id, owner_id, data, tokens_in, tokens_out, is_active, deactivated_at FROM connections ORDER BY created_at ASC"
+                    "SELECT id, owner_id, name, data, tokens_in, tokens_out, is_active, "
+                    "deactivated_at, created_at, updated_at FROM connections ORDER BY created_at ASC"
                 )
             else:
                 rows = await conn.fetchall(
-                    "SELECT id, owner_id, data, tokens_in, tokens_out, is_active, deactivated_at FROM connections "
+                    "SELECT id, owner_id, name, data, tokens_in, tokens_out, is_active, "
+                    "deactivated_at, created_at, updated_at FROM connections "
                     "WHERE owner_id = ? ORDER BY created_at ASC",
                     (owner_id,),
                 )
@@ -182,12 +211,14 @@ class ConnectionStorage(ResourceStorage):
         async with open_db() as conn:
             if owner_id is None:
                 row = await conn.fetchone(
-                    "SELECT id, owner_id, data, tokens_in, tokens_out, is_active, deactivated_at FROM connections WHERE id = ?",
+                    "SELECT id, owner_id, name, data, tokens_in, tokens_out, is_active, "
+                    "deactivated_at, created_at, updated_at FROM connections WHERE id = ?",
                     (conn_id,),
                 )
             else:
                 row = await conn.fetchone(
-                    "SELECT id, owner_id, data, tokens_in, tokens_out, is_active, deactivated_at FROM connections "
+                    "SELECT id, owner_id, name, data, tokens_in, tokens_out, is_active, "
+                    "deactivated_at, created_at, updated_at FROM connections "
                     "WHERE id = ? AND owner_id = ?",
                     (conn_id, owner_id),
                 )
@@ -200,6 +231,7 @@ class ConnectionStorage(ResourceStorage):
 
         conn_id = str(payload.get("id") or "").strip() or generate_id()
         payload["id"] = conn_id
+        payload["name"] = _display_name(payload, conn_id)
         existing = await self.get(conn_id, owner_id)
         if existing:
             payload["created_at"] = existing.get("created_at", _now())
@@ -214,6 +246,16 @@ class ConnectionStorage(ResourceStorage):
             payload.setdefault("created_at", _now())
             payload.setdefault("is_active", True)
         payload["updated_at"] = _now()
+        payload.update(
+            {
+                "resource_type": "connection",
+                "scope": "private",
+                "owner_id": owner_id,
+            }
+        )
+        payload.setdefault("description", "")
+        payload.setdefault("icon", "")
+        payload.setdefault("labels", ["private"])
         stored = dict(payload)
         for field in _ENCRYPTED_FIELDS:
             if stored.get(field):
@@ -336,9 +378,10 @@ class AgentStorage(ResourceStorage):
     async def _upsert(
         self, conn: Any, agent_id: str, owner_id: str, scope: str, data: Dict[str, Any]
     ) -> None:
-        from app.storage.db import IS_PG
+        from app.storage.db import IS_PG, _compact_resource_data
 
-        data_json = json.dumps(data, ensure_ascii=False)
+        name = str(data.get("name") or "").strip()
+        data_json = _compact_resource_data(data)
         tokens_in = int(data.get("tokens_in") or 0)
         tokens_out = int(data.get("tokens_out") or 0)
         now = _now()
@@ -348,16 +391,17 @@ class AgentStorage(ResourceStorage):
         deactivated_at = data.get("deactivated_at")
         if IS_PG:
             await conn.execute(
-                "INSERT INTO agents (id, owner_id, scope, data, tokens_in, tokens_out, "
+                "INSERT INTO agents (id, owner_id, name, scope, data, tokens_in, tokens_out, "
                 "is_active, deactivated_at, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-                "ON CONFLICT (id, owner_id) DO UPDATE SET scope=EXCLUDED.scope, data=EXCLUDED.data, "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT (id, owner_id) DO UPDATE SET name=EXCLUDED.name, scope=EXCLUDED.scope, data=EXCLUDED.data, "
                 "tokens_in=EXCLUDED.tokens_in, tokens_out=EXCLUDED.tokens_out, "
                 "is_active=EXCLUDED.is_active, deactivated_at=EXCLUDED.deactivated_at, "
                 "updated_at=EXCLUDED.updated_at",
                 (
                     agent_id,
                     owner_id,
+                    name,
                     scope,
                     data_json,
                     tokens_in,
@@ -371,12 +415,13 @@ class AgentStorage(ResourceStorage):
         else:
             await conn.execute(
                 "INSERT OR REPLACE INTO agents "
-                "(id, owner_id, scope, data, tokens_in, tokens_out, "
+                "(id, owner_id, name, scope, data, tokens_in, tokens_out, "
                 "is_active, deactivated_at, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     agent_id,
                     owner_id,
+                    name,
                     scope,
                     data_json,
                     tokens_in,
@@ -390,9 +435,18 @@ class AgentStorage(ResourceStorage):
 
     def _row_to_dict(self, row: Any) -> Dict[str, Any]:
         d: Dict[str, Any] = json.loads(row["data"])
-        d["tokens_in"] = row["tokens_in"]
-        d["tokens_out"] = row["tokens_out"]
-        d["scope"] = row["scope"]
+        d.update(
+            {
+                "id": row["id"],
+                "name": row["name"],
+                "resource_type": "agent",
+                "tokens_in": row["tokens_in"],
+                "tokens_out": row["tokens_out"],
+                "scope": row["scope"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+        )
         d["is_active"] = bool(row["is_active"])
         d["deactivated_at"] = row["deactivated_at"]
         owner = row["owner_id"]
@@ -410,24 +464,28 @@ class AgentStorage(ResourceStorage):
         async with open_db() as conn:
             if scope == "public":
                 rows = await conn.fetchall(
-                    "SELECT id, owner_id, scope, data, tokens_in, tokens_out, is_active, deactivated_at "
+                    "SELECT id, owner_id, name, scope, data, tokens_in, tokens_out, "
+                    "is_active, deactivated_at, created_at, updated_at "
                     "FROM agents WHERE scope='public' ORDER BY created_at ASC"
                 )
             elif scope == "private":
                 if owner_id:
                     rows = await conn.fetchall(
-                        "SELECT id, owner_id, scope, data, tokens_in, tokens_out, is_active, deactivated_at "
+                        "SELECT id, owner_id, name, scope, data, tokens_in, tokens_out, "
+                        "is_active, deactivated_at, created_at, updated_at "
                         "FROM agents WHERE scope='private' AND owner_id=? ORDER BY created_at ASC",
                         (owner_id,),
                     )
                 else:
                     rows = await conn.fetchall(
-                        "SELECT id, owner_id, scope, data, tokens_in, tokens_out, is_active, deactivated_at "
+                        "SELECT id, owner_id, name, scope, data, tokens_in, tokens_out, "
+                        "is_active, deactivated_at, created_at, updated_at "
                         "FROM agents WHERE scope='private' ORDER BY created_at ASC"
                     )
             else:  # all
                 rows = await conn.fetchall(
-                    "SELECT id, owner_id, scope, data, tokens_in, tokens_out, is_active, deactivated_at "
+                    "SELECT id, owner_id, name, scope, data, tokens_in, tokens_out, "
+                    "is_active, deactivated_at, created_at, updated_at "
                     "FROM agents ORDER BY created_at ASC"
                 )
         return [self._row_to_dict(r) for r in rows]
@@ -441,20 +499,23 @@ class AgentStorage(ResourceStorage):
         async with open_db() as conn:
             if scope == "public":
                 row = await conn.fetchone(
-                    "SELECT id, owner_id, scope, data, tokens_in, tokens_out, is_active, deactivated_at "
+                    "SELECT id, owner_id, name, scope, data, tokens_in, tokens_out, "
+                    "is_active, deactivated_at, created_at, updated_at "
                     "FROM agents WHERE id=? AND scope='public' LIMIT 1",
                     (agent_id,),
                 )
             elif scope == "private":
                 row = await conn.fetchone(
-                    "SELECT id, owner_id, scope, data, tokens_in, tokens_out, is_active, deactivated_at "
+                    "SELECT id, owner_id, name, scope, data, tokens_in, tokens_out, "
+                    "is_active, deactivated_at, created_at, updated_at "
                     "FROM agents WHERE id=? AND scope='private' LIMIT 1",
                     (agent_id,),
                 )
             else:
                 # prefer private, fall back to public
                 row = await conn.fetchone(
-                    "SELECT id, owner_id, scope, data, tokens_in, tokens_out, is_active, deactivated_at "
+                    "SELECT id, owner_id, name, scope, data, tokens_in, tokens_out, "
+                    "is_active, deactivated_at, created_at, updated_at "
                     "FROM agents WHERE id=? ORDER BY CASE scope WHEN 'private' THEN 0 ELSE 1 END LIMIT 1",
                     (agent_id,),
                 )
@@ -667,27 +728,29 @@ class SkillStorage(ResourceStorage):
     async def _upsert(
         self, conn: Any, skill_id: str, owner_id: str, scope: str, data: Dict[str, Any]
     ) -> None:
-        from app.storage.db import IS_PG
+        from app.storage.db import IS_PG, _compact_resource_data
 
+        name = str(data.get("name") or "").strip()
         content = str(data.get("content") or "")
         now = _now()
         created_at = str(data.get("created_at") or now)
         updated_at = str(data.get("updated_at") or now)
         is_active = 1 if data.get("is_active", True) else 0
         deactivated_at = data.get("deactivated_at")
-        meta = {k: v for k, v in data.items() if k not in ("content",)}
-        meta_json = json.dumps(meta, ensure_ascii=False)
+        meta = {k: v for k, v in data.items() if k != "content"}
+        meta_json = _compact_resource_data(meta)
         if IS_PG:
             await conn.execute(
-                "INSERT INTO skills (id, owner_id, scope, data, content, "
+                "INSERT INTO skills (id, owner_id, name, scope, data, content, "
                 "is_active, deactivated_at, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
-                "ON CONFLICT (id, owner_id) DO UPDATE SET scope=EXCLUDED.scope, data=EXCLUDED.data, "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT (id, owner_id) DO UPDATE SET name=EXCLUDED.name, scope=EXCLUDED.scope, data=EXCLUDED.data, "
                 "content=EXCLUDED.content, is_active=EXCLUDED.is_active, "
                 "deactivated_at=EXCLUDED.deactivated_at, updated_at=EXCLUDED.updated_at",
                 (
                     skill_id,
                     owner_id,
+                    name,
                     scope,
                     meta_json,
                     content,
@@ -700,12 +763,13 @@ class SkillStorage(ResourceStorage):
         else:
             await conn.execute(
                 "INSERT OR REPLACE INTO skills "
-                "(id, owner_id, scope, data, content, "
+                "(id, owner_id, name, scope, data, content, "
                 "is_active, deactivated_at, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     skill_id,
                     owner_id,
+                    name,
                     scope,
                     meta_json,
                     content,
@@ -720,7 +784,16 @@ class SkillStorage(ResourceStorage):
         d: Dict[str, Any] = json.loads(row["data"])
         if include_content:
             d["content"] = row["content"]
-        d["scope"] = row["scope"]
+        d.update(
+            {
+                "id": row["id"],
+                "name": row["name"],
+                "resource_type": "skill",
+                "scope": row["scope"],
+                "created_at": row["created_at"],
+                "updated_at": row["updated_at"],
+            }
+        )
         d["is_active"] = bool(row["is_active"])
         d["deactivated_at"] = row["deactivated_at"]
         owner = row["owner_id"]
@@ -738,24 +811,28 @@ class SkillStorage(ResourceStorage):
         async with open_db() as conn:
             if scope == "public":
                 rows = await conn.fetchall(
-                    "SELECT id, owner_id, scope, data, content, is_active, deactivated_at "
+                    "SELECT id, owner_id, name, scope, data, content, is_active, "
+                    "deactivated_at, created_at, updated_at "
                     "FROM skills WHERE scope='public' ORDER BY created_at ASC"
                 )
             elif scope == "private":
                 if owner_id:
                     rows = await conn.fetchall(
-                        "SELECT id, owner_id, scope, data, content, is_active, deactivated_at "
+                        "SELECT id, owner_id, name, scope, data, content, is_active, "
+                        "deactivated_at, created_at, updated_at "
                         "FROM skills WHERE scope='private' AND owner_id=? ORDER BY created_at ASC",
                         (owner_id,),
                     )
                 else:
                     rows = await conn.fetchall(
-                        "SELECT id, owner_id, scope, data, content, is_active, deactivated_at "
+                        "SELECT id, owner_id, name, scope, data, content, is_active, "
+                        "deactivated_at, created_at, updated_at "
                         "FROM skills WHERE scope='private' ORDER BY created_at ASC"
                     )
             else:  # all
                 rows = await conn.fetchall(
-                    "SELECT id, owner_id, scope, data, content, is_active, deactivated_at "
+                    "SELECT id, owner_id, name, scope, data, content, is_active, "
+                    "deactivated_at, created_at, updated_at "
                     "FROM skills ORDER BY created_at ASC"
                 )
         return [self._row_to_dict(r, include_content=False) for r in rows]
@@ -768,14 +845,16 @@ class SkillStorage(ResourceStorage):
 
         async with open_db() as conn:
             row = await conn.fetchone(
-                "SELECT id, owner_id, scope, data, content, is_active, deactivated_at "
+                "SELECT id, owner_id, name, scope, data, content, is_active, "
+                "deactivated_at, created_at, updated_at "
                 "FROM skills WHERE id=? AND scope=? LIMIT 1",
                 (skill_id, scope),
             )
             if not row:
                 # try slug variant
                 row = await conn.fetchone(
-                    "SELECT id, owner_id, scope, data, content, is_active, deactivated_at "
+                    "SELECT id, owner_id, name, scope, data, content, is_active, "
+                    "deactivated_at, created_at, updated_at "
                     "FROM skills WHERE id=? AND scope=? LIMIT 1",
                     (_slug(skill_id), scope),
                 )
@@ -809,6 +888,7 @@ class SkillStorage(ResourceStorage):
         data: Dict[str, Any] = {
             "id": skill_id,
             "name": name,
+            "resource_type": "skill",
             "description": str(payload.get("description") or "").strip(),
             "icon": str(payload.get("icon") or "🔧").strip(),
             "category": str(payload.get("category") or "").strip() or None,

@@ -42,6 +42,13 @@ def _guest_item(*, type: str, title: str, source: str, content: str) -> Dict[str
     now = datetime.now(timezone.utc).isoformat()
     return {
         "id": generate_id(16),
+        "name": title,
+        "resource_type": "knowledge",
+        "description": "",
+        "icon": "",
+        "scope": "private",
+        "labels": ["private"],
+        "is_active": True,
         "type": type,
         "title": title,
         "source": source,
