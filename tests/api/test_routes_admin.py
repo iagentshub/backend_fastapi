@@ -387,6 +387,65 @@ def test_check_update_unauthenticated(client):
     assert r.status_code == 401
 
 
+def test_update_now_no_token_configured(admin_client, monkeypatch):
+    monkeypatch.delenv("WATCHTOWER_HTTP_API_TOKEN", raising=False)
+    r = admin_client.post("/api/admin/update-now")
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "update_now_unavailable"
+
+
+def test_update_now_triggers_watchtower(admin_client, monkeypatch):
+    monkeypatch.setenv("WATCHTOWER_HTTP_API_TOKEN", "secret-token")
+    calls = []
+
+    async def fake_post(self, url, **kwargs):
+        calls.append((url, kwargs.get("headers")))
+        return _mock_action_response(200)
+
+    with patch.object(httpx.AsyncClient, "post", new=fake_post):
+        r = admin_client.post("/api/admin/update-now")
+
+    assert r.status_code == 200
+    assert r.json() == {"triggered": True}
+    assert calls == [
+        ("http://watchtower:8080/v1/update", {"Authorization": "Bearer secret-token"})
+    ]
+
+
+def test_update_now_swallows_connection_errors(admin_client, monkeypatch):
+    """Watchtower puede sustituir este mismo contenedor a mitad de la
+    petición si aplica una actualización — perder la conexión no debe
+    convertirse en un error de cara al cliente."""
+    monkeypatch.setenv("WATCHTOWER_HTTP_API_TOKEN", "secret-token")
+
+    async def fake_post(self, url, **kwargs):
+        raise httpx.ConnectError("conexión perdida")
+
+    with patch.object(httpx.AsyncClient, "post", new=fake_post):
+        r = admin_client.post("/api/admin/update-now")
+
+    assert r.status_code == 200
+    assert r.json() == {"triggered": True}
+
+
+def test_update_now_forbidden_for_standard(client, reset_rate_limiter):
+    client.post(
+        "/api/auth/register",
+        json={
+            "username": "updatenow",
+            "email": "updatenow@example.com",
+            "password": "pass1234",
+        },
+    )
+    r = client.post("/api/admin/update-now")
+    assert r.status_code == 403
+
+
+def test_update_now_unauthenticated(client):
+    r = client.post("/api/admin/update-now")
+    assert r.status_code == 401
+
+
 def _mock_action_response(status_code):
     resp = MagicMock()
     resp.status_code = status_code

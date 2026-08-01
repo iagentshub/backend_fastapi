@@ -18,7 +18,7 @@ import re
 from typing import Any
 
 import httpx
-from fastapi import APIRouter, Depends, Query, Request, Response
+from fastapi import APIRouter, BackgroundTasks, Depends, Query, Request, Response
 from pydantic import BaseModel
 
 from app.api.routes.auth import _public_base_url, require_admin
@@ -256,6 +256,45 @@ async def admin_set_auto_update(
     cfg["auto_update_enabled"] = body.enabled
     _write_platform_cfg(cfg)
     return {"auto_update_enabled": body.enabled}
+
+
+async def _trigger_watchtower_update(token: str) -> None:
+    """Si Watchtower encuentra una imagen nueva, sustituye ESTE MISMO
+    contenedor a mitad de la petición — por eso se dispara en segundo plano
+    en vez de esperar su respuesta desde el endpoint: perder la conexión aquí
+    es la señal esperada de que se está aplicando, no un fallo real."""
+    try:
+        async with httpx.AsyncClient(timeout=120) as client:
+            await client.post(
+                "http://watchtower:8080/v1/update",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+    except httpx.HTTPError:
+        pass
+
+
+@admin_router.post("/update-now")
+async def admin_update_now(
+    background_tasks: BackgroundTasks, _: str = Depends(require_admin)
+) -> dict:
+    """Fuerza ahora mismo el ciclo de comprobación+actualización que
+    Watchtower ejecuta cada WATCHTOWER_INTERVAL segundos, vía su propia API
+    HTTP (WATCHTOWER_HTTP_API_UPDATE en docker-compose.hub.yml) — sin ampliar
+    los permisos de docker-proxy, deliberadamente restringidos a start/stop
+    (ver ese fichero para el razonamiento).
+    """
+    token = os.environ.get("WATCHTOWER_HTTP_API_TOKEN", "")
+    if not token:
+        raise APIError(
+            409,
+            "update_now_unavailable",
+            "Esta instalación no tiene la API HTTP de Watchtower activada. "
+            "Actualiza docker-compose.hub.yml y vuelve a desplegar (docker "
+            "compose pull && docker compose up -d) para poder disparar "
+            "actualizaciones desde aquí.",
+        )
+    background_tasks.add_task(_trigger_watchtower_update, token)
+    return {"triggered": True}
 
 
 @admin_router.get("/metadata/tables")
