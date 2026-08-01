@@ -11,7 +11,7 @@ def test_me_autenticado(admin_client):
 
 
 def test_me_usuario_estandar(client, reset_rate_limiter):
-    client.post("/api/auth/register", json={"email": "stduser@example.com", "password": "pass1234"})
+    client.post("/api/auth/register", json={"username": "stduser", "email": "stduser@example.com", "password": "pass1234"})
     r = client.get("/api/auth/me")
     assert r.status_code == 200
     assert r.json()["role"] == "standard"
@@ -23,7 +23,7 @@ def test_me_sin_autenticar(client):
 
 
 def test_change_password_usuario_local_ok(client, reset_rate_limiter):
-    client.post("/api/auth/register", json={"email": "localuser@example.com", "password": "pass1234"})
+    client.post("/api/auth/register", json={"username": "localuser", "email": "localuser@example.com", "password": "pass1234"})
     r = client.post("/api/auth/change-password", json={
         "current_password": "pass1234",
         "new_password": "newpass5678",
@@ -32,7 +32,7 @@ def test_change_password_usuario_local_ok(client, reset_rate_limiter):
 
 
 def test_change_password_password_actual_incorrecta(client, reset_rate_limiter):
-    client.post("/api/auth/register", json={"email": "localuser2@example.com", "password": "pass1234"})
+    client.post("/api/auth/register", json={"username": "localuser2", "email": "localuser2@example.com", "password": "pass1234"})
     r = client.post("/api/auth/change-password", json={
         "current_password": "wrongpass",
         "new_password": "newpass5678",
@@ -41,7 +41,7 @@ def test_change_password_password_actual_incorrecta(client, reset_rate_limiter):
 
 
 def test_change_password_demasiado_corta(client, reset_rate_limiter):
-    client.post("/api/auth/register", json={"email": "localuser3@example.com", "password": "pass1234"})
+    client.post("/api/auth/register", json={"username": "localuser3", "email": "localuser3@example.com", "password": "pass1234"})
     r = client.post("/api/auth/change-password", json={
         "current_password": "pass1234",
         "new_password": "ab",

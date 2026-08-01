@@ -40,7 +40,8 @@ from app.storage.groups import GroupStorage as _GroupStorage
 from app.storage.storage import AgentStorage as _AgentStorage
 from app.storage.workflows import WorkflowStorage as _WorkflowStorage
 from app.utils import flog
-from app.utils.validation import is_valid_email
+from app.utils.generators import generate_id
+from app.utils.validation import is_valid_email, is_valid_username, normalize_username
 
 _groups = _GroupStorage(_DB_FILE)
 _agents = _AgentStorage(_AGENTS_DIR)
@@ -458,8 +459,7 @@ async def admin_list_users(
         )
     token_map = {r[0]: {"tokens_in": r[1], "tokens_out": r[2]} for r in token_rows}
     for u in users:
-        uname = u.get("username")
-        tokens = token_map.get(uname, {"tokens_in": 0, "tokens_out": 0})
+        tokens = token_map.get(u.get("id"), {"tokens_in": 0, "tokens_out": 0})
         u["tokens_in"] = tokens["tokens_in"]
         u["tokens_out"] = tokens["tokens_out"]
     if q:
@@ -487,7 +487,8 @@ async def admin_patch_user(
     request: Request,
     admin: str = Depends(require_admin),
 ) -> dict[str, Any]:
-    if username == admin:
+    target = await get_user_by_username(username)
+    if target and target["id"] == admin:
         raise APIError(400, "cannot_modify_own_account", "No puedes modificar tu propia cuenta")
     body = await request.json()
     updates: dict[str, Any] = {}
@@ -528,13 +529,19 @@ async def admin_create_user(
     """
     from datetime import datetime
     from datetime import timezone as _tz
-
     body = await request.json()
+    username = normalize_username(str(body.get("username") or ""))
     email = str(body.get("email") or "").strip().lower()
     password = str(body.get("password") or "").strip()
     role = str(body.get("role") or "standard").strip()
     display_name = str(body.get("display_name") or "").strip()
 
+    if not is_valid_username(username):
+        raise APIError(
+            400, "invalid_field",
+            "El usuario debe tener entre 5 y 32 caracteres: a-z, 0-9, punto, guion o guion bajo",
+            extra={"field": "username"},
+        )
     if not email:
         raise APIError(400, "email_required", "El email es obligatorio")
     if not is_valid_email(email):
@@ -549,7 +556,6 @@ async def admin_create_user(
             extra={"field": "role"},
         )
 
-    username = email  # username = email (igual que en el registro normal)
     now = datetime.now(_tz.utc).isoformat()
     password_hash = await hash_password_async(password)
     try:
@@ -566,10 +572,11 @@ async def admin_create_user(
                 )
             await conn.execute(
                 "INSERT INTO users "
-                "(username, email, password_hash, display_name, role, "
+                "(id, username, email, password_hash, display_name, role, "
                 "is_active, is_verified, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
+                    generate_id(32),
                     username,
                     email,
                     password_hash,
@@ -593,7 +600,8 @@ async def admin_create_user(
 async def admin_delete_user(
     username: str, admin: str = Depends(require_admin)
 ) -> dict[str, Any]:
-    if username == admin:
+    target = await get_user_by_username(username)
+    if target and target["id"] == admin:
         raise APIError(400, "cannot_delete_own_account", "No puedes eliminar tu propia cuenta")
     if not await delete_user(username):
         raise APIError(404, "not_found", "Usuario no encontrado", extra={"resource": "user"})
@@ -611,8 +619,8 @@ async def admin_list_connections(
             "SELECT id, owner_id, name, data, tokens_in, tokens_out, created_at "
             "FROM connections ORDER BY created_at DESC"
         )
-        email_rows = await conn.fetchall("SELECT username, email FROM users")
-    email_map = {r[0]: r[1] for r in email_rows}
+        user_rows = await conn.fetchall("SELECT id, username FROM users")
+    username_map = {r[0]: r[1] for r in user_rows}
     result = []
     for row in rows:
         d = (
@@ -636,7 +644,7 @@ async def admin_list_connections(
             {
                 "id": d["id"],
                 "owner_id": d["owner_id"],
-                "owner_email": email_map.get(d["owner_id"], d["owner_id"]),
+                "owner_username": username_map.get(d["owner_id"], d["owner_id"]),
                 "name": d["name"],
                 "type": data.get("type", ""),
                 "tokens_in": d["tokens_in"],
@@ -663,11 +671,11 @@ async def admin_delete_connection(
 async def admin_list_agents(_: str = Depends(require_admin)) -> list[dict[str, Any]]:
     agents = await _agents.list(scope="all")
     async with open_db() as conn:
-        user_rows = await conn.fetchall("SELECT username, email FROM users")
+        user_rows = await conn.fetchall("SELECT id, username FROM users")
         conn_rows = await conn.fetchall(
             "SELECT id, owner_id, tokens_in, tokens_out FROM connections"
         )
-    email_map = {r[0]: r[1] for r in user_rows}
+    username_map = {r[0]: r[1] for r in user_rows}
     conn_data = {
         r[0]: {"owner_id": r[1], "tokens_in": r[2], "tokens_out": r[3]}
         for r in conn_rows
@@ -677,7 +685,7 @@ async def admin_list_agents(_: str = Depends(require_admin)) -> list[dict[str, A
         owner = a.get("owner_id")
         if not owner and conn_id and conn_id in conn_data:
             owner = conn_data[conn_id]["owner_id"]
-        a["owner_email"] = email_map.get(owner, owner) if owner else None
+        a["owner_username"] = username_map.get(owner, owner) if owner else None
         # Agregar tokens de la conexión asociada
         if conn_id and conn_id in conn_data:
             a["tokens_in"] = conn_data[conn_id]["tokens_in"]
@@ -729,11 +737,11 @@ async def admin_list_knowledge(_: str = Depends(require_admin)) -> list[dict[str
     from app.storage.knowledge import KnowledgeStorage
 
     async with open_db() as conn:
-        user_rows = await conn.fetchall("SELECT username, email FROM users")
-    email_map = {r[0]: r[1] for r in user_rows}
+        user_rows = await conn.fetchall("SELECT id, username FROM users")
+    username_map = {r[0]: r[1] for r in user_rows}
     items = await KnowledgeStorage(DB_FILE).list(owner_id=None)
     for item in items:
-        item["owner_email"] = email_map.get(
+        item["owner_username"] = username_map.get(
             item.get("owner_id", ""), item.get("owner_id", "")
         )
         item.pop("content", None)
@@ -756,10 +764,10 @@ async def admin_delete_knowledge(
 async def admin_list_workflows(_: str = Depends(require_admin)) -> list[dict[str, Any]]:
     items = await _workflows.list_all()
     async with open_db() as conn:
-        user_rows = await conn.fetchall("SELECT username, email FROM users")
-    email_map = {r[0]: r[1] for r in user_rows}
+        user_rows = await conn.fetchall("SELECT id, username FROM users")
+    username_map = {r[0]: r[1] for r in user_rows}
     for item in items:
-        item["owner_email"] = email_map.get(item.get("owner_id", ""), item.get("owner_id", ""))
+        item["owner_username"] = username_map.get(item.get("owner_id", ""), item.get("owner_id", ""))
         definition = item.pop("definition", None) or {}
         item["steps"] = len(definition.get("nodes") or [])
     return items
@@ -785,17 +793,19 @@ async def admin_list_groups(
 
     async with open_db() as conn:
         group_rows = await conn.fetchall(
-            "SELECT id, name, created_by, created_at, is_active "
-            "FROM groups ORDER BY created_at DESC"
+            "SELECT g.id, g.name, g.created_by, u.username, g.created_at, g.is_active "
+            "FROM groups g LEFT JOIN users u ON u.id = g.created_by "
+            "ORDER BY g.created_at DESC"
         )
         groups = [
             {
                 "id": r[0],
                 "name": r[1],
                 "created_by": r[2],
-                "created_at": r[3],
-                "is_active": bool(r[4]),
-                "status": "active" if r[4] else "disabled",
+                "created_by_username": r[3],
+                "created_at": r[4],
+                "is_active": bool(r[5]),
+                "status": "active" if r[5] else "disabled",
             }
             for r in group_rows
         ]
@@ -931,13 +941,13 @@ async def admin_set_resource_owner(
             extra={"field": "resource_type"},
         )
     body = await request.json()
-    new_owner = str(body.get("owner_id") or "").strip()
+    new_owner = str(body.get("username") or body.get("owner_id") or "").strip().lower()
     if not new_owner:
         raise APIError(400, "invalid_field", "owner_id es obligatorio", extra={"field": "owner_id"})
 
     async with open_db() as conn:
         user_row = await conn.fetchone(
-            "SELECT username, is_active FROM users WHERE username=?", (new_owner,)
+            "SELECT id, username, is_active FROM users WHERE username=?", (new_owner,)
         )
         if not user_row:
             raise APIError(
@@ -954,7 +964,10 @@ async def admin_set_resource_owner(
             raise APIError(
                 404, "not_found", "Recurso no encontrado", extra={"resource": resource_type},
             )
-        await conn.execute(f"UPDATE {table} SET owner_id=? WHERE id=?", (new_owner, resource_id))
+        await conn.execute(
+            f"UPDATE {table} SET owner_id=? WHERE id=?",
+            (user_row["id"], resource_id),
+        )
         await conn.commit()
     return {"ok": True}
 
@@ -965,12 +978,11 @@ async def admin_impersonate(
     response: Response,
     admin: str = Depends(require_admin),
 ) -> dict[str, Any]:
-    if username == admin:
-        raise APIError(400, "already_own_user", "Ya eres este usuario")
-
     target_user = await get_user_by_username(username)
     if not target_user:
         raise APIError(404, "not_found", "Usuario no encontrado", extra={"resource": "user"})
+    if target_user["id"] == admin:
+        raise APIError(400, "already_own_user", "Ya eres este usuario")
 
     # Verificar que la cuenta del usuario objetivo esté activa
     if not target_user.get("is_active", 1):
@@ -983,7 +995,7 @@ async def admin_impersonate(
 
     # Crear token para el group personal del usuario impersonado
     # (group_id=username por defecto)
-    token = create_token(username)
+    token = create_token(target_user["id"])
 
     # Establecer la cookie del nuevo token
     response.set_cookie(

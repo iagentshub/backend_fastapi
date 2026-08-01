@@ -1,9 +1,13 @@
-"""Tests for POST /api/auth/login (email+password)."""
+"""Tests for POST /api/auth/login (username/email + password)."""
 from __future__ import annotations
 
 
 def _register(client, email: str = "user@example.com", password: str = "pass1234"):
-    r = client.post("/api/auth/register", json={"email": email, "password": password})
+    username = email.split("@", 1)[0]
+    r = client.post(
+        "/api/auth/register",
+        json={"username": username, "email": email, "password": password},
+    )
     assert r.status_code == 200, r.text
     return r
 
@@ -16,6 +20,16 @@ def test_login_success(client, reset_rate_limiter):
     assert data["ok"] is True
     assert "username" in data
     assert "ga_token" in r.cookies
+
+
+def test_login_success_with_username(client, reset_rate_limiter):
+    _register(client, "publicuser@example.com", "pass1234")
+    r = client.post(
+        "/api/auth/login",
+        json={"identifier": "publicuser", "password": "pass1234"},
+    )
+    assert r.status_code == 200
+    assert r.json()["username"] == "publicuser"
 
 
 def test_login_wrong_password(client, reset_rate_limiter):

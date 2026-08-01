@@ -42,6 +42,15 @@ def _create_group_api(client: TestClient, name: str = "Equipo Test") -> dict:
     return r.json()
 
 
+def _user_id(username: str) -> str:
+    import asyncio
+
+    from app.auth.auth import get_user_by_username
+    user = asyncio.run(get_user_by_username(username))
+    assert user is not None
+    return str(user["id"])
+
+
 def _add_member_api(client: TestClient, group_id: str, username: str) -> None:
     """Añade un miembro al group a través de la API."""
     r = client.post(f"/api/groups/{group_id}/invitations", json={"username": username})
@@ -100,7 +109,7 @@ def test_request_deletion_409_si_es_owner_de_group(client):
     import asyncio
 
     from app.storage.groups import GroupStorage
-    asyncio.run(GroupStorage(_cfg.DB_FILE).create("Group Bloqueante", created_by="rd_group_owner"))
+    asyncio.run(GroupStorage(_cfg.DB_FILE).create("Group Bloqueante", created_by=_user_id("rd_group_owner")))
     r = client.post("/api/auth/me/request-deletion")
     assert r.status_code == 409
     data = r.json()
@@ -244,6 +253,8 @@ def test_transfer_ownership_verifica_nuevo_owner(client):
 
 def test_transfer_ownership_nuevo_owner_no_miembro(client):
     group_id = _setup_transfer(client, "to3_owner", "to3_member")
+    _auth(TestClient(client.app), "to3_outsider")
+    _auth(client, "to3_owner")
     r = client.post(f"/api/groups/{group_id}/transfer-ownership", json={"username": "to3_outsider"})
     assert r.status_code == 400
 

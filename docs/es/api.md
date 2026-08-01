@@ -21,7 +21,7 @@ Todos los endpoints requieren autenticación mediante cookie HTTP-only (`ga_toke
 | `GET` | `/api/auth/me` | Requerida | Obtener el perfil del usuario autenticado (incluye `role`) |
 | `POST` | `/api/auth/change-password` | Requerida | Cambiar la contraseña del usuario actual |
 
-La autenticación usa **cookies HTTP-only** (`ga_token`). La respuesta de `/api/auth/me` incluye un campo `role` (`"admin"` o `"standard"`).
+El registro recibe `username`, `email` y `password`. El login recibe `identifier` (username o email) y `password`. El `username` es público e inmutable; el email es privado salvo que el usuario active `is_email_public`. La autenticación usa **cookies HTTP-only** (`ga_token`).
 
 ---
 
@@ -41,21 +41,21 @@ Todos los endpoints de admin requieren el rol `admin`.
 
 | Método | Endpoint | Descripción |
 |---|---|---|
-| `GET` | `/api/admin/agents` | Listar todos los agentes privados; cada item incluye `owner_id` y `owner_email` |
+| `GET` | `/api/admin/agents` | Listar todos los agentes privados; cada item incluye `owner_id` interno y `owner_username` público |
 | `DELETE` | `/api/admin/agents/{id}?scope=private` | Eliminar un agente privado |
 
 ### Conexiones
 
 | Método | Endpoint | Descripción |
 |---|---|---|
-| `GET` | `/api/admin/connections` | Listar todas las conexiones; cada item incluye `owner_email` y totales de tokens |
+| `GET` | `/api/admin/connections` | Listar todas las conexiones; cada item incluye `owner_username` y totales de tokens |
 | `DELETE` | `/api/admin/connections/{id}` | Eliminar una conexión (elimina también el historial de tokens asociado) |
 
 ### Conocimiento
 
 | Método | Endpoint | Descripción |
 |---|---|---|
-| `GET` | `/api/admin/knowledge` | Listar todos los elementos de conocimiento; cada item incluye `owner_email` y `char_count` |
+| `GET` | `/api/admin/knowledge` | Listar todos los elementos de conocimiento; cada item incluye `owner_username` y `char_count` |
 | `DELETE` | `/api/admin/knowledge/{id}` | Eliminar un elemento de conocimiento |
 
 ### Estadísticas

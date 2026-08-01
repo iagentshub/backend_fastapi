@@ -31,7 +31,7 @@ def test_list_users_no_password_hash(admin_client, reset_rate_limiter):
 
 
 def test_list_users_forbidden_for_standard(client, reset_rate_limiter):
-    client.post("/api/auth/register", json={"email": "stduser2@example.com", "password": "pass1234"})
+    client.post("/api/auth/register", json={"username": "stduser2", "email": "stduser2@example.com", "password": "pass1234"})
     r = client.get("/api/admin/users")
     assert r.status_code == 403
 
@@ -57,7 +57,7 @@ def test_delete_nonexistent_user(admin_client):
 def test_create_user_rejects_invalid_email(admin_client):
     response = admin_client.post(
         "/api/admin/users",
-        json={"email": "invalid", "password": "pass1234"},
+        json={"username": "invaliduser", "email": "invalid", "password": "pass1234"},
     )
 
     assert response.status_code == 400
@@ -71,13 +71,13 @@ def test_create_user_rejects_invalid_email(admin_client):
 def test_create_user_accepts_valid_email(admin_client):
     response = admin_client.post(
         "/api/admin/users",
-        json={"email": "created@example.com", "password": "pass1234"},
+        json={"username": "createduser", "email": "created@example.com", "password": "pass1234"},
     )
 
     assert response.status_code == 200
     assert response.json() == {
         "ok": True,
-        "username": "created@example.com",
+        "username": "createduser",
         "email": "created@example.com",
         "role": "standard",
     }
@@ -286,7 +286,7 @@ def test_check_update_github_api_failure_is_not_fatal(admin_client, monkeypatch)
 
 
 def test_check_update_forbidden_for_standard(client, reset_rate_limiter):
-    client.post("/api/auth/register", json={"email": "checkupdate@example.com", "password": "pass1234"})
+    client.post("/api/auth/register", json={"username": "checkupdate", "email": "checkupdate@example.com", "password": "pass1234"})
     r = client.get("/api/admin/check-update")
     assert r.status_code == 403
 
@@ -391,7 +391,7 @@ def test_auto_update_invalid_body(admin_client, monkeypatch):
 
 
 def test_auto_update_forbidden_for_standard(client, reset_rate_limiter):
-    client.post("/api/auth/register", json={"email": "autoupdate@example.com", "password": "pass1234"})
+    client.post("/api/auth/register", json={"username": "autoupdate", "email": "autoupdate@example.com", "password": "pass1234"})
     r = client.put("/api/admin/auto-update", json={"enabled": False})
     assert r.status_code == 403
 
@@ -421,7 +421,7 @@ def test_admin_cannot_self_delete(admin_client):
 def test_delete_user_forbidden_for_standard(client, reset_rate_limiter):
     _register("victim_user")
     # autenticarse como otro usuario estándar
-    client.post("/api/auth/register", json={"email": "attacker@example.com", "password": "pass1234"})
+    client.post("/api/auth/register", json={"username": "attacker", "email": "attacker@example.com", "password": "pass1234"})
     r = client.delete("/api/admin/users/victim_user")
     assert r.status_code == 403
 
@@ -445,12 +445,12 @@ def test_admin_list_agents(admin_client):
     assert any(a["name"] == "Admin Test Agent" for a in agents)
 
 
-def test_admin_list_agents_has_owner_email(admin_client):
+def test_admin_list_agents_has_owner_username(admin_client):
     admin_client.post("/api/agents", json=_AGENT_PAYLOAD)
     agents = admin_client.get("/api/admin/agents").json()
     private = [a for a in agents if a.get("scope") == "private"]
     assert private, "se esperaba al menos un agente privado"
-    assert private[0]["owner_email"] == "testadmin@example.com"
+    assert private[0]["owner_username"] == "testadmin"
 
 
 def test_admin_delete_agent(admin_client):
@@ -485,12 +485,15 @@ def test_admin_set_agent_owner(admin_client):
     created = admin_client.post("/api/agents", json=_AGENT_PAYLOAD).json()
     r = admin_client.put(
         f"/api/admin/resources/agent/{created['id']}/owner",
-        json={"owner_id": "new_owner_a1"},
+        json={"username": "new_owner_a1"},
     )
     assert r.status_code == 200
     agents = admin_client.get("/api/admin/agents").json()
     moved = next(a for a in agents if a["id"] == created["id"])
-    assert moved["owner_id"] == "new_owner_a1"
+    import asyncio
+
+    from app.auth.auth import get_user_by_username
+    assert moved["owner_id"] == asyncio.run(get_user_by_username("new_owner_a1"))["id"]
 
 
 def test_admin_set_owner_unknown_user_returns_404(admin_client):
@@ -525,7 +528,7 @@ def test_admin_set_owner_invalid_resource_type_returns_422(admin_client):
 
 
 def test_admin_agents_forbidden_for_standard(client, reset_rate_limiter):
-    client.post("/api/auth/register", json={"email": "std@example.com", "password": "pass1234"})
+    client.post("/api/auth/register", json={"username": "stduser", "email": "std@example.com", "password": "pass1234"})
     r = client.get("/api/admin/agents")
     assert r.status_code == 403
 
@@ -555,10 +558,10 @@ def test_admin_list_connections(admin_client):
     assert len(conns) >= 1
 
 
-def test_admin_list_connections_has_owner_email(admin_client):
+def test_admin_list_connections_has_owner_username(admin_client):
     _insert_connection()
     conns = admin_client.get("/api/admin/connections").json()
-    assert conns[0]["owner_email"] == "testadmin@example.com"
+    assert conns[0]["owner_username"] == "testadmin"
 
 
 def test_admin_delete_connection(admin_client):
@@ -576,7 +579,7 @@ def test_admin_delete_connection_not_found(admin_client):
 
 
 def test_admin_connections_forbidden_for_standard(client, reset_rate_limiter):
-    client.post("/api/auth/register", json={"email": "std2@example.com", "password": "pass1234"})
+    client.post("/api/auth/register", json={"username": "stduser2", "email": "std2@example.com", "password": "pass1234"})
     r = client.get("/api/admin/connections")
     assert r.status_code == 403
 
@@ -590,7 +593,7 @@ def test_admin_list_knowledge(admin_client):
 
 
 def test_admin_knowledge_forbidden_for_standard(client, reset_rate_limiter):
-    client.post("/api/auth/register", json={"email": "std3@example.com", "password": "pass1234"})
+    client.post("/api/auth/register", json={"username": "stduser3", "email": "std3@example.com", "password": "pass1234"})
     r = client.get("/api/admin/knowledge")
     assert r.status_code == 403
 

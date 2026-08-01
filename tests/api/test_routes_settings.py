@@ -312,7 +312,7 @@ def test_get_admin_settings_forbidden_non_admin(client, reset_rate_limiter):
     """Usuario estándar devuelve 403."""
     client.post(
         "/api/auth/register",
-        json={"email": "std_set@example.com", "password": "pass1234"},
+        json={"username": "stdsettings", "email": "std_set@example.com", "password": "pass1234"},
     )
     client.post(
         "/api/auth/login", json={"email": "std_set@example.com", "password": "pass1234"}
@@ -376,7 +376,7 @@ def test_put_admin_settings_forbidden_non_admin(client, reset_rate_limiter):
     """Usuario estándar no puede modificar ajustes admin."""
     client.post(
         "/api/auth/register",
-        json={"email": "std_set2@example.com", "password": "pass1234"},
+        json={"username": "stdsettings2", "email": "std_set2@example.com", "password": "pass1234"},
     )
     client.post(
         "/api/auth/login",
@@ -424,7 +424,7 @@ def test_get_platform_config_unauthenticated(client):
 
 
 def test_get_platform_config_forbidden_for_standard(client, reset_rate_limiter):
-    client.post("/api/auth/register", json={"email": "platformcfg@example.com", "password": "pass1234"})
+    client.post("/api/auth/register", json={"username": "platformcfg", "email": "platformcfg@example.com", "password": "pass1234"})
     r = client.get("/api/settings/platform")
     assert r.status_code == 403
 

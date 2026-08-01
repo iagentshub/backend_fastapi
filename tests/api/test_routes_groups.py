@@ -26,6 +26,15 @@ def _switch(client: TestClient, group_id: str, username: str) -> TestClient:
     return client
 
 
+def _user_id(username: str) -> str:
+    import asyncio
+
+    from app.auth.auth import get_user_by_username
+    user = asyncio.run(get_user_by_username(username))
+    assert user is not None
+    return str(user["id"])
+
+
 # ── Auth requerida ────────────────────────────────────────────────────────────
 
 def test_list_groups_requires_auth(client):
@@ -48,7 +57,7 @@ def test_list_includes_personal_group(client):
     assert len(data) >= 1
     personal = next((w for w in data if w["type"] == "personal"), None)
     assert personal is not None
-    assert personal["id"] == "group_list_personal"
+    assert personal["id"] == _user_id("group_list_personal")
     assert personal["name"] == "Personal"
     assert personal["role"] == "owner"
 
@@ -64,7 +73,7 @@ def test_personal_group_active_by_default(client):
 def test_personal_group_lists_only_its_owner(client):
     _auth(client, "group_personal_single_owner")
 
-    r = client.get("/api/groups/group_personal_single_owner/members")
+    r = client.get(f"/api/groups/{_user_id('group_personal_single_owner')}/members")
 
     assert r.status_code == 200
     assert r.json() == [
@@ -80,7 +89,7 @@ def test_personal_group_rejects_direct_members(client):
     _auth(client, "group_personal_direct_owner")
 
     r = client.post(
-        "/api/groups/group_personal_direct_owner/members",
+        f"/api/groups/{_user_id('group_personal_direct_owner')}/members",
         json={"username": "someone_else", "role": "member"},
     )
 
@@ -92,7 +101,7 @@ def test_personal_group_rejects_invitations(client):
     _auth(client, "group_personal_invite_owner")
 
     r = client.post(
-        "/api/groups/group_personal_invite_owner/invitations",
+        f"/api/groups/{_user_id('group_personal_invite_owner')}/invitations",
         json={"username": "someone_else"},
     )
 
@@ -145,7 +154,7 @@ def test_rename_group(client):
 
 def test_rename_personal_group_rejected(client):
     _auth(client, "group_rename_personal")
-    r = client.patch("/api/groups/group_rename_personal", json={"name": "Nuevo"})
+    r = client.patch(f"/api/groups/{_user_id('group_rename_personal')}", json={"name": "Nuevo"})
     assert r.status_code == 400
 
 
@@ -170,7 +179,7 @@ def test_delete_group(client):
 
 def test_delete_personal_group_rejected(client):
     _auth(client, "group_delete_personal")
-    r = client.delete("/api/groups/group_delete_personal")
+    r = client.delete(f"/api/groups/{_user_id('group_delete_personal')}")
     assert r.status_code == 400
 
 
@@ -216,7 +225,7 @@ def test_set_status_invalid_value_rejected(client):
 
 def test_set_status_personal_group_rejected(client):
     _auth(client, "group_status_personal")
-    r = client.post("/api/groups/group_status_personal/status", json={"status": "disabled"})
+    r = client.post(f"/api/groups/{_user_id('group_status_personal')}/status", json={"status": "disabled"})
     assert r.status_code == 400
 
 
@@ -248,11 +257,12 @@ def test_member_switches_to_disabled_group_falls_back_to_personal(client):
 
 def test_switch_to_personal_group(client):
     _auth(client, "group_switch_personal")
-    r = client.post("/api/groups/switch/group_switch_personal")
+    user_id = _user_id("group_switch_personal")
+    r = client.post(f"/api/groups/switch/{user_id}")
     assert r.status_code == 200
     data = r.json()
     assert data["ok"] is True
-    assert data["group_id"] == "group_switch_personal"
+    assert data["group_id"] == user_id
 
 
 def test_switch_to_team_group_as_member(client):
@@ -265,7 +275,7 @@ def test_switch_to_team_group_as_member(client):
 
 def test_switch_sets_cookie(client):
     _auth(client, "group_switch_cookie")
-    r = client.post("/api/groups/switch/group_switch_cookie")
+    r = client.post(f"/api/groups/switch/{_user_id('group_switch_cookie')}")
     assert "ga_token" in r.cookies or r.status_code == 200  # cookie updated
 
 
@@ -466,22 +476,22 @@ def test_update_and_list_granular_member_permissions(client):
     storage = GroupStorage(DB_FILE)
     assert asyncio.run(
         storage.has_resource_permission(
-            group["id"], "group_perm_member", "agents", "agent-private", "use"
+            group["id"], _user_id("group_perm_member"), "agents", "agent-private", "use"
         )
     ) is False
     assert asyncio.run(
         storage.has_resource_permission(
-            group["id"], "group_perm_member", "connections", "conn-ok", "direct"
+            group["id"], _user_id("group_perm_member"), "connections", "conn-ok", "direct"
         )
     ) is True
     assert asyncio.run(
         storage.has_resource_permission(
-            group["id"], "group_perm_member", "connections", "conn-ok", "via_agent"
+            group["id"], _user_id("group_perm_member"), "connections", "conn-ok", "via_agent"
         )
     ) is False
     assert asyncio.run(
         storage.has_resource_permission(
-            group["id"], "group_perm_member", "connections", "conn-other", "direct"
+            group["id"], _user_id("group_perm_member"), "connections", "conn-other", "direct"
         )
     ) is False
 
@@ -504,7 +514,7 @@ def test_existing_member_permissions_default_to_allow(client):
 
     assert asyncio.run(
         storage.has_resource_permission(
-            group["id"], "group_default_perm_member", "agents", "any-agent", "use"
+            group["id"], _user_id("group_default_perm_member"), "agents", "any-agent", "use"
         )
     ) is True
 

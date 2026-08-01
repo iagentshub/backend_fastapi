@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS skills (
 CREATE INDEX IF NOT EXISTS idx_skills_owner ON skills(owner_id, scope, updated_at DESC);
 CREATE TABLE IF NOT EXISTS memory_files (
     id          TEXT NOT NULL,
-    owner_id    TEXT NOT NULL DEFAULT 'admin',
+    owner_id    TEXT NOT NULL,
     content     TEXT NOT NULL DEFAULT '',
     updated_at  TEXT NOT NULL,
     PRIMARY KEY (id, owner_id)
@@ -43,7 +43,7 @@ CREATE TABLE IF NOT EXISTS memory_files (
 CREATE INDEX IF NOT EXISTS idx_memory_owner ON memory_files(owner_id, updated_at DESC);
 CREATE TABLE IF NOT EXISTS connections (
     id          TEXT PRIMARY KEY,
-    owner_id    TEXT NOT NULL DEFAULT 'admin',
+    owner_id    TEXT NOT NULL,
     name        TEXT NOT NULL DEFAULT '',
     data        TEXT NOT NULL,
     tokens_in   INTEGER NOT NULL DEFAULT 0,
@@ -54,7 +54,7 @@ CREATE TABLE IF NOT EXISTS connections (
     updated_at  TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS accounts (
-    owner_id    TEXT NOT NULL DEFAULT 'admin',
+    owner_id    TEXT NOT NULL,
     provider    TEXT NOT NULL,
     data        TEXT NOT NULL,
     linked_at   TEXT NOT NULL,
@@ -81,7 +81,7 @@ CREATE INDEX IF NOT EXISTS idx_msg_conv
     ON messages(conversation_id, created_at ASC);
 CREATE TABLE IF NOT EXISTS knowledge_items (
     id         TEXT PRIMARY KEY,
-    owner_id   TEXT NOT NULL DEFAULT 'admin',
+    owner_id   TEXT NOT NULL,
     type       TEXT NOT NULL,
     title      TEXT NOT NULL,
     source     TEXT NOT NULL,
@@ -95,7 +95,8 @@ CREATE TABLE IF NOT EXISTS knowledge_items (
 CREATE INDEX IF NOT EXISTS idx_knowledge_owner
     ON knowledge_items(owner_id, type, created_at DESC);
 CREATE TABLE IF NOT EXISTS users (
-    username              TEXT PRIMARY KEY,
+    id                    TEXT PRIMARY KEY,
+    username              TEXT UNIQUE NOT NULL,
     email                 TEXT UNIQUE NOT NULL,
     password_hash         TEXT,
     display_name          TEXT,
@@ -115,6 +116,12 @@ CREATE TABLE IF NOT EXISTS users (
     deletion_requested_at TEXT,
     deletion_token        TEXT,
     stripe_customer_id    TEXT,
+    avatar                TEXT,
+    bio                   TEXT,
+    languages             TEXT NOT NULL DEFAULT '[]',
+    is_email_public       INTEGER NOT NULL DEFAULT 0,
+    github                TEXT,
+    cv                    TEXT,
     created_at            TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_users_email    ON users (email);
@@ -305,7 +312,7 @@ CREATE TABLE IF NOT EXISTS skills (
 CREATE INDEX IF NOT EXISTS idx_skills_owner ON skills(owner_id, scope, updated_at DESC);
 CREATE TABLE IF NOT EXISTS memory_files (
     id          TEXT NOT NULL,
-    owner_id    TEXT NOT NULL DEFAULT 'admin',
+    owner_id    TEXT NOT NULL,
     content     TEXT NOT NULL DEFAULT '',
     updated_at  TEXT NOT NULL,
     PRIMARY KEY (id, owner_id)
@@ -313,7 +320,7 @@ CREATE TABLE IF NOT EXISTS memory_files (
 CREATE INDEX IF NOT EXISTS idx_memory_owner ON memory_files(owner_id, updated_at DESC);
 CREATE TABLE IF NOT EXISTS connections (
     id          TEXT PRIMARY KEY,
-    owner_id    TEXT NOT NULL DEFAULT 'admin',
+    owner_id    TEXT NOT NULL,
     name        TEXT NOT NULL DEFAULT '',
     data        TEXT NOT NULL,
     tokens_in   INTEGER NOT NULL DEFAULT 0,
@@ -324,7 +331,7 @@ CREATE TABLE IF NOT EXISTS connections (
     updated_at  TEXT NOT NULL
 );
 CREATE TABLE IF NOT EXISTS accounts (
-    owner_id    TEXT NOT NULL DEFAULT 'admin',
+    owner_id    TEXT NOT NULL,
     provider    TEXT NOT NULL,
     data        TEXT NOT NULL,
     linked_at   TEXT NOT NULL,
@@ -351,7 +358,7 @@ CREATE INDEX IF NOT EXISTS idx_msg_conv
     ON messages(conversation_id, created_at ASC);
 CREATE TABLE IF NOT EXISTS knowledge_items (
     id         TEXT PRIMARY KEY,
-    owner_id   TEXT NOT NULL DEFAULT 'admin',
+    owner_id   TEXT NOT NULL,
     type       TEXT NOT NULL,
     title      TEXT NOT NULL,
     source     TEXT NOT NULL,
@@ -365,7 +372,8 @@ CREATE TABLE IF NOT EXISTS knowledge_items (
 CREATE INDEX IF NOT EXISTS idx_knowledge_owner
     ON knowledge_items(owner_id, type, created_at DESC);
 CREATE TABLE IF NOT EXISTS users (
-    username           TEXT PRIMARY KEY,
+    id                 TEXT PRIMARY KEY,
+    username           TEXT UNIQUE NOT NULL,
     email              TEXT UNIQUE NOT NULL,
     password_hash      TEXT,
     display_name       TEXT,
@@ -385,6 +393,12 @@ CREATE TABLE IF NOT EXISTS users (
     deletion_requested_at TEXT,
     deletion_token        TEXT,
     stripe_customer_id    TEXT,
+    avatar                TEXT,
+    bio                   TEXT,
+    languages             TEXT NOT NULL DEFAULT '[]',
+    is_email_public       SMALLINT NOT NULL DEFAULT 0,
+    github                TEXT,
+    cv                    TEXT,
     created_at            TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_users_email    ON users (email);

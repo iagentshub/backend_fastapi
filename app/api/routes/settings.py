@@ -53,25 +53,25 @@ VALID_THEMES = {
 VALID_LANGUAGES = {"es", "en"}
 
 
-async def _get_prefs(username: str) -> dict:
+async def _get_prefs(user_id: str) -> dict:
     async with open_db() as conn:
         row = await conn.fetchone(
-            "SELECT preferences FROM users WHERE username = ?", (username,)
+            "SELECT preferences FROM users WHERE id = ?", (user_id,)
         )
     if not row or not row["preferences"]:
         return {}
     try:
         return json.loads(row["preferences"])
     except Exception as exc:
-        flog.warning(f"[settings] Preferencias corruptas para {username}: {exc}")
+        flog.warning(f"[settings] Preferencias corruptas para {user_id}: {exc}")
         return {}
 
 
-async def _save_prefs(username: str, prefs: dict) -> None:
+async def _save_prefs(user_id: str, prefs: dict) -> None:
     async with open_db() as conn:
         await conn.execute(
-            "UPDATE users SET preferences = ? WHERE username = ?",
-            (json.dumps(prefs), username),
+            "UPDATE users SET preferences = ? WHERE id = ?",
+            (json.dumps(prefs), user_id),
         )
         await conn.commit()
 

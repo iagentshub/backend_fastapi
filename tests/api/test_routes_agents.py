@@ -79,6 +79,11 @@ def test_agents_requires_auth(client):
 
 
 def test_create_agent_stores_owner_id(admin_client):
+    import asyncio
+
+    from app.auth.auth import get_user_by_username
+
     r = admin_client.post("/api/agents", json=_AGENT_PAYLOAD)
     assert r.status_code == 200
-    assert r.json()["owner_id"] == "testadmin"
+    user = asyncio.run(get_user_by_username("testadmin"))
+    assert r.json()["owner_id"] == user["id"]

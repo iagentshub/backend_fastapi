@@ -218,7 +218,7 @@ def test_ensure_admin_user_uses_valid_default_email(patch_data_dir, monkeypatch)
 
     user = asyncio.run(get_user_by_email("admin@localhost.com"))
     assert user is not None
-    assert user["username"] == "admin@localhost.com"
+    assert user["username"] == "admin"
     assert user["role"] == "admin"
 
 
@@ -226,9 +226,9 @@ def test_ensure_admin_user_creates_when_none_exists(patch_data_dir):
     from unittest.mock import patch
 
     from app.auth.auth import ensure_admin_user, get_user_by_username
-    with patch.dict("os.environ", {"GAIA_ADMIN_EMAIL": "newadmin@test.com", "GAIA_ADMIN_RESET": ""}):
+    with patch.dict("os.environ", {"GAIA_ADMIN_USERNAME": "newadmin", "GAIA_ADMIN_EMAIL": "newadmin@test.com", "GAIA_ADMIN_RESET": ""}):
         asyncio.run(ensure_admin_user())
-    user = asyncio.run(get_user_by_username("newadmin@test.com"))
+    user = asyncio.run(get_user_by_username("newadmin"))
     # El admin puede ser creado o un admin pre-existente puede existir
     assert user is None or user["role"] == "admin"
 
@@ -237,10 +237,10 @@ def test_ensure_admin_user_promotes_existing(patch_data_dir):
     from unittest.mock import patch
 
     from app.auth.auth import ensure_admin_user, get_user_by_username, register_user
-    asyncio.run(register_user("promote@test.com", "pass", email="promote@test.com"))
-    with patch.dict("os.environ", {"GAIA_ADMIN_EMAIL": "promote@test.com", "GAIA_ADMIN_RESET": ""}):
+    asyncio.run(register_user("promoteuser", "pass", email="promote@test.com"))
+    with patch.dict("os.environ", {"GAIA_ADMIN_USERNAME": "promoteuser", "GAIA_ADMIN_EMAIL": "promote@test.com", "GAIA_ADMIN_RESET": ""}):
         asyncio.run(ensure_admin_user())
-    user = asyncio.run(get_user_by_username("promote@test.com"))
+    user = asyncio.run(get_user_by_username("promoteuser"))
     assert user["role"] == "admin"
 
 

@@ -26,6 +26,22 @@ from app.storage.workflows import WorkflowStorage
 
 router = APIRouter(tags=["explore"])
 
+
+async def _add_owner_usernames(rows: List[Dict[str, Any]]) -> None:
+    """Attach the public username while keeping the internal owner id intact."""
+    owner_ids = {str(row.get("owner") or "") for row in rows} - {"", "__public__"}
+    if not owner_ids:
+        return
+    placeholders = ",".join("?" for _ in owner_ids)
+    async with open_db() as conn:
+        users = await conn.fetchall(
+            f"SELECT id, username FROM users WHERE id IN ({placeholders})",
+            tuple(owner_ids),
+        )
+    usernames = {row["id"]: row["username"] for row in users}
+    for row in rows:
+        row["owner_username"] = usernames.get(str(row.get("owner") or ""))
+
 @router.get("/api/explore")
 async def explore(
     type: Optional[str] = None,
@@ -83,6 +99,7 @@ async def explore(
         except (ValueError, TypeError):
             row["labels"] = ["private"]
         rows.append(row)
+    await _add_owner_usernames(rows)
     return rows
 
 
@@ -116,6 +133,7 @@ async def explore_preview(
         base["labels"] = ["private"]
     base["resource_type"] = resource_type
     base["resource_id"] = resource_id
+    await _add_owner_usernames([base])
 
     if resource_type == "agent":
         agents = AgentStorage(_cfg.AGENTS_DIR)
@@ -233,6 +251,8 @@ async def my_resources(
             row["labels"] = ["private"]
         rows.append(row)
 
+    await _add_owner_usernames(rows)
+
     # Annotate linked rows with linked_broken flag
     linked_ids = [r["linked_to_id"] for r in rows if r.get("linked_to_id")]
     if linked_ids:
@@ -262,8 +282,13 @@ async def user_resources(
 ) -> List[Dict[str, Any]]:
 
     async with open_db() as conn:
+        target_id = await conn.fetchval(
+            "SELECT id FROM users WHERE username = ?", (target_username,)
+        )
+        if not target_id:
+            raise APIError(404, "not_found", "Usuario no encontrado", extra={"resource": "user"})
         conditions: List[str] = ["is_public = ?", "owner = ?"]
-        params: List[Any] = [_PUBLIC_VAL, target_username]
+        params: List[Any] = [_PUBLIC_VAL, target_id]
         if type and type != "all":
             conditions.append("resource_type = ?")
             params.append(type)
@@ -288,6 +313,7 @@ async def user_resources(
         except (ValueError, TypeError):
             row["labels"] = ["private"]
         rows.append(row)
+    await _add_owner_usernames(rows)
     return rows
 
 
@@ -297,23 +323,23 @@ async def follow_user(
     username: str = Depends(require_auth),
     _rl: None = Depends(_social_limiter),
 ) -> Dict[str, Any]:
-    if target == username:
-        raise APIError(400, "cannot_follow_self", "No puedes seguirte a ti mismo")
-
     async with open_db() as conn:
-        row = await conn.fetchone("SELECT 1 FROM users WHERE username = ?", (target,))
+        row = await conn.fetchone("SELECT id FROM users WHERE username = ?", (target,))
         if not row:
             raise APIError(404, "not_found", "Usuario no encontrado", extra={"resource": "user"})
+        target_id = row["id"]
+        if target_id == username:
+            raise APIError(400, "cannot_follow_self", "No puedes seguirte a ti mismo")
         if IS_PG:
             await conn.execute(
                 "INSERT INTO user_follows (follower, following) VALUES (?, ?) "
                 "ON CONFLICT DO NOTHING",
-                (username, target),
+                (username, target_id),
             )
         else:
             await conn.execute(
                 "INSERT OR IGNORE INTO user_follows (follower, following) VALUES (?, ?)",
-                (username, target),
+                (username, target_id),
             )
         await conn.commit()
     return {"ok": True}
@@ -327,9 +353,12 @@ async def unfollow_user(
 ) -> Dict[str, Any]:
 
     async with open_db() as conn:
+        target_id = await conn.fetchval("SELECT id FROM users WHERE username = ?", (target,))
+        if not target_id:
+            raise APIError(404, "not_found", "Usuario no encontrado", extra={"resource": "user"})
         await conn.execute(
             "DELETE FROM user_follows WHERE follower = ? AND following = ?",
-            (username, target),
+            (username, target_id),
         )
         await conn.commit()
     return {"ok": True}
@@ -342,17 +371,20 @@ async def follow_status(
 ) -> Dict[str, Any]:
 
     async with open_db() as conn:
+        target_id = await conn.fetchval("SELECT id FROM users WHERE username = ?", (target,))
+        if not target_id:
+            raise APIError(404, "not_found", "Usuario no encontrado", extra={"resource": "user"})
         is_following_row = await conn.fetchone(
             "SELECT 1 FROM user_follows WHERE follower = ? AND following = ?",
-            (username, target),
+            (username, target_id),
         )
         followers_count = await conn.fetchval(
             "SELECT COUNT(*) FROM user_follows WHERE following = ?",
-            (target,),
+            (target_id,),
         )
         following_count = await conn.fetchval(
             "SELECT COUNT(*) FROM user_follows WHERE follower = ?",
-            (target,),
+            (target_id,),
         )
 
     return {
@@ -404,4 +436,5 @@ async def get_feed(
         except (ValueError, TypeError):
             row["labels"] = ["private"]
         rows.append(row)
+    await _add_owner_usernames(rows)
     return rows

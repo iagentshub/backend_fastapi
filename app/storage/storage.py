@@ -955,7 +955,7 @@ class SkillStorage(ResourceStorage):
 
 
 # ─── MemoryStorage ────────────────────────────────────────────────────────────
-# DB-backed. Memoria por usuario: owner_id=username.
+# DB-backed. La propiedad interna se guarda con users.id.
 
 
 def _safe_mem_id(filename: str) -> str:

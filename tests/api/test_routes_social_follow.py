@@ -21,17 +21,20 @@ def _register(username, password="pass1234"):
 def _insert_resource_social(owner, resource_id, is_public=True):
     import asyncio
 
+    from app.auth.auth import get_user_by_username
     from app.storage.db import open_db
     pub_val = 1 if is_public else 0
 
     async def _do() -> None:
+        user = await get_user_by_username(owner)
+        assert user is not None
         async with open_db() as conn:
             await conn.execute(
                 "INSERT OR IGNORE INTO resource_social "
                 "(resource_type, resource_id, owner, name, description, is_public, category, "
                 "trial_missing_deps, updated_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))",
-                ("agent", resource_id, owner, f"Agent of {owner}", "desc", pub_val, "Coding", "warn"),
+                ("agent", resource_id, user["id"], f"Agent of {owner}", "desc", pub_val, "Coding", "warn"),
             )
             await conn.commit()
 
@@ -109,7 +112,8 @@ def test_feed_muestra_recursos_publicos_del_usuario_seguido(client):
     items = r.json()
     assert any(x["resource_id"] == "flw-test-agent-001" for x in items)
     found = next(x for x in items if x["resource_id"] == "flw-test-agent-001")
-    assert found["owner"] == "flw_feedfollowed"
+    assert found["owner"] != "flw_feedfollowed"
+    assert found["owner_username"] == "flw_feedfollowed"
     assert "updated_at" in found
 
 

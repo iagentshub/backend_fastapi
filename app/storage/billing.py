@@ -182,20 +182,20 @@ class BillingStorage:
 
         async with open_db() as conn:
             assignment_rows = await conn.fetchall(
-                "SELECT la.username, la.assigned_by, la.assigned_at, la.status, "
+                "SELECT la.username AS user_id, u.username, la.assigned_by, la.assigned_at, la.status, "
                 "u.email, u.role, u.is_active "
                 "FROM subscription_license_assignments la "
-                "LEFT JOIN users u ON u.username = la.username "
+                "LEFT JOIN users u ON u.id = la.username "
                 "WHERE la.subscription_id = ? "
                 "ORDER BY la.status ASC, la.assigned_at ASC",
                 (subscription_id,),
             )
             user_rows = await conn.fetchall(
-                "SELECT username, email, role, is_active FROM users ORDER BY email ASC"
+                "SELECT id, username, email, role, is_active FROM users ORDER BY username ASC"
             )
 
         active = {
-            row["username"]: dict(row)
+            row["user_id"]: dict(row)
             for row in assignment_rows
             if row["status"] == "active"
         }
@@ -203,7 +203,7 @@ class BillingStorage:
         seats = int(subscription["seats"] or 0)
         return {
             "subscription_id": subscription_id,
-            "owner": owner_username,
+            "owner": next((r["username"] for r in user_rows if r["id"] == owner_username), owner_username),
             "tier": subscription["tier"],
             "seats": seats,
             "used": used,
@@ -217,7 +217,7 @@ class BillingStorage:
                     "email": r["email"],
                     "role": r["role"],
                     "is_active": bool(r["is_active"]),
-                    "licensed": r["username"] in active,
+                    "licensed": r["id"] in active,
                 }
                 for r in user_rows
             ],
@@ -238,7 +238,7 @@ class BillingStorage:
         now = _now()
         async with open_db() as conn:
             if not await conn.fetchone(
-                "SELECT 1 FROM users WHERE username = ?", (target_username,)
+                "SELECT 1 FROM users WHERE id = ?", (target_username,)
             ):
                 raise ValueError("user_not_found")
 

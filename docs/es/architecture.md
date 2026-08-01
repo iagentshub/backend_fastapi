@@ -43,7 +43,7 @@ El helper `PH` en `app/storage/db.py` abstrae el dialecto SQL (`?` en SQLite, `%
 
 Existen dos formas de acceder a la plataforma:
 
-**Email y contraseña** — el método de acceso para usuarios registrados. Las cuentas se crean mediante el flujo de registro.
+**Username o email y contraseña** — el username público y el email privado identifican la misma cuenta. Las relaciones y los recursos personales usan el `users.id` interno, nunca el username; los recursos del espacio de un grupo usan su `group_id`.
 
 **Acceso de invitado** — permite usar la plataforma sin necesidad de cuenta. El acceso de invitado tiene permisos limitados.
 

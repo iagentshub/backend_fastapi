@@ -390,9 +390,12 @@ def test_user_resources_con_filtro_tipo(client):
 def _insert_feed_resource(
     owner: str, resource_id: str, resource_type: str = "agent"
 ) -> None:
+    from app.auth.auth import get_user_by_username
     from app.storage.db import open_db
 
     async def _do() -> None:
+        user = await get_user_by_username(owner)
+        assert user is not None
         async with open_db() as conn:
             await conn.execute(
                 "INSERT OR IGNORE INTO resource_social "
@@ -402,7 +405,7 @@ def _insert_feed_resource(
                 (
                     resource_type,
                     resource_id,
-                    owner,
+                    user["id"],
                     f"Feed {resource_type} {resource_id[:6]}",
                 ),
             )
@@ -602,4 +605,3 @@ def test_sync_linked_skill_sin_enlace(client):
 
     r2 = client.post(f"/api/skills/private/{skill_id}/sync")
     assert r2.status_code == 400
-

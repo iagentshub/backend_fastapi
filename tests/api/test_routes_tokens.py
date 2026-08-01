@@ -25,6 +25,13 @@ def _register(client: TestClient, username: str) -> TestClient:
     return client
 
 
+def _user_id(username: str) -> str:
+    from app.auth.auth import get_user_by_username
+    user = asyncio.run(get_user_by_username(username))
+    assert user is not None
+    return str(user["id"])
+
+
 def _make_token(client: TestClient, name: str = "vscode", **body) -> str:
     r = client.post("/api/auth/tokens", json={"name": name, **body})
     assert r.status_code == 200, r.text
@@ -85,12 +92,13 @@ def test_el_secreto_no_se_persiste_en_bd(client):
 
     from app.storage.db import open_db
     from app.storage.tokens import hash_token
+    user_id = _user_id("pat_nostore")
 
     async def _fetch():
         async with open_db() as conn:
             return await conn.fetchone(
                 "SELECT * FROM personal_access_tokens WHERE username = ?",
-                ("pat_nostore",),
+                (user_id,),
             )
 
     row = dict(asyncio.run(_fetch()))
@@ -213,13 +221,14 @@ def test_token_caducado_es_401(client):
     from app.storage.db import open_db
 
     ayer = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+    user_id = _user_id("pat_exp")
 
     async def _expire():
         async with open_db() as conn:
             async with conn.transaction():
                 await conn.execute(
                     "UPDATE personal_access_tokens SET expires_at = ? WHERE username = ?",
-                    (ayer, "pat_exp"),
+                    (ayer, user_id),
                 )
 
     asyncio.run(_expire())
@@ -309,7 +318,7 @@ def test_group_ajeno_cae_al_personal(client):
         )
 
     ctx = asyncio.run(_ctx())
-    assert ctx.group_id == "pat_intruso"  # el suyo, no el ajeno
+    assert ctx.group_id == _user_id("pat_intruso")  # el suyo, no el ajeno
 
 
 def test_group_inexistente_cae_al_personal(client):
@@ -326,7 +335,7 @@ def test_group_inexistente_cae_al_personal(client):
         )
 
     ctx = asyncio.run(_ctx())
-    assert ctx.group_id == "pat_groupghost"
+    assert ctx.group_id == _user_id("pat_groupghost")
 
 
 def test_group_propio_se_respeta(client):
@@ -359,7 +368,7 @@ def test_sin_cabecera_usa_el_group_personal(client):
         )
 
     ctx = asyncio.run(_ctx())
-    assert ctx.group_id == "pat_groupdefault"
+    assert ctx.group_id == _user_id("pat_groupdefault")
 
 
 def test_invitado_no_puede_crear_tokens(client):
@@ -444,13 +453,14 @@ def test_vscode_codigo_caducado(client):
     from app.storage.db import open_db
 
     ayer = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat()
+    user_id = _user_id("vsc_exp")
 
     async def _expire():
         async with open_db() as conn:
             async with conn.transaction():
                 await conn.execute(
                     "UPDATE vscode_auth_codes SET expires_at = ? WHERE username = ?",
-                    (ayer, "vsc_exp"),
+                    (ayer, user_id),
                 )
 
     asyncio.run(_expire())

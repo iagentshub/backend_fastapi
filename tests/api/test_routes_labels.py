@@ -11,7 +11,10 @@ def _login(client, username="labelsuser", password="pass1234"):
     from app.auth.auth import create_token, register_user
     asyncio.run(register_user(username, password, email=f"{username}@example.com"))
     client.cookies.set("ga_token", create_token(username))
-    return username
+    from app.auth.auth import get_user_by_username
+    user = asyncio.run(get_user_by_username(username))
+    assert user is not None
+    return user["id"]
 
 
 def _create_agent(client, name="Label Agent", labels=None):

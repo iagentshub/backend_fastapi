@@ -40,8 +40,8 @@ def test_delete_sharing_requires_auth(client):
 # ── Validación de tipo de recurso ─────────────────────────────────────────────
 
 def test_invalid_resource_type_returns_422(client):
-    _register("sh_a")
-    _set_cookie(client, "sh_a")
+    _register("sh_badtype")
+    _set_cookie(client, "sh_badtype")
     # El tipo se valida antes de leer el body; no hace falta pasar group_id
     r = client.post("/api/sharing/badtype/resource-id")
     assert r.status_code == 422

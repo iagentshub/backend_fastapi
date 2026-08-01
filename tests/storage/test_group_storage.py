@@ -60,7 +60,11 @@ async def test_delete_removes_members(group: GroupStorage):
 # ── Miembros ──────────────────────────────────────────────────────────────────
 
 async def test_creator_is_automatically_owner(group: GroupStorage):
-    created = await group.create("Grupo", created_by="alice")
+    from app.auth.auth import get_user_by_username, register_user
+    await register_user("alice", "pass1234", email="alice@group.test")
+    user = await get_user_by_username("alice")
+    assert user is not None
+    created = await group.create("Grupo", created_by=user["id"])
     members = await group.list_members(created["id"])
     assert len(members) == 1
     assert members[0]["username"] == "alice"
@@ -68,12 +72,18 @@ async def test_creator_is_automatically_owner(group: GroupStorage):
 
 
 async def test_add_member(group: GroupStorage):
-    created = await group.create("Grupo", created_by="alice")
-    ok = await group.add_member(created["id"], "bob", "member")
+    from app.auth.auth import get_user_by_username, register_user
+    await register_user("alice", "pass1234", email="alice@group.test")
+    await register_user("bobby", "pass1234", email="bobby@group.test")
+    owner = await get_user_by_username("alice")
+    member = await get_user_by_username("bobby")
+    assert owner is not None and member is not None
+    created = await group.create("Grupo", created_by=owner["id"])
+    ok = await group.add_member(created["id"], member["id"], "member")
     assert ok is True
     members = await group.list_members(created["id"])
     usernames = {m["username"] for m in members}
-    assert "bob" in usernames
+    assert "bobby" in usernames
 
 
 async def test_add_member_invalid_role(group: GroupStorage):

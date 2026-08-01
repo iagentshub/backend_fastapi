@@ -87,7 +87,7 @@ def test_list_logs_unauthenticated(client):
 
 def test_list_logs_forbidden_non_admin(client, reset_rate_limiter):
     client.post(
-        "/api/auth/register", json={"email": "std@example.com", "password": "pass1234"}
+        "/api/auth/register", json={"username": "stduser", "email": "std@example.com", "password": "pass1234"}
     )
     client.post(
         "/api/auth/login", json={"email": "std@example.com", "password": "pass1234"}
@@ -388,7 +388,7 @@ def test_summary_multiple_days_sorted_desc(admin_client, log_db):
 def test_summary_forbidden(client, reset_rate_limiter):
     client.post(
         "/api/auth/register",
-        json={"email": "stdsum@example.com", "password": "pass1234"},
+        json={"username": "stdsummary", "email": "stdsum@example.com", "password": "pass1234"},
     )
     client.post(
         "/api/auth/login", json={"email": "stdsum@example.com", "password": "pass1234"}
@@ -479,7 +479,7 @@ def test_client_log_unauthenticated(client):
 def test_client_log_forbidden(client, reset_rate_limiter):
     client.post(
         "/api/auth/register",
-        json={"email": "stdcl@example.com", "password": "pass1234"},
+        json={"username": "stdclient", "email": "stdcl@example.com", "password": "pass1234"},
     )
     client.post(
         "/api/auth/login", json={"email": "stdcl@example.com", "password": "pass1234"}

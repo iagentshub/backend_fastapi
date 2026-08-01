@@ -73,7 +73,8 @@ def test_agente_publico_aparece_en_explore(client):
 
     found = next(x for x in r.json() if x["resource_id"] == agent_id)
     assert found["resource_type"] == "agent"
-    assert found["owner"] == user
+    assert found["owner"] != user
+    assert found["owner_username"] == user
     assert found["category"] == "Coding"
 
 
@@ -256,9 +257,12 @@ def _create_connection_raw(username: str, conn_id: str = "test-conn-try-001") ->
     import asyncio
     import json
 
+    from app.auth.auth import get_user_by_username
     from app.storage.db import open_db
 
     async def _do() -> None:
+        user = await get_user_by_username(username)
+        assert user is not None
         data = json.dumps(
             {
                 "id": conn_id,
@@ -272,7 +276,7 @@ def _create_connection_raw(username: str, conn_id: str = "test-conn-try-001") ->
                 "INSERT OR REPLACE INTO connections "
                 "(id, owner_id, data, tokens_in, tokens_out, created_at, updated_at) "
                 "VALUES (?, ?, ?, 0, 0, datetime('now'), datetime('now'))",
-                (conn_id, username, data),
+                (conn_id, user["id"], data),
             )
             await conn.commit()
 

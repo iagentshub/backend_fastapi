@@ -21,7 +21,7 @@ All endpoints require authentication via HTTP-only cookie (`ga_token`) unless ma
 | `GET` | `/api/auth/me` | Required | Get the authenticated user's profile (includes `role`) |
 | `POST` | `/api/auth/change-password` | Required | Change the current user's password |
 
-Authentication uses **HTTP-only cookies** (`ga_token`). The `/api/auth/me` response includes a `role` field (`"admin"` or `"standard"`).
+Registration accepts `username`, `email`, and `password`. Login accepts `identifier` (username or email) and `password`. The username is public and immutable; email stays private unless the user enables `is_email_public`. Authentication uses **HTTP-only cookies** (`ga_token`).
 
 ---
 
@@ -41,21 +41,21 @@ All admin endpoints require the `admin` role.
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/admin/agents` | List all private agents; each item includes `owner_id` and `owner_email` |
+| `GET` | `/api/admin/agents` | List all private agents; each item includes internal `owner_id` and public `owner_username` |
 | `DELETE` | `/api/admin/agents/{id}?scope=private` | Delete a private agent |
 
 ### Connections
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/admin/connections` | List all connections; each item includes `owner_email` and token totals |
+| `GET` | `/api/admin/connections` | List all connections; each item includes `owner_username` and token totals |
 | `DELETE` | `/api/admin/connections/{id}` | Delete a connection (removes associated token history) |
 
 ### Knowledge
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/admin/knowledge` | List all knowledge items; each item includes `owner_email` and `char_count` |
+| `GET` | `/api/admin/knowledge` | List all knowledge items; each item includes `owner_username` and `char_count` |
 | `DELETE` | `/api/admin/knowledge/{id}` | Delete a knowledge item |
 
 ### Stats

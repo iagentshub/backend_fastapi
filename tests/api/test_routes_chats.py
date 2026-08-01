@@ -17,21 +17,21 @@ def _auth_client(client, username: str):
 
 
 def _make_user(username: str, email: str) -> None:
-    asyncio.run(register_user_email(email, "password123"))
+    asyncio.run(register_user_email(username, email, "password123"))
 
 
 # ── Fixtures ───────────────────────────────────────────────────────────────────
 
 @pytest.fixture()
 def alice(client, patch_data_dir):
-    _make_user("alice@test.com", "alice@test.com")
-    return _auth_client(client, "alice@test.com")
+    _make_user("alice", "alice@test.com")
+    return _auth_client(client, "alice")
 
 
 @pytest.fixture()
 def bob(client, patch_data_dir):
-    _make_user("bob@test.com", "bob@test.com")
-    return _auth_client(client, "bob@test.com")
+    _make_user("bobby", "bob@test.com")
+    return _auth_client(client, "bobby")
 
 
 # ── Lista de conversaciones ────────────────────────────────────────────────────
@@ -135,13 +135,13 @@ def test_isolation_alice_cannot_see_bob_conversations(patch_data_dir):
 
     app = create_app()
     with TestClient(app) as c:
-        _make_user("iso_alice@test.com", "iso_alice@test.com")
-        _make_user("iso_bob@test.com", "iso_bob@test.com")
-        bob_c = _auth_client(c, "iso_bob@test.com")
+        _make_user("iso_alice", "iso_alice@test.com")
+        _make_user("iso_bob", "iso_bob@test.com")
+        bob_c = _auth_client(c, "iso_bob")
         bob_c.post("/api/chats/agent-shared", json={"title": "Chat de Bob"})
 
     with TestClient(app) as c2:
-        alice_c = _auth_client(c2, "iso_alice@test.com")
+        alice_c = _auth_client(c2, "iso_alice")
         r = alice_c.get("/api/chats/agent-shared")
         assert r.status_code == 200
         assert r.json() == []
@@ -156,13 +156,13 @@ def test_isolation_alice_cannot_delete_bob_conversation(patch_data_dir):
     app = create_app()
     conv_id = None
     with TestClient(app) as c:
-        _make_user("del_alice@test.com", "del_alice@test.com")
-        _make_user("del_bob@test.com", "del_bob@test.com")
-        bob_c = _auth_client(c, "del_bob@test.com")
+        _make_user("del_alice", "del_alice@test.com")
+        _make_user("del_bob", "del_bob@test.com")
+        bob_c = _auth_client(c, "del_bob")
         conv_id = bob_c.post("/api/chats/agent-shared", json={"title": "Chat de Bob"}).json()["id"]
 
     with TestClient(app) as c2:
-        alice_c = _auth_client(c2, "del_alice@test.com")
+        alice_c = _auth_client(c2, "del_alice")
         r = alice_c.delete(f"/api/chats/agent-shared/{conv_id}")
         assert r.status_code == 404
 
@@ -176,12 +176,12 @@ def test_isolation_alice_cannot_read_bob_messages(patch_data_dir):
     app = create_app()
     conv_id = None
     with TestClient(app) as c:
-        _make_user("msg_alice@test.com", "msg_alice@test.com")
-        _make_user("msg_bob@test.com", "msg_bob@test.com")
-        bob_c = _auth_client(c, "msg_bob@test.com")
+        _make_user("msg_alice", "msg_alice@test.com")
+        _make_user("msg_bob", "msg_bob@test.com")
+        bob_c = _auth_client(c, "msg_bob")
         conv_id = bob_c.post("/api/chats/agent-shared", json={"title": "Chat de Bob"}).json()["id"]
 
     with TestClient(app) as c2:
-        alice_c = _auth_client(c2, "msg_alice@test.com")
+        alice_c = _auth_client(c2, "msg_alice")
         r = alice_c.get(f"/api/chats/agent-shared/{conv_id}")
         assert r.status_code == 404

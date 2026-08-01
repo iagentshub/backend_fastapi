@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from app.api.routes.auth import require_auth
 from app.auth.auth import (
     get_stripe_customer_id,
+    get_user_by_id,
     get_user_by_username,
     get_username_by_stripe_customer_id,
     set_stripe_customer_id,
@@ -134,10 +135,10 @@ async def subscribe(
     customer_id = await get_stripe_customer_id(user)
     try:
         if not customer_id:
-            user_row = await get_user_by_username(user)
+            user_row = await get_user_by_id(user)
             customer = stripe.Customer.create(
                 email=(user_row or {}).get("email") or None,
-                metadata={"username": user},
+                metadata={"user_id": user},
             )
             customer_id = customer.id
             await set_stripe_customer_id(user, customer_id)
@@ -168,7 +169,7 @@ async def subscribe(
             payment_settings={"save_default_payment_method": "on_subscription"},
             expand=["latest_invoice.payment_intent"],
             metadata={
-                "username": user,
+                "user_id": user,
                 "tier": tier,
                 "seats": str(seats),
                 "interval": interval,
@@ -286,9 +287,12 @@ async def assign_license(
             "Solo el plan Business permite asignar licencias",
             extra={"action": "assign_licenses"},
         )
+    target = await get_user_by_username(username)
+    if not target:
+        raise APIError(404, "not_found", "Usuario no encontrado", extra={"resource": "user"})
     try:
         await _billing.assign_license(
-            subscription_id=row["id"], target_username=username, assigned_by=user
+            subscription_id=row["id"], target_username=target["id"], assigned_by=user
         )
     except ValueError as exc:
         raise _license_error(exc)
@@ -309,9 +313,13 @@ async def revoke_license(
             "Solo el plan Business permite quitar licencias",
             extra={"action": "revoke_licenses"},
         )
-    if username == user:
+    target = await get_user_by_username(username)
+    if not target:
+        raise APIError(404, "not_found", "Usuario no encontrado", extra={"resource": "user"})
+    target_id = target["id"]
+    if target_id == user:
         raise APIError(400, "cannot_revoke_own_license", "No puedes quitar tu propia licencia")
-    if not await _billing.revoke_license(subscription_id=row["id"], target_username=username):
+    if not await _billing.revoke_license(subscription_id=row["id"], target_username=target_id):
         raise APIError(404, "not_found", "Licencia no encontrada", extra={"resource": "license"})
     return await _billing.license_summary_for_owner(user)
 
@@ -497,10 +505,14 @@ async def webhook(request: Request) -> Dict[str, Any]:
 
 async def _handle_subscription_event(sub: Dict[str, Any], event_type: str) -> None:
     metadata = _safe_get(sub, "metadata") or {}
-    username = _safe_get(metadata, "username")
-    if not username:
-        username = await get_username_by_stripe_customer_id(sub["customer"])
-    if not username:
+    user_id = _safe_get(metadata, "user_id")
+    if not user_id:
+        legacy_username = _safe_get(metadata, "username")
+        legacy_user = await get_user_by_username(legacy_username) if legacy_username else None
+        user_id = legacy_user["id"] if legacy_user else None
+    if not user_id:
+        user_id = await get_username_by_stripe_customer_id(sub["customer"])
+    if not user_id:
         return  # No se puede atribuir a un usuario — no debería ocurrir en flujo normal
 
     tier = _safe_get(metadata, "tier") or "developer"
@@ -517,7 +529,7 @@ async def _handle_subscription_event(sub: Dict[str, Any], event_type: str) -> No
     status = "canceled" if event_type == "customer.subscription.deleted" else sub["status"]
 
     saved = await _billing.upsert(
-        username=username,
+        username=user_id,
         stripe_customer_id=sub["customer"],
         stripe_subscription_id=sub["id"],
         tier=tier,

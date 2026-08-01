@@ -118,7 +118,10 @@ def test_link_agente_guarda_linked_to_en_resource_social(client):
 
     row = _get_social_row("agent", link_id)
     assert row.get("linked_to_id") == agent_id
-    assert row.get("linked_to_user") == owner
+    import asyncio
+
+    from app.auth.auth import get_user_by_username
+    assert row.get("linked_to_user") == asyncio.run(get_user_by_username(owner))["id"]
     # No debe tener fork_of_id
     assert not row.get("fork_of_id")
 
@@ -247,7 +250,10 @@ def test_link_skill_guarda_linked_to_en_resource_social(client):
 
     row = _get_social_row("skill", link_id)
     assert row.get("linked_to_id") == skill_id
-    assert row.get("linked_to_user") == owner
+    import asyncio
+
+    from app.auth.auth import get_user_by_username
+    assert row.get("linked_to_user") == asyncio.run(get_user_by_username(owner))["id"]
     assert not row.get("fork_of_id")
 
 

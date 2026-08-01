@@ -25,6 +25,14 @@ def _register(username: str) -> None:
         pass
 
 
+def _user_id(username: str) -> str:
+    import asyncio
+
+    from app.auth.auth import get_user_by_username
+
+    return asyncio.run(get_user_by_username(username))["id"]
+
+
 def _token(username: str, group_id: str | None = None) -> str:
     from app.auth.auth import create_token
     return create_token(username, group_id=group_id)
@@ -57,7 +65,7 @@ def test_agent_owner_id_is_group_id(client):
     _set_cookie(client, "iso_owner_b")
     r = client.post("/api/agents", json=_AGENT)
     assert r.status_code == 200
-    assert r.json()["owner_id"] == "iso_owner_b"
+    assert r.json()["owner_id"] == _user_id("iso_owner_b")
 
 
 def test_agent_created_in_team_group_has_team_owner_id(client):
@@ -165,7 +173,7 @@ def test_me_returns_group_id(client):
     r = client.get("/api/auth/me")
     assert r.status_code == 200
     data = r.json()
-    assert data["group_id"] == "iso_me_h"
+    assert data["group_id"] == _user_id("iso_me_h")
     assert data["group_personal"] is True
 
 

@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 import time
-from typing import Any
+from typing import Any, Optional
 from urllib.parse import urlencode, urlsplit
 
 from fastapi import (
@@ -25,7 +25,9 @@ from app.auth.auth import (
     create_token,
     decode_group_token_full,
     get_owned_groups,
-    get_user_by_email,
+    get_user_by_id,
+    get_user_by_identity,
+    get_user_by_login,
     get_user_by_username,
     get_user_role,
     register_user_email,
@@ -73,7 +75,7 @@ from app.storage.tokens import (
 )
 from app.utils import flog
 from app.utils.net import client_ip as _client_ip
-from app.utils.validation import is_valid_email
+from app.utils.validation import is_valid_email, is_valid_username, normalize_username
 
 _groups = _GroupStorage(_DB_FILE)
 _tokens = _TokenStorage()
@@ -134,7 +136,7 @@ async def _get_user_auth_state(username: str) -> tuple[bool, str | None]:
     if cached and now < cached[2]:
         return cached[0], cached[1]
 
-    user = await get_user_by_username(username)
+    user = await get_user_by_identity(username)
     active = bool(user and user.get("is_active", 1))
     pwd_changed = user.get("password_changed_at") if user else None
 
@@ -170,7 +172,7 @@ class GroupContext:
         self.group_id = group_id
 
 
-def _bearer(authorization: str | None) -> str | None:
+def _bearer(authorization: Optional[str]) -> Optional[str]:
     """Extrae el token de una cabecera `Authorization: Bearer <token>`."""
     if not authorization:
         return None
@@ -181,8 +183,8 @@ def _bearer(authorization: str | None) -> str | None:
 
 
 async def _identify(
-    ga_token: str | None, authorization: str | None
-) -> tuple[str, float | None, str | None]:
+    ga_token: Optional[str], authorization: Optional[str]
+) -> tuple[str, Optional[float], Optional[str]]:
     """Resuelve la credencial de la request → (username, issued_at, gid).
 
     Acepta dos credenciales, con la MISMA autoridad:
@@ -214,7 +216,7 @@ async def _identify(
     raise APIError(401, "not_authenticated", "No autenticado")
 
 
-async def _assert_account_ok(username: str, issued_at: float | None) -> None:
+async def _assert_account_ok(username: str, issued_at: Optional[float]) -> None:
     """Cuenta activa + credencial emitida tras el último cambio de contraseña.
 
     Cambiar la contraseña invalida las sesiones robadas — y también los PATs
@@ -240,19 +242,26 @@ async def _assert_account_ok(username: str, issued_at: float | None) -> None:
 
 
 async def require_auth(
-    ga_token: str | None = Cookie(default=None),
-    authorization: str | None = Header(default=None),
+    ga_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
 ) -> str:
     """Dependency: valida la credencial (cookie o Bearer) y la cuenta."""
-    username, issued_at, _ = await _identify(ga_token, authorization)
-    await _assert_account_ok(username, issued_at)
-    return username
+    from app.storage.guest import is_guest
+
+    identity, issued_at, _ = await _identify(ga_token, authorization)
+    await _assert_account_ok(identity, issued_at)
+    if is_guest(identity):
+        return identity
+    user = await get_user_by_identity(identity)
+    if not user:
+        raise APIError(401, "invalid_token", "Token inválido o expirado")
+    return user["id"]
 
 
 async def require_group(
-    ga_token: str | None = Cookie(default=None),
-    authorization: str | None = Header(default=None),
-    x_iagents_group: str | None = Header(default=None),
+    ga_token: Optional[str] = Cookie(default=None),
+    authorization: Optional[str] = Header(default=None),
+    x_iagents_group: Optional[str] = Header(default=None),
 ) -> GroupContext:
     """Dependency: valida la credencial y resuelve el group activo.
 
@@ -261,23 +270,34 @@ async def require_group(
     group no existe, está desactivado o el usuario ya no es miembro, se cae
     al espacio personal (group_id = username).
     """
-    username, issued_at, gid = await _identify(ga_token, authorization)
-    await _assert_account_ok(username, issued_at)
+    from app.storage.guest import is_guest
+
+    identity, issued_at, gid = await _identify(ga_token, authorization)
+    await _assert_account_ok(identity, issued_at)
+    if is_guest(identity):
+        user_id = identity
+        legacy_personal_id = identity
+    else:
+        user = await get_user_by_identity(identity)
+        if not user:
+            raise APIError(401, "invalid_token", "Token inválido o expirado")
+        user_id = user["id"]
+        legacy_personal_id = user["username"]
 
     if gid is None:
         gid = x_iagents_group
 
     # Si el gid es distinto del username → validar group de equipo
-    if gid and gid != username:
+    if gid and gid not in (user_id, legacy_personal_id):
         group = await _groups.get(gid)
         if (
             group
             and group.get("status", "active") == "active"
-            and await _groups.is_member(gid, username)
+            and await _groups.is_member(gid, user_id)
         ):
-            return GroupContext(user=username, group_id=gid)
+            return GroupContext(user=user_id, group_id=gid)
         # Group desactivado, eliminado o no miembro → espacio personal
-    return GroupContext(user=username, group_id=username)
+    return GroupContext(user=user_id, group_id=user_id)
 
 
 async def require_admin(username: str = Depends(require_auth)) -> str:
@@ -298,6 +318,7 @@ async def register(request: Request, response: Response) -> dict[str, Any]:
         )
     await _register_limiter(request)
     body = await request.json()
+    username = normalize_username(str(body.get("username") or ""))
     email = str(body.get("email") or "").strip().lower()
     password = str(body.get("password") or "")
     birth_date = str(body.get("birth_date") or "").strip() or None
@@ -305,6 +326,13 @@ async def register(request: Request, response: Response) -> dict[str, Any]:
     country = str(body.get("country") or "").strip() or None
     phone = str(body.get("phone") or "").strip() or None
 
+    if not is_valid_username(username):
+        raise APIError(
+            400,
+            "invalid_field",
+            "El usuario debe tener entre 5 y 32 caracteres: a-z, 0-9, punto, guion o guion bajo",
+            extra={"field": "username"},
+        )
     if not email or not is_valid_email(email):
         raise APIError(400, "invalid_field", "Email inválido", extra={"field": "email"})
     if len(password) < 8:
@@ -314,6 +342,7 @@ async def register(request: Request, response: Response) -> dict[str, Any]:
 
     try:
         username, verify_token = await register_user_email(
+            username,
             email,
             password,
             birth_date=birth_date,
@@ -322,16 +351,18 @@ async def register(request: Request, response: Response) -> dict[str, Any]:
             phone=phone,
         )
     except ValueError as exc:
-        raise APIError(
-            409, "already_exists", str(exc), extra={"resource": "email"}
-        ) from exc
+        resource = "username" if "usuario" in str(exc).lower() else "email"
+        raise APIError(409, "already_exists", str(exc), extra={"resource": resource}) from exc
 
     if EMAIL_VERIFY_ENABLED and verify_token:
         base_url = _public_base_url(request)
         send_verification_email(email, verify_token, base_url)
         return {"ok": True, "email": email, "pending_verification": True}
 
-    token = create_token(username)
+    user = await get_user_by_username(username)
+    if not user:
+        raise APIError(500, "user_creation_failed", "No se pudo crear la sesión")
+    token = create_token(user["id"])
     response.set_cookie(
         "ga_token",
         token,
@@ -350,39 +381,39 @@ async def login(
     _rl: None = Depends(_login_limiter),
 ) -> dict[str, Any]:
     body = await request.json()
-    email = str(body.get("email") or "").strip().lower()
+    identifier = str(body.get("identifier") or body.get("email") or "").strip().lower()
     password = str(body.get("password") or "")
 
     # Extraer IP real del cliente
     _ip = _client_ip(request)
 
-    if not email or not password:
+    if not identifier or not password:
         flog.warning(
-            f"[login] FAIL email={email or '(vacío)'} razón=campos_vacíos", ip=_ip
+            f"[login] FAIL identificador={identifier or '(vacío)'} razón=campos_vacíos", ip=_ip
         )
-        raise APIError(400, "missing_credentials", "Email y contraseña requeridos")
+        raise APIError(400, "missing_credentials", "Usuario o email y contraseña requeridos")
 
-    user = await get_user_by_email(email)
+    user = await get_user_by_login(identifier)
     if not user or not user.get("password_hash"):
-        flog.warning(f"[login] FAIL email={email} razón=usuario_no_encontrado", ip=_ip)
+        flog.warning(f"[login] FAIL identificador={identifier} razón=usuario_no_encontrado", ip=_ip)
         raise APIError(401, "invalid_credentials", "Credenciales incorrectas")
     if not await verify_password_async(password, user["password_hash"]):
-        flog.warning(f"[login] FAIL email={email} razón=contraseña_incorrecta", ip=_ip)
+        flog.warning(f"[login] FAIL identificador={identifier} razón=contraseña_incorrecta", ip=_ip)
         raise APIError(401, "invalid_credentials", "Credenciales incorrectas")
     if not user.get("is_active", 1):
-        flog.warning(f"[login] FAIL email={email} razón=cuenta_desactivada", ip=_ip)
+        flog.warning(f"[login] FAIL identificador={identifier} razón=cuenta_desactivada", ip=_ip)
         raise APIError(403, "account_disabled", "Cuenta desactivada")
     if EMAIL_VERIFY_ENABLED and not user.get("is_verified", 1):
-        flog.warning(f"[login] FAIL email={email} razón=pendiente_verificación", ip=_ip)
+        flog.warning(f"[login] FAIL identificador={identifier} razón=pendiente_verificación", ip=_ip)
         raise APIError(
             403,
             "email_not_verified",
             "Cuenta pendiente de verificación. Revisa tu correo.",
         )
 
-    token = create_token(user["username"])
+    token = create_token(user["id"])
     flog.ok(
-        f"[login] OK email={email} usuario={user['username']}",
+        f"[login] OK identificador={identifier} usuario={user['username']}",
         ip=_ip,
         username=user["username"],
     )
@@ -404,7 +435,10 @@ async def verify_email(token: str, response: Response) -> dict[str, Any]:
         raise APIError(
             400, "invalid_verification_link", "Enlace de verificación inválido o expirado"
         )
-    auth_token = create_token(username)
+    user = await get_user_by_username(username)
+    if not user:
+        raise APIError(404, "not_found", "Usuario no encontrado", extra={"resource": "user"})
+    auth_token = create_token(user["id"])
     response.set_cookie(
         "ga_token",
         auth_token,
@@ -449,30 +483,36 @@ async def me(
     from app.config.session import WEBMAIL_URL
     from app.storage.guest import is_guest
 
-    username = ctx.user
+    user_id = ctx.user
     group_id = ctx.group_id
 
-    role = await get_user_role(username)
+    role = await get_user_role(user_id)
     group_name: str | None = None
-    if is_guest(username):
+    if is_guest(user_id):
         auth_method = "guest"
         user_row: dict[str, Any] = {}
+        username = user_id
     else:
-        user_row = await get_user_by_username(username) or {}
+        user_row = await get_user_by_id(user_id) or {}
+        username = user_row.get("username", "")
         auth_method = user_row.get("provider") or "internal"
-        if group_id != username:
+        if group_id != user_id:
             group = await _groups.get(group_id)
             group_name = group["name"] if group else group_id
         else:
             group_name = user_row.get("display_name") or username
 
     payload: dict[str, Any] = {
+        "id": user_id,
         "username": username,
         "role": role,
         "auth_method": auth_method,
         "group_id": group_id,
-        "group_personal": group_id == username,
+        "group_personal": group_id == user_id,
     }
+    if user_row:
+        payload["email"] = user_row.get("email")
+        payload["is_email_public"] = bool(user_row.get("is_email_public", 0))
     if role == "admin" and WEBMAIL_URL:
         payload["webmail_url"] = WEBMAIL_URL
     if group_name is not None:
@@ -528,7 +568,7 @@ async def change_password(
     if len(new_pw) < 8:  # N4: mínimo coherente con el registro (8 caracteres)
         raise APIError(400, "password_too_short", "La nueva contraseña debe tener al menos 8 caracteres")
 
-    user = await get_user_by_username(username)
+    user = await get_user_by_id(username)
     if not user:
         raise APIError(404, "not_found", "Usuario no encontrado", extra={"resource": "user"})
     if not await verify_password_async(current, user.get("password_hash", "")):
@@ -554,7 +594,7 @@ async def change_password(
 
 @router.get("/me/deletion-status")
 async def get_deletion_status(username: str = Depends(require_auth)) -> dict[str, Any]:
-    user = await get_user_by_username(username)
+    user = await get_user_by_id(username)
     if not user:
         raise APIError(404, "not_found", "Usuario no encontrado", extra={"resource": "user"})
     return {
@@ -598,7 +638,8 @@ async def export_my_data(username: str = Depends(require_auth)):
 
     buf = await export_user_data(username)
     date_str = datetime.now(timezone.utc).strftime("%Y%m%d")
-    safe_name = username.split("@")[0].replace(" ", "_")
+    user = await get_user_by_id(username)
+    safe_name = (user.get("username") if user else "account").replace(" ", "_")
     filename = f"export_{safe_name}_{date_str}.zip"
     return StreamingResponse(
         buf,
@@ -625,7 +666,7 @@ async def update_profile(
     bio = str(body.get("bio") or "").strip()[:500] or None
     raw_langs = body.get("languages") or []
     languages = json.dumps([lang for lang in raw_langs if lang in _ALLOWED_LANGUAGES])
-    email_public = str(body.get("email_public") or "").strip()[:200] or None
+    is_email_public = 1 if body.get("is_email_public") is True else 0
     # N3: solo permitir URLs https:// para el campo github (bloquear javascript: y otros)
     _github_raw = str(body.get("github") or "").strip()[:100]
     if _github_raw and not _github_raw.startswith("https://"):
@@ -638,8 +679,8 @@ async def update_profile(
 
     async with open_db() as conn:
         await conn.execute(
-            "UPDATE users SET bio=?, languages=?, email_public=?, github=?, cv=? WHERE username=?",
-            (bio, languages, email_public, github, cv, username),
+            "UPDATE users SET bio=?, languages=?, is_email_public=?, github=?, cv=? WHERE id=?",
+            (bio, languages, is_email_public, github, cv, username),
         )
         await conn.commit()
     return {"ok": True}
@@ -674,11 +715,13 @@ async def upload_avatar(
     encoded = base64.b64encode(data).decode("ascii")
     async with open_db() as conn:
         await conn.execute(
-            "UPDATE users SET avatar=? WHERE username=?",
+            "UPDATE users SET avatar=? WHERE id=?",
             (encoded, username),
         )
         await conn.commit()
-    return {"ok": True, "avatar_url": f"/api/users/{username}/avatar"}
+    user = await get_user_by_id(username)
+    public_username = user["username"] if user else ""
+    return {"ok": True, "avatar_url": f"/api/users/{public_username}/avatar"}
 
 # ── Personal access tokens ────────────────────────────────────────────────────
 # Credencial para clientes que no son un navegador (extensión de VS Code,
@@ -823,12 +866,14 @@ async def vscode_exchange(request: Request) -> dict[str, Any]:
     if not code or not state:
         raise APIError(400, "code_and_state_required", "code y state requeridos")
 
-    username = await _consume_auth_code(code, state)
-    if not username:
+    user_id = await _consume_auth_code(code, state)
+    if not user_id:
         raise APIError(
             400, "invalid_auth_code", "Código inválido, caducado o ya usado"
         )
 
-    token, meta = await _tokens.create(username, "VS Code", DEFAULT_EXPIRY_DAYS)
+    token, meta = await _tokens.create(user_id, "VS Code", DEFAULT_EXPIRY_DAYS)
+    user = await get_user_by_id(user_id)
+    username = user["username"] if user else ""
     flog.info(f"PAT creado desde VS Code ({meta['prefix']}…)", username=username)
     return {"token": token, "token_id": meta["id"], "username": username}

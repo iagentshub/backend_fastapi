@@ -23,6 +23,12 @@ async def _make_user(username: str, email: str | None = None) -> None:
     await register_user(username, "pass1234", email=email or f"{username}@test.com")
 
 
+async def _user_id(username: str) -> str:
+    user = await get_user_by_username(username)
+    assert user is not None
+    return str(user["id"])
+
+
 async def _set_deletion_date(username: str, dt: datetime) -> None:
     from app.storage.db import open_db
     async with open_db() as conn:
@@ -48,7 +54,7 @@ async def test_get_owned_groups_sin_groups(patch_data_dir):
 async def test_get_owned_groups_con_group(patch_data_dir):
     await _make_user("gogroup_owner")
     group = await _group_storage()
-    created = await group.create("Mi Equipo", created_by="gogroup_owner")
+    created = await group.create("Mi Equipo", created_by=await _user_id("gogroup_owner"))
     owned = await get_owned_groups("gogroup_owner")
     assert len(owned) == 1
     assert owned[0]["id"] == created["id"]
@@ -59,7 +65,7 @@ async def test_get_owned_groups_no_devuelve_los_que_no_son_suyos(patch_data_dir)
     await _make_user("gogroup_other_owner")
     await _make_user("gogroup_member")
     group = await _group_storage()
-    await group.create("Equipo ajeno", created_by="gogroup_other_owner")
+    await group.create("Equipo ajeno", created_by=await _user_id("gogroup_other_owner"))
     assert await get_owned_groups("gogroup_member") == []
 
 
@@ -122,7 +128,7 @@ async def test_purge_elimina_usuario_de_bd(patch_data_dir):
 async def test_purge_elimina_group_propio(patch_data_dir):
     await _make_user("purge_group_owner")
     group = await _group_storage()
-    created = await group.create("Group a purgar", created_by="purge_group_owner")
+    created = await group.create("Group a purgar", created_by=await _user_id("purge_group_owner"))
     await purge_user_data("purge_group_owner")
     assert await group.get(created["id"]) is None
 
@@ -138,8 +144,8 @@ async def test_purge_elimina_miembros_del_group(patch_data_dir):
     await _make_user("purge_member_owner")
     await _make_user("purge_member_user")
     group = await _group_storage()
-    created = await group.create("Group compartido", created_by="purge_member_owner")
-    await group.add_member(created["id"], "purge_member_user")
+    created = await group.create("Group compartido", created_by=await _user_id("purge_member_owner"))
+    await group.add_member(created["id"], await _user_id("purge_member_user"))
     await purge_user_data("purge_member_user")
     members = await group.list_members(created["id"])
     assert not any(m["username"] == "purge_member_user" for m in members)
@@ -152,15 +158,16 @@ async def test_purge_elimina_agents_del_filesystem(patch_data_dir, tmp_path, mon
     (agents_dir / "private").mkdir(parents=True)
     agent_dir = agents_dir / "private" / "agent-test"
     agent_dir.mkdir()
-    (agent_dir / "config.json").write_text(
-        json.dumps({"id": "agent-test", "owner_id": "purge_fs_user"}), encoding="utf-8"
-    )
     import app.auth.auth as auth_mod
     monkeypatch.setattr(auth_mod, "AGENTS_DIR", agents_dir)
     monkeypatch.setattr(auth_mod, "SKILLS_DIR", tmp_path / "skills_purge")
     (tmp_path / "skills_purge").mkdir()
 
     await _make_user("purge_fs_user")
+    (agent_dir / "config.json").write_text(
+        json.dumps({"id": "agent-test", "owner_id": await _user_id("purge_fs_user")}),
+        encoding="utf-8",
+    )
     await purge_user_data("purge_fs_user")
     assert not agent_dir.exists()
 

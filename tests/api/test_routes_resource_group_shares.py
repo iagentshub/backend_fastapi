@@ -68,7 +68,10 @@ def test_share_personal_connection_with_group_visible_to_member(client):
             row = await c.fetchone("SELECT owner_id FROM connections WHERE id = ?", (conn_id,))
             return row[0] if row else None
 
-    assert asyncio.run(_owner_of(conn["id"])) == "rgroup_owner_a"
+    from app.auth.auth import get_user_by_username
+    assert asyncio.run(_owner_of(conn["id"])) == asyncio.run(
+        get_user_by_username("rgroup_owner_a")
+    )["id"]
 
 
 def test_share_connection_without_ownership_forbidden(client):

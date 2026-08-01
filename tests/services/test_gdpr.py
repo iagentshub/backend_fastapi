@@ -27,6 +27,13 @@ async def _make_user(username: str, email: str | None = None) -> None:
     await register_user(username, "pass1234", email=email or f"{username}@test.com")
 
 
+async def _user_id(username: str) -> str:
+    from app.auth.auth import get_user_by_username
+    user = await get_user_by_username(username)
+    assert user is not None
+    return str(user["id"])
+
+
 async def _insert_conversation(username: str, title: str = "Test conv") -> str:
     from uuid import uuid4
 
@@ -36,7 +43,7 @@ async def _insert_conversation(username: str, title: str = "Test conv") -> str:
         await conn.execute(
             "INSERT INTO conversations (id, user_id, title, agent_id, created_at, updated_at) "
             "VALUES (?, ?, ?, 'agent', datetime('now'), datetime('now'))",
-            (conv_id, username, title),
+            (conv_id, await _user_id(username), title),
         )
         await conn.commit()
     return conv_id
@@ -131,8 +138,8 @@ async def test_export_groups_incluye_membresías(patch_gdpr_db):
     await _make_user("exp_group_owner")
     await _make_user("exp_group_member")
     group = await _group_storage()
-    created = await group.create("Equipo Export", created_by="exp_group_owner")
-    await group.add_member(created["id"], "exp_group_member")
+    created = await group.create("Equipo Export", created_by=await _user_id("exp_group_owner"))
+    await group.add_member(created["id"], await _user_id("exp_group_member"))
 
     buf = await export_user_data("exp_group_member")
     groups = json.loads(_zip_read(buf, "groups.json"))
@@ -143,7 +150,7 @@ async def test_export_groups_no_incluye_los_ajenos(patch_gdpr_db):
     await _make_user("exp_group_noaccess")
     await _make_user("exp_group_other_owner")
     group = await _group_storage()
-    await group.create("Equipo Ajeno", created_by="exp_group_other_owner")
+    await group.create("Equipo Ajeno", created_by=await _user_id("exp_group_other_owner"))
 
     buf = await export_user_data("exp_group_noaccess")
     groups = json.loads(_zip_read(buf, "groups.json"))

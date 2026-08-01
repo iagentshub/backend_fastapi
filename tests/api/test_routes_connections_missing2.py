@@ -631,11 +631,15 @@ def test_get_tokens_daily_with_data(client):
     username = "tok_data_m2"
     _setup_user(client, username)
 
+    from app.auth.auth import get_user_by_username
+    user = asyncio.run(get_user_by_username(username))
+    assert user is not None
+
     async def _insert():
         async with open_db() as db:
             await db.execute(
                 "INSERT OR IGNORE INTO token_daily (day, owner_id, tokens) VALUES (?, ?, ?)",
-                ("2026-06-01", username, 1500),
+                ("2026-06-01", user["id"], 1500),
             )
             await db.commit()
 

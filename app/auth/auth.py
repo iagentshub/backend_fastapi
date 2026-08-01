@@ -24,7 +24,8 @@ from app.config.session import (
 from app.services.email import send_deletion_scheduled_email
 from app.storage.db import IS_PG, open_db
 from app.utils import flog
-from app.utils.generators import generate_date
+from app.utils.generators import generate_date, generate_id
+from app.utils.validation import is_valid_username, normalize_username
 
 # ── Settings ───────────────────────────────────────────────────────────────────
 
@@ -83,7 +84,7 @@ async def verify_password_async(plain: str, hashed: str) -> bool:
 
 # ── Internal DB helpers ────────────────────────────────────────────────────────
 
-_ALLOWED_USER_FIELDS = frozenset({"email", "username"})
+_ALLOWED_USER_FIELDS = frozenset({"id", "email", "username"})
 
 
 async def _get_user_by(field: str, value: str) -> Optional[dict]:
@@ -98,17 +99,43 @@ async def _get_user_by(field: str, value: str) -> Optional[dict]:
 
 
 async def get_user_by_email(email: str) -> Optional[dict]:
-    return await _get_user_by("email", email)
+    return await _get_user_by("email", email.strip().lower())
 
 
 async def get_user_by_username(username: str) -> Optional[dict]:
-    return await _get_user_by("username", username)
+    return await _get_user_by("username", normalize_username(username))
+
+
+async def get_user_by_id(user_id: str) -> Optional[dict]:
+    return await _get_user_by("id", user_id)
+
+
+async def get_user_by_identity(identity: str) -> Optional[dict]:
+    """Resolve an internal user id or a public username."""
+    async with open_db() as conn:
+        row = await conn.fetchone(
+            "SELECT * FROM users WHERE id = ? OR username = ?",
+            (identity, normalize_username(identity)),
+        )
+        return dict(row) if row else None
+
+
+async def get_user_by_login(identifier: str) -> Optional[dict]:
+    """Resolve a login identifier without exposing which field matched."""
+    normalized = identifier.strip().lower()
+    async with open_db() as conn:
+        row = await conn.fetchone(
+            "SELECT * FROM users WHERE username = ? OR email = ?",
+            (normalized, normalized),
+        )
+        return dict(row) if row else None
 
 
 async def get_stripe_customer_id(username: str) -> Optional[str]:
     async with open_db() as conn:
         row = await conn.fetchone(
-            "SELECT stripe_customer_id FROM users WHERE username = ?", (username,)
+            "SELECT stripe_customer_id FROM users WHERE id = ? OR username = ?",
+            (username, normalize_username(username)),
         )
         return row["stripe_customer_id"] if row else None
 
@@ -116,8 +143,8 @@ async def get_stripe_customer_id(username: str) -> Optional[str]:
 async def set_stripe_customer_id(username: str, customer_id: str) -> None:
     async with open_db() as conn:
         await conn.execute(
-            "UPDATE users SET stripe_customer_id = ? WHERE username = ?",
-            (customer_id, username),
+            "UPDATE users SET stripe_customer_id = ? WHERE id = ? OR username = ?",
+            (customer_id, username, normalize_username(username)),
         )
         await conn.commit()
 
@@ -125,20 +152,19 @@ async def set_stripe_customer_id(username: str, customer_id: str) -> None:
 async def get_username_by_stripe_customer_id(customer_id: str) -> Optional[str]:
     async with open_db() as conn:
         row = await conn.fetchone(
-            "SELECT username FROM users WHERE stripe_customer_id = ?", (customer_id,)
+            "SELECT id FROM users WHERE stripe_customer_id = ?", (customer_id,)
         )
-        return row["username"] if row else None
-
-
-async def _gen_username(email: str) -> str:
-    """Username is the full email address."""
-    return email
+        return row["id"] if row else None
 
 
 async def register_user(username: str, password: str, email: str = "") -> None:
     """Create a new local user. Raises ValueError if username or email already taken."""
+    username = normalize_username(username)
+    email = email.strip().lower()
+    if not is_valid_username(username):
+        raise ValueError("El usuario debe tener entre 5 y 32 caracteres: a-z, 0-9, punto, guion o guion bajo")
     if not email:
-        email = f"{username}@local"
+        email = f"{username}@localhost.com"
     password_hash = await hash_password_async(password)
     async with open_db() as conn:
         async with conn.transaction():
@@ -150,14 +176,15 @@ async def register_user(username: str, password: str, email: str = "") -> None:
                 raise ValueError("El correo electrónico ya está registrado")
             now = generate_date()
             await conn.execute(
-                "INSERT INTO users (username, email, password_hash, role, is_active, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
-                (username, email, password_hash, "standard", 1, now),
+                "INSERT INTO users (id, username, email, password_hash, role, is_active, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (generate_id(32), username, email, password_hash, "standard", 1, now),
             )
     flog.ok(f"Nuevo usuario: {email}")
 
 
 async def register_user_email(
+    username: str,
     email: str,
     password: str,
     *,
@@ -167,15 +194,20 @@ async def register_user_email(
     phone: Optional[str] = None,
     display_name: Optional[str] = None,
 ) -> tuple[str, Optional[str]]:
-    """Register user by email. Username = full email. Returns (username, verification_token).
+    """Register a user with separate public username and private account email.
 
     verification_token is None when EMAIL_VERIFY_ENABLED is False (user auto-verified).
     """
-    username = email  # username IS the full email address
+    username = normalize_username(username)
+    email = email.strip().lower()
+    if not is_valid_username(username):
+        raise ValueError("El usuario debe tener entre 5 y 32 caracteres: a-z, 0-9, punto, guion o guion bajo")
     token: Optional[str] = None
     password_hash = await hash_password_async(password)
     async with open_db() as conn:
         async with conn.transaction():
+            if await conn.fetchone("SELECT 1 FROM users WHERE username = ?", (username,)):
+                raise ValueError("El nombre de usuario ya está en uso")
             if await conn.fetchone("SELECT 1 FROM users WHERE email = ?", (email,)):
                 raise ValueError("El correo electrónico ya está registrado")
             now = generate_date()
@@ -187,10 +219,11 @@ async def register_user_email(
                 is_verified = 0
             await conn.execute(
                 "INSERT INTO users "
-                "(username, email, password_hash, display_name, birth_date, gender, "
+                "(id, username, email, password_hash, display_name, birth_date, gender, "
                 "country, phone, role, is_active, is_verified, verification_token, created_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
+                    generate_id(32),
                     username,
                     email,
                     password_hash,
@@ -284,8 +317,8 @@ async def _touch_password_changed_at(conn: Any, username: str) -> None:
     """Marca el instante de cambio de contraseña para invalidar tokens anteriores (A2)."""
     now = generate_date()
     await conn.execute(
-        "UPDATE users SET password_changed_at = ? WHERE username = ?",
-        (now, username),
+        "UPDATE users SET password_changed_at = ? WHERE id = ? OR username = ?",
+        (now, username, normalize_username(username)),
     )
 
 
@@ -294,17 +327,19 @@ async def set_own_password(username: str, new_password: str) -> None:
     password_hash = await hash_password_async(new_password)
     async with open_db() as conn:
         await conn.execute(
-            "UPDATE users SET password_hash = ? WHERE username = ?",
-            (password_hash, username),
+            "UPDATE users SET password_hash = ? WHERE id = ? OR username = ?",
+            (password_hash, username, normalize_username(username)),
         )
         await _touch_password_changed_at(conn, username)
         await conn.commit()
 
 
 async def get_user_role(username: str) -> str:
-    if username == "guest" or username.startswith("guest_"):
+    from app.storage.guest import is_guest
+
+    if is_guest(username):
         return "guest"
-    user = await _get_user_by("username", username)
+    user = await get_user_by_identity(username)
     return user.get("role", "standard") if user else "standard"
 
 
@@ -321,14 +356,10 @@ async def list_users() -> list:
 
 
 async def delete_user(username: str) -> bool:
-    async with open_db() as conn:
-        if not await conn.fetchone(
-            "SELECT 1 FROM users WHERE username = ?", (username,)
-        ):
-            return False
-        await conn.execute("DELETE FROM users WHERE username = ?", (username,))
-        await conn.commit()
-        return True
+    if not await get_user_by_username(username):
+        return False
+    await purge_user_data(username)
+    return True
 
 
 # ── GDPR ──────────────────────────────────────────────────────────────────────
@@ -336,10 +367,12 @@ async def delete_user(username: str) -> bool:
 
 async def get_owned_groups(username: str) -> list:
     """Return groups where the user is owner (created_by)."""
+    user = await get_user_by_identity(username)
+    user_id = user["id"] if user else username
     async with open_db() as conn:
         rows = await conn.fetchall(
             "SELECT id, name FROM groups WHERE created_by = ?",
-            (username,),
+            (user_id,),
         )
         return [dict(r) for r in rows]
 
@@ -350,11 +383,11 @@ async def schedule_user_deletion(username: str) -> str:
     deletion_at = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
     async with open_db() as conn:
         await conn.execute(
-            "UPDATE users SET deletion_requested_at = ?, deletion_token = ? WHERE username = ?",
-            (deletion_at, _hash_token(token), username),
+            "UPDATE users SET deletion_requested_at = ?, deletion_token = ? WHERE id = ? OR username = ?",
+            (deletion_at, _hash_token(token), username, normalize_username(username)),
         )
         await conn.commit()
-    user = await get_user_by_username(username)
+    user = await get_user_by_identity(username)
     if user:
         send_deletion_scheduled_email(user["email"], token, deletion_at)
     flog.info(f"[gdpr] Borrado programado para {username} el {deletion_at}")
@@ -400,49 +433,64 @@ async def purge_user_data(username: str) -> None:
     """Hard-delete all user data from DB (cascade) and filesystem."""
     import asyncio as _asyncio
 
+    user = await get_user_by_identity(username)
+    if not user:
+        return
+    user_id = user["id"]
+    public_username = user["username"]
+
     try:
         async with open_db() as conn:
             async with conn.transaction():
                 await conn.execute(
                     "DELETE FROM messages WHERE conversation_id IN (SELECT id FROM conversations WHERE user_id = ?)",
-                    (username,),
+                    (user_id,),
                 )
                 await conn.execute(
-                    "DELETE FROM conversations WHERE user_id = ?", (username,)
+                    "DELETE FROM conversations WHERE user_id = ?", (user_id,)
+                )
+                await conn.execute("DELETE FROM agents WHERE owner_id = ?", (user_id,))
+                await conn.execute("DELETE FROM skills WHERE owner_id = ?", (user_id,))
+                await conn.execute(
+                    "DELETE FROM knowledge_items WHERE owner_id = ?", (user_id,)
                 )
                 await conn.execute(
-                    "DELETE FROM knowledge_items WHERE owner_id = ?", (username,)
+                    "DELETE FROM connections WHERE owner_id = ?", (user_id,)
+                )
+                await conn.execute("DELETE FROM agent_workflows WHERE owner_id = ?", (user_id,))
+                await conn.execute("DELETE FROM resource_social WHERE owner = ?", (user_id,))
+                await conn.execute("DELETE FROM resource_stars WHERE username = ?", (user_id,))
+                await conn.execute(
+                    "DELETE FROM user_follows WHERE follower = ? OR following = ?",
+                    (user_id, user_id),
                 )
                 await conn.execute(
-                    "DELETE FROM connections WHERE owner_id = ?", (username,)
+                    "DELETE FROM token_daily WHERE owner_id = ?", (user_id,)
                 )
                 await conn.execute(
-                    "DELETE FROM token_daily WHERE owner_id = ?", (username,)
-                )
-                await conn.execute(
-                    "DELETE FROM accounts WHERE owner_id = ?", (username,)
+                    "DELETE FROM accounts WHERE owner_id = ?", (user_id,)
                 )
                 await conn.execute(
                     "DELETE FROM resource_group_shares WHERE shared_by = ?",
-                    (username,),
+                    (user_id,),
                 )
                 await conn.execute(
-                    "DELETE FROM group_invitations WHERE username = ?", (username,)
+                    "DELETE FROM group_invitations WHERE username = ?", (user_id,)
                 )
                 await conn.execute(
-                    "DELETE FROM group_members WHERE username = ?", (username,)
+                    "DELETE FROM group_members WHERE username = ?", (user_id,)
                 )
                 await conn.execute(
-                    "DELETE FROM groups WHERE created_by = ?", (username,)
+                    "DELETE FROM groups WHERE created_by = ?", (user_id,)
                 )
-                await conn.execute("DELETE FROM users WHERE username = ?", (username,))
-        flog.ok(f"[gdpr] BD purgada para {username}")
+                await conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+        flog.ok(f"[gdpr] BD purgada para {public_username}")
     except Exception as exc:
         flog.error(f"[gdpr] Error purgando BD de {username}: {exc}")
         raise
 
-    await _asyncio.to_thread(_purge_user_files, username)
-    flog.ok(f"[gdpr] Purga completa de {username}")
+    await _asyncio.to_thread(_purge_user_files, user_id)
+    flog.ok(f"[gdpr] Purga completa de {public_username}")
 
 
 async def purge_expired_deletions() -> int:
@@ -487,8 +535,8 @@ async def update_user_profile(username: str, **fields) -> None:
         await conn.execute(
             "UPDATE users SET "
             + ", ".join(c[0] for c in clauses)
-            + " WHERE username = ?",
-            [c[1] for c in clauses] + [username],
+            + " WHERE id = ? OR username = ?",
+            [c[1] for c in clauses] + [username, normalize_username(username)],
         )
         await conn.commit()
 
@@ -639,7 +687,10 @@ async def ensure_admin_user() -> None:
        sin reset_mode → no tocar nada.
     """
     reset_mode = os.environ.get("GAIA_ADMIN_RESET", "").lower() in ("1", "true", "yes")
-    target_email = os.environ.get("GAIA_ADMIN_EMAIL", "admin@localhost.com")
+    target_email = os.environ.get("GAIA_ADMIN_EMAIL", "admin@localhost.com").strip().lower()
+    target_username = normalize_username(os.environ.get("GAIA_ADMIN_USERNAME", "admin"))
+    if not is_valid_username(target_username):
+        raise RuntimeError("GAIA_ADMIN_USERNAME no es un nombre de usuario válido")
 
     # If .admin_pass doesn't exist yet, force a one-time reset so gaia.py can always display it
     # DATA_DIR, no GAIA_DATA_DIR: sin la env var la contraseña se generaba y se
@@ -718,10 +769,11 @@ async def ensure_admin_user() -> None:
             try:
                 await conn.execute(
                     "INSERT INTO users "
-                    "(username, email, password_hash, role, is_active, is_verified, created_at) "
-                    "VALUES (?,?,?,?,?,?,?)",
+                    "(id, username, email, password_hash, role, is_active, is_verified, created_at) "
+                    "VALUES (?,?,?,?,?,?,?,?)",
                     (
-                        target_email,
+                        generate_id(32),
+                        target_username,
                         target_email,
                         password_hash,
                         "admin",

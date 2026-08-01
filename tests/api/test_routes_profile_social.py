@@ -18,12 +18,14 @@ def test_actualizar_perfil_campos_basicos(client):
     r = client.put("/api/auth/me/profile", json={
         "bio": "Desarrollador de agentes IA",
         "languages": ["es", "en"],
-        "email_public": "public@example.com",
+        "is_email_public": True,
         "github": "https://github.com/myghuser",
         "cv": "# Mi CV\n\nExperiencia en Python.",
     })
     assert r.status_code == 200
     assert r.json()["ok"] is True
+    profile = client.get("/api/users/socialuser").json()
+    assert profile["email_public"] == "socialuser@example.com"
 
 
 def test_perfil_publico_devuelve_campos(client):

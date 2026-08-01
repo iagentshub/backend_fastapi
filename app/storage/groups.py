@@ -45,8 +45,9 @@ class GroupStorage:
         """Devuelve todos los groups de equipo donde el usuario es miembro."""
         async with open_db() as conn:
             rows = await conn.fetchall(
-                "SELECT w.*, wm.role FROM groups w "
+                "SELECT w.*, wm.role, u.username AS created_by_username FROM groups w "
                 "JOIN group_members wm ON w.id = wm.group_id "
+                "LEFT JOIN users u ON u.id = w.created_by "
                 "WHERE wm.username = ? ORDER BY w.created_at ASC",
                 (username,),
             )
@@ -231,9 +232,9 @@ class GroupStorage:
     async def list_members(self, group_id: str) -> List[Dict[str, Any]]:
         async with open_db() as conn:
             rows = await conn.fetchall(
-                "SELECT wm.username, wm.role, wm.permissions, wm.joined_at, u.display_name, u.email "
+                "SELECT u.username, wm.role, wm.permissions, wm.joined_at, u.display_name "
                 "FROM group_members wm "
-                "LEFT JOIN users u ON u.username = wm.username "
+                "JOIN users u ON u.id = wm.username "
                 "WHERE wm.group_id = ? ORDER BY wm.joined_at ASC",
                 (group_id,),
             )
@@ -404,8 +405,9 @@ class GroupStorage:
     async def list_invitations(self, group_id: str) -> List[Dict[str, Any]]:
         async with open_db() as conn:
             rows = await conn.fetchall(
-                "SELECT * FROM group_invitations "
-                "WHERE group_id = ? AND status = 'pending' ORDER BY created_at DESC",
+                "SELECT wi.id, wi.group_id, wi.invited_by, u.username, wi.status, wi.created_at "
+                "FROM group_invitations wi JOIN users u ON u.id = wi.username "
+                "WHERE wi.group_id = ? AND wi.status = 'pending' ORDER BY wi.created_at DESC",
                 (group_id,),
             )
             return [dict(r) for r in rows]
@@ -413,8 +415,10 @@ class GroupStorage:
     async def list_my_invitations(self, username: str) -> List[Dict[str, Any]]:
         async with open_db() as conn:
             rows = await conn.fetchall(
-                "SELECT wi.*, w.name AS group_name FROM group_invitations wi "
+                "SELECT wi.id, wi.group_id, wi.invited_by, u.username, wi.status, "
+                "wi.created_at, w.name AS group_name FROM group_invitations wi "
                 "LEFT JOIN groups w ON w.id = wi.group_id "
+                "JOIN users u ON u.id = wi.username "
                 "WHERE wi.username = ? AND wi.status = 'pending' ORDER BY wi.created_at DESC",
                 (username,),
             )

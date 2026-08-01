@@ -43,7 +43,7 @@ The `PH` helper in `app/storage/db.py` abstracts SQL dialect differences (`?` in
 
 There are two ways to access the platform:
 
-**Email/password** — the access method for registered users. Accounts are created via the registration flow.
+**Username or email plus password** — the public username and private email identify the same account. Personal relationships and resources use the internal `users.id`, never the username; resources in a group space use its `group_id`.
 
 **Guest access** — allows using the platform without an account. Guest access has limited permissions.
 

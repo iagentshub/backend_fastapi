@@ -22,38 +22,39 @@ async def _get_social_fields(username: str) -> dict[str, Any]:
 
     async with open_db() as conn:
         row = await conn.fetchone(
-            "SELECT avatar, bio, languages, email_public, github, cv, created_at "
+            "SELECT id, avatar, bio, languages, email, is_email_public, github, cv, created_at "
             "FROM users WHERE username = ?",
             (username,),
         )
         if not row:
             return {}
+        user_id = row[0]
         followers_count = (
             await conn.fetchval(
                 "SELECT COUNT(*) FROM user_follows WHERE following = ?",
-                (username,),
+                (user_id,),
             )
             or 0
         )
         following_count = (
             await conn.fetchval(
                 "SELECT COUNT(*) FROM user_follows WHERE follower = ?",
-                (username,),
+                (user_id,),
             )
             or 0
         )
     try:
-        langs = json.loads(row[2] or "[]")
+        langs = json.loads(row[3] or "[]")
     except (json.JSONDecodeError, TypeError):
         langs = []
     return {
-        "avatar_url": f"/api/users/{username}/avatar" if row[0] else None,
-        "bio": row[1],
+        "avatar_url": f"/api/users/{username}/avatar" if row[1] else None,
+        "bio": row[2],
         "languages": langs,
-        "email_public": row[3],
-        "github": row[4],
-        "cv": row[5],
-        "joined_at": row[6],
+        "email_public": row[4] if row[5] else None,
+        "github": row[6],
+        "cv": row[7],
+        "joined_at": row[8],
         "followers_count": followers_count,
         "following_count": following_count,
     }
@@ -72,20 +73,20 @@ async def search_users(
             pattern = f"%{q}%"
             rows = await conn.fetchall(
                 "SELECT u.username, u.avatar, "
-                "(SELECT COUNT(*) FROM user_follows WHERE following = u.username) AS followers_count, "
+                "(SELECT COUNT(*) FROM user_follows WHERE following = u.id) AS followers_count, "
                 "(SELECT COUNT(*) FROM resource_social WHERE owner = u.username AND is_public = 1) AS public_resources_count "
                 "FROM users u "
-                "WHERE u.username != ? AND LOWER(u.username) LIKE LOWER(?) "
+                "WHERE u.id != ? AND LOWER(u.username) LIKE LOWER(?) "
                 "ORDER BY u.username LIMIT ? OFFSET ?",
                 (username, pattern, limit, offset),
             )
         else:
             rows = await conn.fetchall(
                 "SELECT u.username, u.avatar, "
-                "(SELECT COUNT(*) FROM user_follows WHERE following = u.username) AS followers_count, "
+                "(SELECT COUNT(*) FROM user_follows WHERE following = u.id) AS followers_count, "
                 "(SELECT COUNT(*) FROM resource_social WHERE owner = u.username AND is_public = 1) AS public_resources_count "
                 "FROM users u "
-                "WHERE u.username != ? "
+                "WHERE u.id != ? "
                 "ORDER BY u.username LIMIT ? OFFSET ?",
                 (username, limit, offset),
             )

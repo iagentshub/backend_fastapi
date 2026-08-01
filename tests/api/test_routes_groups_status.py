@@ -30,6 +30,15 @@ def _set_cookie(client: TestClient, username: str, group_id: str | None = None) 
     client.cookies.set("ga_token", _token(username, group_id))
 
 
+def _user_id(username: str) -> str:
+    import asyncio
+
+    from app.auth.auth import get_user_by_username
+    user = asyncio.run(get_user_by_username(username))
+    assert user is not None
+    return str(user["id"])
+
+
 _AGENT = {
     "name": "Agente de prueba",
     "system_prompt": "Eres un asistente de pruebas.",
@@ -96,7 +105,7 @@ def test_active_member_falls_back_to_personal_when_disabled(admin_client):
     # Mismo usuario, mismo group_id en el token — require_group cae a personal
     _set_cookie(admin_client, "group_status_owner_d", group_id=group["id"])
     r2 = admin_client.get("/api/auth/me")
-    assert r2.json()["group_id"] == "group_status_owner_d"
+    assert r2.json()["group_id"] == _user_id("group_status_owner_d")
 
 
 def test_reactivate_group_allogroup_switch_again(admin_client):
@@ -221,4 +230,4 @@ def test_delete_group_does_not_touch_shared_original(admin_client):
 
     _set_cookie(admin_client, "group_status_h")
     still_there = admin_client.get(f"/api/agents/{original['id']}").json()
-    assert still_there["owner_id"] == "group_status_h"
+    assert still_there["owner_id"] == _user_id("group_status_h")

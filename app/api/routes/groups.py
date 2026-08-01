@@ -6,7 +6,12 @@ from typing import Any, Dict, List
 from fastapi import APIRouter, Depends, Request, Response
 
 from app.api.routes.auth import GroupContext, require_auth, require_group
-from app.auth.auth import create_token, get_user_by_username, get_user_role
+from app.auth.auth import (
+    create_token,
+    get_user_by_id,
+    get_user_by_username,
+    get_user_role,
+)
 from app.config.data import DB_FILE
 from app.config.session import SECURE_COOKIES
 from app.errors import APIError
@@ -181,7 +186,8 @@ async def list_members(
 ) -> List[Dict[str, Any]]:
     _assert_not_guest(ctx.user)
     if group_id == ctx.user:
-        return [{"username": ctx.user, "role": "owner", "permissions": {}}]
+        user = await get_user_by_id(ctx.user)
+        return [{"username": user["username"] if user else "", "role": "owner", "permissions": {}}]
     if not await _groups.can_access(group_id, ctx.user) and await get_user_role(ctx.user) != "admin":
         raise APIError(403, "forbidden", "Sin acceso a este grupo", extra={"resource": "group"})
     return await _groups.list_members(group_id)
@@ -203,11 +209,12 @@ async def add_member(
         raise APIError(400, "invalid_field", "Rol inválido", extra={"field": "role"})
     if not await _groups.can_manage(group_id, ctx.user) and await get_user_role(ctx.user) != "admin":
         raise APIError(403, "forbidden", "Sin permisos para invitar miembros")
-    if not await get_user_by_username(username):
+    target_user = await get_user_by_username(username)
+    if not target_user:
         raise APIError(404, "not_found", "Usuario no encontrado", extra={"resource": "user"})
     if not await _groups.get(group_id):
         raise APIError(404, "not_found", "Grupo no encontrado", extra={"resource": "group"})
-    await _groups.add_member(group_id, username, role)
+    await _groups.add_member(group_id, target_user["id"], role)
     return {"ok": True, "group_id": group_id, "username": username, "role": role}
 
 
@@ -219,15 +226,17 @@ async def remove_member(
 ) -> Dict[str, Any]:
     _assert_not_guest(ctx.user)
     _assert_not_personal_group(group_id, ctx.user)
+    target_user = await get_user_by_username(username)
+    target_user_id = target_user["id"] if target_user else ""
     if not await _groups.can_manage(group_id, ctx.user) and await get_user_role(ctx.user) != "admin":
-        if username != ctx.user:
+        if target_user_id != ctx.user:
             raise APIError(403, "forbidden", "Sin permisos para eliminar miembros")
     group = await _groups.get(group_id)
     if not group:
         raise APIError(404, "not_found", "Grupo no encontrado", extra={"resource": "group"})
-    if username == group["created_by"]:
+    if target_user_id == group["created_by"]:
         raise APIError(400, "cannot_remove_group_owner", "No puedes eliminar al creador del grupo")
-    if not await _groups.remove_member(group_id, username):
+    if not target_user or not await _groups.remove_member(group_id, target_user_id):
         raise APIError(404, "not_found", "Miembro no encontrado", extra={"resource": "member"})
     return {"ok": True}
 
@@ -254,10 +263,14 @@ async def update_member_role(
         _validate_permissions(permissions)
     if not await _groups.can_manage(group_id, ctx.user) and await get_user_role(ctx.user) != "admin":
         raise APIError(403, "forbidden", "Sin permisos para cambiar roles")
-    if has_role and not await _groups.update_member_role(group_id, username, role):
+    target_user = await get_user_by_username(username)
+    if not target_user:
+        raise APIError(404, "not_found", "Usuario no encontrado", extra={"resource": "user"})
+    target_user_id = target_user["id"]
+    if has_role and not await _groups.update_member_role(group_id, target_user_id, role):
         raise APIError(404, "not_found", "Miembro no encontrado", extra={"resource": "member"})
     if permissions is not None and not await _groups.update_member_permissions(
-        group_id, username, permissions
+        group_id, target_user_id, permissions
     ):
         raise APIError(404, "not_found", "Miembro no encontrado", extra={"resource": "member"})
     return {
@@ -328,16 +341,19 @@ async def invite_member(
         raise APIError(403, "forbidden", "Sin permisos para invitar miembros")
     if not await _groups.get(group_id):
         raise APIError(404, "not_found", "Grupo no encontrado", extra={"resource": "group"})
-    if not await get_user_by_username(username):
+    target_user = await get_user_by_username(username)
+    if not target_user:
         raise APIError(404, "not_found", "Usuario no encontrado", extra={"resource": "user"})
-    if await _groups.is_member(group_id, username):
+    target_user_id = target_user["id"]
+    if await _groups.is_member(group_id, target_user_id):
         raise APIError(409, "already_member", "El usuario ya es miembro de este grupo")
-    inv = await _groups.invite_user(group_id, username, ctx.user)
+    inv = await _groups.invite_user(group_id, target_user_id, ctx.user)
     if inv is None:
         raise APIError(
             409, "already_exists", "Ya existe una invitacion pendiente para este usuario",
             extra={"resource": "invitation"},
         )
+    inv["username"] = username
     return inv
 
 
@@ -371,7 +387,11 @@ async def transfer_group_ownership(
             400, "field_required", "Se requiere 'username' del nuevo propietario",
             extra={"field": "username"},
         )
-    if new_owner == username:
+    target_user = await get_user_by_username(new_owner)
+    if not target_user:
+        raise APIError(404, "not_found", "Usuario no encontrado", extra={"resource": "user"})
+    new_owner_id = target_user["id"]
+    if new_owner_id == username:
         raise APIError(400, "already_owner", "Ya eres el propietario")
     group = await _groups.get(group_id)
     if not group:
@@ -381,7 +401,7 @@ async def transfer_group_ownership(
             403, "owner_only_action", "Solo el propietario puede transferir el grupo",
             extra={"action": "transfer"},
         )
-    if not await _groups.transfer_ownership(group_id, new_owner):
+    if not await _groups.transfer_ownership(group_id, new_owner_id):
         raise APIError(400, "not_a_member", "El usuario no es miembro de este grupo")
     return {"ok": True}
 

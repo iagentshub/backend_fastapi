@@ -92,7 +92,7 @@ def test_register_email_verify_enabled_returns_pending(client, reset_rate_limite
          patch("app.auth.auth.EMAIL_VERIFY_ENABLED", True), \
          patch("app.api.routes.auth.send_verification_email"):
         r = client.post("/api/auth/register", json={
-            "email": "pendingverify@test.com", "password": "pass1234"
+            "username": "pendingverify", "email": "pendingverify@test.com", "password": "pass1234"
         })
     assert r.status_code == 200
     data = r.json()
@@ -148,7 +148,7 @@ def test_login_unverified_account(client):
 # ── logout (líneas 185-186) ───────────────────────────────────────────────────
 
 def test_logout_clears_cookie(client, reset_rate_limiter):
-    client.post("/api/auth/register", json={"email": "logout@test.com", "password": "pass1234"})
+    client.post("/api/auth/register", json={"username": "logoutuser", "email": "logout@test.com", "password": "pass1234"})
     r = client.post("/api/auth/logout")
     assert r.status_code == 200
     assert r.json()["ok"] is True
@@ -184,7 +184,7 @@ def test_me_admin_with_webmail_url(admin_client):
 # ── change_password — campos vacíos (línea 260) ──────────────────────────────
 
 def test_change_password_empty_fields(client, reset_rate_limiter):
-    client.post("/api/auth/register", json={"email": "emptypw@test.com", "password": "pass1234"})
+    client.post("/api/auth/register", json={"username": "emptypw", "email": "emptypw@test.com", "password": "pass1234"})
     r = client.post("/api/auth/change-password", json={"current_password": "", "new_password": ""})
     assert r.status_code == 400
     assert r.json()["detail"]["code"] == "all_fields_required"
@@ -343,7 +343,7 @@ def test_admin_delete_agent_invalid_scope(admin_client):
 # ── admin_list_knowledge — con ítems (líneas 779-780) ────────────────────────
 
 def test_admin_list_knowledge_with_items(admin_client):
-    """Con ítems en la BD se ejercita la asignación de owner_email y pop de content."""
+    """Los ítems administrativos exponen el username público, no el email."""
     admin_client.post("/api/knowledge/text", json={
         "title": "Test Knowledge Item", "content": "Contenido de prueba"
     })
@@ -353,7 +353,7 @@ def test_admin_list_knowledge_with_items(admin_client):
     assert len(items) >= 1
     for item in items:
         assert "content" not in item
-        assert "owner_email" in item
+        assert item["owner_username"] == "testadmin"
 
 
 # ── admin_delete_knowledge — no encontrado (línea 791) ───────────────────────

@@ -68,6 +68,12 @@ def _login_as(client, username):
     client.cookies.set("ga_token", create_token(username))
 
 
+def _user_id(username: str) -> str:
+    from app.auth.auth import get_user_by_username
+
+    return asyncio.run(get_user_by_username(username))["id"]
+
+
 def _enable_billing():
     import app.config.data as cfg
     cfg.SETTINGS_FILE.write_text(
@@ -240,31 +246,31 @@ def test_business_subscription_auto_assigns_owner_license(client):
 
 def test_assigning_licenses_respects_seat_limit_and_revoke_frees_slot(client):
     _setup_user(client, "alice")
-    _setup_user(client, "bob")
+    _setup_user(client, "bobby")
     _setup_user(client, "carol")
-    _setup_user(client, "dave")
+    _setup_user(client, "david")
     _login_as(client, "alice")
     _subscribe(client, tier="business", seats=3)
 
-    assert client.post("/api/billing/licenses/bob", json={}).status_code == 200
+    assert client.post("/api/billing/licenses/bobby", json={}).status_code == 200
     assert client.post("/api/billing/licenses/carol", json={}).status_code == 200
-    over = client.post("/api/billing/licenses/dave", json={})
+    over = client.post("/api/billing/licenses/david", json={})
     assert over.status_code == 409
 
-    revoked = client.delete("/api/billing/licenses/bob")
+    revoked = client.delete("/api/billing/licenses/bobby")
     assert revoked.status_code == 200
     assert revoked.json()["available"] == 1
-    assert client.post("/api/billing/licenses/dave", json={}).status_code == 200
+    assert client.post("/api/billing/licenses/david", json={}).status_code == 200
 
 
 def test_non_owner_cannot_assign_licenses(client):
     _setup_user(client, "alice")
-    _setup_user(client, "bob")
+    _setup_user(client, "bobby")
     _login_as(client, "alice")
     _subscribe(client, tier="business", seats=3)
 
-    _login_as(client, "bob")
-    r = client.post("/api/billing/licenses/bob", json={})
+    _login_as(client, "bobby")
+    r = client.post("/api/billing/licenses/bobby", json={})
     assert r.status_code == 404
 
 
@@ -279,12 +285,12 @@ def test_license_gate_blocks_standard_user_without_license(client):
 def test_license_gate_allogroup_assigned_user(client):
     _enable_billing()
     _setup_user(client, "alice")
-    _setup_user(client, "bob")
+    _setup_user(client, "bobby")
     _login_as(client, "alice")
     _subscribe(client, tier="business", seats=3)
-    client.post("/api/billing/licenses/bob", json={})
+    client.post("/api/billing/licenses/bobby", json={})
 
-    _login_as(client, "bob")
+    _login_as(client, "bobby")
     r = client.get("/api/connections")
     assert r.status_code == 200
 
@@ -292,11 +298,11 @@ def test_license_gate_allogroup_assigned_user(client):
 def test_canceled_subscription_license_does_not_grant_access(client):
     _enable_billing()
     _setup_user(client, "alice")
-    _setup_user(client, "bob")
+    _setup_user(client, "bobby")
     _login_as(client, "alice")
     _subscribe(client, tier="business", seats=3)
-    client.post("/api/billing/licenses/bob", json={})
-    row = asyncio.run(billing_routes._billing.get_active_by_username("alice"))
+    client.post("/api/billing/licenses/bobby", json={})
+    row = asyncio.run(billing_routes._billing.get_active_by_username(_user_id("alice")))
     asyncio.run(
         billing_routes._billing.upsert(
             username="alice",
@@ -313,7 +319,7 @@ def test_canceled_subscription_license_does_not_grant_access(client):
         )
     )
 
-    _login_as(client, "bob")
+    _login_as(client, "bobby")
     r = client.get("/api/connections")
     assert r.status_code == 403
     assert r.json()["detail"]["code"] == "license_required"
@@ -386,7 +392,7 @@ def test_webhook_duplicate_event_processed_once(client):
 def test_webhook_subscription_deleted_marks_canceled(client):
     _setup_user(client, "alice")
     _subscribe(client)
-    row = asyncio.run(billing_routes._billing.get_active_by_username("alice"))
+    row = asyncio.run(billing_routes._billing.get_active_by_username(_user_id("alice")))
     sub_obj = {
         "id": row["stripe_subscription_id"],
         "customer": row["stripe_customer_id"],

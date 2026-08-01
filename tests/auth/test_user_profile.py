@@ -12,12 +12,12 @@ from app.auth.auth import (
 
 
 async def test_register_user_email_basic(patch_data_dir):
-    username, token = await register_user_email("hello@example.com", "pass1234")
-    assert username == "hello@example.com"
+    username, token = await register_user_email("hello", "hello@example.com", "pass1234")
+    assert username == "hello"
     assert token is None  # EMAIL_VERIFY_ENABLED is False in tests
     user = await get_user_by_email("hello@example.com")
     assert user is not None
-    assert user["username"] == "hello@example.com"
+    assert user["username"] == "hello"
     assert user["email"] == "hello@example.com"
     assert user["role"] == "standard"
     assert user["is_active"] in (1, True)
@@ -26,6 +26,7 @@ async def test_register_user_email_basic(patch_data_dir):
 
 async def test_register_user_email_with_profile(patch_data_dir):
     username, _ = await register_user_email(
+        "profileuser",
         "profile@example.com",
         "pass1234",
         birth_date="1990-06-15",
@@ -44,20 +45,20 @@ async def test_register_user_email_with_profile(patch_data_dir):
 
 
 async def test_register_user_email_duplicate(patch_data_dir):
-    await register_user_email("dup@example.com", "pass1234")
+    await register_user_email("dupuser", "dup@example.com", "pass1234")
     with pytest.raises(ValueError, match="correo"):
-        await register_user_email("dup@example.com", "pass5678")
+        await register_user_email("different", "dup@example.com", "pass5678")
 
 
-async def test_register_username_is_full_email(patch_data_dir):
-    u1, _ = await register_user_email("alice@foo.com", "pass1234")
-    u2, _ = await register_user_email("alice@bar.com", "pass1234")
-    assert u1 == "alice@foo.com"
-    assert u2 == "alice@bar.com"
+async def test_register_username_is_separate_and_unique(patch_data_dir):
+    u1, _ = await register_user_email("alice", "alice@foo.com", "pass1234")
+    assert u1 == "alice"
+    with pytest.raises(ValueError, match="usuario"):
+        await register_user_email("alice", "alice@bar.com", "pass1234")
 
 
 async def test_update_user_profile(patch_data_dir):
-    username, _ = await register_user_email("update@example.com", "pass1234")
+    username, _ = await register_user_email("updateuser", "update@example.com", "pass1234")
     await update_user_profile(username, country="MX", phone="+52 55 1234 5678")
     user = await get_user_by_username(username)
     assert user["country"] == "MX"
@@ -65,14 +66,14 @@ async def test_update_user_profile(patch_data_dir):
 
 
 async def test_update_user_profile_ignores_unknown_fields(patch_data_dir):
-    username, _ = await register_user_email("ignore@example.com", "pass1234")
+    username, _ = await register_user_email("ignoreuser", "ignore@example.com", "pass1234")
     await update_user_profile(username, country="FR", unknown_field="value")
     user = await get_user_by_username(username)
     assert user["country"] == "FR"
 
 
 async def test_update_user_profile_empty_update(patch_data_dir):
-    username, _ = await register_user_email("empty@example.com", "pass1234")
+    username, _ = await register_user_email("emptyuser", "empty@example.com", "pass1234")
     await update_user_profile(username)
     user = await get_user_by_username(username)
     assert user is not None

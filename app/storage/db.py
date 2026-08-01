@@ -20,6 +20,7 @@ from typing import Any, AsyncGenerator, List, Optional, Tuple
 
 from app.storage.schema import SCHEMA_PG, SCHEMA_SQLITE
 from app.utils import flog
+from app.utils.generators import generate_id
 
 # ── Backend detection ──────────────────────────────────────────────────────────
 
@@ -416,6 +417,7 @@ async def _migrate_sqlite(conn: Any) -> None:
     cur = await conn.execute("PRAGMA table_info(users)")
     user_cols = {row[1] for row in await cur.fetchall()}
     for col, definition in [
+        ("id", "TEXT"),
         ("birth_date", "TEXT"),
         ("gender", "TEXT"),
         ("country", "TEXT"),
@@ -443,6 +445,18 @@ async def _migrate_sqlite(conn: Any) -> None:
                 await conn.commit()
             except Exception as exc:
                 flog.warning(f"[db] No se pudo añadir columna {col}: {exc}")
+
+    # IDs internos estables: username queda reservado para presentación/búsqueda.
+    cur = await conn.execute("SELECT username FROM users WHERE id IS NULL OR id = ''")
+    missing_user_ids = await cur.fetchall()
+    if missing_user_ids:
+        for row in missing_user_ids:
+            await conn.execute(
+                "UPDATE users SET id = ? WHERE username = ?",
+                (generate_id(32), row[0]),
+            )
+        await conn.commit()
+    await conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_id ON users(id)")
 
     # Create token_daily table if missing
     cur = await conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
@@ -495,7 +509,7 @@ async def _migrate_sqlite(conn: Any) -> None:
         ("avatar", "TEXT"),
         ("bio", "TEXT"),
         ("languages", "TEXT NOT NULL DEFAULT '[]'"),
-        ("email_public", "TEXT"),
+        ("is_email_public", "INTEGER NOT NULL DEFAULT 0"),
         ("github", "TEXT"),
         ("cv", "TEXT"),
     ]:
@@ -793,10 +807,11 @@ async def _migrate_users_json_sqlite(conn: Any) -> None:
             email = u.get("email") or f"{username}@migrated.local"
             await conn.execute(
                 "INSERT OR IGNORE INTO users "
-                "(username, email, password_hash, display_name, birth_date, gender, "
+                "(id, username, email, password_hash, display_name, birth_date, gender, "
                 "country, phone, role, is_active, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
+                    generate_id(32),
                     username,
                     email,
                     u.get("password_hash"),
@@ -849,6 +864,7 @@ async def _migrate_pg(conn: Any) -> None:
     await _migrate_named_resources_pg(conn)
     await _migrate_group_active_flag_pg(conn)
 
+    await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS id TEXT")
     await conn.execute("ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token TEXT")
     await conn.execute(
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS reset_token_expires TEXT"
@@ -899,13 +915,18 @@ async def _migrate_pg(conn: Any) -> None:
         ("avatar", "TEXT"),
         ("bio", "TEXT"),
         ("languages", "TEXT NOT NULL DEFAULT '[]'"),
-        ("email_public", "TEXT"),
+        ("is_email_public", "SMALLINT NOT NULL DEFAULT 0"),
         ("github", "TEXT"),
         ("cv", "TEXT"),
     ]:
         await conn.execute(
             f"ALTER TABLE users ADD COLUMN IF NOT EXISTS {col} {definition}"
         )
+    await conn.execute(
+        "UPDATE users SET id = md5(random()::text || clock_timestamp()::text) "
+        "WHERE id IS NULL OR id = ''"
+    )
+    await conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_id ON users(id)")
     await conn.execute("""
         CREATE TABLE IF NOT EXISTS user_follows (
             follower    TEXT NOT NULL,
@@ -1181,10 +1202,11 @@ async def _migrate_users_json_pg(conn: Any) -> None:
             email = u.get("email") or f"{username}@migrated.local"
             await conn.execute(
                 "INSERT INTO users "
-                "(username, email, password_hash, display_name, birth_date, gender, "
+                "(id, username, email, password_hash, display_name, birth_date, gender, "
                 "country, phone, role, is_active, created_at) "
-                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) "
+                "VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12) "
                 "ON CONFLICT (username) DO NOTHING",
+                generate_id(32),
                 username,
                 email,
                 u.get("password_hash"),
