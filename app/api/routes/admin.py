@@ -434,6 +434,62 @@ async def admin_metadata_table_data(
         }
 
 
+def _server_health() -> dict[str, Any]:
+    """Disco/memoria/CPU del host — sin dependencias nuevas (evita psutil):
+    shutil.disk_usage es stdlib, la memoria se lee de /proc/meminfo (Linux,
+    válido en el contenedor de producción) y la CPU se aproxima con la load
+    average normalizada por núcleos. Si algo no está disponible (p.ej. correr
+    en macOS en local) se devuelve None en ese campo en vez de romper /stats
+    entero — este dato es informativo, nunca debe tumbar el panel de admin."""
+    import shutil as _shutil
+
+    from app.config.data import DATA_DIR as _DATA_DIR
+
+    health: dict[str, Any] = {
+        "disk_used_pct": None,
+        "disk_used_gb": None,
+        "disk_total_gb": None,
+        "memory_used_pct": None,
+        "memory_used_gb": None,
+        "memory_total_gb": None,
+        "cpu_load_pct": None,
+        "cpu_cores": None,
+    }
+    try:
+        usage = _shutil.disk_usage(_DATA_DIR)
+        health["disk_used_pct"] = round(usage.used / usage.total * 100, 1)
+        health["disk_used_gb"] = round(usage.used / 1_073_741_824, 1)
+        health["disk_total_gb"] = round(usage.total / 1_073_741_824, 1)
+    except Exception:  # noqa: BLE001 — informativo, no debe romper /stats
+        pass
+
+    try:
+        meminfo: dict[str, int] = {}
+        with open("/proc/meminfo", encoding="utf-8") as f:
+            for line in f:
+                key, _, rest = line.partition(":")
+                meminfo[key] = int(rest.strip().split()[0])  # kB
+        mem_total = meminfo.get("MemTotal", 0)
+        mem_available = meminfo.get("MemAvailable", 0)
+        if mem_total:
+            mem_used = mem_total - mem_available
+            health["memory_used_pct"] = round(mem_used / mem_total * 100, 1)
+            health["memory_used_gb"] = round(mem_used / 1_048_576, 1)
+            health["memory_total_gb"] = round(mem_total / 1_048_576, 1)
+    except Exception:  # noqa: BLE001 — /proc/meminfo no existe fuera de Linux
+        pass
+
+    try:
+        cores = os.cpu_count() or 1
+        load_1min = os.getloadavg()[0]
+        health["cpu_cores"] = cores
+        health["cpu_load_pct"] = round(load_1min / cores * 100, 1)
+    except (OSError, AttributeError):
+        pass
+
+    return health
+
+
 @admin_router.get("/stats")
 async def admin_stats(_: str = Depends(require_admin)) -> dict[str, Any]:
     import datetime as _dt
@@ -563,6 +619,7 @@ async def admin_stats(_: str = Depends(require_admin)) -> dict[str, Any]:
         "avg_latency_ms": avg_latency_ms,
         "top_error_endpoint": top_error_endpoint,
         "top_error_count": top_error_count,
+        **_server_health(),
     }
 
 

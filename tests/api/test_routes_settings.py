@@ -550,3 +550,52 @@ def test_platform_rejects_invalid_default_theme(admin_client):
     )
     assert r.status_code == 422
     assert r.json()["detail"]["field"] == "default_theme"
+
+
+def test_platform_public_maintenance_defaults_off(client):
+    r = client.get("/api/settings/platform/public")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["maintenance_enabled"] is False
+    assert data["maintenance_message"] == ""
+    assert data["maintenance_at"] is None
+
+
+def test_admin_sets_maintenance_notice(admin_client, client):
+    r = admin_client.put(
+        "/api/settings/platform",
+        json={
+            "maintenance_enabled": True,
+            "maintenance_message": "Mantenimiento programado el viernes a las 20h",
+            "maintenance_at": "2026-08-07T20:00:00",
+        },
+    )
+    assert r.status_code == 200
+    data = r.json()
+    assert data["maintenance_enabled"] is True
+    assert data["maintenance_message"] == "Mantenimiento programado el viernes a las 20h"
+    assert data["maintenance_at"] == "2026-08-07T20:00:00"
+
+    public = client.get("/api/settings/platform/public")
+    assert public.json()["maintenance_enabled"] is True
+    assert public.json()["maintenance_message"] == (
+        "Mantenimiento programado el viernes a las 20h"
+    )
+
+
+def test_platform_rejects_maintenance_message_too_long(admin_client):
+    r = admin_client.put(
+        "/api/settings/platform",
+        json={"maintenance_message": "x" * 501},
+    )
+    assert r.status_code == 422
+    assert r.json()["detail"]["field"] == "maintenance_message"
+
+
+def test_platform_rejects_invalid_maintenance_at(admin_client):
+    r = admin_client.put(
+        "/api/settings/platform",
+        json={"maintenance_at": "not-a-date"},
+    )
+    assert r.status_code == 422
+    assert r.json()["detail"]["field"] == "maintenance_at"

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime as _datetime
 from typing import Any, List, Literal, Optional
 
 from fastapi import APIRouter, Depends
@@ -305,6 +306,11 @@ _PLATFORM_DEFAULTS: dict = {
     # desincronizarse de si el contenedor "watchtower" realmente arrancó o
     # paró — solo se guarda tras confirmar la operación contra Docker.
     "auto_update_enabled": True,
+    # Aviso informativo de mantenimiento programado — solo se muestra como
+    # banner a los usuarios, no bloquea ni restringe el uso de la app.
+    "maintenance_enabled": False,
+    "maintenance_message": "",
+    "maintenance_at": None,  # ISO datetime, opcional — solo informativo
 }
 
 _VALID_REGISTRATION = {"open", "closed"}
@@ -356,6 +362,9 @@ class PlatformConfigUpdate(BaseModel):
     oauth_google_enabled: Optional[bool] = None
     oauth_apple_enabled: Optional[bool] = None
     oauth_microsoft_enabled: Optional[bool] = None
+    maintenance_enabled: Optional[bool] = None
+    maintenance_message: Optional[str] = None
+    maintenance_at: Optional[str] = None
 
 
 @router.get("/platform/public")
@@ -373,6 +382,9 @@ async def get_platform_config_public() -> dict:
         "oauth_google_enabled": cfg.get("oauth_google_enabled", True),
         "oauth_apple_enabled": cfg.get("oauth_apple_enabled", True),
         "oauth_microsoft_enabled": cfg.get("oauth_microsoft_enabled", True),
+        "maintenance_enabled": cfg.get("maintenance_enabled", False),
+        "maintenance_message": cfg.get("maintenance_message", ""),
+        "maintenance_at": cfg.get("maintenance_at"),
     }
 
 
@@ -440,6 +452,23 @@ async def update_platform_config(
             "stress_max_concurrency debe estar entre 0 y 100000",
             extra={"field": "stress_max_concurrency"},
         )
+    if "maintenance_message" in update and len(update["maintenance_message"]) > 500:
+        raise APIError(
+            422,
+            "invalid_field",
+            "maintenance_message no puede superar 500 caracteres",
+            extra={"field": "maintenance_message"},
+        )
+    if update.get("maintenance_at"):
+        try:
+            _datetime.fromisoformat(update["maintenance_at"])
+        except ValueError:
+            raise APIError(
+                422,
+                "invalid_field",
+                "maintenance_at debe ser una fecha ISO 8601 válida",
+                extra={"field": "maintenance_at"},
+            ) from None
 
     cfg.update(update)
     _write_platform_cfg(cfg)

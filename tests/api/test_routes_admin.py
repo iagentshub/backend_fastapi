@@ -959,6 +959,27 @@ def test_admin_stats_health_no_logs_today(admin_client):
     assert stats["top_error_count"] == 0
 
 
+def test_admin_stats_server_health(admin_client):
+    """Disco siempre disponible (shutil es stdlib multiplataforma); memoria
+    depende de /proc/meminfo (Linux, ausente en runners macOS) así que puede
+    venir a None ahí — el contrato es "no rompe /stats", no un valor fijo."""
+    r = admin_client.get("/api/admin/stats")
+    assert r.status_code == 200
+    stats = r.json()
+
+    assert stats["disk_total_gb"] > 0
+    assert 0 <= stats["disk_used_pct"] <= 100
+    assert 0 <= stats["disk_used_gb"] <= stats["disk_total_gb"]
+
+    if stats["memory_total_gb"] is not None:
+        assert stats["memory_total_gb"] > 0
+        assert 0 <= stats["memory_used_pct"] <= 100
+
+    if stats["cpu_cores"] is not None:
+        assert stats["cpu_cores"] >= 1
+        assert stats["cpu_load_pct"] >= 0
+
+
 def test_admin_stats_health_counts_and_failure_rate(admin_client, tmp_path):
     from datetime import datetime as _datetime
 
