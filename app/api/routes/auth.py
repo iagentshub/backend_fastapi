@@ -57,6 +57,7 @@ from app.middleware.ratelimit import RateLimiter
 from app.services.email import send_reset_email, send_verification_email
 from app.storage.db import open_db
 from app.storage.groups import GroupStorage as _GroupStorage
+from app.storage.guest import is_guest
 from app.storage.tokens import (
     DEFAULT_EXPIRY_DAYS,
     VALID_EXPIRY_DAYS,
@@ -118,32 +119,34 @@ router = APIRouter(prefix="/api/auth", tags=["auth"])
 #     de un cambio de contraseña, sin una consulta a BD por request.
 _ACTIVE_CACHE_TTL = 60       # segundos
 _ACTIVE_CACHE_MAX = 5_000    # entradas máximas antes de eviction
-# {username: (is_active, password_changed_at, expires_at)}
-_active_cache: dict[str, tuple[bool, str | None, float]] = {}
+# {username: (is_active, password_changed_at, role, expires_at)}
+# El rol viaja en la misma entrada: sale de la fila de usuario que ya leemos,
+# así que require_role() no cuesta una consulta extra por request.
+_active_cache: dict[str, tuple[bool, str | None, str, float]] = {}
 
 
-async def _get_user_auth_state(username: str) -> tuple[bool, str | None]:
-    """Devuelve (is_active, password_changed_at). Usa caché con TTL de 60 s.
+async def _get_user_auth_state(username: str) -> tuple[bool, str | None, str]:
+    """Devuelve (is_active, password_changed_at, role). Usa caché con TTL de 60 s.
 
     Los usuarios guest son siempre activos y no tienen password_changed_at.
     """
-    from app.storage.guest import is_guest as _is_guest_fn
-    if _is_guest_fn(username):
-        return True, None
+    if is_guest(username):
+        return True, None, "guest"
 
     now = time.monotonic()
     cached = _active_cache.get(username)
-    if cached and now < cached[2]:
-        return cached[0], cached[1]
+    if cached and now < cached[3]:
+        return cached[0], cached[1], cached[2]
 
     user = await get_user_by_identity(username)
     active = bool(user and user.get("is_active", 1))
     pwd_changed = user.get("password_changed_at") if user else None
+    role = (user.get("role") or "standard") if user else "standard"
 
     # Eviction: si el dict supera el límite, eliminar la mitad de entradas expiradas
     # (o las más antiguas si no hay suficientes expiradas)
     if len(_active_cache) >= _ACTIVE_CACHE_MAX:
-        expired = [k for k, (_, _, exp) in _active_cache.items() if now >= exp]
+        expired = [k for k, (_, _, _, exp) in _active_cache.items() if now >= exp]
         if len(expired) >= _ACTIVE_CACHE_MAX // 2:
             for k in expired:
                 del _active_cache[k]
@@ -152,13 +155,13 @@ async def _get_user_auth_state(username: str) -> tuple[bool, str | None]:
             for k in list(_active_cache)[: _ACTIVE_CACHE_MAX // 2]:
                 del _active_cache[k]
 
-    _active_cache[username] = (active, pwd_changed, now + _ACTIVE_CACHE_TTL)
-    return active, pwd_changed
+    _active_cache[username] = (active, pwd_changed, role, now + _ACTIVE_CACHE_TTL)
+    return active, pwd_changed, role
 
 
 async def _is_user_active(username: str) -> bool:
     """Compatibilidad: devuelve True si la cuenta está activa."""
-    active, _ = await _get_user_auth_state(username)
+    active, _, _ = await _get_user_auth_state(username)
     return active
 
 
@@ -216,78 +219,129 @@ async def _identify(
     raise APIError(401, "not_authenticated", "No autenticado")
 
 
-async def _assert_account_ok(username: str, issued_at: Optional[float]) -> None:
+async def _assert_account_ok(username: str, issued_at: Optional[float]) -> str:
     """Cuenta activa + credencial emitida tras el último cambio de contraseña.
 
     Cambiar la contraseña invalida las sesiones robadas — y también los PATs
     anteriores, que son credenciales de largo recorrido y por tanto el activo
     más valioso para un atacante que ya tuvo acceso.
 
-    Los guests salen de _get_user_auth_state como (True, None) → no bloquean.
+    Los guests salen de _get_user_auth_state como (True, None, "guest") → no bloquean.
+
+    Devuelve el rol del principal para que require_role() no vuelva a consultarlo.
     """
-    is_active, password_changed_at = await _get_user_auth_state(username)
+    is_active, password_changed_at, role = await _get_user_auth_state(username)
     if not is_active:
         raise APIError(403, "account_disabled", "Cuenta desactivada")
     if not password_changed_at or issued_at is None:
-        return
+        return role
     changed = _parse_ts(password_changed_at)
     if changed is None:
-        return  # fecha malformada en BD → no bloquear
+        return role  # fecha malformada en BD → no bloquear
     if issued_at < changed.timestamp():
         raise APIError(
             401,
             "credential_expired_password_change",
             "Credencial expirada tras cambio de contraseña. Vuelve a autenticarte.",
         )
+    return role
 
 
-async def require_auth(
-    ga_token: Optional[str] = Cookie(default=None),
-    authorization: Optional[str] = Header(default=None),
-) -> str:
-    """Dependency: valida la credencial (cookie o Bearer) y la cuenta."""
-    from app.storage.guest import is_guest
+# ── Autorización por rol ──────────────────────────────────────────────────────
+# Un único modelo de principal para todo el backend. Antes había dos guards
+# escritos a mano (require_auth sin distinguir invitado, require_admin encima)
+# y comprobaciones de invitado repartidas por endpoint; el que no se acordaba
+# de comprobarlo quedaba abierto al invitado. Ahora el rango es la política y
+# el default de cada dependency es explícito.
+#
+# Rol desconocido (p. ej. "gestor", que admin.py:497 acepta en BD) → rango de
+# usuario registrado: pasa las puertas de "standard", no las de "admin". Es el
+# comportamiento que ya tenían, porque nadie ramifica sobre esos roles.
+_STANDARD_RANK = 1
+_ROLE_RANK = {"guest": 0, "standard": _STANDARD_RANK, "admin": 2}
 
-    identity, issued_at, _ = await _identify(ga_token, authorization)
-    await _assert_account_ok(identity, issued_at)
+
+def _assert_min_role(role: str, minimum: str) -> None:
+    if _ROLE_RANK.get(role, _STANDARD_RANK) < _ROLE_RANK[minimum]:
+        if minimum == "admin":
+            raise APIError(403, "forbidden", "Acceso restringido")
+        raise APIError(
+            403,
+            "guest_forbidden",
+            "Esta acción requiere una cuenta registrada.",
+        )
+
+
+async def _resolve_principal(
+    ga_token: Optional[str], authorization: Optional[str]
+) -> tuple[str, str, str, Optional[str]]:
+    """Credencial → (user_id, legacy_personal_id, role, gid).
+
+    El invitado no tiene fila en `users`, así que su identidad hace de ambos ids.
+    """
+    identity, issued_at, gid = await _identify(ga_token, authorization)
+    role = await _assert_account_ok(identity, issued_at)
     if is_guest(identity):
-        return identity
+        return identity, identity, role, gid
     user = await get_user_by_identity(identity)
     if not user:
         raise APIError(401, "invalid_token", "Token inválido o expirado")
-    return user["id"]
+    return user["id"], user["username"], role, gid
 
 
-async def require_group(
-    ga_token: Optional[str] = Cookie(default=None),
-    authorization: Optional[str] = Header(default=None),
-    x_iagents_group: Optional[str] = Header(default=None),
-) -> GroupContext:
-    """Dependency: valida la credencial y resuelve el group activo.
+def require_role(minimum: str):
+    """Construye la dependency que exige `minimum` como rol mínimo.
+
+    `minimum="guest"` acepta a cualquiera con credencial válida, invitado
+    incluido — es el permiso más laxo y hay que pedirlo explícitamente.
+    """
+
+    async def dependency(
+        ga_token: Optional[str] = Cookie(default=None),
+        authorization: Optional[str] = Header(default=None),
+    ) -> str:
+        user_id, _personal, role, _gid = await _resolve_principal(
+            ga_token, authorization
+        )
+        _assert_min_role(role, minimum)
+        return user_id
+
+    return dependency
+
+
+def require_group_role(minimum: str):
+    """Igual que require_role, pero resuelve además el group activo.
 
     El group sale del claim `gid` del JWT (navegador) o de la cabecera
     `X-iAgents-Group` (Bearer). En ambos casos se valida igual: si el
     group no existe, está desactivado o el usuario ya no es miembro, se cae
-    al espacio personal (group_id = username).
+    al espacio personal (group_id = user_id).
     """
-    from app.storage.guest import is_guest
 
-    identity, issued_at, gid = await _identify(ga_token, authorization)
-    await _assert_account_ok(identity, issued_at)
-    if is_guest(identity):
-        user_id = identity
-        legacy_personal_id = identity
-    else:
-        user = await get_user_by_identity(identity)
-        if not user:
-            raise APIError(401, "invalid_token", "Token inválido o expirado")
-        user_id = user["id"]
-        legacy_personal_id = user["username"]
+    async def dependency(
+        ga_token: Optional[str] = Cookie(default=None),
+        authorization: Optional[str] = Header(default=None),
+        x_iagents_group: Optional[str] = Header(default=None),
+    ) -> GroupContext:
+        user_id, personal_id, role, gid = await _resolve_principal(
+            ga_token, authorization
+        )
+        _assert_min_role(role, minimum)
+        return await _resolve_group(user_id, personal_id, gid, x_iagents_group)
 
+    return dependency
+
+
+async def _resolve_group(
+    user_id: str,
+    legacy_personal_id: str,
+    gid: Optional[str],
+    x_iagents_group: Optional[str],
+) -> GroupContext:
     if gid is None:
         gid = x_iagents_group
 
-    # Si el gid es distinto del username → validar group de equipo
+    # Si el gid es distinto del espacio personal → validar group de equipo
     if gid and gid not in (user_id, legacy_personal_id):
         group = await _groups.get(gid)
         if (
@@ -300,10 +354,25 @@ async def require_group(
     return GroupContext(user=user_id, group_id=user_id)
 
 
-async def require_admin(username: str = Depends(require_auth)) -> str:
-    if await get_user_role(username) != "admin":
-        raise APIError(403, "forbidden", "Acceso restringido")
-    return username
+# Dependencies concretas. Los ~137 `Depends(require_auth)` / `Depends(require_group)`
+# del backend no cambian: lo que cambia es que su política ahora es un dato.
+#
+# require_auth y require_group siguen admitiendo invitado —el mismo comportamiento
+# que hoy— porque cerrarlos exige antes decidir qué endpoints reabrir con
+# require_session. Esa es la línea a cambiar cuando esté revisado el allowlist:
+#   require_auth  = require_role("standard")
+#   require_group = require_group_role("standard")
+# El agujero de 0.1 no se cierra hasta ese cambio; esto es la máquina que lo hace
+# posible en una línea en vez de en 137.
+require_auth = require_role("guest")
+require_group = require_group_role("guest")
+
+# Explícitos: aceptan invitado por diseño. Úsalos en los endpoints del demo
+# (los cinco campos de GuestSession) para que sigan abiertos tras el cierre.
+require_session = require_role("guest")
+require_group_session = require_group_role("guest")
+
+require_admin = require_role("admin")
 
 
 @router.post("/register")

@@ -23,6 +23,7 @@ from app.config.session import (
 )
 from app.services.email import send_deletion_scheduled_email
 from app.storage.db import IS_PG, open_db
+from app.storage.guest import is_guest
 from app.utils import flog
 from app.utils.generators import generate_date, generate_id
 from app.utils.validation import is_valid_username, normalize_username
@@ -335,8 +336,14 @@ async def set_own_password(username: str, new_password: str) -> None:
 
 
 async def get_user_role(username: str) -> str:
-    from app.storage.guest import is_guest
+    """Rol del principal: "guest", "standard", "admin" (o el que tenga en BD).
 
+    El invitado se reconoce con ``is_guest`` de ``storage.guest`` — la misma y
+    única definición que usa el resto del backend. Antes esta función tenía su
+    propia comprobación (``"guest"`` / prefijo ``guest_``) que no encajaba con
+    los ids que emite ``new_guest_id()`` (prefijo ``guest:``), así que todo
+    invitado caía al default y se clasificaba como ``standard``.
+    """
     if is_guest(username):
         return "guest"
     user = await get_user_by_identity(username)
