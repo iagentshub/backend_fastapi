@@ -57,6 +57,7 @@ _ADMIN_EXPLORE_TYPES = (
     "connection",
     "knowledge",
     "workflow",
+    "skill",
 )
 
 
@@ -945,6 +946,40 @@ async def admin_delete_agent(
     return {"ok": True}
 
 
+@admin_router.get("/skills")
+async def admin_list_skills(_: str = Depends(require_admin)) -> list[dict[str, Any]]:
+    from app.config.data import SKILLS_DIR
+    from app.storage.storage import SkillStorage
+
+    async with open_db() as conn:
+        user_rows = await conn.fetchall("SELECT id, username FROM users")
+    username_map = {r[0]: r[1] for r in user_rows}
+    items = await SkillStorage(SKILLS_DIR).list("all")
+    for item in items:
+        item["owner_username"] = username_map.get(
+            item.get("owner_id", ""), item.get("owner_id", "")
+        )
+        item.pop("content", None)
+    return items
+
+
+@admin_router.delete("/skills/{item_id}")
+async def admin_delete_skill(
+    item_id: str, _: str = Depends(require_admin)
+) -> dict[str, Any]:
+    from app.config.data import SKILLS_DIR
+    from app.storage.storage import SkillStorage
+
+    storage = SkillStorage(SKILLS_DIR)
+    skill = await storage.get_any(item_id)
+    if not skill:
+        raise APIError(
+            404, "not_found", "Elemento no encontrado", extra={"resource": "item"}
+        )
+    await storage.delete(skill["scope"], item_id, owner_id=None, allow_public=True)
+    return {"ok": True}
+
+
 @admin_router.get("/knowledge")
 async def admin_list_knowledge(_: str = Depends(require_admin)) -> list[dict[str, Any]]:
     from app.config.data import DB_FILE
@@ -1117,18 +1152,20 @@ def _explore_search_text(resource_type: str, item: dict[str, Any]) -> str:
         "connection": ("name", "id", "owner_username", "type"),
         "knowledge": ("title", "id", "owner_username", "type"),
         "workflow": ("name", "id", "owner_username", "description"),
+        "skill": ("name", "id", "owner_username", "category"),
     }[resource_type]
     return " ".join(str(item.get(field) or "") for field in fields).lower()
 
 
 async def _admin_inventory() -> dict[str, list[dict[str, Any]]]:
-    users, groups, agents, connections, knowledge, workflows = await asyncio.gather(
+    users, groups, agents, connections, knowledge, workflows, skills = await asyncio.gather(
         admin_list_users(_=""),
         admin_list_groups(_=""),
         admin_list_agents(_=""),
         admin_list_connections(_=""),
         admin_list_knowledge(_=""),
         admin_list_workflows(_=""),
+        admin_list_skills(_=""),
     )
     return {
         "user": users,
@@ -1137,6 +1174,7 @@ async def _admin_inventory() -> dict[str, list[dict[str, Any]]]:
         "connection": connections,
         "knowledge": knowledge,
         "workflow": workflows,
+        "skill": skills,
     }
 
 
@@ -1394,11 +1432,22 @@ async def admin_resource_graph(
                 )
                 add_edge(root_id, knowledge_node, "uses")
         for skill_id in root.get("skills") or []:
-            skill_node = add_node("skill", str(skill_id), str(skill_id))
+            skill = resources_by_type["skill"].get(str(skill_id))
+            skill_node = add_node(
+                "skill",
+                str(skill_id),
+                resource_label("skill", skill) if skill else str(skill_id),
+            )
             add_edge(root_id, skill_node, "uses")
 
-    if resource_type in ("connection", "knowledge"):
-        field = "connection_id" if resource_type == "connection" else "knowledge"
+    if resource_type in ("connection", "knowledge", "skill"):
+        field = (
+            "connection_id"
+            if resource_type == "connection"
+            else "knowledge"
+            if resource_type == "knowledge"
+            else "skills"
+        )
         for agent in agents.values():
             if field == "connection_id":
                 operation_connections = {

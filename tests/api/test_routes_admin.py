@@ -794,6 +794,47 @@ def test_admin_knowledge_forbidden_for_standard(client, reset_rate_limiter):
     assert r.status_code == 403
 
 
+def test_admin_list_skills(admin_client):
+    r = admin_client.get("/api/admin/skills")
+    assert r.status_code == 200
+    assert isinstance(r.json(), list)
+
+
+def test_admin_skills_forbidden_for_standard(client, reset_rate_limiter):
+    client.post(
+        "/api/auth/register",
+        json={
+            "username": "stduser4",
+            "email": "std4@example.com",
+            "password": "pass1234",
+        },
+    )
+    r = client.get("/api/admin/skills")
+    assert r.status_code == 403
+
+
+def test_admin_delete_skill(admin_client):
+    skill = admin_client.post(
+        "/api/skills/private",
+        json={
+            "name": "Admin delete me",
+            "description": "temp",
+            "content": "do the thing",
+        },
+    ).json()
+
+    r = admin_client.delete(f"/api/admin/skills/{skill['id']}")
+
+    assert r.status_code == 200
+    remaining = admin_client.get("/api/admin/skills").json()
+    assert skill["id"] not in {item["id"] for item in remaining}
+
+
+def test_admin_delete_skill_not_found(admin_client):
+    r = admin_client.delete("/api/admin/skills/missing")
+    assert r.status_code == 404
+
+
 # ── Admin explore y grafo relacional ─────────────────────────────────────────
 
 
@@ -816,6 +857,7 @@ def test_admin_explore_unifies_and_filters_resource_types(admin_client):
         "connection",
         "knowledge",
         "workflow",
+        "skill",
     }
 
 
@@ -861,9 +903,21 @@ def test_admin_agent_graph_contains_owner_connection_and_workflow(admin_client):
             owner_id=admin_user["id"],
         )
     )
+    skill = admin_client.post(
+        "/api/skills/private",
+        json={
+            "name": "Graph skill name",
+            "description": "for graph test",
+            "content": "do the thing",
+        },
+    ).json()
     agent = admin_client.post(
         "/api/agents",
-        json={**_AGENT_PAYLOAD, "connection_id": connection["id"]},
+        json={
+            **_AGENT_PAYLOAD,
+            "connection_id": connection["id"],
+            "skills": [skill["id"]],
+        },
     ).json()
     workflow = admin_client.post(
         "/api/workflows",
@@ -888,12 +942,14 @@ def test_admin_agent_graph_contains_owner_connection_and_workflow(admin_client):
     payload = response.json()
     assert payload["root_id"] == f"agent:{agent['id']}"
     node_types = {node["type"] for node in payload["nodes"]}
-    assert {"agent", "user", "connection", "workflow"}.issubset(node_types)
+    assert {"agent", "user", "connection", "workflow", "skill"}.issubset(node_types)
     assert {edge["relation"] for edge in payload["edges"]} >= {
         "owns",
         "uses",
         "orchestrates",
     }
+    skill_node = next(n for n in payload["nodes"] if n["type"] == "skill")
+    assert skill_node["label"] == "Graph skill name"
 
     for resource_type, resource_id in (
         ("user", admin_user["id"]),
@@ -901,12 +957,21 @@ def test_admin_agent_graph_contains_owner_connection_and_workflow(admin_client):
         ("connection", connection["id"]),
         ("knowledge", knowledge["id"]),
         ("workflow", workflow.json()["id"]),
+        ("skill", skill["id"]),
     ):
         related = admin_client.get(
             f"/api/admin/resources/{resource_type}/{resource_id}/graph"
         )
         assert related.status_code == 200
         assert related.json()["root_id"] == f"{resource_type}:{resource_id}"
+
+    # El grafo del usuario propietario también debe incluir la skill —
+    # antes "skill" no era un tipo conocido por Admin y nunca aparecía.
+    user_graph = admin_client.get(
+        f"/api/admin/resources/user/{admin_user['id']}/graph"
+    ).json()
+    user_node_types = {node["type"] for node in user_graph["nodes"]}
+    assert "skill" in user_node_types
 
 
 def test_admin_resource_graph_not_found(admin_client):
