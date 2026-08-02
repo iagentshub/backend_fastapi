@@ -111,7 +111,7 @@ async def builder_chat(
         model=str(builder_conn.get("model") or ""),
         system_prompt=build_system_prompt(force_ready=force_ready, mode=body.mode),
         temperature=0.2,
-        max_tokens=700,
+        max_tokens=1400,
         timeout=90,
     )
     history = [message.model_dump() for message in body.messages]

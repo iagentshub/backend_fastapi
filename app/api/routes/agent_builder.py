@@ -131,7 +131,7 @@ async def builder_chat(
         temperature=0.2,
         # Un borrador completo cabe holgadamente aquí. Evita que un modelo
         # pequeño divague durante miles de tokens antes de cerrar el JSON.
-        max_tokens=700,
+        max_tokens=1400,
         # La conexión del asistente debe usar un modelo rápido. Tres minutos
         # cubren colas/cold starts de NIM sin dejar la interfaz bloqueada.
         timeout=90,

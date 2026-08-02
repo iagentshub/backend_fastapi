@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from app.services.agent_builder import (
@@ -36,7 +38,7 @@ def test_parse_ready_draft_and_remove_unknown_resource_ids():
       "draft": {
         "name": "Agente de soporte",
         "description": "Responde dudas",
-        "system_prompt": "Eres un agente de soporte. Pregunta por el contexto antes de responder.",
+        "system_prompt": "Eres un agente de soporte. Pregunta por el contexto antes de responder, verifica los datos disponibles y explica con claridad cualquier límite o incertidumbre.",
         "temperature": 0.4,
         "skills": ["known-skill", "invented-skill"],
         "knowledge": ["known-doc", "other-doc"],
@@ -190,3 +192,22 @@ def test_guided_fallback_turns_answers_into_actionable_prompt():
     assert "Quiero responder dudas de clientes" in envelope.draft.system_prompt
     assert "No inventar datos" in envelope.draft.system_prompt
     assert "No inventes datos" in envelope.draft.system_prompt
+    assert "## Forma de trabajo" in envelope.draft.system_prompt
+    assert "## Reglas y límites" in envelope.draft.system_prompt
+    assert "## Formato de respuesta" in envelope.draft.system_prompt
+
+
+def test_ready_draft_rejects_a_short_generic_system_prompt():
+    reply = json.dumps(
+        {
+            "assistant_message": "Listo",
+            "status": "ready",
+            "draft": {
+                "name": "Agente genérico",
+                "system_prompt": "Eres un asistente útil que ayuda al usuario con sus tareas.",
+            },
+        }
+    )
+
+    with pytest.raises(ValueError, match="demasiado breve o genérico"):
+        parse_builder_reply(reply, BuilderResources())

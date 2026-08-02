@@ -41,6 +41,20 @@ _CATEGORY_ALIASES = {
     "general": "productivity",
 }
 
+_MIN_ACTIONABLE_SKILL_CHARS = 180
+
+
+def _is_actionable_skill_content(content: str) -> bool:
+    """Require enough structure to make the skill reusable and checkable."""
+    clean = content.strip()
+    headings = re.findall(r"(?m)^#{1,3}\s+\S+", clean)
+    procedure_items = re.findall(r"(?m)^\s*(?:\d+\.|[-*])\s+\S+", clean)
+    return (
+        len(clean) >= _MIN_ACTIONABLE_SKILL_CHARS
+        and len(headings) >= 3
+        and len(procedure_items) >= 3
+    )
+
 
 class SkillBuilderMessage(BaseModel):
     role: Literal["user", "assistant"]
@@ -155,6 +169,8 @@ REGLAS:
 - Construye las instrucciones mediante campos breves y listas. El backend las
   convertirá a Markdown. No escribas saltos de línea dentro de strings JSON.
 - Da instrucciones concretas y comprobables; evita texto comercial y relleno.
+- Incluye situaciones de uso, entradas, al menos tres pasos concretos,
+  comprobaciones, límites y un resultado esperado.
 - Categorías permitidas: {categories}.
 - icon debe coincidir con category.
 
@@ -185,6 +201,7 @@ def parse_builder_reply(reply: str) -> SkillBuilderEnvelope:
     """Extract the first valid structured envelope from a provider response."""
     decoder = json.JSONDecoder()
     last_error: Exception | None = None
+    quality_error: Exception | None = None
     for index, char in enumerate(reply):
         if char != "{":
             continue
@@ -203,6 +220,30 @@ def parse_builder_reply(reply: str) -> SkillBuilderEnvelope:
             raw_draft["category"] = category
             raw_draft["icon"] = category
             if not raw_draft.get("content") and raw_draft.get("purpose"):
+                required_lists = (
+                    "when_to_use",
+                    "inputs",
+                    "steps",
+                    "checks",
+                    "limits",
+                )
+                missing = [
+                    field
+                    for field in required_lists
+                    if not isinstance(raw_draft.get(field), list)
+                    or not any(str(item).strip() for item in raw_draft[field])
+                ]
+                if len(raw_draft.get("steps") or []) < 3:
+                    missing.append("steps (mínimo 3)")
+                if not str(raw_draft.get("output") or "").strip():
+                    missing.append("output")
+                if missing:
+                    quality_error = ValueError(
+                        "La skill no incluye instrucciones operativas completas: "
+                        + ", ".join(dict.fromkeys(missing))
+                    )
+                    continue
+
                 def section(title: str, field: str) -> str:
                     items = raw_draft.get(field)
                     if not isinstance(items, list):
@@ -243,10 +284,20 @@ def parse_builder_reply(reply: str) -> SkillBuilderEnvelope:
         if envelope.status == "ready" and envelope.draft is None:
             last_error = ValueError("La respuesta no incluye el borrador")
             continue
+        if (
+            envelope.status == "ready"
+            and envelope.draft is not None
+            and not _is_actionable_skill_content(envelope.draft.content)
+        ):
+            quality_error = ValueError(
+                "El contenido de la skill es demasiado breve o poco operativo"
+            )
+            continue
         if envelope.draft:
             envelope.draft.icon = envelope.draft.category
         return envelope
-    detail = f": {last_error}" if last_error else ""
+    final_error = quality_error or last_error
+    detail = f": {final_error}" if final_error else ""
     raise ValueError(f"El proveedor no devolvió una skill válida{detail}")
 
 
@@ -284,6 +335,12 @@ Ayudar a realizar correctamente la siguiente tarea:
 2. Analiza el objetivo y las restricciones indicadas.
 3. Realiza la tarea de forma ordenada, clara y verificable.
 4. Revisa el resultado antes de entregarlo.
+
+## Comprobaciones
+
+- Verifica que se ha respondido al objetivo y que no faltan datos esenciales.
+- Comprueba que las afirmaciones importantes se pueden justificar o se presentan
+  claramente como supuestos.
 
 ## Límites
 

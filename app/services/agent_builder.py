@@ -43,6 +43,20 @@ class BuilderEnvelope(BaseModel):
 
 BuilderMode = Literal["auto", "guided", "expert"]
 
+_MIN_ACTIONABLE_PROMPT_CHARS = 90
+
+
+def _is_actionable_system_prompt(prompt: str) -> bool:
+    """Reject short or repetitive text that cannot guide an agent reliably."""
+    clean = prompt.strip()
+    words = re.findall(r"\w+", clean, flags=re.UNICODE)
+    unique_words = {word.casefold() for word in words}
+    return (
+        len(clean) >= _MIN_ACTIONABLE_PROMPT_CHARS
+        and len(words) >= 12
+        and len(unique_words) >= 10
+    )
+
 
 def should_force_ready(
     messages: List[BuilderMessage], mode: BuilderMode = "auto"
@@ -175,6 +189,8 @@ el borrador sin hacer preguntas innecesarias.
 Un buen system_prompt debe incluir: identidad y objetivo, flujo de trabajo,
 preguntas que debe hacer cuando falte contexto, reglas y límites, y formato de
 respuesta. Escribe instrucciones operativas, no una descripción comercial.
+No marques el borrador como listo si el system_prompt es una frase breve o
+genérica: debe poder guiar por sí solo el trabajo del agente.
 
 Skills disponibles:
 {catalogue(resources.skills)}
@@ -258,20 +274,32 @@ def build_fallback_ready(
     ]
     combined = "\n\n".join(answers)
     longest = max(answers, key=len, default="")
-    if mode == "expert" and len(longest) >= 20:
-        system_prompt = longest
-    elif len(longest) >= 500:
+    if _is_actionable_system_prompt(longest):
         system_prompt = longest
     else:
-        system_prompt = (
-            "Eres un asistente especializado en ayudar al usuario con el siguiente "
-            "objetivo y contexto:\n\n"
-            f"{combined}\n\n"
-            "Trabaja de forma clara, práctica y fiable. Antes de actuar, pide únicamente "
-            "la información imprescindible que falte. No inventes datos. Explica los "
-            "límites relevantes y entrega resultados fáciles de revisar. Respeta la "
-            "privacidad y no reveles información sensible."
-        )
+        system_prompt = f"""Eres un asistente especializado en este objetivo:
+
+{combined or "Ayudar al usuario con la tarea que indique."}
+
+## Forma de trabajo
+
+1. Identifica el resultado que necesita el usuario y las restricciones expresadas.
+2. Solicita solamente la información imprescindible que falte para trabajar bien.
+3. Ejecuta la tarea de forma ordenada, explicando decisiones relevantes.
+4. Comprueba que el resultado responde al objetivo antes de entregarlo.
+
+## Reglas y límites
+
+- No inventes datos, fuentes, requisitos ni acciones realizadas.
+- Distingue hechos, supuestos y recomendaciones cuando pueda haber confusión.
+- Protege datos sensibles y avisa de riesgos o limitaciones importantes.
+- Mantén el trabajo dentro del objetivo solicitado y pide confirmación antes de
+  realizar acciones irreversibles o con impacto externo.
+
+## Formato de respuesta
+
+Entrega primero el resultado principal. Añade después los pasos, comprobaciones,
+supuestos o siguientes acciones que ayuden al usuario a revisarlo y utilizarlo."""
     return BuilderEnvelope(
         assistant_message=(
             "He preparado un borrador con la información disponible. "
@@ -312,6 +340,7 @@ def parse_builder_reply(
 ) -> BuilderEnvelope:
     """Extract, validate and sanitize the structured response from the model."""
     last_error: Exception | None = None
+    quality_error: Exception | None = None
     for value in _json_objects(reply):
         try:
             envelope = BuilderEnvelope.model_validate(value)
@@ -320,6 +349,15 @@ def parse_builder_reply(
             continue
         if envelope.status == "ready" and envelope.draft is None:
             last_error = ValueError("El modelo marcó el borrador como listo sin incluirlo")
+            continue
+        if (
+            envelope.status == "ready"
+            and envelope.draft is not None
+            and not _is_actionable_system_prompt(envelope.draft.system_prompt)
+        ):
+            quality_error = ValueError(
+                "El system_prompt es demasiado breve o genérico para guiar al agente"
+            )
             continue
         if envelope.draft is not None:
             allowed_skills = {item.id for item in resources.skills}
@@ -333,5 +371,6 @@ def parse_builder_reply(
                 if item in allowed_knowledge
             ]
         return envelope
-    detail = f": {last_error}" if last_error else ""
+    final_error = quality_error or last_error
+    detail = f": {final_error}" if final_error else ""
     raise ValueError(f"El proveedor no devolvió un borrador válido{detail}")
