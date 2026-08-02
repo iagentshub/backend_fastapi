@@ -1403,6 +1403,53 @@ async def admin_resource_graph(
     if resource_type in resources_by_type:
         connect_owner(resource_type, root)
 
+    def wire_agent_uses(agent: dict[str, Any], agent_node: str) -> None:
+        """Añade las aristas "usa" de un agente (conexión/knowledge/skill/
+        memoria) — reutilizable tanto cuando el agente es la raíz del grafo
+        como cuando aparece como hijo de su usuario/grupo propietario, para
+        que esa vista también muestre qué usa cada agente y no solo qué
+        posee el usuario en plano."""
+        connection_ids = [str(agent.get("connection_id") or "")]
+        connection_ids.extend(
+            str(value).split("::", 1)[0]
+            for value in (agent.get("op_connections") or [])
+        )
+        for connection_id in {value for value in connection_ids if value}:
+            connection = resources_by_type["connection"].get(connection_id)
+            if connection:
+                connection_node = add_node(
+                    "connection",
+                    connection_id,
+                    resource_label("connection", connection),
+                )
+                add_edge(agent_node, connection_node, "uses")
+        for knowledge_id in agent.get("knowledge") or []:
+            knowledge = resources_by_type["knowledge"].get(str(knowledge_id))
+            if knowledge:
+                knowledge_node = add_node(
+                    "knowledge",
+                    str(knowledge_id),
+                    resource_label("knowledge", knowledge),
+                )
+                add_edge(agent_node, knowledge_node, "uses")
+        for skill_id in agent.get("skills") or []:
+            skill = resources_by_type["skill"].get(str(skill_id))
+            skill_node = add_node(
+                "skill",
+                str(skill_id),
+                resource_label("skill", skill) if skill else str(skill_id),
+            )
+            add_edge(agent_node, skill_node, "uses")
+        memory_file = str(agent.get("memory_file") or "")
+        if agent.get("use_memory") and memory_file:
+            # El id de memoria es compuesto ("owner_id::filename", ver
+            # admin_list_memory) porque el nombre solo es único por dueño.
+            memory_key = f"{str(agent.get('owner_id') or '')}::{memory_file}"
+            memory = resources_by_type["memory"].get(memory_key)
+            if memory:
+                memory_node = add_node("memory", memory_key, memory_file)
+                add_edge(agent_node, memory_node, "uses")
+
     async with open_db() as conn:
         member_rows = await conn.fetchall(
             "SELECT group_id, username, role FROM group_members"
@@ -1430,6 +1477,8 @@ async def admin_resource_graph(
                         kind, str(item["id"]), resource_label(kind, item)
                     )
                     add_edge(root_id, item_node, "owns")
+                    if kind == "agent":
+                        wire_agent_uses(item, item_node)
 
     if resource_type == "group":
         for row in member_rows:
@@ -1448,6 +1497,8 @@ async def admin_resource_graph(
                         kind, str(item["id"]), resource_label(kind, item)
                     )
                     add_edge(root_id, item_node, "owns")
+                    if kind == "agent":
+                        wire_agent_uses(item, item_node)
 
     for row in share_rows:
         kind = str(row["resource_type"])
@@ -1469,45 +1520,7 @@ async def admin_resource_graph(
 
     agents = resources_by_type["agent"]
     if resource_type == "agent":
-        connection_ids = [str(root.get("connection_id") or "")]
-        connection_ids.extend(
-            str(value).split("::", 1)[0] for value in (root.get("op_connections") or [])
-        )
-        for connection_id in {value for value in connection_ids if value}:
-            connection = resources_by_type["connection"].get(connection_id)
-            if connection:
-                connection_node = add_node(
-                    "connection",
-                    connection_id,
-                    resource_label("connection", connection),
-                )
-                add_edge(root_id, connection_node, "uses")
-        for knowledge_id in root.get("knowledge") or []:
-            knowledge = resources_by_type["knowledge"].get(str(knowledge_id))
-            if knowledge:
-                knowledge_node = add_node(
-                    "knowledge",
-                    str(knowledge_id),
-                    resource_label("knowledge", knowledge),
-                )
-                add_edge(root_id, knowledge_node, "uses")
-        for skill_id in root.get("skills") or []:
-            skill = resources_by_type["skill"].get(str(skill_id))
-            skill_node = add_node(
-                "skill",
-                str(skill_id),
-                resource_label("skill", skill) if skill else str(skill_id),
-            )
-            add_edge(root_id, skill_node, "uses")
-        memory_file = str(root.get("memory_file") or "")
-        if root.get("use_memory") and memory_file:
-            # El id de memoria es compuesto ("owner_id::filename", ver
-            # admin_list_memory) porque el nombre solo es único por dueño.
-            memory_key = f"{str(root.get('owner_id') or '')}::{memory_file}"
-            memory = resources_by_type["memory"].get(memory_key)
-            if memory:
-                memory_node = add_node("memory", memory_key, memory_file)
-                add_edge(root_id, memory_node, "uses")
+        wire_agent_uses(root, root_id)
 
     if resource_type == "memory":
         memory_owner_id, _, memory_filename = canonical_resource_id.partition("::")

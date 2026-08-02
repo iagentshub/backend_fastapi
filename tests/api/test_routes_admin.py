@@ -961,12 +961,17 @@ def test_admin_agent_graph_contains_owner_connection_and_workflow(admin_client):
         "/api/memory/graph-memory-file", json={"content": "some notes"}
     )
     memory_id = f"{admin_user['id']}::graph-memory-file"
+    knowledge = admin_client.post(
+        "/api/knowledge/text",
+        json={"title": "Graph knowledge", "content": "Graph content"},
+    ).json()
     agent = admin_client.post(
         "/api/agents",
         json={
             **_AGENT_PAYLOAD,
             "connection_id": connection["id"],
             "skills": [skill["id"]],
+            "knowledge": [knowledge["id"]],
             "use_memory": True,
             "memory_file": "graph-memory-file",
         },
@@ -983,10 +988,6 @@ def test_admin_agent_graph_contains_owner_connection_and_workflow(admin_client):
     )
     assert workflow.status_code in (200, 201)
     group = admin_client.post("/api/groups", json={"name": "Graph test group"}).json()
-    knowledge = admin_client.post(
-        "/api/knowledge/text",
-        json={"title": "Graph knowledge", "content": "Graph content"},
-    ).json()
 
     response = admin_client.get(f"/api/admin/resources/agent/{agent['id']}/graph")
 
@@ -1001,6 +1002,7 @@ def test_admin_agent_graph_contains_owner_connection_and_workflow(admin_client):
         "workflow",
         "skill",
         "memory",
+        "knowledge",
     }.issubset(node_types)
     assert {edge["relation"] for edge in payload["edges"]} >= {
         "owns",
@@ -1036,6 +1038,20 @@ def test_admin_agent_graph_contains_owner_connection_and_workflow(admin_client):
     user_node_types = {node["type"] for node in user_graph["nodes"]}
     assert "skill" in user_node_types
     assert "memory" in user_node_types
+
+    # No basta con que los nodos aparezcan sueltos bajo el usuario: el grafo
+    # debe dejar claro que es el AGENTE quien usa la skill/memoria/knowledge,
+    # no solo que el usuario "posee" ambos por separado sin conectar.
+    agent_node_id = f"agent:{agent['id']}"
+    uses_targets = {
+        edge["target_id"]
+        for edge in user_graph["edges"]
+        if edge["source_id"] == agent_node_id and edge["relation"] == "uses"
+    }
+    assert f"skill:{skill['id']}" in uses_targets
+    assert f"knowledge:{knowledge['id']}" in uses_targets
+    assert f"memory:{memory_id}" in uses_targets
+    assert f"connection:{connection['id']}" in uses_targets
 
 
 def test_admin_resource_graph_not_found(admin_client):
