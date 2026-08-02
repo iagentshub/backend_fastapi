@@ -494,6 +494,42 @@ async def admin_stats(_: str = Depends(require_admin)) -> dict[str, Any]:
         except Exception:  # noqa: BLE001 — backfill best-effort, no debe romper /admin/stats
             tokens_daily = []
 
+        # "date" en app_logs se escribe con datetime.now() local (ver
+        # app/utils/flog.py) — se usa la misma convención aquí para que
+        # "hoy" coincida con lo ya persistido, en vez de la fecha UTC que
+        # usa tokens_daily arriba.
+        today_local = _dt.datetime.now().strftime("%Y-%m-%d")
+        log_rows = await conn.fetchall(
+            "SELECT level, summary FROM app_logs WHERE source='BE' AND date = ?",
+            (today_local,),
+        )
+
+    requests_today = len(log_rows)
+    errors_today = 0
+    endpoint_error_counts: dict[str, int] = {}
+    latency_total = 0
+    latency_count = 0
+    _latency_re = re.compile(r"\((\d+)ms\)\s*$")
+    for level, summary in log_rows:
+        match = _latency_re.search(summary)
+        if match:
+            latency_total += int(match.group(1))
+            latency_count += 1
+        if level == "ERROR":
+            errors_today += 1
+            endpoint = summary.split(" → ", 1)[0].strip()
+            endpoint_error_counts[endpoint] = endpoint_error_counts.get(endpoint, 0) + 1
+
+    failure_rate_pct = (
+        round(errors_today / requests_today * 100, 1) if requests_today else 0.0
+    )
+    avg_latency_ms = round(latency_total / latency_count) if latency_count else 0
+    top_error_endpoint, top_error_count = (
+        max(endpoint_error_counts.items(), key=lambda kv: kv[1])
+        if endpoint_error_counts
+        else (None, 0)
+    )
+
     agents_public = (
         len(list(_AGENTS_DIR.glob("public/*/config.json")))
         if _AGENTS_DIR.exists()
@@ -521,6 +557,12 @@ async def admin_stats(_: str = Depends(require_admin)) -> dict[str, Any]:
         "agents_private": agents_private,
         "webmail_url": WEBMAIL_URL,
         "tokens_daily": tokens_daily,
+        "requests_today": requests_today,
+        "errors_today": errors_today,
+        "failure_rate_pct": failure_rate_pct,
+        "avg_latency_ms": avg_latency_ms,
+        "top_error_endpoint": top_error_endpoint,
+        "top_error_count": top_error_count,
     }
 
 
