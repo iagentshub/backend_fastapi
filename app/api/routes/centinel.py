@@ -97,6 +97,17 @@ async def _broadcast(event: dict) -> None:
     _broadcast_sync(event)
 
 
+def _prune_history(history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+    """Mismo horizonte que la retención de logs (Admin → Config → Logs) — un
+    solo dial para "cuánto histórico guardamos" en vez de dos ajustes que
+    puedan desincronizarse."""
+    from app.api.routes.settings import _read_platform_cfg
+
+    retention_days = int(_read_platform_cfg().get("log_retention_days", 30))
+    cutoff = time.time() - retention_days * 86400
+    return [h for h in history if (h.get("finished_at") or 0) >= cutoff]
+
+
 def _push_history() -> None:
     entry = {
         "run_id": _run["run_id"],
@@ -107,7 +118,7 @@ def _push_history() -> None:
         "summary": dict(_run["summary"]),
     }
     _history.insert(0, entry)
-    del _history[5:]
+    _history[:] = _prune_history(_history)
     # _history es de proceso — con varios workers, el que atienda /history
     # puede no ser el que ejecutó el run. Se persiste igual que el resto del
     # estado de Centinel para que el historial sea el mismo lo sirva quien lo
@@ -281,6 +292,17 @@ async def get_history(_: str = Depends(require_admin)) -> list:
     if persisted_history is not None:
         return persisted_history
     return _history
+
+
+@router.delete("/history/{run_id}")
+async def delete_history_entry(run_id: str, _: str = Depends(require_admin)) -> dict:
+    _guard()
+    _history[:] = [h for h in _history if h.get("run_id") != run_id]
+    data = _read_centinel_state()
+    history = data.get("run_history") or []
+    data["run_history"] = [h for h in history if h.get("run_id") != run_id]
+    _write_centinel_state(data)
+    return {"ok": True}
 
 
 @router.get("/stream/{run_id}")
@@ -681,8 +703,7 @@ def _persist_run_history(entry: Dict[str, Any]) -> None:
     data = _read_centinel_state()
     history = data.get("run_history") or []
     history.insert(0, entry)
-    del history[5:]
-    data["run_history"] = history
+    data["run_history"] = _prune_history(history)
     _write_centinel_state(data)
 
 
