@@ -435,6 +435,15 @@ async def _execute_run(run_id: str, target: str) -> None:
         "-p",
         "no:cacheprovider",
     ]
+    # En producción (GAIA_WORKERS>1) el proceso maestro migra el esquema una
+    # sola vez y marca GAIA_SCHEMA_MIGRATED=1 en su entorno antes de lanzar
+    # los workers de uvicorn (ver main.py) — este subproceso, hijo de un
+    # worker, heredaría esa marca aunque va a crear sus propias bases de
+    # datos SQLite efímeras y vacías (ver conftest.py), haciendo que
+    # init_db() se salte migrate_schema() y truene con "no such table".
+    env = os.environ.copy()
+    env.pop("GAIA_SCHEMA_MIGRATED", None)
+
     ticker_task: Optional[asyncio.Task] = None
     try:
         proc = await asyncio.create_subprocess_exec(
@@ -442,6 +451,7 @@ async def _execute_run(run_id: str, target: str) -> None:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.STDOUT,
             cwd=_BACKEND_DIR,
+            env=env,
         )
         _run["proc"] = proc
         ticker_task = asyncio.create_task(_run_ticker(run_id, proc))
