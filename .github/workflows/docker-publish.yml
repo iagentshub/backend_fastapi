@@ -5,6 +5,10 @@ permissions:
   packages: write
 
 on:
+  # El trigger push llevaba semanas sin disparar ningún run (probablemente
+  # desde la migración de organización del 2026-07-14) — este comentario es
+  # el commit de prueba para confirmar que el ciclo disable/enable del
+  # workflow lo desatascó.
   push:
     branches: [main]
   workflow_dispatch:
