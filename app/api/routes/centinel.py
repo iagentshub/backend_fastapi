@@ -57,6 +57,13 @@ _run: Dict[str, Any] = {
     "summary": {},
     "failed_ids": [],
     "abort_requested": False,  # señal cross-proceso (ver _persist_run_state)
+    # Salida cruda línea a línea, SIN filtrar — a diferencia de "events", que
+    # solo guarda lo que el parser reconoce (test/collecting/summary). Las
+    # secciones "ERRORS"/"FAILURES" de pytest (con el traceback real) van
+    # DESPUÉS de todas las líneas de test, cuando pending_test ya es None —
+    # el parser las descartaba en silencio. Acotado para no crecer sin límite
+    # en un run con miles de tests.
+    "raw_lines": [],
 }
 _subscribers: List[asyncio.Queue] = []
 _history: List[Dict[str, Any]] = []
@@ -221,6 +228,7 @@ async def start_run(
             "summary": {},
             "failed_ids": [],
             "abort_requested": False,
+            "raw_lines": [],
         }
     )
     _persist_run_state()
@@ -426,6 +434,13 @@ async def _execute_run(run_id: str, target: str) -> None:
             line = raw.decode("utf-8", errors="replace").rstrip()
             if not line:
                 continue
+
+            # Sin filtrar — incluye lo que el parser de abajo no reconoce,
+            # como las secciones ERRORS/FAILURES (con el traceback real),
+            # que pytest emite al final, no junto a cada test.
+            _run["raw_lines"].append(line)
+            if len(_run["raw_lines"]) > 4500:
+                del _run["raw_lines"][:-4000]
 
             # ── collecting count
             m = _RE_COLLECTING.search(line)
@@ -643,17 +658,22 @@ def _persist_run_state() -> None:
 
 
 def _persist_run_events() -> None:
-    """Espeja _run["events"] en disco para que /stream/{run_id} pueda
-    reenviarlos en vivo aunque la conexión SSE caiga en un worker distinto
-    al que ejecuta el run — ver _sse_generator, rama "remota"."""
+    """Espeja _run["events"] y _run["raw_lines"] en disco para que
+    /stream/{run_id} pueda reenviarlos en vivo aunque la conexión SSE caiga
+    en un worker distinto al que ejecuta el run (ver _sse_generator, rama
+    "remota"), y para poder inspeccionar la salida cruda de un run desde
+    fuera de la app (p.ej. `docker exec` + leer centinel_state.json) cuando
+    el resumen estructurado no basta para diagnosticar un fallo."""
     data = _read_centinel_state()
     data["run_events"] = list(_run["events"])
+    data["run_raw_lines"] = list(_run["raw_lines"])
     _write_centinel_state(data)
 
 
 def _reset_run_events() -> None:
     data = _read_centinel_state()
     data["run_events"] = []
+    data["run_raw_lines"] = []
     _write_centinel_state(data)
 
 
