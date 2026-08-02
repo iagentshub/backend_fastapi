@@ -835,6 +835,51 @@ def test_admin_delete_skill_not_found(admin_client):
     assert r.status_code == 404
 
 
+def test_admin_list_memory(admin_client):
+    r = admin_client.get("/api/admin/memory")
+    assert r.status_code == 200
+    assert isinstance(r.json(), list)
+
+
+def test_admin_memory_forbidden_for_standard(client, reset_rate_limiter):
+    client.post(
+        "/api/auth/register",
+        json={
+            "username": "stduser5",
+            "email": "std5@example.com",
+            "password": "pass1234",
+        },
+    )
+    r = client.get("/api/admin/memory")
+    assert r.status_code == 403
+
+
+def test_admin_delete_memory(admin_client):
+    admin_client.post(
+        "/api/memory/admin-delete-me", json={"content": "some notes"}
+    )
+
+    memory = admin_client.get("/api/admin/memory").json()
+    entry = next(m for m in memory if m["filename"] == "admin-delete-me")
+
+    r = admin_client.delete(f"/api/admin/memory/{entry['id']}")
+
+    assert r.status_code == 200
+    remaining = admin_client.get("/api/admin/memory").json()
+    assert entry["id"] not in {m["id"] for m in remaining}
+
+
+def test_admin_delete_memory_invalid_id(admin_client):
+    r = admin_client.delete("/api/admin/memory/no-separator")
+    assert r.status_code == 422
+    assert r.json()["detail"]["field"] == "item_id"
+
+
+def test_admin_delete_memory_not_found(admin_client):
+    r = admin_client.delete("/api/admin/memory/testadmin::missing")
+    assert r.status_code == 404
+
+
 # ── Admin explore y grafo relacional ─────────────────────────────────────────
 
 
@@ -858,6 +903,7 @@ def test_admin_explore_unifies_and_filters_resource_types(admin_client):
         "knowledge",
         "workflow",
         "skill",
+        "memory",
     }
 
 
@@ -911,12 +957,18 @@ def test_admin_agent_graph_contains_owner_connection_and_workflow(admin_client):
             "content": "do the thing",
         },
     ).json()
+    admin_client.post(
+        "/api/memory/graph-memory-file", json={"content": "some notes"}
+    )
+    memory_id = f"{admin_user['id']}::graph-memory-file"
     agent = admin_client.post(
         "/api/agents",
         json={
             **_AGENT_PAYLOAD,
             "connection_id": connection["id"],
             "skills": [skill["id"]],
+            "use_memory": True,
+            "memory_file": "graph-memory-file",
         },
     ).json()
     workflow = admin_client.post(
@@ -942,7 +994,14 @@ def test_admin_agent_graph_contains_owner_connection_and_workflow(admin_client):
     payload = response.json()
     assert payload["root_id"] == f"agent:{agent['id']}"
     node_types = {node["type"] for node in payload["nodes"]}
-    assert {"agent", "user", "connection", "workflow", "skill"}.issubset(node_types)
+    assert {
+        "agent",
+        "user",
+        "connection",
+        "workflow",
+        "skill",
+        "memory",
+    }.issubset(node_types)
     assert {edge["relation"] for edge in payload["edges"]} >= {
         "owns",
         "uses",
@@ -950,6 +1009,9 @@ def test_admin_agent_graph_contains_owner_connection_and_workflow(admin_client):
     }
     skill_node = next(n for n in payload["nodes"] if n["type"] == "skill")
     assert skill_node["label"] == "Graph skill name"
+    memory_node = next(n for n in payload["nodes"] if n["type"] == "memory")
+    assert memory_node["label"] == "graph-memory-file"
+    assert memory_node["id"] == f"memory:{memory_id}"
 
     for resource_type, resource_id in (
         ("user", admin_user["id"]),
@@ -958,6 +1020,7 @@ def test_admin_agent_graph_contains_owner_connection_and_workflow(admin_client):
         ("knowledge", knowledge["id"]),
         ("workflow", workflow.json()["id"]),
         ("skill", skill["id"]),
+        ("memory", memory_id),
     ):
         related = admin_client.get(
             f"/api/admin/resources/{resource_type}/{resource_id}/graph"
@@ -965,13 +1028,14 @@ def test_admin_agent_graph_contains_owner_connection_and_workflow(admin_client):
         assert related.status_code == 200
         assert related.json()["root_id"] == f"{resource_type}:{resource_id}"
 
-    # El grafo del usuario propietario también debe incluir la skill —
-    # antes "skill" no era un tipo conocido por Admin y nunca aparecía.
+    # El grafo del usuario propietario también debe incluir la skill y la
+    # memoria — antes ninguno de los dos era un tipo conocido por Admin.
     user_graph = admin_client.get(
         f"/api/admin/resources/user/{admin_user['id']}/graph"
     ).json()
     user_node_types = {node["type"] for node in user_graph["nodes"]}
     assert "skill" in user_node_types
+    assert "memory" in user_node_types
 
 
 def test_admin_resource_graph_not_found(admin_client):

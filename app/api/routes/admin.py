@@ -58,6 +58,7 @@ _ADMIN_EXPLORE_TYPES = (
     "knowledge",
     "workflow",
     "skill",
+    "memory",
 )
 
 
@@ -980,6 +981,53 @@ async def admin_delete_skill(
     return {"ok": True}
 
 
+@admin_router.get("/memory")
+async def admin_list_memory(_: str = Depends(require_admin)) -> list[dict[str, Any]]:
+    """A diferencia del resto de recursos, el nombre de un fichero de memoria
+    lo elige el usuario (no un ID generado) y solo es único por dueño (PK
+    compuesta (id, owner_id) en memory_files) — dos usuarios pueden tener
+    ambos un fichero "notes". Para que Admin (que asume IDs únicas
+    globalmente) pueda listar/enlazar/borrar cada uno sin ambigüedad, el
+    "id" que se expone aquí es "{owner_id}::{filename}"."""
+    async with open_db() as conn:
+        user_rows = await conn.fetchall("SELECT id, username FROM users")
+        username_map = {r[0]: r[1] for r in user_rows}
+        rows = await conn.fetchall(
+            "SELECT id, owner_id, content, updated_at FROM memory_files "
+            "ORDER BY updated_at DESC"
+        )
+    return [
+        {
+            "id": f"{r['owner_id']}::{r['id']}",
+            "filename": r["id"],
+            "owner_id": r["owner_id"],
+            "owner_username": username_map.get(r["owner_id"], r["owner_id"]),
+            "size": len(r["content"] or ""),
+            "updated_at": r["updated_at"],
+        }
+        for r in rows
+    ]
+
+
+@admin_router.delete("/memory/{item_id}")
+async def admin_delete_memory(
+    item_id: str, _: str = Depends(require_admin)
+) -> dict[str, Any]:
+    from app.config.data import MEMORY_DIR
+    from app.storage.storage import MemoryStorage
+
+    owner_id, sep, filename = item_id.partition("::")
+    if not sep:
+        raise APIError(
+            422, "invalid_field", "id de memoria no válido", extra={"field": "item_id"}
+        )
+    if not await MemoryStorage(MEMORY_DIR).delete(filename, owner_id=owner_id):
+        raise APIError(
+            404, "not_found", "Elemento no encontrado", extra={"resource": "item"}
+        )
+    return {"ok": True}
+
+
 @admin_router.get("/knowledge")
 async def admin_list_knowledge(_: str = Depends(require_admin)) -> list[dict[str, Any]]:
     from app.config.data import DB_FILE
@@ -1153,12 +1201,22 @@ def _explore_search_text(resource_type: str, item: dict[str, Any]) -> str:
         "knowledge": ("title", "id", "owner_username", "type"),
         "workflow": ("name", "id", "owner_username", "description"),
         "skill": ("name", "id", "owner_username", "category"),
+        "memory": ("filename", "id", "owner_username"),
     }[resource_type]
     return " ".join(str(item.get(field) or "") for field in fields).lower()
 
 
 async def _admin_inventory() -> dict[str, list[dict[str, Any]]]:
-    users, groups, agents, connections, knowledge, workflows, skills = await asyncio.gather(
+    (
+        users,
+        groups,
+        agents,
+        connections,
+        knowledge,
+        workflows,
+        skills,
+        memory,
+    ) = await asyncio.gather(
         admin_list_users(_=""),
         admin_list_groups(_=""),
         admin_list_agents(_=""),
@@ -1166,6 +1224,7 @@ async def _admin_inventory() -> dict[str, list[dict[str, Any]]]:
         admin_list_knowledge(_=""),
         admin_list_workflows(_=""),
         admin_list_skills(_=""),
+        admin_list_memory(_=""),
     )
     return {
         "user": users,
@@ -1175,6 +1234,7 @@ async def _admin_inventory() -> dict[str, list[dict[str, Any]]]:
         "knowledge": knowledge,
         "workflow": workflows,
         "skill": skills,
+        "memory": memory,
     }
 
 
@@ -1439,6 +1499,28 @@ async def admin_resource_graph(
                 resource_label("skill", skill) if skill else str(skill_id),
             )
             add_edge(root_id, skill_node, "uses")
+        memory_file = str(root.get("memory_file") or "")
+        if root.get("use_memory") and memory_file:
+            # El id de memoria es compuesto ("owner_id::filename", ver
+            # admin_list_memory) porque el nombre solo es único por dueño.
+            memory_key = f"{str(root.get('owner_id') or '')}::{memory_file}"
+            memory = resources_by_type["memory"].get(memory_key)
+            if memory:
+                memory_node = add_node("memory", memory_key, memory_file)
+                add_edge(root_id, memory_node, "uses")
+
+    if resource_type == "memory":
+        memory_owner_id, _, memory_filename = canonical_resource_id.partition("::")
+        for agent in agents.values():
+            if (
+                str(agent.get("owner_id") or "") == memory_owner_id
+                and agent.get("use_memory")
+                and str(agent.get("memory_file") or "") == memory_filename
+            ):
+                agent_node = add_node(
+                    "agent", str(agent["id"]), resource_label("agent", agent)
+                )
+                add_edge(agent_node, root_id, "uses")
 
     if resource_type in ("connection", "knowledge", "skill"):
         field = (
