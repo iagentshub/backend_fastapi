@@ -56,6 +56,7 @@ _run: Dict[str, Any] = {
     "events": [],  # lista de todos los eventos emitidos (para replay)
     "summary": {},
     "failed_ids": [],
+    "abort_requested": False,  # señal cross-proceso (ver _persist_run_state)
 }
 _subscribers: List[asyncio.Queue] = []
 _history: List[Dict[str, Any]] = []
@@ -77,6 +78,7 @@ def _sse(data: dict) -> str:
 
 def _broadcast_sync(event: dict) -> None:
     _run["events"].append(event)
+    _persist_run_events()
     for q in list(_subscribers):
         try:
             q.put_nowait(event)
@@ -99,6 +101,11 @@ def _push_history() -> None:
     }
     _history.insert(0, entry)
     del _history[5:]
+    # _history es de proceso — con varios workers, el que atienda /history
+    # puede no ser el que ejecutó el run. Se persiste igual que el resto del
+    # estado de Centinel para que el historial sea el mismo lo sirva quien lo
+    # sirva.
+    _persist_run_history(entry)
 
 
 def _build_tree(lines: List[str]) -> dict:
@@ -137,15 +144,11 @@ def _build_tree(lines: List[str]) -> dict:
 @router.get("/status")
 async def get_status(_: str = Depends(require_admin)) -> dict:
     _guard()
-    return {
-        "status": _run["status"],
-        "run_id": _run["run_id"],
-        "target": _run["target"],
-        "started_at": _run["started_at"],
-        "finished_at": _run["finished_at"],
-        "summary": _run["summary"],
-        "failed_ids": _run["failed_ids"],
-    }
+    data = _heal_if_stale(_read_centinel_state(), "run")
+    persisted = data.get("run")
+    if persisted:
+        return persisted
+    return {k: _run.get(k) for k in _RUN_PERSIST_KEYS}
 
 
 @router.get("/tree")
@@ -184,7 +187,8 @@ async def start_run(
     _: str = Depends(require_admin),
 ) -> dict:
     _guard()
-    if _run["status"] == "running":
+    persisted = _heal_if_stale(_read_centinel_state(), "run").get("run", {})
+    if _run["status"] == "running" or persisted.get("status") == "running":
         raise APIError(
             409,
             "already_exists",
@@ -197,9 +201,12 @@ async def start_run(
     if not target.startswith("tests") or ".." in target or target.startswith("/"):
         raise APIError(422, "invalid_field", "Target no válido", extra={"field": "target"})
 
-    # Re-run solo los fallidos
-    if body.rerun_failed and _run["failed_ids"]:
-        target = " ".join(_run["failed_ids"])
+    # Re-run solo los fallidos — prefiere la memoria local (mismo worker que
+    # acaba de terminar el run anterior) y cae a lo persistido si este worker
+    # no es el que lo ejecutó.
+    failed_ids = _run["failed_ids"] or persisted.get("failed_ids") or []
+    if body.rerun_failed and failed_ids:
+        target = " ".join(failed_ids)
 
     run_id = generate_id(32)
     _run.update(
@@ -213,8 +220,11 @@ async def start_run(
             "events": [],
             "summary": {},
             "failed_ids": [],
+            "abort_requested": False,
         }
     )
+    _persist_run_state()
+    _reset_run_events()
     background_tasks.add_task(_execute_run, run_id, target)
     flog.info(f"[centinel] run iniciado id={run_id[:8]} target={target!r}")
     return {"run_id": run_id, "status": "running"}
@@ -223,18 +233,34 @@ async def start_run(
 @router.delete("/run")
 async def abort_run(_: str = Depends(require_admin)) -> dict:
     _guard()
-    if _run["status"] != "running":
+    persisted = _heal_if_stale(_read_centinel_state(), "run").get("run", {})
+    is_local = _run["status"] == "running" and _run["run_id"] == persisted.get(
+        "run_id"
+    )
+    if not is_local and persisted.get("status") != "running":
         raise APIError(409, "no_run_in_progress", "No hay run en curso")
-    proc = _run.get("proc")
-    if proc and proc.returncode is None:
-        try:
-            proc.terminate()
-        except Exception:
-            pass
-    _run["status"] = "aborted"
-    _run["finished_at"] = time.time()
-    _broadcast_sync({"type": "aborted"})
-    _push_history()
+
+    if is_local:
+        # Camino rápido: este mismo proceso está ejecutando el run.
+        proc = _run.get("proc")
+        if proc and proc.returncode is None:
+            try:
+                proc.terminate()
+            except Exception:
+                pass
+        _run["status"] = "aborted"
+        _run["finished_at"] = time.time()
+        _broadcast_sync({"type": "aborted"})
+        _persist_run_state()
+        _push_history()
+    else:
+        # El run corre en otro worker: señalizar vía archivo compartido — su
+        # _execute_run tiene un ticker que revisa "abort_requested" cada ~1s.
+        persisted["abort_requested"] = True
+        data = _read_centinel_state()
+        data["run"] = persisted
+        _write_centinel_state(data)
+
     flog.warning("[centinel] run abortado")
     return {"ok": True}
 
@@ -242,6 +268,10 @@ async def abort_run(_: str = Depends(require_admin)) -> dict:
 @router.get("/history")
 async def get_history(_: str = Depends(require_admin)) -> list:
     _guard()
+    data = _read_centinel_state()
+    persisted_history = data.get("run_history")
+    if persisted_history is not None:
+        return persisted_history
     return _history
 
 
@@ -249,7 +279,14 @@ async def get_history(_: str = Depends(require_admin)) -> list:
 async def stream_run(run_id: str, _: str = Depends(require_admin)) -> StreamingResponse:
     _guard()
     if _run["run_id"] != run_id:
-        raise APIError(404, "not_found", "Run no encontrado", extra={"resource": "run"})
+        persisted = _read_centinel_state().get("run", {})
+        if persisted.get("run_id") != run_id:
+            raise APIError(
+                404, "not_found", "Run no encontrado", extra={"resource": "run"}
+            )
+        # El run existe pero lo ejecuta otro worker: sin memoria compartida no
+        # hay eventos en vivo que reenviar desde aquí, pero al menos no se
+        # corta con un 404 — el generador replica el estado final conocido.
     return StreamingResponse(
         _sse_generator(run_id),
         media_type="text/event-stream",
@@ -261,27 +298,57 @@ async def stream_run(run_id: str, _: str = Depends(require_admin)) -> StreamingR
 
 
 async def _sse_generator(run_id: str):
-    q: asyncio.Queue = asyncio.Queue(maxsize=5000)
-    _subscribers.append(q)
-    try:
-        # Replay eventos pasados (reconexión o run ya terminado)
-        for event in list(_run["events"]):
-            yield _sse(event)
-        # Si el run ya terminó, salimos tras el replay
-        if _run["status"] not in ("running",):
-            return
-        # Stream en vivo
-        while True:
-            try:
-                event = await asyncio.wait_for(q.get(), timeout=15.0)
+    if _run["run_id"] == run_id:
+        # Este worker ejecuta el run: cola en memoria, entrega en vivo exacta.
+        q: asyncio.Queue = asyncio.Queue(maxsize=5000)
+        _subscribers.append(q)
+        try:
+            # Replay eventos pasados (reconexión o run ya terminado)
+            for event in list(_run["events"]):
                 yield _sse(event)
-                if event.get("type") in ("done", "aborted", "error"):
-                    break
-            except asyncio.TimeoutError:
+            # Si el run ya terminó, salimos tras el replay
+            if _run["status"] not in ("running",):
+                return
+            # Stream en vivo
+            while True:
+                try:
+                    event = await asyncio.wait_for(q.get(), timeout=15.0)
+                    yield _sse(event)
+                    if event.get("type") in ("done", "aborted", "error"):
+                        break
+                except asyncio.TimeoutError:
+                    yield ": ping\n\n"  # keepalive
+        finally:
+            if q in _subscribers:
+                _subscribers.remove(q)
+        return
+
+    # El run lo ejecuta OTRO worker: no hay cola en memoria que compartir, así
+    # que se sondea el log de eventos persistido (ver _persist_run_events)
+    # cada ~1s y se reenvía lo nuevo, hasta que el estado persistido deje de
+    # decir "running".
+    sent = 0
+    idle_ticks = 0
+    while True:
+        data = _read_centinel_state()
+        if (data.get("run") or {}).get("run_id") != run_id:
+            return
+        events = data.get("run_events") or []
+        new_events = events[sent:]
+        for event in new_events:
+            yield _sse(event)
+        sent = len(events)
+        if new_events:
+            idle_ticks = 0
+        else:
+            idle_ticks += 1
+            if idle_ticks >= 15:
                 yield ": ping\n\n"  # keepalive
-    finally:
-        if q in _subscribers:
-            _subscribers.remove(q)
+                idle_ticks = 0
+        status = (data.get("run") or {}).get("status")
+        if status not in ("running",):
+            return
+        await asyncio.sleep(1.0)
 
 
 # ── Background runner ─────────────────────────────────────────────────────────
@@ -291,6 +358,36 @@ _RE_TEST = re.compile(
 )
 _RE_COLLECTING = re.compile(r"collected (\d+) items?")
 _RE_DURATION = re.compile(r"in ([\d.]+)s")
+
+
+async def _run_ticker(run_id: str, proc: "asyncio.subprocess.Process") -> None:
+    """Doble función, revisada cada ~1s mientras el run está activo:
+    1) Refresca el heartbeat ("updated_at") para que _heal_if_stale no marque
+       el run como huérfano en otro worker — una suite real tarda minutos,
+       muy por encima de _STALE_SECONDS, así que sin este refresco periódico
+       cualquier /status que caiga en otro worker lo daría por muerto.
+    2) Detecta un abort disparado desde OTRO worker (ver /run DELETE), que
+       llega aquí vía archivo compartido, no memoria."""
+    while _run["status"] == "running":
+        await asyncio.sleep(1.0)
+        if _run["status"] != "running":
+            return
+        other_worker_state = _read_centinel_state().get("run", {})
+        if other_worker_state.get("run_id") == run_id and other_worker_state.get(
+            "abort_requested"
+        ):
+            _run["status"] = "aborted"
+            _run["finished_at"] = time.time()
+            if proc.returncode is None:
+                try:
+                    proc.terminate()
+                except Exception:
+                    pass
+            _broadcast_sync({"type": "aborted"})
+            _persist_run_state()
+            _push_history()
+            return
+        _persist_run_state()
 
 
 async def _execute_run(run_id: str, target: str) -> None:
@@ -308,6 +405,7 @@ async def _execute_run(run_id: str, target: str) -> None:
         "-p",
         "no:cacheprovider",
     ]
+    ticker_task: Optional[asyncio.Task] = None
     try:
         proc = await asyncio.create_subprocess_exec(
             *cmd,
@@ -316,6 +414,7 @@ async def _execute_run(run_id: str, target: str) -> None:
             cwd=_BACKEND_DIR,
         )
         _run["proc"] = proc
+        ticker_task = asyncio.create_task(_run_ticker(run_id, proc))
         await _broadcast({"type": "started", "run_id": run_id, "target": target})
 
         pending_test: Optional[dict] = None
@@ -392,6 +491,8 @@ async def _execute_run(run_id: str, target: str) -> None:
 
         await proc.wait()
         if _run["status"] == "aborted":
+            # El ticker (abort de otro worker) ya persistió y emitió el evento;
+            # un abort local ya lo hizo el propio endpoint DELETE /run.
             return
 
         failed_ids = [
@@ -402,7 +503,10 @@ async def _execute_run(run_id: str, target: str) -> None:
         _run["failed_ids"] = failed_ids
         _run["status"] = "done"
         _run["finished_at"] = time.time()
-        _push_history()
+        # Orden importa: el evento terminal debe quedar en run_events ANTES
+        # de que el status persistido diga "done" — si no, un poller remoto
+        # (ver _sse_generator) puede leer status=done sin haber visto aún el
+        # evento "done" y cortar el stream perdiéndoselo.
         await _broadcast(
             {
                 "type": "done",
@@ -411,6 +515,8 @@ async def _execute_run(run_id: str, target: str) -> None:
                 "failed_ids": failed_ids,
             }
         )
+        _persist_run_state()
+        _push_history()
         flog.info(f"[centinel] run finalizado id={run_id[:8]} rc={proc.returncode}")
 
     except Exception as exc:
@@ -418,6 +524,11 @@ async def _execute_run(run_id: str, target: str) -> None:
         _run["status"] = "error"
         _run["finished_at"] = time.time()
         await _broadcast({"type": "error", "message": str(exc)})
+        _persist_run_state()
+
+    finally:
+        if ticker_task is not None:
+            ticker_task.cancel()
 
 
 # ════════════════════════════════════════════════════════════════════════════
@@ -470,6 +581,13 @@ _PROBE_PERSIST_KEYS = (
     "status", "run_id", "steps", "ticks", "current_users", "verdict",
     "abort_requested", "error", "updated_at",
 )
+# El test runner funcional (pytest, _run más abajo) tenía el mismo problema de
+# fondo que stress/probe pero nunca recibió este mismo arreglo — ver _run,
+# _persist_run_state y los endpoints /status, /run, /history, /stream.
+_RUN_PERSIST_KEYS = (
+    "status", "run_id", "target", "started_at", "finished_at",
+    "summary", "failed_ids", "abort_requested", "updated_at",
+)
 
 # Si "status" lleva más de esto sin heartbeat (ver _persist_*_state), el
 # proceso que lo ejecutaba ya no existe — un reinicio/crash/deploy a mitad de
@@ -514,6 +632,37 @@ def _persist_probe_state() -> None:
     _probe["updated_at"] = time.time()
     data = _read_centinel_state()
     data["probe"] = {k: _probe.get(k) for k in _PROBE_PERSIST_KEYS}
+    _write_centinel_state(data)
+
+
+def _persist_run_state() -> None:
+    _run["updated_at"] = time.time()
+    data = _read_centinel_state()
+    data["run"] = {k: _run.get(k) for k in _RUN_PERSIST_KEYS}
+    _write_centinel_state(data)
+
+
+def _persist_run_events() -> None:
+    """Espeja _run["events"] en disco para que /stream/{run_id} pueda
+    reenviarlos en vivo aunque la conexión SSE caiga en un worker distinto
+    al que ejecuta el run — ver _sse_generator, rama "remota"."""
+    data = _read_centinel_state()
+    data["run_events"] = list(_run["events"])
+    _write_centinel_state(data)
+
+
+def _reset_run_events() -> None:
+    data = _read_centinel_state()
+    data["run_events"] = []
+    _write_centinel_state(data)
+
+
+def _persist_run_history(entry: Dict[str, Any]) -> None:
+    data = _read_centinel_state()
+    history = data.get("run_history") or []
+    history.insert(0, entry)
+    del history[5:]
+    data["run_history"] = history
     _write_centinel_state(data)
 
 
