@@ -311,6 +311,11 @@ _PLATFORM_DEFAULTS: dict = {
     "maintenance_enabled": False,
     "maintenance_message": "",
     "maintenance_at": None,  # ISO datetime, opcional — solo informativo
+    # Splash de arranque: cada ciclo es una ida y vuelta completa A→B→A del
+    # logotipo. splash_end_on_logo añade un tramo final A→B para que el
+    # splash se cierre mostrando la marca (B), no la forma de partida (A).
+    "splash_cycles": 1,
+    "splash_end_on_logo": True,
 }
 
 _VALID_REGISTRATION = {"open", "closed"}
@@ -365,6 +370,8 @@ class PlatformConfigUpdate(BaseModel):
     maintenance_enabled: Optional[bool] = None
     maintenance_message: Optional[str] = None
     maintenance_at: Optional[str] = None
+    splash_cycles: Optional[int] = None
+    splash_end_on_logo: Optional[bool] = None
 
 
 @router.get("/platform/public")
@@ -385,6 +392,8 @@ async def get_platform_config_public() -> dict:
         "maintenance_enabled": cfg.get("maintenance_enabled", False),
         "maintenance_message": cfg.get("maintenance_message", ""),
         "maintenance_at": cfg.get("maintenance_at"),
+        "splash_cycles": cfg.get("splash_cycles", 1),
+        "splash_end_on_logo": cfg.get("splash_end_on_logo", True),
     }
 
 
@@ -469,6 +478,13 @@ async def update_platform_config(
                 "maintenance_at debe ser una fecha ISO 8601 válida",
                 extra={"field": "maintenance_at"},
             ) from None
+    if "splash_cycles" in update and not (1 <= update["splash_cycles"] <= 10):
+        raise APIError(
+            422,
+            "invalid_field",
+            "splash_cycles debe estar entre 1 y 10",
+            extra={"field": "splash_cycles"},
+        )
 
     cfg.update(update)
     _write_platform_cfg(cfg)

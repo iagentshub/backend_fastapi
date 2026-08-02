@@ -599,3 +599,41 @@ def test_platform_rejects_invalid_maintenance_at(admin_client):
     )
     assert r.status_code == 422
     assert r.json()["detail"]["field"] == "maintenance_at"
+
+
+def test_platform_public_splash_defaults(client):
+    r = client.get("/api/settings/platform/public")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["splash_cycles"] == 1
+    assert data["splash_end_on_logo"] is True
+
+
+def test_admin_sets_splash_config(admin_client, client):
+    r = admin_client.put(
+        "/api/settings/platform",
+        json={"splash_cycles": 3, "splash_end_on_logo": False},
+    )
+    assert r.status_code == 200
+    data = r.json()
+    assert data["splash_cycles"] == 3
+    assert data["splash_end_on_logo"] is False
+
+    public = client.get("/api/settings/platform/public")
+    assert public.json()["splash_cycles"] == 3
+    assert public.json()["splash_end_on_logo"] is False
+
+
+def test_platform_rejects_splash_cycles_out_of_range(admin_client):
+    r = admin_client.put(
+        "/api/settings/platform",
+        json={"splash_cycles": 11},
+    )
+    assert r.status_code == 422
+    assert r.json()["detail"]["field"] == "splash_cycles"
+
+    r_zero = admin_client.put(
+        "/api/settings/platform",
+        json={"splash_cycles": 0},
+    )
+    assert r_zero.status_code == 422
