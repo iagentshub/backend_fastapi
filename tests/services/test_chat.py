@@ -12,6 +12,7 @@ import pytest
 
 from app.services.chat import (
     _do_openai_stream_with_dns_retry,
+    _openai_compat_chat_url,
     stream_chat,
 )
 
@@ -127,6 +128,35 @@ def test_openai_stream_retries_timeout_before_first_token():
 
 
 @pytest.mark.parametrize(
+    "configured,expected",
+    [
+        (
+            "https://integrate.api.nvidia.com",
+            "https://integrate.api.nvidia.com/v1/chat/completions",
+        ),
+        (
+            "https://integrate.api.nvidia.com/v1",
+            "https://integrate.api.nvidia.com/v1/chat/completions",
+        ),
+        (
+            "https://integrate.api.nvidia.com/v1/models",
+            "https://integrate.api.nvidia.com/v1/chat/completions",
+        ),
+        (
+            "https://integrate.api.nvidia.com/v1/chat/completions/",
+            "https://integrate.api.nvidia.com/v1/chat/completions",
+        ),
+        (
+            "http://nim.internal:8000/v1",
+            "http://nim.internal:8000/v1/chat/completions",
+        ),
+    ],
+)
+def test_nvidia_connection_url_accepts_base_or_complete_endpoint(configured, expected):
+    assert _openai_compat_chat_url("nvidia", configured) == expected
+
+
+@pytest.mark.parametrize(
     "conn_type,expected_url",
     [
         ("openai", "https://api.openai.com/v1/chat/completions"),
@@ -199,6 +229,37 @@ async def test_stream_chat_connection_error_yields_error_event():
     assert error_event is not None
 
 
+async def test_stream_chat_explains_openai_compatible_404():
+    agent = _make_agent("nvidia", model="vendor/chat-model")
+    conn = {
+        **_make_conn("nvidia", model="vendor/chat-model"),
+        "url": "https://integrate.api.nvidia.com/v1",
+    }
+    not_found = urllib.error.HTTPError(
+        "https://integrate.api.nvidia.com/v1/chat/completions",
+        404,
+        "Not Found",
+        {},
+        BytesIO(b"404 page not found"),
+    )
+
+    with patch("urllib.request.urlopen", side_effect=not_found):
+        events = [
+            event
+            async for event in stream_chat(
+                agent,
+                conn,
+                [{"role": "user", "content": "Hola"}],
+                _skill_storage(),
+            )
+        ]
+
+    error_event = next(event for event in events if '"type": "error"' in event)
+    assert "vendor/chat-model" in error_event
+    assert "https://integrate.api.nvidia.com/v1/chat/completions" in error_event
+    assert "OpenAI-compatible" in error_event
+
+
 async def test_stream_chat_unknown_provider_yields_error():
     agent = _make_agent("unknown_llm")
     conn = _make_conn("unknown_llm")
@@ -255,7 +316,9 @@ def _chat_storage_mock(convs: list, messages_by_conv: dict) -> MagicMock:
     return storage
 
 
-async def _sent_system_message(agent, conn, history, chat_storage, user_id, conversation_id):
+async def _sent_system_message(
+    agent, conn, history, chat_storage, user_id, conversation_id
+):
     sent_payloads = []
 
     def fake_urlopen(req, timeout):

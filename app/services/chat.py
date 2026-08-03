@@ -22,7 +22,7 @@ from typing import (
 
 if TYPE_CHECKING:
     from app.models.agent import Agent
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urlunparse
 
 from app.config.providers import (
     ANTHROPIC_API_VERSION,
@@ -36,6 +36,42 @@ _NVIDIA_DEEPSEEK_V4_MODELS = {
     "deepseek-ai/deepseek-v4-pro",
     "deepseek-ai/deepseek-v4-flash",
 }
+
+
+def _openai_compat_chat_url(conn_type: str, configured_url: str = "") -> str:
+    """Accept either a provider base URL or a full chat-completions endpoint."""
+    default_url = OPENAI_COMPAT_URLS[conn_type]
+    raw = configured_url.strip()
+    if not raw:
+        return default_url
+
+    parsed = urlparse(raw)
+    if not parsed.scheme or not parsed.netloc:
+        return raw.rstrip("/")
+
+    path = parsed.path.rstrip("/")
+    host = parsed.netloc.casefold()
+    default_path = urlparse(default_url).path
+
+    # The hosted NVIDIA API exposes one canonical OpenAI-compatible route.
+    # Connections sometimes store only the host, /v1, or /models after model
+    # discovery; all of those must resolve to the inference endpoint.
+    if conn_type == "nvidia" and host == "integrate.api.nvidia.com":
+        path = default_path
+    elif path.endswith("/chat/completions"):
+        pass
+    elif path.endswith("/models"):
+        path = path[: -len("/models")] + "/chat/completions"
+    elif conn_type == "gemini" and path.endswith("/v1beta"):
+        path += "/openai/chat/completions"
+    elif path.endswith("/v1") or path.endswith("/openai"):
+        path += "/chat/completions"
+    elif not path:
+        path = default_path
+    else:
+        path += "/chat/completions"
+
+    return urlunparse(parsed._replace(path=path, params="", query="", fragment=""))
 
 
 @runtime_checkable
@@ -344,7 +380,10 @@ async def stream_chat(
 
     try:
         if conn_type in OPENAI_COMPAT_URLS:
-            url = (conn.get("url") or OPENAI_COMPAT_URLS[conn_type]).rstrip("/")
+            url = _openai_compat_chat_url(
+                conn_type,
+                str(conn.get("url") or ""),
+            )
             msgs: List[Dict[str, Any]] = []
             if system:
                 msgs.append({"role": "system", "content": system})
@@ -476,6 +515,12 @@ async def stream_chat(
             )
         except Exception:
             pass
+        if exc.code == 404 and conn_type in OPENAI_COMPAT_URLS:
+            detail = (
+                f"No se encontró el endpoint de chat o el modelo '{model}'. "
+                f"URL utilizada: {url}. Revisa que la conexión use una URL base "
+                "OpenAI-compatible y que el modelo admita conversaciones."
+            )
         yield _sse(
             {
                 "type": "error",
