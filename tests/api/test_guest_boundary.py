@@ -31,7 +31,7 @@ def guest(client):
 CERRADOS = [
     ("GET", "/api/accounts"),
     ("GET", "/api/billing/subscription"),
-    ("GET", "/api/explore/agents"),
+    ("GET", "/api/feed"),
     ("GET", "/api/groups"),
     ("GET", "/api/labels"),
     ("GET", "/api/settings"),
@@ -70,6 +70,8 @@ ABIERTOS = [
     ("GET", "/api/knowledge"),
     ("GET", "/api/memory"),
     ("GET", "/api/chats/recent"),
+    # Catálogo público: solo filas is_public. Es la vitrina del demo.
+    ("GET", "/api/explore"),
 ]
 
 
