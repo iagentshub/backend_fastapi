@@ -44,6 +44,7 @@ class BuilderEnvelope(BaseModel):
 BuilderMode = Literal["auto", "guided", "expert"]
 
 _MIN_ACTIONABLE_PROMPT_CHARS = 90
+_PROFESSIONAL_PROMPT_CHARS = 450
 
 
 def _is_actionable_system_prompt(prompt: str) -> bool:
@@ -56,6 +57,73 @@ def _is_actionable_system_prompt(prompt: str) -> bool:
         and len(words) >= 12
         and len(unique_words) >= 10
     )
+
+
+def _is_professionally_structured(prompt: str) -> bool:
+    """Return whether a prompt covers the operating areas of a reliable agent."""
+    clean = prompt.strip().casefold()
+    areas = (
+        ("objetivo", "goal", "resultado", "outcome", "alcance", "scope"),
+        ("flujo", "proceso", "workflow", "steps", "pasos", "procedimiento"),
+        ("verifica", "valida", "quality", "calidad", "check", "comprueba"),
+        ("límite", "limit", "no debes", "must not", "escal", "riesgo", "risk"),
+        ("formato", "format", "estructura", "entrega", "response", "output"),
+    )
+    covered_areas = sum(any(term in clean for term in area) for area in areas)
+    return len(prompt.strip()) >= _PROFESSIONAL_PROMPT_CHARS and covered_areas >= 4
+
+
+def _ensure_professional_system_prompt(prompt: str) -> str:
+    """Complete an actionable but shallow prompt with a dependable work contract."""
+    clean = prompt.strip()
+    if _is_professionally_structured(clean):
+        return clean
+
+    spanish_markers = re.findall(
+        r"\b(?:eres|debes|usuario|respuesta|objetivo|datos|antes|cuando|para)\b",
+        clean.casefold(),
+    )
+    english_markers = re.findall(
+        r"\b(?:you|must|user|response|goal|data|before|when|for)\b",
+        clean.casefold(),
+    )
+    if len(english_markers) > len(spanish_markers):
+        framework = """## Operating method
+
+1. Confirm the desired outcome, audience, available context, and constraints. Ask only for missing information that would materially change the result.
+2. Plan the work before producing the final answer. Apply domain best practices and use available resources only when they are relevant.
+3. Execute precisely. Never fabricate facts, sources, access, tool results, or actions. Clearly label assumptions and uncertainty.
+4. Review the result against the user's goal, stated constraints, internal consistency, and practical usability before delivering it.
+
+## Decision rules and boundaries
+
+- Prioritize accuracy, clarity, privacy, and user intent over speed or apparent completeness.
+- Distinguish verified facts from estimates and recommendations. Explain important trade-offs succinctly.
+- Stay within the requested scope. Ask for confirmation before irreversible, sensitive, costly, or externally visible actions.
+- If the request is unsafe, unsupported, or lacks critical evidence, explain the limitation and offer a safe next step.
+
+## Response contract
+
+Lead with the useful result. Then provide the evidence, decisions, checks, assumptions, or next actions needed to review and use it. Adapt depth and terminology to the user's expertise; avoid filler and generic claims."""
+    else:
+        framework = """## Método de trabajo
+
+1. Confirma el resultado esperado, el destinatario, el contexto disponible y las restricciones. Pregunta solo por información ausente que cambie materialmente el resultado.
+2. Planifica el trabajo antes de redactar la respuesta final. Aplica buenas prácticas del dominio y usa los recursos disponibles solo cuando sean relevantes.
+3. Ejecuta con precisión. No inventes hechos, fuentes, accesos, resultados de herramientas ni acciones realizadas. Señala claramente supuestos e incertidumbres.
+4. Revisa el resultado frente al objetivo, las restricciones indicadas, la coherencia interna y su utilidad práctica antes de entregarlo.
+
+## Criterios de decisión y límites
+
+- Prioriza precisión, claridad, privacidad e intención del usuario frente a rapidez o apariencia de completitud.
+- Distingue hechos verificados, estimaciones y recomendaciones. Explica brevemente los trade-offs importantes.
+- Mantente dentro del alcance solicitado. Pide confirmación antes de acciones irreversibles, sensibles, costosas o visibles externamente.
+- Si la petición es insegura, no está soportada o carece de evidencia crítica, explica el límite y ofrece un siguiente paso seguro.
+
+## Contrato de respuesta
+
+Empieza por el resultado útil. Añade después evidencias, decisiones, comprobaciones, supuestos o siguientes acciones necesarios para revisarlo y utilizarlo. Adapta la profundidad y el vocabulario al nivel del usuario; evita relleno y afirmaciones genéricas."""
+    return f"{clean}\n\n{framework}"
 
 
 def should_force_ready(
@@ -109,13 +177,19 @@ def build_system_prompt(
 La petición del usuario ya es suficiente. Tu única tarea es diseñar AHORA un
 agente completo y específico para la especialidad u objetivo solicitado.
 
-REGLAS OBLIGATORIAS:
+ESTÁNDAR PROFESIONAL OBLIGATORIO:
 - No converses, no hagas preguntas y no pidas más contexto.
 - Usa tu conocimiento del dominio para inferir capacidades, buenas prácticas,
   proceso de trabajo, seguridad, límites y formato de respuesta.
-- El system_prompt debe ser operativo y detallado, no una descripción comercial.
-- Incluye qué debe hacer el agente, cómo debe trabajar, qué debe comprobar, qué
-  no debe hacer y cómo debe presentar sus resultados.
+- El system_prompt debe ser operativo, específico y autónomo, no una descripción
+  comercial ni una lista de cualidades abstractas.
+- Estructúralo con identidad y objetivo, alcance, método de trabajo paso a paso,
+  criterios de decisión, comprobaciones de calidad, límites y contrato de salida.
+- Define cómo actuar ante contexto insuficiente, incertidumbre, información
+  contradictoria, riesgos y peticiones fuera de alcance.
+- Indica cómo usar los recursos asignados y prohíbe fingir accesos, fuentes,
+  verificaciones o acciones que no se hayan realizado realmente.
+- Adapta profundidad, vocabulario y formato al destinatario y al tipo de tarea.
 - No inventes requisitos del usuario, pero sí completa prácticas profesionales
   razonables y editables propias de la especialidad.
 - Escribe todo en el idioma del usuario.
@@ -186,11 +260,21 @@ límites. Si el primer mensaje ya contiene suficiente información, puedes crear
 el borrador sin hacer preguntas innecesarias.
 {interview_rule}
 
-Un buen system_prompt debe incluir: identidad y objetivo, flujo de trabajo,
-preguntas que debe hacer cuando falte contexto, reglas y límites, y formato de
-respuesta. Escribe instrucciones operativas, no una descripción comercial.
+Un system_prompt profesional debe incluir: identidad, objetivo y resultados;
+alcance; flujo de trabajo paso a paso; criterios para decidir y preguntar;
+uso correcto de skills y conocimiento; comprobaciones de calidad; privacidad,
+seguridad, límites y escalado; y un contrato de respuesta adaptado al usuario.
+Debe distinguir hechos, supuestos y recomendaciones, resolver instrucciones
+contradictorias con prudencia y prohibir fingir fuentes, accesos o acciones.
+Escribe instrucciones observables y operativas, no una descripción comercial
+ni una colección de adjetivos como "útil", "experto" o "profesional".
 No marques el borrador como listo si el system_prompt es una frase breve o
 genérica: debe poder guiar por sí solo el trabajo del agente.
+
+El nombre debe ser breve y específico. La descripción debe explicar en una sola
+frase el resultado que obtiene el usuario, no repetir el nombre. Ajusta la
+temperatura al trabajo: 0.2-0.4 para precisión y procesos; 0.6-0.8 solo cuando
+la creatividad sea parte central del objetivo.
 
 Skills disponibles:
 {catalogue(resources.skills)}
@@ -370,6 +454,9 @@ def parse_builder_reply(
                 for item in envelope.draft.knowledge
                 if item in allowed_knowledge
             ]
+            envelope.draft.system_prompt = _ensure_professional_system_prompt(
+                envelope.draft.system_prompt
+            )
         return envelope
     final_error = quality_error or last_error
     detail = f": {final_error}" if final_error else ""

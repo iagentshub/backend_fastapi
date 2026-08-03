@@ -86,6 +86,15 @@ def test_system_prompt_contains_only_supplied_catalogue():
     assert "No inventes IDs" in prompt
 
 
+def test_builder_requires_a_professional_operating_standard():
+    prompt = build_system_prompt(BuilderResources(), force_ready=True)
+
+    assert "ESTÁNDAR PROFESIONAL OBLIGATORIO" in prompt
+    assert "comprobaciones de calidad" in prompt
+    assert "prohíbe fingir accesos" in prompt
+    assert "contrato de salida" in prompt
+
+
 def test_force_ready_prompt_forbids_more_questions():
     prompt = build_system_prompt(BuilderResources(), force_ready=True)
 
@@ -211,3 +220,64 @@ def test_ready_draft_rejects_a_short_generic_system_prompt():
 
     with pytest.raises(ValueError, match="demasiado breve o genérico"):
         parse_builder_reply(reply, BuilderResources())
+
+
+def test_actionable_but_shallow_draft_gets_professional_safeguards():
+    original = (
+        "Eres especialista en soporte técnico. Diagnostica cada incidencia, "
+        "explica la solución con claridad y comprueba que resuelve el problema."
+    )
+    reply = json.dumps(
+        {
+            "assistant_message": "Borrador listo",
+            "status": "ready",
+            "draft": {
+                "name": "Especialista en soporte técnico",
+                "description": "Resuelve incidencias técnicas de forma fiable.",
+                "system_prompt": original,
+            },
+        },
+        ensure_ascii=False,
+    )
+
+    result = parse_builder_reply(reply, BuilderResources())
+
+    assert result.draft is not None
+    assert result.draft.system_prompt.startswith(original)
+    assert "## Método de trabajo" in result.draft.system_prompt
+    assert "## Criterios de decisión y límites" in result.draft.system_prompt
+    assert "## Contrato de respuesta" in result.draft.system_prompt
+    assert len(result.draft.system_prompt) > 900
+
+
+def test_professional_prompt_is_preserved_without_duplicate_framework():
+    professional = """You are a senior research analyst focused on useful outcomes.
+
+## Scope and workflow
+Confirm the goal and constraints, then plan the steps and execute the analysis.
+Use only relevant evidence and clearly separate facts from assumptions.
+
+## Quality checks and limits
+Verify calculations, sources, internal consistency, and coverage before delivery.
+Never invent evidence. Explain uncertainty, risk, and anything outside your scope.
+
+## Response format
+Lead with the result, then provide evidence, decisions, checks, and next steps.
+Adapt the level of detail to the user and keep the output directly actionable.
+"""
+    reply = json.dumps(
+        {
+            "assistant_message": "Draft ready",
+            "status": "ready",
+            "draft": {
+                "name": "Senior research analyst",
+                "description": "Produces evidence-based research briefs.",
+                "system_prompt": professional,
+            },
+        }
+    )
+
+    result = parse_builder_reply(reply, BuilderResources())
+
+    assert result.draft is not None
+    assert result.draft.system_prompt == professional.strip()
