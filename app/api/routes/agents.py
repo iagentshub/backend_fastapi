@@ -14,7 +14,12 @@ from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
-from app.api.routes.auth import GroupContext, require_auth, require_group
+from app.api.routes.auth import (
+    GroupContext,
+    require_auth,
+    require_group,
+    require_group_session,
+)
 from app.auth.auth import get_user_role
 from app.config.data import AGENTS_DIR, DB_FILE, MEMORY_DIR, SKILLS_DIR
 from app.config.session import RATE_CHAT_CALLS, RATE_CHAT_WINDOW
@@ -195,7 +200,7 @@ async def list_agents(
     include_inactive: bool = False,
     limit: int = Query(0, ge=0, description="Máx. items. 0 = sin límite"),
     offset: int = Query(0, ge=0),
-    ctx: GroupContext = Depends(require_group),
+    ctx: GroupContext = Depends(require_group_session),
 ) -> List[Dict[str, Any]]:
     _check_scope(scope)
     locale = get_locale()
@@ -313,7 +318,7 @@ async def list_agents(
 
 @router.post("")
 async def save_agent(
-    request: Request, ctx: GroupContext = Depends(require_group)
+    request: Request, ctx: GroupContext = Depends(require_group_session)
 ) -> Dict[str, Any]:
     user, group_id = ctx.user, ctx.group_id
     payload = await request.json()
@@ -377,7 +382,7 @@ async def save_agent(
 
 @router.get("/{agent_id}")
 async def get_agent(
-    agent_id: str, ctx: GroupContext = Depends(require_group)
+    agent_id: str, ctx: GroupContext = Depends(require_group_session)
 ) -> Dict[str, Any]:
     user = ctx.user
     if is_guest(user):
@@ -409,7 +414,7 @@ async def get_agent(
 
 @router.delete("/{agent_id}")
 async def delete_agent(
-    agent_id: str, ctx: GroupContext = Depends(require_group)
+    agent_id: str, ctx: GroupContext = Depends(require_group_session)
 ) -> Dict[str, Any]:
     user, group_id = ctx.user, ctx.group_id
     if is_guest(user):
@@ -521,7 +526,7 @@ async def put_agent_preferences(
 
 @router.get("/{agent_id}/export/{fmt}")
 async def export_agent(
-    agent_id: str, fmt: str, ctx: GroupContext = Depends(require_group)
+    agent_id: str, fmt: str, ctx: GroupContext = Depends(require_group_session)
 ) -> Response:
     """fmt: openai | claude | github | mcp"""
     user = ctx.user
@@ -698,7 +703,7 @@ async def export_agent(
 async def chat(
     agent_id: str,
     request: Request,
-    ctx: GroupContext = Depends(require_group),
+    ctx: GroupContext = Depends(require_group_session),
     _rl: None = Depends(_chat_limiter),
 ) -> StreamingResponse:
     user, group_id = ctx.user, ctx.group_id

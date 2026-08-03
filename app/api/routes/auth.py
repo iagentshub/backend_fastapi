@@ -354,21 +354,20 @@ async def _resolve_group(
     return GroupContext(user=user_id, group_id=user_id)
 
 
-# Dependencies concretas. Los ~137 `Depends(require_auth)` / `Depends(require_group)`
-# del backend no cambian: lo que cambia es que su política ahora es un dato.
+# Dependencies concretas. El default exige cuenta registrada: un invitado que
+# llegue a un endpoint que no lo contemple recibe 403 en vez de entrar.
 #
-# require_auth y require_group siguen admitiendo invitado —el mismo comportamiento
-# que hoy— porque cerrarlos exige antes decidir qué endpoints reabrir con
-# require_session. Esa es la línea a cambiar cuando esté revisado el allowlist:
-#   require_auth  = require_role("standard")
-#   require_group = require_group_role("standard")
-# El agujero de 0.1 no se cierra hasta ese cambio; esto es la máquina que lo hace
-# posible en una línea en vez de en 137.
-require_auth = require_role("guest")
-require_group = require_group_role("guest")
+# El allowlist no se decidió a ojo: un endpoint que contiene una rama
+# `is_guest(...)` es consciente del invitado por diseño, y son exactamente los
+# que trabajan sobre los cinco campos de GuestSession (connections, agents,
+# skills, knowledge, memory) más el chat y GET /me. Esos 32 usan
+# require_session / require_group_session. Los otros 106 —billing, settings,
+# social, sharing, users, accounts, workflows, groups— nunca miraron si quien
+# llamaba era invitado, que es precisamente lo que los hacía inseguros.
+require_auth = require_role("standard")
+require_group = require_group_role("standard")
 
-# Explícitos: aceptan invitado por diseño. Úsalos en los endpoints del demo
-# (los cinco campos de GuestSession) para que sigan abiertos tras el cierre.
+# Explícitos: aceptan invitado por diseño. Son los endpoints del demo.
 require_session = require_role("guest")
 require_group_session = require_group_role("guest")
 
@@ -547,7 +546,7 @@ async def logout(response: Response) -> dict[str, Any]:
 
 @router.get("/me")
 async def me(
-    ctx: GroupContext = Depends(require_group),  # noqa: B008
+    ctx: GroupContext = Depends(require_group_session),  # noqa: B008
 ) -> dict[str, Any]:
     from app.config.session import WEBMAIL_URL
     from app.storage.guest import is_guest

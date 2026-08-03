@@ -8,7 +8,12 @@ from typing import Any, Dict, List, Optional, Set
 import httpx
 from fastapi import APIRouter, Depends, Query, Request
 
-from app.api.routes.auth import GroupContext, require_auth, require_group
+from app.api.routes.auth import (
+    GroupContext,
+    require_auth,
+    require_group,
+    require_group_session,
+)
 from app.auth.auth import get_user_role
 from app.config.data import AGENTS_DIR, DB_FILE, SKILLS_DIR
 from app.config.security import assert_safe_url
@@ -309,7 +314,7 @@ async def list_connections(
     include_inactive: bool = False,
     limit: int = Query(0, ge=0, description="Máx. items. 0 = sin límite"),
     offset: int = Query(0, ge=0),
-    ctx: GroupContext = Depends(require_group),
+    ctx: GroupContext = Depends(require_group_session),
 ) -> List[Dict[str, Any]]:
     user, active_group_id = ctx.user, ctx.group_id
 
@@ -384,7 +389,7 @@ async def list_connections(
 
 @router.post("")
 async def save_connection(
-    request: Request, ctx: GroupContext = Depends(require_group)
+    request: Request, ctx: GroupContext = Depends(require_group_session)
 ) -> Dict[str, Any]:
     user, group_id = ctx.user, ctx.group_id
     payload = await request.json()
@@ -493,7 +498,7 @@ async def get_tokens_daily(
 
 @router.get("/{conn_id}")
 async def get_connection(
-    conn_id: str, ctx: GroupContext = Depends(require_group)
+    conn_id: str, ctx: GroupContext = Depends(require_group_session)
 ) -> Dict[str, Any]:
     user, group_id = ctx.user, ctx.group_id
     if is_guest(user):
@@ -524,7 +529,7 @@ async def get_connection(
 
 @router.delete("/{conn_id}")
 async def delete_connection(
-    conn_id: str, ctx: GroupContext = Depends(require_group)
+    conn_id: str, ctx: GroupContext = Depends(require_group_session)
 ) -> Dict[str, Any]:
     user, group_id = ctx.user, ctx.group_id
     if is_guest(user):
@@ -879,7 +884,7 @@ async def import_models(
 @router.post("/{conn_id}/test")
 async def test_connection(
     conn_id: str,
-    ctx: GroupContext = Depends(require_group),
+    ctx: GroupContext = Depends(require_group_session),
     _rl: None = Depends(_test_limiter),
 ) -> Dict[str, Any]:
     user, group_id = ctx.user, ctx.group_id

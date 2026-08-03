@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from app.api.routes.auth import GroupContext, require_group
+from app.api.routes.auth import GroupContext, require_group_session
 from app.auth.auth import get_user_role
 from app.config.data import DB_FILE
 from app.config.providers import PROVIDER_DEFAULT_MODELS
@@ -48,7 +48,7 @@ def _sse(data: Dict[str, Any]) -> str:
 @router.post("/chat")
 async def builder_chat(
     body: SkillBuilderChatBody,
-    ctx: GroupContext = Depends(require_group),
+    ctx: GroupContext = Depends(require_group_session),
 ) -> StreamingResponse:
     user, group_id = ctx.user, ctx.group_id
     raw_conn_id = body.connection_id
