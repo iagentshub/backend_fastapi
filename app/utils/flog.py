@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+import atexit
 import logging
+import logging.handlers
 import os
+import queue
 import sqlite3
 import sys
 from datetime import datetime
@@ -39,11 +42,22 @@ class _StdoutFmt(logging.Formatter):
 
 
 class _DBHandler(logging.Handler):
-    """Escribe cada entrada de log en hub.db (SQLite) o PostgreSQL de forma síncrona."""
+    """Escribe cada entrada de log en hub.db (SQLite) o PostgreSQL.
+
+    Mantiene UNA conexión abierta y reutilizada. Antes se abría una conexión
+    nueva —con su PRAGMA y su executescript del esquema entero— por cada
+    registro; como RequestLoggerMiddleware loguea toda petición, eso era un
+    CREATE TABLE IF NOT EXISTS x2 + CREATE INDEX IF NOT EXISTS x2 síncronos por
+    request HTTP. El DDL vive ahora solo en _init_schema().
+
+    Va detrás de un QueueListener (ver _build), así que emit() corre siempre en
+    el mismo hilo dedicado: una única conexión es suficiente y no hay carrera.
+    """
 
     def __init__(self, db_path: Path | None) -> None:
         super().__init__()
         self._db = str(db_path) if db_path else None
+        self._conn: object | None = None
         if db_path:
             db_path.parent.mkdir(parents=True, exist_ok=True)
             self._init_schema()
@@ -56,61 +70,69 @@ class _DBHandler(logging.Handler):
             conn.executescript(_LOG_SCHEMA)
             conn.close()
         except Exception:
+            # Sin tabla de logs el proceso arranca igual: el handler de stdout
+            # sigue funcionando y cada emit reintentará la conexión.
+            logging.getLogger(__name__).warning(
+                "flog: no se pudo inicializar app_logs en %s", self._db, exc_info=True
+            )
+
+    def _connect(self):
+        """Conexión perezosa. Se reconstruye sola si una escritura la invalidó."""
+        if self._conn is None:
+            if self._db is None:
+                import psycopg2  # type: ignore[import]
+
+                self._conn = psycopg2.connect(os.environ.get("DATABASE_URL", ""))
+            else:
+                conn = sqlite3.connect(self._db, check_same_thread=False)
+                conn.execute("PRAGMA journal_mode=WAL")
+                self._conn = conn
+        return self._conn
+
+    def _drop_conn(self) -> None:
+        try:
+            if self._conn is not None:
+                self._conn.close()  # type: ignore[attr-defined]
+        except Exception:
             pass
+        finally:
+            self._conn = None
 
-    def _emit_sqlite(self, record: logging.LogRecord) -> None:
+    def _row(self, record: logging.LogRecord) -> tuple:
         dt = datetime.fromtimestamp(record.created)
-        conn = sqlite3.connect(self._db, check_same_thread=False)
-        conn.execute("PRAGMA journal_mode=WAL")
-        conn.executescript(_LOG_SCHEMA)  # no-op si la tabla ya existe
-        conn.execute(
-            "INSERT INTO app_logs (ts, date, time, ip, username, level, source, summary) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-            (
-                record.created,
-                dt.strftime("%Y-%m-%d"),
-                dt.strftime("%H:%M:%S"),
-                getattr(record, "ip", "-") or "-",
-                getattr(record, "username", "-") or "-",
-                record.levelname,
-                getattr(record, "source", "BE") or "BE",
-                record.getMessage(),
-            ),
+        return (
+            record.created,
+            dt.strftime("%Y-%m-%d"),
+            dt.strftime("%H:%M:%S"),
+            getattr(record, "ip", "-") or "-",
+            getattr(record, "username", "-") or "-",
+            record.levelname,
+            getattr(record, "source", "BE") or "BE",
+            record.getMessage(),
         )
-        conn.commit()
-        conn.close()
-
-    def _emit_pg(self, record: logging.LogRecord) -> None:
-        import psycopg2  # type: ignore[import]
-
-        dt = datetime.fromtimestamp(record.created)
-        conn = psycopg2.connect(os.environ.get("DATABASE_URL", ""))
-        cur = conn.cursor()
-        cur.execute(
-            "INSERT INTO app_logs (ts, date, time, ip, username, level, source, summary) "
-            "VALUES (%s, %s, %s, %s, %s, %s, %s, %s)",
-            (
-                record.created,
-                dt.strftime("%Y-%m-%d"),
-                dt.strftime("%H:%M:%S"),
-                getattr(record, "ip", "-") or "-",
-                getattr(record, "username", "-") or "-",
-                record.levelname,
-                getattr(record, "source", "BE") or "BE",
-                record.getMessage(),
-            ),
-        )
-        conn.commit()
-        conn.close()
 
     def emit(self, record: logging.LogRecord) -> None:
+        placeholder = "?" if self._db else "%s"
+        sql = (
+            "INSERT INTO app_logs (ts, date, time, ip, username, level, source, summary) "
+            f"VALUES ({', '.join([placeholder] * 8)})"
+        )
         try:
-            if self._db is None:
-                self._emit_pg(record)
+            conn = self._connect()
+            if self._db:
+                conn.execute(sql, self._row(record))  # type: ignore[attr-defined]
             else:
-                self._emit_sqlite(record)
+                conn.cursor().execute(sql, self._row(record))  # type: ignore[attr-defined]
+            conn.commit()  # type: ignore[attr-defined]
         except Exception:
+            # Conexión rota (fichero borrado, PG caído): tirarla para que el
+            # siguiente registro reconecte en vez de fallar para siempre.
+            self._drop_conn()
             self.handleError(record)
+
+    def close(self) -> None:
+        self._drop_conn()
+        super().close()
 
 
 def log_db_path() -> Path | None:
@@ -135,12 +157,25 @@ def _build() -> logging.Logger:
         h = logging.StreamHandler(sys.stdout)
         h.setFormatter(_StdoutFmt())
         log.addHandler(h)
+
+        # La escritura a BD sale del hilo que loguea. Sin esto, cada llamada a
+        # flog.info() desde un handler async ejecutaba un INSERT síncrono
+        # dentro del event loop.
+        db: logging.Handler | None = None
         if os.environ.get("DATABASE_URL", "").strip():
-            log.addHandler(_DBHandler(None))  # PostgreSQL: usa DATABASE_URL
+            db = _DBHandler(None)  # PostgreSQL: usa DATABASE_URL
         else:
             p = log_db_path()
             if p is not None:
-                log.addHandler(_DBHandler(p))
+                db = _DBHandler(p)
+        if db is not None:
+            q: queue.Queue = queue.Queue(-1)
+            log.addHandler(logging.handlers.QueueHandler(q))
+            listener = logging.handlers.QueueListener(q, db, respect_handler_level=True)
+            listener.start()
+            # Vacía la cola al salir: sin esto se pierden los últimos registros
+            # (incluido el traceback que provocó el cierre).
+            atexit.register(listener.stop)
     log.propagate = False
     return log
 

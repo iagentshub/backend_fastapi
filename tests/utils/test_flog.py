@@ -293,6 +293,87 @@ def test_db_handler_source_por_defecto_be(tmp_path):
     assert row[0] == "BE"
 
 
+def test_db_handler_reutiliza_la_conexion(tmp_path):
+    """Una sola conexión para todos los registros, no una por emit."""
+    h = _DBHandler(tmp_path / "logs.sqlite3")
+    h.emit(_make_record(logging.INFO, "uno"))
+    primera = h._conn
+    h.emit(_make_record(logging.INFO, "dos"))
+    assert h._conn is primera is not None
+
+
+def test_db_handler_reconecta_si_la_conexion_muere(tmp_path):
+    """Una conexión rota no deja el logging muerto para siempre."""
+    db = tmp_path / "logs.sqlite3"
+    h = _DBHandler(db)
+    h.emit(_make_record(logging.INFO, "antes"))
+
+    h._conn.close()  # simula PG caído o fichero retirado bajo los pies
+    h.emit(_make_record(logging.INFO, "durante"))  # falla y tira la conexión
+    h.emit(_make_record(logging.INFO, "despues"))  # reconecta y escribe
+
+    conn = sqlite3.connect(str(db))
+    resumenes = [r[0] for r in conn.execute("SELECT summary FROM app_logs")]
+    conn.close()
+    assert "antes" in resumenes and "despues" in resumenes
+
+
+def test_db_handler_no_ejecuta_ddl_por_registro(tmp_path):
+    """El esquema se crea en _init_schema, no en cada emit (era 4 DDL por request)."""
+    h = _DBHandler(tmp_path / "logs.sqlite3")
+    h.emit(_make_record(logging.INFO, "primero"))
+
+    ejecutadas: list[str] = []
+    h._conn.set_trace_callback(ejecutadas.append)
+    h.emit(_make_record(logging.INFO, "segundo"))
+    h._conn.set_trace_callback(None)
+
+    assert ejecutadas, "el trace no capturó nada: el test no está probando nada"
+    assert all("CREATE" not in sql.upper() for sql in ejecutadas)
+
+
+def test_el_camino_completo_cola_a_bd_conserva_los_campos(tmp_path):
+    """flog.info() -> QueueHandler -> hilo listener -> INSERT, con ip y usuario.
+
+    Es el camino que corre en producción. Los tests de _DBHandler llaman a
+    emit() directamente y se lo saltan entero: sin esto, que la cola perdiera
+    los campos extra o no vaciara nunca no lo detectaría nadie.
+    """
+    import logging.handlers
+    import queue as _queue
+
+    db = tmp_path / "logs.sqlite3"
+    h = _DBHandler(db)
+    q: _queue.Queue = _queue.Queue(-1)
+    listener = logging.handlers.QueueListener(q, h, respect_handler_level=True)
+    listener.start()
+
+    log = logging.getLogger("flog_test_cola")
+    log.setLevel(logging.DEBUG)
+    log.addHandler(logging.handlers.QueueHandler(q))
+    log.propagate = False
+    try:
+        log.warning(
+            "usuario %s hizo algo",
+            "andres",
+            extra={"ip": "9.9.9.9", "username": "andres", "source": "FE"},
+        )
+    finally:
+        listener.stop()  # vacía la cola antes de devolver el control
+
+    conn = sqlite3.connect(str(db))
+    row = conn.execute(
+        "SELECT summary, ip, username, source, level FROM app_logs"
+    ).fetchone()
+    conn.close()
+    assert row is not None, "el registro nunca llegó a la BD"
+    assert row[0] == "usuario andres hizo algo"  # los args se sustituyeron
+    assert row[1] == "9.9.9.9"
+    assert row[2] == "andres"
+    assert row[3] == "FE"
+    assert row[4] == "WARNING"
+
+
 # ── log_db_path ────────────────────────────────────────────────────────────────
 
 
