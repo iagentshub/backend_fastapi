@@ -1,8 +1,13 @@
-"""Tests de rutas de accounts: GET, PUT, DELETE, test, sync."""
+"""Tests de rutas de accounts: GET, POST, PUT, DELETE, test, sync.
+
+Varias cuentas pueden compartir `provider` (cada una con su propio `id`) —
+las rutas de mutación/lectura de una cuenta concreta van por id, no por
+provider.
+"""
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import httpx
 
@@ -16,20 +21,26 @@ def _setup_user(client, username="accuser"):
     return username
 
 
-# ── GET /api/accounts ─────────────────────────────────────────────────────────
+def _mock_openai_models(*model_ids):
+    mock_response = MagicMock()
+    mock_response.status_code = 200
+    mock_response.json.return_value = {"data": [{"id": m} for m in model_ids]}
+    mock_response.raise_for_status = lambda: None
+
+    async def fake_get(*args, **kwargs):
+        return mock_response
+
+    return fake_get
+
+
+# ── GET /api/accounts ────────────────────────────────────────────────────────
 
 def test_list_accounts_empty(client):
-    """Sin cuentas vinculadas devuelve todos los providers con linked=False."""
+    """Sin cuentas vinculadas devuelve una lista vacía."""
     _setup_user(client, "acclist1")
     r = client.get("/api/accounts")
     assert r.status_code == 200
-    data = r.json()
-    assert isinstance(data, list)
-    # Hay exactamente los providers definidos
-    providers = {item["provider"] for item in data}
-    assert providers == {"anthropic", "openai", "github", "ollama", "nvidia", "google"}
-    for item in data:
-        assert item.get("linked") is False
+    assert r.json() == []
 
 
 def test_list_accounts_requires_auth(client):
@@ -38,222 +49,259 @@ def test_list_accounts_requires_auth(client):
     assert r.status_code == 401
 
 
-def test_list_accounts_shogroup_linked_after_put(client):
-    """Después de vincular una cuenta, aparece en la lista sin api_key en claro."""
+def test_list_accounts_shows_linked_after_create(client):
+    """Tras crear una cuenta, aparece en la lista sin api_key en claro."""
     _setup_user(client, "acclist2")
-    r_put = client.put("/api/accounts/openai", json={"api_key": "sk-test-openai-123456"})
-    assert r_put.status_code == 200
+    r_create = client.post("/api/accounts", json={"provider": "openai", "api_key": "sk-test-openai-123456"})
+    assert r_create.status_code == 200
 
     r = client.get("/api/accounts")
     assert r.status_code == 200
     data = r.json()
-    openai_entry = next((a for a in data if a["provider"] == "openai"), None)
-    assert openai_entry is not None
-    # La api_key no debe aparecer en claro
-    assert "api_key" not in openai_entry
-    # Pero sí la versión enmascarada
-    assert "api_key_masked" in openai_entry
+    assert len(data) == 1
+    entry = data[0]
+    assert entry["provider"] == "openai"
+    assert "id" in entry and entry["id"]
+    assert "api_key" not in entry
+    assert "api_key_masked" in entry
 
 
-# ── PUT /api/accounts/{provider} ─────────────────────────────────────────────
+def test_list_accounts_allows_several_same_provider(client):
+    """Dos cuentas OpenAI distintas conviven con ids propios."""
+    _setup_user(client, "acclist3")
+    r1 = client.post("/api/accounts", json={"provider": "openai", "api_key": "sk-account-one-123456"})
+    r2 = client.post("/api/accounts", json={"provider": "openai", "api_key": "sk-account-two-123456"})
+    id1, id2 = r1.json()["id"], r2.json()["id"]
+    assert id1 != id2
 
-def test_link_account_openai(client):
-    """PUT /api/accounts/openai vincula la cuenta y devuelve api_key enmascarada."""
-    _setup_user(client, "putacc1")
-    r = client.put("/api/accounts/openai", json={"api_key": "sk-test-openai-123456"})
+    data = client.get("/api/accounts").json()
+    provider_entries = [a for a in data if a["provider"] == "openai"]
+    assert len(provider_entries) == 2
+    assert {a["id"] for a in provider_entries} == {id1, id2}
+
+
+# ── POST /api/accounts ───────────────────────────────────────────────────────
+
+def test_create_account_openai(client):
+    """POST /api/accounts crea la cuenta y devuelve api_key enmascarada + id."""
+    _setup_user(client, "postacc1")
+    r = client.post("/api/accounts", json={"provider": "openai", "api_key": "sk-test-openai-123456"})
     assert r.status_code == 200
     data = r.json()
     assert data["provider"] == "openai"
+    assert data["id"]
     assert "api_key" not in data
-    assert "api_key_masked" in data
     assert data["api_key_masked"].startswith("sk-tes")
 
 
-def test_link_account_anthropic(client):
-    """PUT /api/accounts/anthropic vincula con api_key de Anthropic."""
-    _setup_user(client, "putacc2")
-    r = client.put("/api/accounts/anthropic", json={"api_key": "sk-ant-test-key-1234"})
+def test_create_account_anthropic(client):
+    _setup_user(client, "postacc2")
+    r = client.post("/api/accounts", json={"provider": "anthropic", "api_key": "sk-ant-test-key-1234"})
     assert r.status_code == 200
-    data = r.json()
-    assert data["provider"] == "anthropic"
-    assert "api_key" not in data
+    assert r.json()["provider"] == "anthropic"
 
 
-def test_link_account_invalid_provider(client):
-    """PUT con provider no soportado devuelve 400."""
-    _setup_user(client, "putacc3")
-    r = client.put("/api/accounts/unsupported_llm", json={"api_key": "key123"})
+def test_create_account_invalid_provider(client):
+    _setup_user(client, "postacc3")
+    r = client.post("/api/accounts", json={"provider": "unsupported_llm", "api_key": "key123"})
     assert r.status_code == 400
 
 
-def test_link_account_missing_api_key(client):
-    """PUT sin api_key (para provider que la requiere) devuelve 422."""
-    _setup_user(client, "putacc4")
-    r = client.put("/api/accounts/openai", json={})
+def test_create_account_missing_api_key(client):
+    _setup_user(client, "postacc4")
+    r = client.post("/api/accounts", json={"provider": "openai"})
     assert r.status_code == 422
 
 
-def test_link_account_ollama_no_key_required(client):
-    """PUT /api/accounts/ollama no requiere api_key."""
-    _setup_user(client, "putacc5")
-    r = client.put("/api/accounts/ollama", json={"host": "http://localhost:11434"})
+def test_create_account_ollama_no_key_required(client):
+    _setup_user(client, "postacc5")
+    r = client.post("/api/accounts", json={"provider": "ollama", "host": "http://localhost:11434"})
     assert r.status_code == 200
-    data = r.json()
-    assert data["provider"] == "ollama"
+    assert r.json()["provider"] == "ollama"
 
 
-def test_link_account_requires_auth(client):
-    """PUT sin auth devuelve 401."""
-    r = client.put("/api/accounts/openai", json={"api_key": "sk-test"})
+def test_create_account_requires_auth(client):
+    r = client.post("/api/accounts", json={"provider": "openai", "api_key": "sk-test"})
     assert r.status_code == 401
 
 
-# ── DELETE /api/accounts/{provider} ──────────────────────────────────────────
+# ── PUT /api/accounts/{id} ───────────────────────────────────────────────────
+
+def test_update_account(client):
+    _setup_user(client, "putacc1")
+    account_id = client.post(
+        "/api/accounts", json={"provider": "openai", "api_key": "sk-original-123456"}
+    ).json()["id"]
+
+    r = client.put(f"/api/accounts/{account_id}", json={"api_key": "sk-updated-123456"})
+    assert r.status_code == 200
+    assert r.json()["api_key_masked"].startswith("sk-upd")
+
+
+def test_update_account_not_found(client):
+    _setup_user(client, "putacc2")
+    r = client.put("/api/accounts/does-not-exist", json={"api_key": "sk-test"})
+    assert r.status_code == 404
+
+
+def test_update_account_requires_auth(client):
+    r = client.put("/api/accounts/some-id", json={"api_key": "sk-test"})
+    assert r.status_code == 401
+
+
+# ── DELETE /api/accounts/{id} ────────────────────────────────────────────────
 
 def test_unlink_account(client):
-    """Vincular y desconectar una cuenta devuelve ok=True."""
     _setup_user(client, "delacc1")
-    client.put("/api/accounts/openai", json={"api_key": "sk-test-openai-123456"})
-    r = client.delete("/api/accounts/openai")
+    account_id = client.post(
+        "/api/accounts", json={"provider": "openai", "api_key": "sk-test-openai-123456"}
+    ).json()["id"]
+    r = client.delete(f"/api/accounts/{account_id}")
     assert r.status_code == 200
     assert r.json()["ok"] is True
 
 
-def test_unlink_account_not_linked(client):
-    """Desconectar cuenta no vinculada devuelve 404."""
+def test_unlink_account_not_found(client):
     _setup_user(client, "delacc2")
-    r = client.delete("/api/accounts/openai")
-    assert r.status_code == 404
-
-
-def test_unlink_account_invalid_provider(client):
-    """Desconectar provider no soportado devuelve 404 (no vinculado)."""
-    _setup_user(client, "delacc3")
-    r = client.delete("/api/accounts/unknown_provider")
+    r = client.delete("/api/accounts/does-not-exist")
     assert r.status_code == 404
 
 
 def test_unlink_account_requires_auth(client):
-    """DELETE sin auth devuelve 401."""
-    r = client.delete("/api/accounts/openai")
+    r = client.delete("/api/accounts/some-id")
     assert r.status_code == 401
 
 
-# ── POST /api/accounts/{provider}/test ───────────────────────────────────────
+def test_unlink_account_does_not_affect_sibling(client):
+    """Borrar una de dos cuentas OpenAI deja la otra intacta."""
+    _setup_user(client, "delacc3")
+    id1 = client.post("/api/accounts", json={"provider": "openai", "api_key": "sk-one-123456"}).json()["id"]
+    id2 = client.post("/api/accounts", json={"provider": "openai", "api_key": "sk-two-123456"}).json()["id"]
+    client.delete(f"/api/accounts/{id1}")
+    remaining = client.get("/api/accounts").json()
+    assert {a["id"] for a in remaining} == {id2}
 
-def test_test_account_openai_mocked(client):
-    """POST test con openai mockeado devuelve ok=True y lista de modelos."""
-    _setup_user(client, "testacc1")
 
-    mock_response = MagicMock()
-    mock_response.status_code = 200
-    mock_response.json.return_value = {
-        "data": [{"id": "gpt-4o"}, {"id": "gpt-3.5-turbo"}]
-    }
-    mock_response.raise_for_status = lambda: None
+# ── POST /api/accounts/test (credenciales nuevas, sin guardar) ──────────────
 
-    async def fake_get(*args, **kwargs):
-        return mock_response
-
-    with patch.object(httpx.AsyncClient, "get", new=fake_get):
+def test_test_new_account_openai_mocked(client):
+    _setup_user(client, "testnew1")
+    with patch.object(httpx.AsyncClient, "get", new=_mock_openai_models("gpt-4o", "gpt-3.5-turbo")):
         r = client.post(
-            "/api/accounts/openai/test",
-            json={"api_key": "sk-test-openai-123456"},
+            "/api/accounts/test",
+            json={"provider": "openai", "api_key": "sk-test-openai-123456"},
         )
-
     assert r.status_code == 200
     data = r.json()
     assert data["ok"] is True
-    assert "models" in data
     assert "gpt-4o" in data["models"]
 
 
-def test_test_account_anthropic_mocked(client):
-    """POST test con anthropic mockeado devuelve modelos."""
-    _setup_user(client, "testacc2")
+def test_test_new_account_invalid_provider(client):
+    _setup_user(client, "testnew2")
+    r = client.post("/api/accounts/test", json={"provider": "invalid_prov", "api_key": "key"})
+    assert r.status_code == 400
 
-    mock_response = MagicMock()
-    mock_response.status_code = 200
-    mock_response.json.return_value = {
-        "data": [{"id": "claude-3-5-sonnet-20241022"}, {"id": "claude-3-haiku-20240307"}]
-    }
-    mock_response.raise_for_status = lambda: None
 
-    async def fake_get(*args, **kwargs):
-        return mock_response
+def test_test_new_account_requires_auth(client):
+    r = client.post("/api/accounts/test", json={"provider": "openai", "api_key": "sk-test"})
+    assert r.status_code == 401
 
-    with patch.object(httpx.AsyncClient, "get", new=fake_get):
-        r = client.post(
-            "/api/accounts/anthropic/test",
-            json={"api_key": "sk-ant-test-key-1234"},
-        )
+
+# ── POST /api/accounts/{id}/test (cuenta ya vinculada) ───────────────────────
+
+def test_test_account_uses_stored_credentials(client):
+    """POST test con body vacío usa la api_key ya guardada de la cuenta."""
+    _setup_user(client, "testacc1")
+    account_id = client.post(
+        "/api/accounts", json={"provider": "openai", "api_key": "sk-test-openai-123456"}
+    ).json()["id"]
+
+    with patch.object(httpx.AsyncClient, "get", new=_mock_openai_models("gpt-4o", "gpt-3.5-turbo")):
+        r = client.post(f"/api/accounts/{account_id}/test", json={})
 
     assert r.status_code == 200
     data = r.json()
     assert data["ok"] is True
-    assert "claude-3-5-sonnet-20241022" in data["models"]
+    assert "gpt-4o" in data["models"]
 
 
-def test_test_account_invalid_provider(client):
-    """POST test con provider inválido devuelve 400."""
-    _setup_user(client, "testacc3")
-    r = client.post("/api/accounts/invalid_prov/test", json={"api_key": "key"})
-    assert r.status_code == 400
+def test_test_account_not_found(client):
+    _setup_user(client, "testacc2")
+    r = client.post("/api/accounts/does-not-exist/test", json={})
+    assert r.status_code == 404
 
 
 def test_test_account_requires_auth(client):
-    """POST test sin auth devuelve 401."""
-    r = client.post("/api/accounts/openai/test", json={"api_key": "sk-test"})
+    r = client.post("/api/accounts/some-id/test", json={})
     assert r.status_code == 401
 
 
-# ── POST /api/accounts/{provider}/sync ───────────────────────────────────────
+# ── POST /api/accounts/{id}/sync ─────────────────────────────────────────────
 
-def test_sync_account_not_linked(client):
-    """Sync sin cuenta vinculada devuelve 404."""
+def test_sync_account_not_found(client):
     _setup_user(client, "syncacc1")
-    r = client.post("/api/accounts/openai/sync")
+    r = client.post("/api/accounts/does-not-exist/sync")
     assert r.status_code == 404
 
 
 def test_sync_account_openai_mocked(client):
     """Sync con openai mockeado crea conexiones y devuelve resumen."""
     _setup_user(client, "syncacc2")
-    # Primero vinculamos la cuenta
-    client.put("/api/accounts/openai", json={"api_key": "sk-test-openai-123456"})
+    account_id = client.post(
+        "/api/accounts", json={"provider": "openai", "api_key": "sk-test-openai-123456"}
+    ).json()["id"]
 
-    mock_response = MagicMock()
-    mock_response.status_code = 200
-    mock_response.json.return_value = {
-        "data": [{"id": "gpt-4o"}, {"id": "gpt-3.5-turbo"}]
-    }
-    mock_response.raise_for_status = lambda: None
-
-    async def fake_get(*args, **kwargs):
-        return mock_response
-
-    with patch.object(httpx.AsyncClient, "get", new=fake_get):
-        r = client.post("/api/accounts/openai/sync")
+    with patch.object(httpx.AsyncClient, "get", new=_mock_openai_models("gpt-4o", "gpt-3.5-turbo")):
+        r = client.post(f"/api/accounts/{account_id}/sync")
 
     assert r.status_code == 200
     data = r.json()
     assert data["provider"] == "openai"
-    assert "models" in data
+    assert set(data["models"]) == {"gpt-4o", "gpt-3.5-turbo"}
     assert "api_key" not in data
 
 
-def test_sync_account_invalid_provider(client):
-    """Sync con provider inválido devuelve 400."""
-    _setup_user(client, "syncacc3")
-    r = client.post("/api/accounts/bad_provider/sync")
-    assert r.status_code == 400
+def test_sync_account_with_selected_models(client):
+    """Sync con {"models": [...]} solo crea/actualiza esas conexiones, no el resto."""
+    _setup_user(client, "syncacc4")
+    account_id = client.post(
+        "/api/accounts", json={"provider": "openai", "api_key": "sk-test-openai-123456"}
+    ).json()["id"]
+
+    with patch.object(
+        httpx.AsyncClient, "get", new=_mock_openai_models("gpt-4o", "gpt-3.5-turbo", "gpt-4o-mini")
+    ):
+        r = client.post(f"/api/accounts/{account_id}/sync", json={"models": ["gpt-4o"]})
+
+    assert r.status_code == 200
+    data = r.json()
+    assert data["models"] == ["gpt-4o"]
+
+    conns = client.get("/api/connections/raw").json()
+    names = {c["name"] for c in conns}
+    assert "OpenAI / gpt-4o" in names
+    assert "OpenAI / gpt-3.5-turbo" not in names
+    assert "OpenAI / gpt-4o-mini" not in names
+
+
+def test_sync_two_accounts_same_provider_do_not_clash(client):
+    """Sincronizar dos cuentas OpenAI con el mismo modelo crea dos conexiones
+    distintas, una por cuenta — no se pisan entre sí."""
+    _setup_user(client, "syncacc5")
+    id1 = client.post("/api/accounts", json={"provider": "openai", "api_key": "sk-acc-one-123456"}).json()["id"]
+    id2 = client.post("/api/accounts", json={"provider": "openai", "api_key": "sk-acc-two-123456"}).json()["id"]
+
+    with patch.object(httpx.AsyncClient, "get", new=_mock_openai_models("gpt-4o")):
+        client.post(f"/api/accounts/{id1}/sync")
+        client.post(f"/api/accounts/{id2}/sync")
+
+    conns = client.get("/api/connections/raw").json()
+    gpt4o_conns = [c for c in conns if c.get("model") == "gpt-4o"]
+    assert len(gpt4o_conns) == 2
+    assert {c["_account_id"] for c in gpt4o_conns} == {id1, id2}
 
 
 def test_sync_account_requires_auth(client):
-    """POST sync sin auth devuelve 401."""
-    r = client.post("/api/accounts/openai/sync")
+    r = client.post("/api/accounts/some-id/sync")
     assert r.status_code == 401
-
-
-# Necesario para los mocks con MagicMock sin import explícito
-from unittest.mock import MagicMock  # noqa: E402

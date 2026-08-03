@@ -18,7 +18,7 @@ La base de datos SQLite (`hub.db`) almacena todos los datos estructurados:
 | Tabla | Contenido |
 |---|---|
 | `users` | Cuentas de usuario — credenciales, rol y preferencias por usuario (tema, idioma); la política global puede imponer el tema sin borrar la preferencia personal |
-| `accounts` | API keys de proveedor vinculadas por usuario (Anthropic, OpenAI, GitHub, Ollama, NVIDIA, Google) — keys cifradas en reposo |
+| `accounts` | API keys de proveedor vinculadas por usuario (Anthropic, OpenAI, GitHub, Ollama, NVIDIA, Google), cada una con su propio `id` — se permiten varias cuentas del mismo proveedor; keys cifradas en reposo |
 | `connections` | Conexiones de IA con nombre, selección de modelo y consumo acumulado de tokens — API keys cifradas en reposo |
 | `knowledge_items` | Elementos de la base de conocimiento |
 | `conversations` | Historial de conversaciones (id, título, fechas) |

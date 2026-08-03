@@ -414,6 +414,39 @@ async def _migrate_sqlite(conn: Any) -> None:
                 SELECT 'admin', provider, data, linked_at FROM _accounts_old;
             DROP TABLE _accounts_old;
         """)
+        await conn.commit()
+
+    # 2b. Own `id` per account: permite varias cuentas del mismo provider
+    # (antes la clave (owner_id, provider) forzaba una sola por proveedor).
+    cur = await conn.execute("PRAGMA table_info(accounts)")
+    acct_cols = {row[1] for row in await cur.fetchall()}
+    if "id" not in acct_cols:
+        await conn.execute("ALTER TABLE accounts ADD COLUMN id TEXT")
+        cur = await conn.execute(
+            "SELECT rowid FROM accounts WHERE id IS NULL OR id = ''"
+        )
+        for (rowid,) in await cur.fetchall():
+            await conn.execute(
+                "UPDATE accounts SET id = ? WHERE rowid = ?",
+                (generate_id(), rowid),
+            )
+        await conn.commit()
+        await conn.executescript("""
+            ALTER TABLE accounts RENAME TO _accounts_old2;
+            CREATE TABLE accounts (
+                id          TEXT NOT NULL,
+                owner_id    TEXT NOT NULL,
+                provider    TEXT NOT NULL,
+                data        TEXT NOT NULL,
+                linked_at   TEXT NOT NULL,
+                PRIMARY KEY (id, owner_id)
+            );
+            INSERT INTO accounts (id, owner_id, provider, data, linked_at)
+                SELECT id, owner_id, provider, data, linked_at FROM _accounts_old2;
+            DROP TABLE _accounts_old2;
+            CREATE INDEX IF NOT EXISTS idx_accounts_owner ON accounts(owner_id, provider);
+        """)
+        await conn.commit()
 
     # Add users table columns that may be missing in older DBs
     cur = await conn.execute("PRAGMA table_info(users)")
@@ -871,6 +904,23 @@ async def _migrate_pg(conn: Any) -> None:
     await conn.execute(
         "ALTER TABLE connections ADD COLUMN IF NOT EXISTS "
         "owner_id TEXT NOT NULL DEFAULT 'admin'"
+    )
+    # Own `id` per account: permite varias cuentas del mismo provider (antes
+    # (owner_id, provider) forzaba una sola por proveedor).
+    await conn.execute("ALTER TABLE accounts ADD COLUMN IF NOT EXISTS id TEXT")
+    await conn.execute(
+        "UPDATE accounts SET id = md5(random()::text || clock_timestamp()::text) "
+        "WHERE id IS NULL OR id = ''"
+    )
+    await conn.execute("ALTER TABLE accounts ALTER COLUMN id SET NOT NULL")
+    await conn.execute(
+        "ALTER TABLE accounts DROP CONSTRAINT IF EXISTS accounts_pkey"
+    )
+    await conn.execute(
+        "ALTER TABLE accounts ADD CONSTRAINT accounts_pkey PRIMARY KEY (id, owner_id)"
+    )
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_accounts_owner ON accounts(owner_id, provider)"
     )
     await _migrate_named_resources_pg(conn)
     await _migrate_group_active_flag_pg(conn)

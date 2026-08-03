@@ -1,4 +1,9 @@
-"""Storage for linked provider accounts — DB-backed with owner_id."""
+"""Storage for linked provider accounts — DB-backed con owner_id.
+
+Varias cuentas pueden compartir el mismo `provider` (ej. dos API keys de
+OpenAI distintas): la clave de unicidad es `(id, owner_id)`, `provider` es
+solo un campo más, no forma parte de la clave.
+"""
 from __future__ import annotations
 
 import json
@@ -9,6 +14,7 @@ from app.storage.crypto import decrypt, encrypt
 from app.storage.db import IS_PG, open_db
 from app.utils import flog
 from app.utils import now_iso as _now
+from app.utils.generators import generate_id
 
 
 def _mask(key: str) -> str:
@@ -18,13 +24,14 @@ def _mask(key: str) -> str:
 
 
 class AccountStorage:
-    """DB-backed account storage. Accepts the DB file path."""
+    """DB-backed account storage. Acepta la ruta al fichero de BD."""
 
     def __init__(self, db_path: Path) -> None:
         self._db_path = Path(db_path)
 
     async def _migrate_files(self) -> None:
-        """One-time import from per-provider JSON files."""
+        """One-time import from per-provider JSON files (formato legado:
+        una cuenta por proveedor, sin id propio)."""
         async with open_db() as conn:
             count = await conn.fetchval("SELECT COUNT(*) FROM accounts")
             if count:
@@ -36,44 +43,48 @@ class AccountStorage:
             for p in sorted(accounts_dir.glob("*.json")):
                 try:
                     d = json.loads(p.read_text(encoding="utf-8"))
-                    provider = p.stem
-                    d["provider"] = provider
-                    await self._upsert_with_conn(conn, "admin", provider, d)
+                    d["provider"] = p.stem
+                    await self.save(d, owner_id="admin")
                     p.rename(p.with_suffix(".migrated"))
                 except Exception as exc:
                     flog.warning(f"[accounts] Migración de {p.name} fallida: {exc}")
 
-    async def _upsert_with_conn(self, conn, owner_id: str, provider: str, data: Dict[str, Any]) -> None:
+    async def _upsert_with_conn(
+        self, conn: Any, owner_id: str, data: Dict[str, Any]
+    ) -> None:
         if IS_PG:
             await conn.execute(
-                "INSERT INTO accounts (owner_id, provider, data, linked_at) "
-                "VALUES (?, ?, ?, ?) "
-                "ON CONFLICT (owner_id, provider) DO UPDATE SET data=EXCLUDED.data, linked_at=EXCLUDED.linked_at",
+                "INSERT INTO accounts (id, owner_id, provider, data, linked_at) "
+                "VALUES (?, ?, ?, ?, ?) "
+                "ON CONFLICT (id, owner_id) DO UPDATE SET provider=EXCLUDED.provider, "
+                "data=EXCLUDED.data, linked_at=EXCLUDED.linked_at",
                 (
+                    data["id"],
                     owner_id,
-                    provider,
+                    data["provider"],
                     json.dumps(data, ensure_ascii=False),
                     str(data.get("linked_at") or _now()),
                 ),
             )
         else:
             await conn.execute(
-                "INSERT OR REPLACE INTO accounts (owner_id, provider, data, linked_at) "
-                "VALUES (?, ?, ?, ?)",
+                "INSERT OR REPLACE INTO accounts (id, owner_id, provider, data, linked_at) "
+                "VALUES (?, ?, ?, ?, ?)",
                 (
+                    data["id"],
                     owner_id,
-                    provider,
+                    data["provider"],
                     json.dumps(data, ensure_ascii=False),
                     str(data.get("linked_at") or _now()),
                 ),
             )
         await conn.commit()
 
-    async def get(self, provider: str, owner_id: str = "admin") -> Optional[Dict[str, Any]]:
+    async def get(self, account_id: str, owner_id: str = "admin") -> Optional[Dict[str, Any]]:
         async with open_db() as conn:
             row = await conn.fetchone(
-                "SELECT data FROM accounts WHERE owner_id = ? AND provider = ?",
-                (owner_id, provider),
+                "SELECT data FROM accounts WHERE owner_id = ? AND id = ?",
+                (owner_id, account_id),
             )
             if not row:
                 return None
@@ -82,30 +93,42 @@ class AccountStorage:
                 d["api_key"] = decrypt(d["api_key"])
             return d
 
-    async def save(self, provider: str, data: Dict[str, Any], owner_id: str = "admin") -> Dict[str, Any]:
-        existing = await self.get(provider, owner_id) or {}
-        data["provider"] = provider
-        data.setdefault("linked_at", existing.get("linked_at") or _now())
-        if not data.get("api_key") and existing.get("api_key"):
+    async def save(self, data: Dict[str, Any], owner_id: str = "admin") -> Dict[str, Any]:
+        """Crea una cuenta nueva o actualiza una existente.
+
+        Con `data["id"]` presente y ya existente, actualiza esa cuenta
+        (preservando `api_key`/`provider` si no se mandan de nuevo). Sin
+        `id` (o con un `id` que no existe todavía), crea una cuenta nueva —
+        así se permiten varias cuentas del mismo `provider` para el mismo
+        owner, cada una con su propio id.
+        """
+        account_id = str(data.get("id") or "").strip()
+        existing = await self.get(account_id, owner_id) if account_id else None
+        if existing is None:
+            account_id = generate_id()
+        data["id"] = account_id
+        data.setdefault("provider", (existing or {}).get("provider"))
+        data.setdefault("linked_at", (existing or {}).get("linked_at") or _now())
+        if not data.get("api_key") and (existing or {}).get("api_key"):
             data["api_key"] = existing["api_key"]
         stored = dict(data)
         if stored.get("api_key"):
             stored["api_key"] = encrypt(stored["api_key"])
         async with open_db() as conn:
-            await self._upsert_with_conn(conn, owner_id, provider, stored)
+            await self._upsert_with_conn(conn, owner_id, stored)
         return data
 
-    async def delete(self, provider: str, owner_id: str = "admin") -> bool:
+    async def delete(self, account_id: str, owner_id: str = "admin") -> bool:
         async with open_db() as conn:
             exists = await conn.fetchone(
-                "SELECT owner_id FROM accounts WHERE owner_id = ? AND provider = ?",
-                (owner_id, provider),
+                "SELECT id FROM accounts WHERE owner_id = ? AND id = ?",
+                (owner_id, account_id),
             )
             if not exists:
                 return False
             await conn.execute(
-                "DELETE FROM accounts WHERE owner_id = ? AND provider = ?",
-                (owner_id, provider),
+                "DELETE FROM accounts WHERE owner_id = ? AND id = ?",
+                (owner_id, account_id),
             )
             await conn.commit()
             return True
@@ -113,7 +136,7 @@ class AccountStorage:
     async def list(self, owner_id: str = "admin") -> List[Dict[str, Any]]:
         async with open_db() as conn:
             rows = await conn.fetchall(
-                "SELECT data FROM accounts WHERE owner_id = ? ORDER BY provider",
+                "SELECT data FROM accounts WHERE owner_id = ? ORDER BY provider, linked_at",
                 (owner_id,),
             )
         result = []
