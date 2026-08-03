@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import asyncio
 
+import pytest
+
 
 def _auth_client(client):
     """Registra 'alice' y autentica el client devuelto."""
@@ -466,6 +468,19 @@ def test_put_platform_config_oauth_toggles(admin_client):
     assert data["oauth_google_enabled"] is False
     assert data["oauth_apple_enabled"] is False
     assert data["oauth_microsoft_enabled"] is True  # no tocado, sigue en su default
+
+
+@pytest.mark.parametrize("modo", ["open", "closed", "invite"])
+def test_put_platform_acepta_los_tres_modos_de_registro(admin_client, modo):
+    """`invite` se rechazaba con 422 aunque auth.py lo implementa y .env lo usa."""
+    r = admin_client.put("/api/settings/platform", json={"registration": modo})
+    assert r.status_code == 200, r.text
+    assert r.json()["registration"] == modo
+
+
+def test_put_platform_rechaza_modo_de_registro_inventado(admin_client):
+    r = admin_client.put("/api/settings/platform", json={"registration": "abierto"})
+    assert r.status_code == 422
 
 
 def test_platform_public_reflects_admin_oauth_toggle(admin_client, client):

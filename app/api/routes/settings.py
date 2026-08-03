@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field, model_validator
 
 from app.api.routes.auth import require_admin, require_auth
+from app.config.session import REGISTRATION_MODES
 from app.errors import APIError
 from app.storage.db import open_db
 from app.utils import flog
@@ -318,7 +319,7 @@ _PLATFORM_DEFAULTS: dict = {
     "splash_end_on_logo": True,
 }
 
-_VALID_REGISTRATION = {"open", "closed"}
+_VALID_REGISTRATION = REGISTRATION_MODES
 
 
 def _read_platform_cfg() -> dict:
@@ -350,6 +351,10 @@ def _write_platform_cfg(cfg: dict) -> None:
     SETTINGS_FILE.write_text(
         _json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8"
     )
+    # billing_enabled vive en este fichero y LicenseGateMiddleware lo cachea.
+    from app.middleware.licenses import invalidate_billing_cache
+
+    invalidate_billing_cache()
 
 
 class PlatformConfigUpdate(BaseModel):
