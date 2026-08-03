@@ -13,7 +13,6 @@ from pydantic import BaseModel, Field
 from app.api.routes.auth import GroupContext, require_group
 from app.auth.auth import get_user_role
 from app.config.data import DB_FILE
-from app.config.providers import PROVIDER_DEFAULT_MODELS
 from app.errors import APIError
 from app.models.agent import Agent
 from app.services.agent_builder import (
@@ -112,17 +111,10 @@ async def builder_chat(
             media_type="text/event-stream",
         )
 
-    builder_conn = conn
-    if str(conn.get("type") or "").lower() == "nvidia":
-        builder_conn = {
-            **conn,
-            "model": PROVIDER_DEFAULT_MODELS["nvidia"],
-        }
-
     builder_agent = Agent(
         id="_agent_builder",
         name="Constructor de agentes",
-        model=str(builder_conn.get("model") or ""),
+        model=str(conn.get("model") or ""),
         system_prompt=build_system_prompt(
             body.resources,
             force_ready=force_ready,
@@ -146,7 +138,7 @@ async def builder_chat(
             partial_reply = ""
             provider_error = ""
             async for chunk in stream_chat(
-                builder_agent, builder_conn, attempt_history, None
+                builder_agent, conn, attempt_history, None
             ):
                 if chunk.startswith(":"):
                     yield chunk

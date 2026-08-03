@@ -42,7 +42,7 @@ def test_builder_returns_validated_draft(admin_client, monkeypatch):
             "name": "NIM test",
             "type": "nvidia",
             "api_key": "nvapi-test",
-            "model": "meta/llama-3.1-8b-instruct",
+            "model": "meta/llama-3.2-3b-instruct",
         },
     ).json()
 
@@ -51,6 +51,7 @@ def test_builder_returns_validated_draft(admin_client, monkeypatch):
     async def fake_stream_chat(agent, *args, **kwargs):
         captured["timeout"] = agent.timeout
         captured["system_prompt"] = agent.system_prompt
+        captured["agent_model"] = agent.model
         captured["connection_model"] = args[0]["model"]
         reply = json.dumps(
             {
@@ -100,7 +101,8 @@ def test_builder_returns_validated_draft(admin_client, monkeypatch):
     assert done["status"] == "ready"
     assert done["draft"]["name"] == "Agente de pruebas"
     assert captured["timeout"] == 90
-    assert captured["connection_model"] == "meta/llama-3.1-8b-instruct"
+    assert captured["agent_model"] == "meta/llama-3.2-3b-instruct"
+    assert captured["connection_model"] == "meta/llama-3.2-3b-instruct"
 
 
 def test_expert_mode_never_returns_another_question(admin_client, monkeypatch):
