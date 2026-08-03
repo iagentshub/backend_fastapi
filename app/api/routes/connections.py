@@ -336,28 +336,6 @@ async def list_connections(
                 raw.append(c)
     else:
         raw = await _resolve_connections(user, active_group_id)
-        # Para usuarios normales, añadir shares de todos los grupos del usuario
-        if not is_guest(user) and await get_user_role(user) != "admin":
-            own_ids = {c["id"] for c in raw}
-            user_groups = await _groups.list_for_user(user)
-            shared_map: Dict[str, str] = {}  # resource_id -> group_id
-            for group in user_groups:
-                gid = group["id"]
-                for rid in await _shares.get_group_shared_resource_ids(gid, "connection"):
-                    if rid not in shared_map:
-                        shared_map[rid] = gid
-            for rid in set(shared_map.keys()) - own_ids:
-                async with open_db() as db:
-                    owner_row = await db.fetchone(
-                        "SELECT owner_id FROM connections WHERE id = ?", (rid,)
-                    )
-                if not owner_row or not await _groups.owner_is_active(owner_row[0]):
-                    continue
-                c = await _storage.get(rid)
-                if c:
-                    c["_shared"] = True
-                    c["_group_id"] = shared_map[rid]
-                    raw.append(c)
 
     if not include_inactive:
         raw = [c for c in raw if c.get("is_active", True)]

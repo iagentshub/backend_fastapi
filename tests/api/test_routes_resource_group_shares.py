@@ -74,6 +74,45 @@ def test_share_personal_connection_with_group_visible_to_member(client):
     )["id"]
 
 
+def test_shared_connection_only_appears_and_works_in_recipient_group(client):
+    _register("rgroup_owner_context")
+    _register("rgroup_member_context")
+
+    _set_cookie(client, "rgroup_owner_context")
+    conn = client.post("/api/connections", json=_CONN).json()
+    group = client.post("/api/groups", json={"name": "Equipo Contexto"}).json()
+    client.post(
+        f"/api/groups/{group['id']}/members",
+        json={"username": "rgroup_member_context", "role": "member"},
+    )
+
+    _set_cookie(client, "rgroup_owner_context", group_id=group["id"])
+    assert client.post(f"/api/sharing/connection/{conn['id']}").status_code == 200
+
+    _set_cookie(client, "rgroup_member_context")
+    personal_ids = {item["id"] for item in client.get("/api/connections").json()}
+    assert conn["id"] not in personal_ids
+
+    _set_cookie(client, "rgroup_member_context", group_id=group["id"])
+    team_ids = {item["id"] for item in client.get("/api/connections").json()}
+    assert conn["id"] in team_ids
+
+    specification = (
+        "Eres un agente senior especializado en Python y FastAPI. "
+        "Conserva todos los requisitos técnicos, valida seguridad y añade pruebas. "
+    ) * 5
+    response = client.post(
+        "/api/agent-builder/chat",
+        json={
+            "connection_id": conn["id"],
+            "mode": "expert",
+            "messages": [{"role": "user", "content": specification}],
+        },
+    )
+    assert response.status_code == 200
+    assert '"type": "builder_done"' in response.text
+
+
 def test_share_connection_without_ownership_forbidden(client):
     _register("rgroup_owner_b")
     _register("rgroup_bystander_b")
