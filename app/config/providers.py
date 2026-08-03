@@ -1,6 +1,13 @@
 """Configuración de proveedores LLM — fuente única de verdad."""
 from __future__ import annotations
 
+import os
+
+# OAuth App propia (Device Flow habilitado) para "Conectar con GitHub" desde
+# Accounts, en vez de pegar un Personal Access Token a mano. Sin client_id
+# configurado, ese botón queda deshabilitado (fallback: pegar el token).
+GITHUB_OAUTH_CLIENT_ID: str = os.getenv("GITHUB_OAUTH_CLIENT_ID", "")
+
 PROVIDER_BASE_URLS: dict[str, str] = {
     "openai":  "https://api.openai.com/v1",
     "gemini":  "https://generativelanguage.googleapis.com/v1beta",

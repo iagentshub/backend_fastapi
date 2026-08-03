@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Dict, List
 
 import httpx
@@ -11,6 +12,7 @@ from app.api.routes.auth import require_auth
 from app.auth.auth import get_user_role
 from app.config.data import AGENTS_DIR, DB_FILE, SKILLS_DIR
 from app.errors import APIError
+from app.middleware.ratelimit import RateLimiter
 from app.storage.accounts import AccountStorage, _mask
 from app.storage.storage import AgentStorage, ConnectionStorage, SkillStorage
 from app.utils import now_iso as _now
@@ -19,6 +21,7 @@ router = APIRouter(prefix="/api/accounts", tags=["accounts"])
 
 _storage = AccountStorage(DB_FILE)
 _conn_storage = ConnectionStorage(DB_FILE)
+_device_flow_limiter = RateLimiter(calls=10, window=60)
 
 
 async def _owner(user: str) -> str:
@@ -28,7 +31,7 @@ async def _owner(user: str) -> str:
 _agent_storage = AgentStorage(AGENTS_DIR)
 _skill_storage = SkillStorage(SKILLS_DIR)
 
-_PROVIDERS = ["anthropic", "openai", "github", "ollama", "nvidia", "google"]
+_PROVIDERS = ["anthropic", "openai", "github", "ollama", "nvidia", "google", "iagentshub"]
 _PROVIDER_LABELS = {
     "anthropic": "Anthropic",
     "openai": "OpenAI",
@@ -36,6 +39,7 @@ _PROVIDER_LABELS = {
     "ollama": "Ollama",
     "nvidia": "NVIDIA NIM",
     "google": "Google Gemini",
+    "iagentshub": "iAgents Hub",
 }
 _PROVIDER_TYPE_IDS: dict[str, str] = {
     "anthropic": "claude",
@@ -44,7 +48,14 @@ _PROVIDER_TYPE_IDS: dict[str, str] = {
     "ollama": "ollama",
     "nvidia": "nvidia",
     "github": "github",
+    "iagentshub": "iagentshub",
 }
+
+# iAgents Hub no encaja en el modelo "api_key -> lista de modelos -> una
+# Connection por modelo": es una cuenta con url+usuario+contraseña cuyo
+# "sync" trae agentes/skills/conocimiento/conexiones de otra instancia
+# (reutiliza `_run_hub_sync` de connections.py), no una lista de LLMs.
+_HUB_PROVIDER = "iagentshub"
 
 
 async def _fetch_models(provider: str, api_key: str, host: str = "") -> List[str]:
@@ -133,6 +144,64 @@ async def _fetch_models(provider: str, api_key: str, host: str = "") -> List[str
     return []
 
 
+async def _test_hub_login(url: str, username: str, password: str) -> Dict[str, Any]:
+    """Prueba el login contra otra instancia de iAgents Hub (sin modelos)."""
+    from app.connections.iagentshub import IAgentsHubProvider
+
+    result = await asyncio.to_thread(
+        IAgentsHubProvider.test,
+        {"url": url, "username": username, "api_key": password},
+    )
+    return {
+        "ok": result.ok,
+        "message": result.message,
+        "models": [],
+        "models_count": 0,
+    }
+
+
+async def _sync_hub_account(
+    account_id: str, account: Dict[str, Any], owner: str
+) -> Dict[str, Any]:
+    """Sincroniza una cuenta de proveedor `iagentshub`: crea/actualiza una
+    Connection-espejo tipo `iagentshub` (misma que usaría el usuario desde
+    Connections) y reutiliza `_run_hub_sync` para traer agentes/skills/
+    conocimiento/conexiones — nada que ver con la selección de modelos que
+    usan el resto de proveedores."""
+    from app.api.routes.connections import _run_hub_sync
+
+    label = account.get("name") or _PROVIDER_LABELS[_HUB_PROVIDER]
+    existing_conns = await _conn_storage.list(owner)
+    mirror = next(
+        (
+            c
+            for c in existing_conns
+            if c.get("_account_id") == account_id and c.get("type") == _HUB_PROVIDER
+        ),
+        None,
+    )
+    conn_data: Dict[str, Any] = {
+        "name": label,
+        "type": _HUB_PROVIDER,
+        "url": account.get("url", ""),
+        "username": account.get("username", ""),
+        "api_key": account.get("api_key", ""),
+        "_account_id": account_id,
+    }
+    if mirror:
+        conn_data["id"] = mirror["id"]
+    saved_conn = await _conn_storage.save(conn_data, owner_id=owner)
+    conn_data["id"] = saved_conn["id"]
+
+    hub_result = await _run_hub_sync(conn_data["id"], conn_data, owner)
+
+    account["id"] = account_id
+    account["last_synced_at"] = _now()
+    account["sync_summary"] = hub_result
+    saved = await _storage.save(account, owner)
+    return _redact(saved)
+
+
 def _redact(saved: Dict[str, Any]) -> Dict[str, Any]:
     if saved.get("api_key"):
         saved["api_key_masked"] = _mask(saved["api_key"])
@@ -168,12 +237,25 @@ async def link_account(
         )
     api_key = str(body.get("api_key") or "").strip()
     host = str(body.get("host") or "").strip()
+    url = str(body.get("url") or "").strip()
+    username = str(body.get("username") or "").strip()
     name = str(body.get("name") or "").strip()
-    if not api_key and provider != "ollama":
+    if provider == _HUB_PROVIDER:
+        if not url or not username or not api_key:
+            raise APIError(
+                422,
+                "invalid_field",
+                "url, username y api_key (contraseña) son obligatorios",
+                extra={"field": "url"},
+            )
+    elif not api_key and provider != "ollama":
         raise APIError(422, "invalid_field", "api_key requerida", extra={"field": "api_key"})
     data: Dict[str, Any] = {"provider": provider, "api_key": api_key}
     if host:
         data["host"] = host
+    if provider == _HUB_PROVIDER:
+        data["url"] = url
+        data["username"] = username
     if name:
         data["name"] = name
     saved = await _storage.save(data, await _owner(user))
@@ -196,8 +278,88 @@ async def test_new_account(
         )
     api_key = str(body.get("api_key") or "").strip()
     host = str(body.get("host") or "").strip()
+    if provider == _HUB_PROVIDER:
+        url = str(body.get("url") or "").strip()
+        username = str(body.get("username") or "").strip()
+        return await _test_hub_login(url, username, api_key)
     models = await _fetch_models(provider, api_key, host)
     return {"ok": True, "models": models, "models_count": len(models)}
+
+
+@router.post("/github/device-code")
+async def github_device_code(
+    _: str = Depends(require_auth), _rl: None = Depends(_device_flow_limiter)
+) -> Dict[str, Any]:
+    """Inicia el GitHub OAuth Device Flow: en vez de pegar un Personal Access
+    Token a mano, el usuario visita `verification_uri`, introduce `user_code`
+    y autoriza el acceso — el cliente sondea `/github/device-token` hasta que
+    esté listo. Requiere una GitHub OAuth App propia (Device Flow habilitado)
+    configurada vía `GITHUB_OAUTH_CLIENT_ID`."""
+    from app.config.providers import GITHUB_OAUTH_CLIENT_ID
+
+    if not GITHUB_OAUTH_CLIENT_ID:
+        raise APIError(
+            503,
+            "oauth_not_configured",
+            "El login con GitHub no está configurado en este servidor",
+        )
+    async with httpx.AsyncClient(timeout=10) as client:
+        r = await client.post(
+            "https://github.com/login/device/code",
+            data={"client_id": GITHUB_OAUTH_CLIENT_ID, "scope": "read:user"},
+            headers={"Accept": "application/json"},
+        )
+    r.raise_for_status()
+    data = r.json()
+    return {
+        "device_code": data.get("device_code", ""),
+        "user_code": data.get("user_code", ""),
+        "verification_uri": data.get("verification_uri", ""),
+        "expires_in": data.get("expires_in", 900),
+        "interval": data.get("interval", 5),
+    }
+
+
+@router.post("/github/device-token")
+async def github_device_token(
+    request: Request,
+    _: str = Depends(require_auth),
+    _rl: None = Depends(_device_flow_limiter),
+) -> Dict[str, Any]:
+    """Sondea si el usuario ya autorizó el Device Flow iniciado con
+    `/github/device-code`; devuelve el access_token en cuanto esté listo."""
+    from app.config.providers import GITHUB_OAUTH_CLIENT_ID
+
+    if not GITHUB_OAUTH_CLIENT_ID:
+        raise APIError(
+            503,
+            "oauth_not_configured",
+            "El login con GitHub no está configurado en este servidor",
+        )
+    body = await request.json()
+    device_code = str(body.get("device_code") or "").strip()
+    if not device_code:
+        raise APIError(
+            422, "invalid_field", "device_code requerido", extra={"field": "device_code"}
+        )
+    async with httpx.AsyncClient(timeout=10) as client:
+        r = await client.post(
+            "https://github.com/login/oauth/access_token",
+            data={
+                "client_id": GITHUB_OAUTH_CLIENT_ID,
+                "device_code": device_code,
+                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+            },
+            headers={"Accept": "application/json"},
+        )
+    r.raise_for_status()
+    data = r.json()
+    error = data.get("error")
+    if error in ("authorization_pending", "slow_down"):
+        return {"ok": False, "pending": True, "slow_down": error == "slow_down"}
+    if error:
+        return {"ok": False, "pending": False, "error": error}
+    return {"ok": True, "pending": False, "access_token": data.get("access_token", "")}
 
 
 @router.put("/{account_id}")
@@ -211,12 +373,18 @@ async def update_account(
     body = await request.json()
     api_key = str(body.get("api_key") or "").strip()
     host = str(body.get("host") or "").strip()
+    url = str(body.get("url") or "").strip()
+    username = str(body.get("username") or "").strip()
     name = str(body.get("name") or "").strip()
     data: Dict[str, Any] = {"id": account_id, "provider": existing["provider"]}
     if api_key:
         data["api_key"] = api_key
     if host:
         data["host"] = host
+    if url:
+        data["url"] = url
+    if username:
+        data["username"] = username
     if name:
         data["name"] = name
     saved = await _storage.save(data, owner)
@@ -246,6 +414,11 @@ async def test_account(
         body = await request.json()
     except Exception:
         body = {}
+    if account["provider"] == _HUB_PROVIDER:
+        url = str(body.get("url") or "").strip() or account.get("url", "")
+        username = str(body.get("username") or "").strip() or account.get("username", "")
+        api_key = str(body.get("api_key") or "").strip() or account.get("api_key", "")
+        return await _test_hub_login(url, username, api_key)
     api_key = str(body.get("api_key") or "").strip() or account.get("api_key", "")
     host = str(body.get("host") or "").strip() or account.get("host", "")
     models = await _fetch_models(account["provider"], api_key, host)
@@ -269,6 +442,10 @@ async def sync_account(
     if not account:
         raise APIError(404, "not_found", "Cuenta no vinculada", extra={"resource": "account"})
 
+    provider = account["provider"]
+    if provider == _HUB_PROVIDER:
+        return await _sync_hub_account(account_id, account, owner)
+
     try:
         body = await request.json()
     except Exception:
@@ -277,7 +454,6 @@ async def sync_account(
     if not isinstance(selected, list):
         selected = None
 
-    provider = account["provider"]
     api_key = account.get("api_key", "")
     host = account.get("host", "")
     label = account.get("name") or _PROVIDER_LABELS.get(provider, provider)

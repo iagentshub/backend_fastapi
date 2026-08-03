@@ -305,3 +305,229 @@ def test_sync_two_accounts_same_provider_do_not_clash(client):
 def test_sync_account_requires_auth(client):
     r = client.post("/api/accounts/some-id/sync")
     assert r.status_code == 401
+
+
+# ── Proveedor iagentshub (url+usuario+contraseña, sync = hub-sync) ──────────
+
+def test_create_account_iagentshub_missing_fields(client):
+    """POST iagentshub sin url/username/api_key devuelve 422."""
+    _setup_user(client, "hubacc1")
+    r = client.post(
+        "/api/accounts",
+        json={"provider": "iagentshub", "url": "https://hub.example.com"},
+    )
+    assert r.status_code == 422
+
+
+def test_create_account_iagentshub_success(client):
+    _setup_user(client, "hubacc2")
+    r = client.post(
+        "/api/accounts",
+        json={
+            "provider": "iagentshub",
+            "url": "https://hub.example.com",
+            "username": "hubuser",
+            "api_key": "hubpass",
+        },
+    )
+    assert r.status_code == 200
+    data = r.json()
+    assert data["provider"] == "iagentshub"
+    assert data["username"] == "hubuser"
+    assert "api_key" not in data
+    assert data["api_key_masked"]
+
+
+def test_test_new_account_iagentshub_mocked(client):
+    """POST /test con iagentshub prueba el login, sin lista de modelos."""
+    _setup_user(client, "hubacc3")
+    from app.connections.base import TestResult
+    from app.connections.iagentshub import IAgentsHubProvider
+
+    with patch.object(
+        IAgentsHubProvider,
+        "test",
+        return_value=TestResult(True, "OK — conectado como hubuser"),
+    ):
+        r = client.post(
+            "/api/accounts/test",
+            json={
+                "provider": "iagentshub",
+                "url": "https://hub.example.com",
+                "username": "hubuser",
+                "api_key": "hubpass",
+            },
+        )
+    assert r.status_code == 200
+    data = r.json()
+    assert data["ok"] is True
+    assert data["models"] == []
+
+
+def test_test_new_account_iagentshub_failed_login_mocked(client):
+    _setup_user(client, "hubacc4")
+    from app.connections.base import TestResult
+    from app.connections.iagentshub import IAgentsHubProvider
+
+    with patch.object(
+        IAgentsHubProvider,
+        "test",
+        return_value=TestResult(False, "Usuario o contraseña incorrectos"),
+    ):
+        r = client.post(
+            "/api/accounts/test",
+            json={
+                "provider": "iagentshub",
+                "url": "https://hub.example.com",
+                "username": "hubuser",
+                "api_key": "wrong",
+            },
+        )
+    assert r.status_code == 200
+    assert r.json()["ok"] is False
+
+
+def test_sync_account_iagentshub_creates_mirror_connection_mocked(client):
+    """Sync de una cuenta iagentshub reutiliza hub-sync y deja una Connection
+    espejo tipo iagentshub ligada a la cuenta vía _account_id."""
+    _setup_user(client, "hubacc5")
+    account_id = client.post(
+        "/api/accounts",
+        json={
+            "provider": "iagentshub",
+            "url": "https://hub.example.com",
+            "username": "hubuser",
+            "api_key": "hubpass",
+        },
+    ).json()["id"]
+
+    mock_response = MagicMock()
+    mock_response.raise_for_status = MagicMock()
+    mock_response.json = MagicMock(return_value=[])
+
+    from unittest.mock import AsyncMock
+
+    mock_http = AsyncMock()
+    mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+    mock_http.__aexit__ = AsyncMock(return_value=False)
+    mock_http.get = AsyncMock(return_value=mock_response)
+
+    with patch("app.connections.iagentshub._login", return_value="fake-token"), patch(
+        "httpx.AsyncClient", return_value=mock_http
+    ):
+        r = client.post(f"/api/accounts/{account_id}/sync")
+
+    assert r.status_code == 200
+    data = r.json()
+    assert data["sync_summary"]["ok"] is True
+    assert data["sync_summary"]["errors"] == []
+
+    conns = client.get("/api/connections/raw").json()
+    mirrors = [c for c in conns if c.get("type") == "iagentshub"]
+    assert len(mirrors) == 1
+    assert mirrors[0]["_account_id"] == account_id
+
+
+def test_sync_account_iagentshub_login_failure_mocked(client):
+    _setup_user(client, "hubacc6")
+    account_id = client.post(
+        "/api/accounts",
+        json={
+            "provider": "iagentshub",
+            "url": "https://hub.example.com",
+            "username": "hubuser",
+            "api_key": "wrongpass",
+        },
+    ).json()["id"]
+
+    with patch(
+        "app.connections.iagentshub._login", side_effect=Exception("auth failed")
+    ):
+        r = client.post(f"/api/accounts/{account_id}/sync")
+    assert r.status_code == 502
+
+
+# ── GitHub OAuth Device Flow ──────────────────────────────────────────────────
+
+def _mock_post_json(payload):
+    mock_response = MagicMock()
+    mock_response.raise_for_status = lambda: None
+    mock_response.json.return_value = payload
+
+    async def fake_post(*args, **kwargs):
+        return mock_response
+
+    return fake_post
+
+
+def test_github_device_code_not_configured(client):
+    """Sin GITHUB_OAUTH_CLIENT_ID configurado, el endpoint devuelve 503."""
+    _setup_user(client, "ghdf1")
+    with patch("app.config.providers.GITHUB_OAUTH_CLIENT_ID", ""):
+        r = client.post("/api/accounts/github/device-code")
+    assert r.status_code == 503
+
+
+def test_github_device_code_success_mocked(client):
+    _setup_user(client, "ghdf2")
+    payload = {
+        "device_code": "devcode123",
+        "user_code": "ABCD-1234",
+        "verification_uri": "https://github.com/login/device",
+        "expires_in": 900,
+        "interval": 5,
+    }
+    with patch("app.config.providers.GITHUB_OAUTH_CLIENT_ID", "test-client-id"), patch.object(
+        httpx.AsyncClient, "post", new=_mock_post_json(payload)
+    ):
+        r = client.post("/api/accounts/github/device-code")
+    assert r.status_code == 200
+    data = r.json()
+    assert data["user_code"] == "ABCD-1234"
+    assert data["device_code"] == "devcode123"
+    assert data["verification_uri"] == "https://github.com/login/device"
+
+
+def test_github_device_code_requires_auth(client):
+    r = client.post("/api/accounts/github/device-code")
+    assert r.status_code == 401
+
+
+def test_github_device_token_missing_device_code(client):
+    _setup_user(client, "ghdf3")
+    with patch("app.config.providers.GITHUB_OAUTH_CLIENT_ID", "test-client-id"):
+        r = client.post("/api/accounts/github/device-token", json={})
+    assert r.status_code == 422
+
+
+def test_github_device_token_pending_mocked(client):
+    _setup_user(client, "ghdf4")
+    with patch("app.config.providers.GITHUB_OAUTH_CLIENT_ID", "test-client-id"), patch.object(
+        httpx.AsyncClient, "post", new=_mock_post_json({"error": "authorization_pending"})
+    ):
+        r = client.post(
+            "/api/accounts/github/device-token", json={"device_code": "devcode123"}
+        )
+    assert r.status_code == 200
+    data = r.json()
+    assert data["ok"] is False
+    assert data["pending"] is True
+
+
+def test_github_device_token_success_mocked(client):
+    _setup_user(client, "ghdf5")
+    with patch("app.config.providers.GITHUB_OAUTH_CLIENT_ID", "test-client-id"), patch.object(
+        httpx.AsyncClient, "post", new=_mock_post_json({"access_token": "ghu_faketoken123"})
+    ):
+        r = client.post(
+            "/api/accounts/github/device-token", json={"device_code": "devcode123"}
+        )
+    assert r.status_code == 200
+    data = r.json()
+    assert data["ok"] is True
+    assert data["access_token"] == "ghu_faketoken123"
+
+
+def test_github_device_token_requires_auth(client):
+    r = client.post("/api/accounts/github/device-token", json={"device_code": "x"})
+    assert r.status_code == 401

@@ -50,3 +50,11 @@ Ollama allows running AI models directly on the local machine, without depending
 ## Token tracking per connection
 
 Each connection keeps a cumulative count of tokens consumed through it — both tokens sent (input) and received (output). This counter updates automatically after every agent conversation and persists between sessions. On the Connections page, the total is visible directly on each connection card.
+
+---
+
+## Provider accounts (Providers tab)
+
+Besides standalone connections, the Connections "Providers" tab lets you link one account per provider (Anthropic, OpenAI, GitHub Copilot, Ollama, NVIDIA, Google, or a remote iAgents Hub instance) and sync the available models in one go — or, for iAgents Hub, agents/skills/knowledge/connections — as regular resources.
+
+For GitHub, instead of pasting a Personal Access Token by hand, the "Connect with GitHub" button can be used (OAuth Device Flow: visit a URL, enter a code, authorize from the browser). It requires your own GitHub OAuth App with "Device Flow" enabled, configured via the `GITHUB_OAUTH_CLIENT_ID` environment variable. Without that variable, the button returns a clear error and the user can still paste the token manually.

@@ -50,3 +50,11 @@ Ollama permite ejecutar modelos de IA directamente en la máquina local, sin dep
 ## Seguimiento de tokens por conexión
 
 Cada conexión lleva la cuenta acumulada de tokens consumidos a través de ella — tanto los tokens enviados (entrada) como los recibidos (salida). Este contador se actualiza automáticamente tras cada conversación con un agente y se mantiene entre sesiones. En la página de Conexiones, el total es visible directamente en cada tarjeta de conexión.
+
+---
+
+## Cuentas de proveedor (pestaña Proveedores)
+
+Además de las conexiones sueltas, la pestaña "Proveedores" de Connections permite vincular una cuenta por proveedor (Anthropic, OpenAI, GitHub Copilot, Ollama, NVIDIA, Google, o una instancia remota de iAgents Hub) y sincronizar de golpe los modelos disponibles — o, para iAgents Hub, agentes/skills/conocimiento/conexiones — como recursos normales.
+
+Para GitHub, en vez de pegar un Personal Access Token a mano, se puede usar el botón "Conectar con GitHub" (OAuth Device Flow: visitar una URL, introducir un código, autorizar desde el navegador). Requiere una GitHub OAuth App propia con "Device Flow" habilitado, configurada vía la variable de entorno `GITHUB_OAUTH_CLIENT_ID`. Sin esa variable, el botón devuelve un error claro y el usuario puede seguir pegando el token manualmente.

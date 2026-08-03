@@ -577,33 +577,14 @@ async def deactivate_connection(
     return await _set_connection_active(conn_id, False, ctx)
 
 
-@router.post("/{conn_id}/hub-sync")
-async def hub_sync(
-    conn_id: str,
-    ctx: GroupContext = Depends(require_group),
-    _rl: None = Depends(_hub_sync_limiter),  # N2: prevenir amplificación HTTP
-) -> Dict[str, Any]:
-    """Sincroniza agentes, skills, conocimiento y conexiones desde un hub remoto."""
-    user, group_id = ctx.user, ctx.group_id
-    role = await get_user_role(user)
-    if role == "admin":
-        conn = await _storage.get(conn_id, None)
-    else:
-        conn = await _get_conn_any(conn_id, user, group_id)
-    if not conn:
-        raise APIError(404, "not_found", "Conexión no encontrada", extra={"resource": "connection"})
-    if conn.get("type") != "iagentshub":
-        raise APIError(
-            400,
-            "hub_sync_invalid_type",
-            "Solo disponible para conexiones de tipo iAgents Hub",
-        )
-
+async def _run_hub_sync(conn_id: str, conn: Dict[str, Any], owner: str) -> Dict[str, Any]:
+    """Lógica de sincronización con un hub remoto, reutilizable tanto desde la
+    ruta `/{conn_id}/hub-sync` (conexión tipo iagentshub) como desde
+    `accounts.sync_account` (cuenta de proveedor tipo iagentshub)."""
     url = (conn.get("url") or "").rstrip("/")
     username = conn.get("username") or ""
     password = conn.get("api_key") or ""
     hub_label = conn.get("name") or "Hub"
-    owner = group_id
 
     # C1: validar URL contra SSRF antes de hacer cualquier petición HTTP
     from app.config.security import assert_safe_url as _assert_safe_hub_url
@@ -796,6 +777,30 @@ async def hub_sync(
 
     result["ok"] = not result["errors"]
     return result
+
+
+@router.post("/{conn_id}/hub-sync")
+async def hub_sync(
+    conn_id: str,
+    ctx: GroupContext = Depends(require_group),
+    _rl: None = Depends(_hub_sync_limiter),  # N2: prevenir amplificación HTTP
+) -> Dict[str, Any]:
+    """Sincroniza agentes, skills, conocimiento y conexiones desde un hub remoto."""
+    user, group_id = ctx.user, ctx.group_id
+    role = await get_user_role(user)
+    if role == "admin":
+        conn = await _storage.get(conn_id, None)
+    else:
+        conn = await _get_conn_any(conn_id, user, group_id)
+    if not conn:
+        raise APIError(404, "not_found", "Conexión no encontrada", extra={"resource": "connection"})
+    if conn.get("type") != "iagentshub":
+        raise APIError(
+            400,
+            "hub_sync_invalid_type",
+            "Solo disponible para conexiones de tipo iAgents Hub",
+        )
+    return await _run_hub_sync(conn_id, conn, group_id)
 
 
 @router.post("/{conn_id}/import-models")
