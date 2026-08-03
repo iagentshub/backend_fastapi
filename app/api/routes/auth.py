@@ -24,6 +24,7 @@ from app.auth.auth import (
     create_password_reset_token,
     create_token,
     decode_group_token_full,
+    get_or_create_github_user,
     get_owned_groups,
     get_user_by_id,
     get_user_by_identity,
@@ -108,6 +109,11 @@ _reset_limiter = RateLimiter(
 _guest_limiter = RateLimiter(
     calls=RATE_GUEST_CALLS, window=RATE_GUEST_WINDOW, key_func=_client_ip
 )
+# Generoso a propósito: el cliente sondea /github/device-token cada ~5s
+# (intervalo que marca GitHub) durante hasta 15 min — un límite ajustado
+# como el de /login (pensado para fuerza bruta de contraseñas) cortaría un
+# login legítimo a mitad de la espera.
+_github_login_limiter = RateLimiter(calls=30, window=60, key_func=_client_ip)
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -537,6 +543,65 @@ async def guest_login(
         max_age=43200,
     )
     return {"ok": True, "username": guest_id}
+
+
+@router.post("/github/device-code")
+async def github_login_device_code(
+    _rl: None = Depends(_github_login_limiter),
+) -> dict[str, Any]:
+    """Inicia sesión con GitHub (Device Flow) — sin sesión previa, a
+    diferencia de `/api/accounts/github/device-code` (que vincula una cuenta
+    proveedor para un usuario ya logueado)."""
+    from app.auth.github_oauth import request_device_code
+
+    return await request_device_code(scope="read:user user:email")
+
+
+@router.post("/github/device-token")
+async def github_login_device_token(
+    request: Request,
+    response: Response,
+    _rl: None = Depends(_github_login_limiter),
+) -> dict[str, Any]:
+    """Sondea el Device Flow iniciado con `/github/device-code`. Si ya se
+    autorizó, resuelve (o crea) el usuario local ligado a esa identidad de
+    GitHub y abre sesión — mismo mecanismo de cookie que `/login`."""
+    from app.auth.github_oauth import fetch_github_identity, poll_device_token
+
+    body = await request.json()
+    device_code = str(body.get("device_code") or "").strip()
+    if not device_code:
+        raise APIError(
+            422, "invalid_field", "device_code requerido", extra={"field": "device_code"}
+        )
+
+    result = await poll_device_token(device_code)
+    if not result.get("ok"):
+        return result
+
+    identity = await fetch_github_identity(result["access_token"])
+    if not identity.get("id"):
+        raise APIError(
+            502, "github_identity_error", "No se pudo obtener la identidad de GitHub"
+        )
+
+    user = await get_or_create_github_user(
+        identity["id"], identity["login"], identity["email"], identity["name"]
+    )
+    if not user.get("is_active", 1):
+        raise APIError(403, "account_disabled", "Cuenta desactivada")
+
+    token = create_token(user["id"])
+    flog.ok(f"[login] OK vía GitHub usuario={user['username']}", ip=_client_ip(request))
+    response.set_cookie(
+        "ga_token",
+        token,
+        httponly=True,
+        samesite="lax",
+        secure=SECURE_COOKIES,
+        max_age=43200,
+    )
+    return {"ok": True, "pending": False, "username": user["username"]}
 
 
 @router.post("/logout")

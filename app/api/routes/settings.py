@@ -378,6 +378,8 @@ class PlatformConfigUpdate(BaseModel):
 async def get_platform_config_public() -> dict:
     """Devuelve solo los campos públicos de la config de plataforma (sin autenticación).
     Usado por login, registro y otras páginas públicas para adaptar el UI."""
+    from app.config.providers import GITHUB_OAUTH_CLIENT_ID
+
     cfg = _read_platform_cfg()
     return {
         "billing_enabled": cfg.get("billing_enabled", False),
@@ -389,6 +391,11 @@ async def get_platform_config_public() -> dict:
         "oauth_google_enabled": cfg.get("oauth_google_enabled", True),
         "oauth_apple_enabled": cfg.get("oauth_apple_enabled", True),
         "oauth_microsoft_enabled": cfg.get("oauth_microsoft_enabled", True),
+        # A diferencia de los tres anteriores (placeholders visuales, sin
+        # implementación real), este refleja una capacidad real del backend:
+        # solo se activa si hay una GitHub OAuth App configurada
+        # (GITHUB_OAUTH_CLIENT_ID) — no es un ajuste editable por el admin.
+        "oauth_github_enabled": bool(GITHUB_OAUTH_CLIENT_ID),
         "maintenance_enabled": cfg.get("maintenance_enabled", False),
         "maintenance_message": cfg.get("maintenance_message", ""),
         "maintenance_at": cfg.get("maintenance_at"),

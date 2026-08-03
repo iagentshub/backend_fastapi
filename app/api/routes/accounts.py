@@ -21,7 +21,7 @@ router = APIRouter(prefix="/api/accounts", tags=["accounts"])
 
 _storage = AccountStorage(DB_FILE)
 _conn_storage = ConnectionStorage(DB_FILE)
-_device_flow_limiter = RateLimiter(calls=10, window=60)
+_device_flow_limiter = RateLimiter(calls=30, window=60)
 
 
 async def _owner(user: str) -> str:
@@ -290,34 +290,14 @@ async def test_new_account(
 async def github_device_code(
     _: str = Depends(require_auth), _rl: None = Depends(_device_flow_limiter)
 ) -> Dict[str, Any]:
-    """Inicia el GitHub OAuth Device Flow: en vez de pegar un Personal Access
-    Token a mano, el usuario visita `verification_uri`, introduce `user_code`
-    y autoriza el acceso — el cliente sondea `/github/device-token` hasta que
-    esté listo. Requiere una GitHub OAuth App propia (Device Flow habilitado)
-    configurada vía `GITHUB_OAUTH_CLIENT_ID`."""
-    from app.config.providers import GITHUB_OAUTH_CLIENT_ID
+    """Inicia el GitHub OAuth Device Flow para vincular una cuenta proveedor
+    (usuario ya logueado en iAgentsHub): en vez de pegar un Personal Access
+    Token a mano, visita `verification_uri`, introduce `user_code` y autoriza
+    — el cliente sondea `/github/device-token` hasta que esté listo. Para el
+    login de la app (sin sesión previa) ver `app/api/routes/auth.py`."""
+    from app.auth.github_oauth import request_device_code
 
-    if not GITHUB_OAUTH_CLIENT_ID:
-        raise APIError(
-            503,
-            "oauth_not_configured",
-            "El login con GitHub no está configurado en este servidor",
-        )
-    async with httpx.AsyncClient(timeout=10) as client:
-        r = await client.post(
-            "https://github.com/login/device/code",
-            data={"client_id": GITHUB_OAUTH_CLIENT_ID, "scope": "read:user"},
-            headers={"Accept": "application/json"},
-        )
-    r.raise_for_status()
-    data = r.json()
-    return {
-        "device_code": data.get("device_code", ""),
-        "user_code": data.get("user_code", ""),
-        "verification_uri": data.get("verification_uri", ""),
-        "expires_in": data.get("expires_in", 900),
-        "interval": data.get("interval", 5),
-    }
+    return await request_device_code(scope="read:user")
 
 
 @router.post("/github/device-token")
@@ -328,38 +308,15 @@ async def github_device_token(
 ) -> Dict[str, Any]:
     """Sondea si el usuario ya autorizó el Device Flow iniciado con
     `/github/device-code`; devuelve el access_token en cuanto esté listo."""
-    from app.config.providers import GITHUB_OAUTH_CLIENT_ID
+    from app.auth.github_oauth import poll_device_token
 
-    if not GITHUB_OAUTH_CLIENT_ID:
-        raise APIError(
-            503,
-            "oauth_not_configured",
-            "El login con GitHub no está configurado en este servidor",
-        )
     body = await request.json()
     device_code = str(body.get("device_code") or "").strip()
     if not device_code:
         raise APIError(
             422, "invalid_field", "device_code requerido", extra={"field": "device_code"}
         )
-    async with httpx.AsyncClient(timeout=10) as client:
-        r = await client.post(
-            "https://github.com/login/oauth/access_token",
-            data={
-                "client_id": GITHUB_OAUTH_CLIENT_ID,
-                "device_code": device_code,
-                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
-            },
-            headers={"Accept": "application/json"},
-        )
-    r.raise_for_status()
-    data = r.json()
-    error = data.get("error")
-    if error in ("authorization_pending", "slow_down"):
-        return {"ok": False, "pending": True, "slow_down": error == "slow_down"}
-    if error:
-        return {"ok": False, "pending": False, "error": error}
-    return {"ok": True, "pending": False, "access_token": data.get("access_token", "")}
+    return await poll_device_token(device_code)
 
 
 @router.put("/{account_id}")
