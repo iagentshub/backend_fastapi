@@ -159,20 +159,20 @@ async def _resolve_connections(
     return raw
 
 
-def _fetch_ollama_models(host: str) -> List[str]:
+def _fetch_ollama_models(host: str, api_key: str = "") -> List[str]:
     """Llama a /api/tags y devuelve los nombres de modelos instalados."""
     from app.config.security import assert_safe_url
     from app.connections.ollama import OllamaProvider
 
     try:
         assert_safe_url(host)  # C3: prevenir SSRF via hosts de conexiones almacenadas
-        data = OllamaProvider._fetch_tags(host)
+        data = OllamaProvider._fetch_tags(host, api_key)
     except OSError:
         alt = OllamaProvider._alt_host(host)
         if not alt:
             return []
         try:
-            data = OllamaProvider._fetch_tags(alt)
+            data = OllamaProvider._fetch_tags(alt, api_key)
         except Exception:
             return []
     except Exception:
@@ -206,7 +206,8 @@ async def _ollama_conns_to_models(
     if base_conns:
         base = base_conns[0]
         host = (base.get("host") or "http://localhost:11434").rstrip("/")
-        models = await asyncio.to_thread(_fetch_ollama_models, host)
+        api_key = str(base.get("api_key") or "")
+        models = await asyncio.to_thread(_fetch_ollama_models, host, api_key)
         base_clean = {k: v for k, v in base.items() if k != "api_key"}
         if models:
             for model in models:
@@ -257,9 +258,10 @@ async def ollama_models(
 
     body = await json_body(request)
     host = (body.get("host") or "http://localhost:11434").strip().rstrip("/")
+    api_key = str(body.get("api_key") or "").strip()
     try:
         assert_safe_url(host)
-        data = await asyncio.to_thread(OllamaProvider._fetch_tags, host)
+        data = await asyncio.to_thread(OllamaProvider._fetch_tags, host, api_key)
         models = [m["name"] for m in (data.get("models") or []) if m.get("name")]
         return {"models": models}
     except Exception as exc:

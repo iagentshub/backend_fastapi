@@ -17,11 +17,13 @@ class OllamaProvider(BaseProvider):
     fields = [
         FieldDef("host", "URL del servidor", "text", "http://localhost:11434", False, "http://localhost:11434"),
         FieldDef("model", "Modelo (opcional)", "text", "ej: llama3, mistral:latest"),
+        FieldDef("api_key", "API Key (opcional, para Ollama Cloud)", "password"),
     ]
 
     @classmethod
-    def _fetch_tags(cls, host: str) -> dict:
-        req = urllib.request.Request(f"{host}/api/tags")
+    def _fetch_tags(cls, host: str, api_key: str = "") -> dict:
+        headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
+        req = urllib.request.Request(f"{host}/api/tags", headers=headers)
         with urllib.request.urlopen(req, timeout=8) as r:
             return json.loads(r.read())
 
@@ -37,8 +39,9 @@ class OllamaProvider(BaseProvider):
     @classmethod
     def test(cls, config: Dict[str, Any]) -> TestResult:
         host = (config.get("host") or "http://localhost:11434").strip().rstrip("/")
+        api_key = str(config.get("api_key") or "").strip()
         try:
-            data = cls._fetch_tags(host)
+            data = cls._fetch_tags(host, api_key)
         except urllib.error.HTTPError as e:
             return TestResult(False, f"HTTP {e.code}", str(e))
         except OSError:
@@ -47,7 +50,7 @@ class OllamaProvider(BaseProvider):
             if not alt:
                 return TestResult(False, "Sin conexión al servidor Ollama", f"No se pudo resolver {host}")
             try:
-                data = cls._fetch_tags(alt)
+                data = cls._fetch_tags(alt, api_key)
             except urllib.error.HTTPError as e:
                 return TestResult(False, f"HTTP {e.code}", str(e))
             except Exception as e:

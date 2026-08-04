@@ -101,8 +101,9 @@ async def _fetch_models(provider: str, api_key: str, host: str = "") -> List[str
             base = (host or "http://localhost:11434").rstrip("/")
             from app.config.security import assert_safe_url as _assu
             _assu(base)  # C3: prevenir SSRF via hosts almacenados en cuentas
+            headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
             async with httpx.AsyncClient(timeout=10) as client:
-                r = await client.get(f"{base}/api/tags")
+                r = await client.get(f"{base}/api/tags", headers=headers)
             r.raise_for_status()
             data = r.json()
             return [m["name"] for m in data.get("models", [])]

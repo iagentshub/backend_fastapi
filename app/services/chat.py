@@ -316,14 +316,17 @@ def _do_claude_stream(
 
 
 def _do_ollama_call(
-    host: str, payload: Dict[str, Any], timeout: Optional[int]
+    host: str, payload: Dict[str, Any], timeout: Optional[int], api_key: str = ""
 ) -> "tuple[str, int, int]":
     """Llama a Ollama y devuelve (reply, tok_in, tok_out)."""
     data = json.dumps(payload).encode()
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
     req = urllib.request.Request(
         f"{host}/api/chat",
         data=data,
-        headers={"Content-Type": "application/json"},
+        headers=headers,
         method="POST",
     )
     with urllib.request.urlopen(req, timeout=timeout) as resp:
@@ -554,8 +557,9 @@ async def stream_chat(
                 "stream": False,
                 "options": {"temperature": temperature},
             }
+            ollama_api_key = str(conn.get("api_key") or "")
             reply, tok_in, tok_out = await asyncio.to_thread(
-                _do_ollama_call, host, payload_o, timeout
+                _do_ollama_call, host, payload_o, timeout, ollama_api_key
             )
 
         else:
