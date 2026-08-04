@@ -105,6 +105,84 @@ def test_builder_returns_validated_draft(admin_client, monkeypatch):
     assert captured["connection_model"] == "meta/llama-3.2-3b-instruct"
 
 
+def test_progress_reports_stage_and_partial_message(admin_client, monkeypatch):
+    connection = admin_client.post(
+        "/api/connections",
+        json={
+            "name": "NIM progreso",
+            "type": "nvidia",
+            "api_key": "nvapi-test",
+            "model": "meta/llama-3.2-3b-instruct",
+        },
+    ).json()
+
+    reply = json.dumps(
+        {
+            "assistant_message": "He preparado el borrador.",
+            "status": "ready",
+            "draft": {
+                "name": "Agente de pruebas",
+                "description": "Creado mediante conversación",
+                "system_prompt": (
+                    "Eres un agente de pruebas. Verifica cada resultado y explica "
+                    "claramente cualquier limitación."
+                ),
+                "temperature": 0.3,
+                "skills": [],
+                "knowledge": [],
+                "use_memory": False,
+            },
+        },
+        ensure_ascii=False,
+    )
+
+    async def token_by_token(*args, **kwargs):
+        for start in range(0, len(reply), 16):
+            token = reply[start : start + 16]
+            yield f"data: {json.dumps({'type': 'token', 'token': token})}\n\n"
+        yield f"data: {json.dumps({'type': 'done', 'reply': reply})}\n\n"
+
+    monkeypatch.setattr("app.api.routes.agent_builder.stream_chat", token_by_token)
+
+    response = admin_client.post(
+        "/api/agent-builder/chat",
+        json={
+            "connection_id": connection["id"],
+            "messages": [
+                {
+                    "role": "user",
+                    "content": "Crea un agente que compruebe resultados de pruebas",
+                }
+            ],
+            "resources": {"skills": [], "knowledge": []},
+        },
+    )
+
+    assert response.status_code == 200
+    events = _events(response.text)
+    progress = [event for event in events if event["type"] == "progress"]
+    assert progress, "el constructor debe informar avance mientras redacta"
+
+    stages = [event["stage"] for event in progress]
+    assert stages[0] == "analyzing"
+    assert "replying" in stages
+    assert stages[-1] == "writing_instructions"
+    # Las etapas nunca retroceden y no se repite el mismo payload dos veces.
+    order = ["analyzing", "replying", "drafting", "writing_instructions"]
+    assert stages == sorted(stages, key=order.index)
+    unique = {json.dumps(event, sort_keys=True) for event in progress}
+    assert len(progress) == len(unique)
+
+    partials = [event["assistant_message"] for event in progress]
+    assert any(partials), "el mensaje visible debe llegar antes que el borrador"
+    visible = next(text for text in partials if text)
+    assert "He preparado el borrador.".startswith(visible)
+
+    done = next(event for event in events if event["type"] == "builder_done")
+    assert done["assistant_message"] == "He preparado el borrador."
+    assert done["draft"]["name"] == "Agente de pruebas"
+
+
 def test_expert_mode_never_returns_another_question(admin_client, monkeypatch):
     connection = admin_client.post(
         "/api/connections",

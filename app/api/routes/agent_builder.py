@@ -25,6 +25,7 @@ from app.services.agent_builder import (
     parse_builder_reply,
     should_force_ready,
 )
+from app.services.builder_progress import partial_progress
 from app.services.chat import stream_chat
 from app.storage.groups import GroupStorage
 from app.storage.guest import get_session, is_guest
@@ -160,6 +161,7 @@ async def builder_chat(
             reply = ""
             partial_reply = ""
             provider_error = ""
+            last_progress: Dict[str, Any] = {}
             async for chunk in stream_chat(
                 builder_agent, conn, attempt_history, None
             ):
@@ -174,7 +176,13 @@ async def builder_chat(
                     continue
                 if event.get("type") == "token":
                     partial_reply += str(event.get("token") or "")
-                    yield _sse({"type": "progress"})
+                    # El modelo devuelve un único JSON, así que los tokens
+                    # crudos no son mostrables: se informa la fase y el mensaje
+                    # visible que ya haya llegado, y sólo cuando cambian.
+                    progress = partial_progress(partial_reply)
+                    if progress != last_progress:
+                        last_progress = progress
+                        yield _sse({"type": "progress", **progress})
                 elif event.get("type") == "error":
                     provider_error = str(event.get("message") or "")
                     break
