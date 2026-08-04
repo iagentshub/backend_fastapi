@@ -611,53 +611,133 @@ def test_platform_rejects_invalid_default_theme(admin_client):
     assert r.json()["detail"]["field"] == "default_theme"
 
 
-def test_platform_public_maintenance_defaults_off(client):
-    r = client.get("/api/settings/platform/public")
-    assert r.status_code == 200
-    data = r.json()
-    assert data["maintenance_enabled"] is False
-    assert data["maintenance_message"] == ""
-    assert data["maintenance_at"] is None
+def _banner_payload(**overrides):
+    payload = {
+        "start_at": "2026-01-01T00:00:00+00:00",
+        "end_at": "2026-01-02T00:00:00+00:00",
+        "message": {"es": "Mantenimiento el viernes", "en": "Maintenance on Friday"},
+    }
+    payload.update(overrides)
+    return payload
 
 
-def test_admin_sets_maintenance_notice(admin_client, client):
-    r = admin_client.put(
-        "/api/settings/platform",
-        json={
-            "maintenance_enabled": True,
-            "maintenance_message": "Mantenimiento programado el viernes a las 20h",
-            "maintenance_at": "2026-08-07T20:00:00",
-        },
+def test_notification_banners_requires_admin(client):
+    _auth_client(client)
+    assert client.get("/api/settings/notification-banners").status_code == 403
+    assert (
+        client.post(
+            "/api/settings/notification-banners", json=_banner_payload()
+        ).status_code
+        == 403
+    )
+    assert (
+        client.put(
+            "/api/settings/notification-banners/xyz", json=_banner_payload()
+        ).status_code
+        == 403
+    )
+    assert client.delete("/api/settings/notification-banners/xyz").status_code == 403
+
+
+def test_admin_creates_and_lists_banner(admin_client):
+    r = admin_client.post(
+        "/api/settings/notification-banners", json=_banner_payload()
     )
     assert r.status_code == 200
-    data = r.json()
-    assert data["maintenance_enabled"] is True
-    assert data["maintenance_message"] == "Mantenimiento programado el viernes a las 20h"
-    assert data["maintenance_at"] == "2026-08-07T20:00:00"
+    created = r.json()
+    assert created["message"]["es"] == "Mantenimiento el viernes"
+    assert created["id"]
 
-    public = client.get("/api/settings/platform/public")
-    assert public.json()["maintenance_enabled"] is True
-    assert public.json()["maintenance_message"] == (
-        "Mantenimiento programado el viernes a las 20h"
-    )
+    listed = admin_client.get("/api/settings/notification-banners")
+    assert listed.status_code == 200
+    assert any(b["id"] == created["id"] for b in listed.json())
 
 
-def test_platform_rejects_maintenance_message_too_long(admin_client):
-    r = admin_client.put(
-        "/api/settings/platform",
-        json={"maintenance_message": "x" * 501},
-    )
+def test_banner_rejects_missing_language(admin_client):
+    payload = _banner_payload()
+    payload["message"] = {"es": "Solo español"}
+    r = admin_client.post("/api/settings/notification-banners", json=payload)
     assert r.status_code == 422
-    assert r.json()["detail"]["field"] == "maintenance_message"
 
 
-def test_platform_rejects_invalid_maintenance_at(admin_client):
-    r = admin_client.put(
-        "/api/settings/platform",
-        json={"maintenance_at": "not-a-date"},
+def test_banner_rejects_end_before_start(admin_client):
+    payload = _banner_payload(
+        start_at="2026-01-02T00:00:00+00:00", end_at="2026-01-01T00:00:00+00:00"
     )
+    r = admin_client.post("/api/settings/notification-banners", json=payload)
     assert r.status_code == 422
-    assert r.json()["detail"]["field"] == "maintenance_at"
+
+
+def test_banner_rejects_message_too_long(admin_client):
+    payload = _banner_payload()
+    payload["message"]["es"] = "x" * 501
+    r = admin_client.post("/api/settings/notification-banners", json=payload)
+    assert r.status_code == 422
+
+
+def test_admin_updates_and_deletes_banner(admin_client):
+    created = admin_client.post(
+        "/api/settings/notification-banners", json=_banner_payload()
+    ).json()
+    banner_id = created["id"]
+
+    updated = admin_client.put(
+        f"/api/settings/notification-banners/{banner_id}",
+        json=_banner_payload(message={"es": "Actualizado", "en": "Updated"}),
+    )
+    assert updated.status_code == 200
+    assert updated.json()["message"]["es"] == "Actualizado"
+
+    deleted = admin_client.delete(
+        f"/api/settings/notification-banners/{banner_id}"
+    )
+    assert deleted.status_code == 200
+    listed = admin_client.get("/api/settings/notification-banners").json()
+    assert not any(b["id"] == banner_id for b in listed)
+
+
+def test_update_missing_banner_returns_404(admin_client):
+    r = admin_client.put(
+        "/api/settings/notification-banners/does-not-exist",
+        json=_banner_payload(),
+    )
+    assert r.status_code == 404
+
+
+def test_active_banners_requires_auth(client):
+    r = client.get("/api/settings/notification-banners/active")
+    assert r.status_code == 401
+
+
+def test_active_banners_filters_by_date_and_language(admin_client, client):
+    from datetime import datetime, timedelta, timezone
+
+    now = datetime.now(timezone.utc)
+    current = admin_client.post(
+        "/api/settings/notification-banners",
+        json=_banner_payload(
+            start_at=(now - timedelta(hours=1)).isoformat(),
+            end_at=(now + timedelta(hours=1)).isoformat(),
+        ),
+    ).json()
+    admin_client.post(
+        "/api/settings/notification-banners",
+        json=_banner_payload(
+            start_at=(now + timedelta(days=1)).isoformat(),
+            end_at=(now + timedelta(days=2)).isoformat(),
+        ),
+    )
+
+    _auth_client(client)
+    active_es = client.get("/api/settings/notification-banners/active")
+    assert active_es.status_code == 200
+    assert active_es.json() == [
+        {"id": current["id"], "message": "Mantenimiento el viernes"}
+    ]
+
+    client.put("/api/settings", json={"language": "en"})
+    active_en = client.get("/api/settings/notification-banners/active")
+    assert active_en.json() == [{"id": current["id"], "message": "Maintenance on Friday"}]
 
 
 def test_platform_public_splash_defaults(client):
