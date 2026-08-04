@@ -474,6 +474,50 @@ def test_platform_public_reflects_admin_oauth_toggle(admin_client, client):
     assert r.json()["oauth_microsoft_enabled"] is False
 
 
+def test_platform_public_oauth_github_hidden_without_client_id(client):
+    """A diferencia de google/apple/microsoft, GitHub exige credenciales
+    reales en el servidor — el toggle de admin (True por defecto) nunca
+    basta por sí solo para mostrar el botón."""
+    from unittest.mock import patch
+
+    with patch("app.config.providers.GITHUB_OAUTH_CLIENT_ID", ""):
+        r = client.get("/api/settings/platform/public")
+    assert r.json()["oauth_github_enabled"] is False
+
+
+def test_platform_public_oauth_github_visible_with_client_id_and_default_toggle(
+    client,
+):
+    from unittest.mock import patch
+
+    with patch("app.config.providers.GITHUB_OAUTH_CLIENT_ID", "test-client-id"):
+        r = client.get("/api/settings/platform/public")
+    assert r.json()["oauth_github_enabled"] is True
+
+
+def test_put_platform_config_oauth_github_toggle_hides_button_despite_client_id(
+    admin_client, client
+):
+    """Apagar el toggle oculta el botón aunque el servidor sí tenga
+    credenciales — pero no debe tocar los endpoints /api/auth/github/*."""
+    from unittest.mock import patch
+
+    r = admin_client.put(
+        "/api/settings/platform", json={"oauth_github_enabled": False}
+    )
+    assert r.status_code == 200
+    assert r.json()["oauth_github_enabled"] is False
+
+    with patch("app.config.providers.GITHUB_OAUTH_CLIENT_ID", "test-client-id"):
+        r = client.get("/api/settings/platform/public")
+        assert r.json()["oauth_github_enabled"] is False
+
+    # El endpoint real de login (probado a fondo en
+    # test_routes_auth_github_login.py, incluyendo con este mismo toggle en
+    # False) no lee `oauth_github_enabled` en ningún momento — no se
+    # duplica esa cobertura aquí.
+
+
 def test_admin_can_force_platform_theme(admin_client, client):
     r = admin_client.put(
         "/api/settings/platform",
