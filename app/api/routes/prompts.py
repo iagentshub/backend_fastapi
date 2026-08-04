@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Query, Request
 
-from app.api.routes.auth import GroupContext, require_group
+from app.api.routes.auth import GroupContext, require_group, require_group_session
 from app.auth.auth import get_user_role
 from app.config.data import DB_FILE
 from app.errors import APIError
@@ -57,7 +57,7 @@ async def list_prompts(
     include_inactive: bool = False,
     limit: int = Query(0, ge=0, description="Máx. items. 0 = sin límite"),
     offset: int = Query(0, ge=0),
-    ctx: GroupContext = Depends(require_group),
+    ctx: GroupContext = Depends(require_group_session),
 ) -> List[Dict[str, Any]]:
     user = ctx.user
     _check_scope(scope)
@@ -127,7 +127,7 @@ async def list_prompts(
 
 @router.get("/{scope}/{prompt_id}")
 async def get_prompt(
-    scope: str, prompt_id: str, ctx: GroupContext = Depends(require_group)
+    scope: str, prompt_id: str, ctx: GroupContext = Depends(require_group_session)
 ) -> Dict[str, Any]:
     user = ctx.user
     _check_scope(scope)
@@ -172,7 +172,7 @@ async def get_prompt(
 
 @router.post("/{scope}")
 async def save_prompt(
-    scope: str, request: Request, ctx: GroupContext = Depends(require_group)
+    scope: str, request: Request, ctx: GroupContext = Depends(require_group_session)
 ) -> Dict[str, Any]:
     user, group_id = ctx.user, ctx.group_id
     _check_scope(scope)
@@ -284,7 +284,7 @@ async def save_prompt(
 
 @router.delete("/{scope}/{prompt_id}")
 async def delete_prompt(
-    scope: str, prompt_id: str, ctx: GroupContext = Depends(require_group)
+    scope: str, prompt_id: str, ctx: GroupContext = Depends(require_group_session)
 ) -> Dict[str, Any]:
     user, group_id = ctx.user, ctx.group_id
     _check_scope(scope)

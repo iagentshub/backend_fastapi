@@ -72,6 +72,10 @@ ABIERTOS = [
     ("GET", "/api/chats/recent"),
     # Catálogo público: solo filas is_public. Es la vitrina del demo.
     ("GET", "/api/explore"),
+    # Prompts llegó a main mientras corrían las fases y se cerró al
+    # integrar, pese a tener ramas is_guest y su propio campo en
+    # GuestSession. Lo cazó la suite; aquí queda fijado.
+    ("GET", "/api/prompts"),
 ]
 
 
@@ -108,3 +112,39 @@ def test_el_invitado_completa_el_camino_del_demo(guest):
     assert r.status_code in (200, 201), r.text
 
     assert any(a["name"] == "agente demo" for a in guest.get("/api/agents").json())
+
+
+# ── Prompts: guest-aware por diseño, pero no entero ───────────────────────────
+# Los 4 handlers con rama is_guest() están abiertos; activate y deactivate no la
+# tienen —operan sobre el estado del grupo en BD— y siguen cerrados.
+
+PROMPTS_CERRADOS = [
+    ("POST", "/api/prompts/x/activate"),
+    ("POST", "/api/prompts/x/deactivate"),
+]
+
+
+@pytest.mark.parametrize("metodo,ruta", PROMPTS_CERRADOS)
+def test_el_invitado_no_activa_prompts_del_grupo(guest, metodo, ruta):
+    r = guest.request(metodo, ruta)
+    assert r.status_code == 403, f"{metodo} {ruta} devolvió {r.status_code}"
+    assert r.json()["detail"]["code"] == "guest_forbidden"
+
+
+def test_el_invitado_guarda_y_borra_su_prompt_privado(guest):
+    """El prompt vive en la sesión efímera, no en la BD."""
+    r = guest.post(
+        "/api/prompts/private",
+        json={
+            "name": "Demo",
+            "description": "del invitado",
+            "content": "contenido",
+            "alias": "demo-invitado",
+        },
+    )
+    assert r.status_code == 200, r.text
+    pid = r.json()["id"]
+
+    assert guest.get(f"/api/prompts/private/{pid}").status_code == 200
+    assert guest.delete(f"/api/prompts/private/{pid}").status_code == 200
+    assert guest.get(f"/api/prompts/private/{pid}").status_code == 404
