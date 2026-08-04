@@ -26,6 +26,15 @@ import pytest
 from fastapi.testclient import TestClient
 
 
+def pytest_addoption(parser):
+    parser.addoption(
+        "--actualizar-contrato",
+        action="store_true",
+        default=False,
+        help="Reescribe tests/api/contrato_rutas.txt con la superficie actual de la API.",
+    )
+
+
 @pytest.fixture(scope="session")
 def tmp_data_dir():
     """Creates an isolated data directory for all tests."""
@@ -187,47 +196,18 @@ def clear_all_rate_limiters():
     (TestClient siempre usa 'testclient' como peer). Sin limpiar, el 6.º test
     que llama a /api/auth/guest recibe 429 porque _guest_limiter (límite=5) ya
     está saturado.
+
+    Se recorren los limiters que RateLimiter registra al construirse en vez de
+    listarlos aquí: la lista escrita a mano se había quedado sin 4 de los 13
+    (device flow, login de GitHub, sync del hub y social), y cada limiter nuevo
+    volvía a olvidarse en silencio.
     """
 
     def _clear():
-        try:
-            from app.api.routes.auth import (
-                _forgot_limiter,
-                _guest_limiter,
-                _login_limiter,
-                _register_limiter,
-                _reset_limiter,
-            )
+        from app.middleware.ratelimit import INSTANCES
 
-            for lim in (
-                _register_limiter,
-                _login_limiter,
-                _forgot_limiter,
-                _reset_limiter,
-                _guest_limiter,
-            ):
-                lim._data.clear()
-        except ImportError:
-            pass
-        try:
-            from app.api.routes.agents import _chat_limiter
-
-            _chat_limiter._data.clear()
-        except ImportError:
-            pass
-        try:
-            from app.api.routes.connections import _test_all_limiter, _test_limiter
-
-            _test_limiter._data.clear()
-            _test_all_limiter._data.clear()
-        except ImportError:
-            pass
-        try:
-            from app.api.routes.billing import _subscribe_limiter
-
-            _subscribe_limiter._data.clear()
-        except ImportError:
-            pass
+        for lim in INSTANCES:
+            lim._data.clear()
 
     _clear()
     yield

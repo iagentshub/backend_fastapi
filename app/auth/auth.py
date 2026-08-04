@@ -377,6 +377,35 @@ async def _touch_password_changed_at(conn: Any, username: str) -> None:
         "UPDATE users SET password_changed_at = ? WHERE id = ? OR username = ?",
         (now, username, normalize_username(username)),
     )
+    await _clear_temp_admin_pass(conn, username)
+
+
+async def _clear_temp_admin_pass(conn: Any, username: str) -> None:
+    """Vacía .admin_pass en cuanto el admin inicial elige su propia contraseña.
+
+    La contraseña temporal se escribe en claro para que el instalador pueda
+    mostrarla; a partir del primer cambio ya no sirve para nada y no debe
+    seguir en disco.
+
+    Se VACÍA en vez de borrarse a propósito: los instaladores esperan a que el
+    fichero exista como señal de arranque, y ensure_admin_user() lee su
+    contenido —vacío significa "ya consumida", que es justo lo que queremos.
+
+    Cuelga de _touch_password_changed_at porque es el único punto por el que
+    pasan los tres caminos que cambian una contraseña (perfil, token de
+    recuperación y reseteo por admin).
+    """
+    import contextlib
+
+    target = os.environ.get("GAIA_ADMIN_EMAIL", "admin@localhost.com").strip().lower()
+    row = await conn.fetchone(
+        "SELECT 1 FROM users WHERE (id = ? OR username = ?) AND lower(email) = ?",
+        (username, normalize_username(username), target),
+    )
+    if not row:
+        return
+    with contextlib.suppress(OSError):
+        (DATA_DIR / ".admin_pass").write_text("", encoding="utf-8")
 
 
 async def set_own_password(username: str, new_password: str) -> None:
@@ -758,6 +787,11 @@ async def ensure_admin_user() -> None:
     # If .admin_pass doesn't exist yet, force a one-time reset so gaia.py can always display it
     # DATA_DIR, no GAIA_DATA_DIR: sin la env var la contraseña se generaba y se
     # perdía, dejando la cuenta admin inaccesible sin avisar.
+    #
+    # OJO: "fichero ausente" significa instalación nueva, no "contraseña ya
+    # usada". Cuando el admin cambia su contraseña el fichero se VACÍA, no se
+    # borra (ver _clear_temp_admin_pass); borrarlo a mano hace que el siguiente
+    # arranque regenere la contraseña y tire la que eligió el usuario.
     _pass_file = DATA_DIR / ".admin_pass"
     if not reset_mode and not _pass_file.exists():
         reset_mode = True
@@ -875,7 +909,7 @@ async def ensure_admin_user() -> None:
     flog.warning(f" iAgents Hub — Administrador ({action})")
     flog.warning(f" Email:      {target_email}")
     flog.warning(
-        f" Contraseña: [ver {_pass_file} — borrar tras primer login]"
+        f" Contraseña: [ver {_pass_file} — se borra sola al cambiarla; no la borres a mano]"
         if saved
         else f" Contraseña: {password}  [no se pudo escribir {_pass_file}: apúntala AHORA]"
     )

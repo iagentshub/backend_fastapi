@@ -22,6 +22,7 @@ from app.storage.groups import GroupStorage
 from app.storage.knowledge import KnowledgeStorage
 from app.storage.storage import AgentStorage, PromptStorage, SkillStorage
 from app.storage.workflows import WorkflowStorage
+from app.utils.net import json_body
 
 router = APIRouter(prefix="/api/sharing", tags=["sharing"])
 
@@ -220,7 +221,7 @@ async def share_resource_with_group(
     """
     _assert_valid_type(resource_type)
     try:
-        body = await request.json()
+        body = await json_body(request)
     except Exception:
         body = {}
     group_id = str(body.get("group_id") or "").strip()
@@ -264,7 +265,7 @@ async def unshare_resource_from_group(
     group_id = request.query_params.get("group_id", "").strip()
     if not group_id:
         try:
-            body = await request.json()
+            body = await json_body(request)
             group_id = str(body.get("group_id") or "").strip()
         except Exception:
             group_id = ""

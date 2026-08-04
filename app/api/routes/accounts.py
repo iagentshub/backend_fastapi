@@ -16,6 +16,7 @@ from app.middleware.ratelimit import RateLimiter
 from app.storage.accounts import AccountStorage, _mask
 from app.storage.storage import AgentStorage, ConnectionStorage, SkillStorage
 from app.utils import now_iso as _now
+from app.utils.net import json_body
 
 router = APIRouter(prefix="/api/accounts", tags=["accounts"])
 
@@ -226,7 +227,7 @@ async def link_account(
     request: Request, user: str = Depends(require_auth)
 ) -> Dict[str, Any]:
     """Vincula una cuenta nueva. No hay límite de una por `provider`."""
-    body = await request.json()
+    body = await json_body(request)
     provider = str(body.get("provider") or "").strip()
     if provider not in _PROVIDERS:
         raise APIError(
@@ -267,7 +268,7 @@ async def test_new_account(
     request: Request, _: str = Depends(require_auth)
 ) -> Dict[str, Any]:
     """Prueba credenciales nuevas, antes de vincular la cuenta."""
-    body = await request.json()
+    body = await json_body(request)
     provider = str(body.get("provider") or "").strip()
     if provider not in _PROVIDERS:
         raise APIError(
@@ -310,7 +311,7 @@ async def github_device_token(
     `/github/device-code`; devuelve el access_token en cuanto esté listo."""
     from app.auth.github_oauth import poll_device_token
 
-    body = await request.json()
+    body = await json_body(request)
     device_code = str(body.get("device_code") or "").strip()
     if not device_code:
         raise APIError(
@@ -327,7 +328,7 @@ async def update_account(
     existing = await _storage.get(account_id, owner)
     if not existing:
         raise APIError(404, "not_found", "Cuenta no vinculada", extra={"resource": "account"})
-    body = await request.json()
+    body = await json_body(request)
     api_key = str(body.get("api_key") or "").strip()
     host = str(body.get("host") or "").strip()
     url = str(body.get("url") or "").strip()
@@ -368,7 +369,7 @@ async def test_account(
     if not account:
         raise APIError(404, "not_found", "Cuenta no vinculada", extra={"resource": "account"})
     try:
-        body = await request.json()
+        body = await json_body(request)
     except Exception:
         body = {}
     if account["provider"] == _HUB_PROVIDER:
@@ -404,7 +405,7 @@ async def sync_account(
         return await _sync_hub_account(account_id, account, owner)
 
     try:
-        body = await request.json()
+        body = await json_body(request)
     except Exception:
         body = {}
     selected = body.get("models") if isinstance(body, dict) else None

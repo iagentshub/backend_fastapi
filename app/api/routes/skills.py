@@ -21,6 +21,7 @@ from app.storage.storage import (
 )
 from app.utils import flog
 from app.utils.generators import generate_id
+from app.utils.net import json_body
 from app.utils.origin import compute_origin_type
 
 router = APIRouter(prefix="/api/skills", tags=["skills"])
@@ -176,7 +177,7 @@ async def save_skill(
 ) -> Dict[str, Any]:
     user, group_id = ctx.user, ctx.group_id
     _check_scope(scope)
-    payload = await request.json()
+    payload = await json_body(request)
     if payload.get("tags") not in (None, [], ""):
         raise APIError(
             422,

@@ -44,6 +44,7 @@ from app.storage.storage import (
 )
 from app.utils import flog
 from app.utils.generators import generate_id
+from app.utils.net import json_body
 from app.utils.origin import compute_origin_type
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
@@ -336,7 +337,7 @@ async def save_agent(
     request: Request, ctx: GroupContext = Depends(require_group)
 ) -> Dict[str, Any]:
     user, group_id = ctx.user, ctx.group_id
-    payload = await request.json()
+    payload = await json_body(request)
     scope = str(payload.pop("scope", "private") or "private")
     if scope not in ("public", "private"):
         raise APIError(
@@ -745,7 +746,7 @@ async def chat(
         await _assert_can_read_agent(agent_id, a, ctx)
     a = _apply_locale(a, get_locale())
 
-    body = await request.json()
+    body = await json_body(request)
     history: List[Dict[str, Any]] = body.get("messages") or []
     conversation_id: str = str(body.get("conversation_id") or "").strip()
 

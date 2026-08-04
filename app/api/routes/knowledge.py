@@ -23,6 +23,7 @@ from app.storage.knowledge import (
 from app.storage.storage import AgentStorage
 from app.utils import flog
 from app.utils.generators import generate_id
+from app.utils.net import json_body
 
 router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
 
@@ -155,7 +156,7 @@ async def add_text(
     ctx: GroupContext = Depends(require_group),
 ) -> Dict[str, Any]:
     user, group_id = ctx.user, ctx.group_id
-    body = await request.json()
+    body = await json_body(request)
     title = str(body.get("title") or "").strip()
     content = str(body.get("content") or "").strip()
     source = str(body.get("source") or title).strip()
@@ -179,7 +180,7 @@ async def add_url(
     ctx: GroupContext = Depends(require_group),
 ) -> Dict[str, Any]:
     user, group_id = ctx.user, ctx.group_id
-    body = await request.json()
+    body = await json_body(request)
     url = str(body.get("url") or "").strip()
     title = str(body.get("title") or "").strip() or url
     if not url:

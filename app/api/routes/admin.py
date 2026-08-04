@@ -42,6 +42,7 @@ from app.storage.storage import AgentStorage as _AgentStorage
 from app.storage.workflows import WorkflowStorage as _WorkflowStorage
 from app.utils import flog
 from app.utils.generators import generate_id
+from app.utils.net import json_body
 from app.utils.validation import is_valid_email, is_valid_username, normalize_username
 
 _groups = _GroupStorage(_DB_FILE)
@@ -675,7 +676,7 @@ async def admin_patch_user(
         raise APIError(
             400, "cannot_modify_own_account", "No puedes modificar tu propia cuenta"
         )
-    body = await request.json()
+    body = await json_body(request)
     updates: dict[str, Any] = {}
     if "is_active" in body:
         updates["is_active"] = 1 if body["is_active"] else 0
@@ -721,7 +722,7 @@ async def admin_create_user(
     from datetime import datetime
     from datetime import timezone as _tz
 
-    body = await request.json()
+    body = await json_body(request)
     username = normalize_username(str(body.get("username") or ""))
     email = str(body.get("email") or "").strip().lower()
     password = str(body.get("password") or "").strip()
@@ -918,7 +919,7 @@ async def admin_update_agent(
         raise APIError(
             404, "not_found", "Agente no encontrado", extra={"resource": "agent"}
         )
-    payload = await request.json()
+    payload = await json_body(request)
     protected = {"id", "owner_id", "created_at", "scope"}
     updated = {**agent, **{k: v for k, v in payload.items() if k not in protected}}
     new_name = str(updated.get("name") or "").strip()
@@ -1208,7 +1209,7 @@ async def admin_delete_group(
 async def admin_set_group_status(
     group_id: str, request: Request, _: str = Depends(require_admin)
 ) -> dict[str, Any]:
-    body = await request.json()
+    body = await json_body(request)
     status = str(body.get("status") or "").strip()
     if status not in ("active", "disabled"):
         raise APIError(
@@ -1653,7 +1654,7 @@ async def admin_verify_resource(
             f"resource_type debe ser uno de {_valid_types}",
             extra={"field": "resource_type"},
         )
-    body = await request.json()
+    body = await json_body(request)
     verified_val = bool(body.get("verified", False))
     db_val = 1 if verified_val else 0
 
@@ -1701,7 +1702,7 @@ async def admin_set_resource_owner(
             f"resource_type debe ser uno de {list(table_map)}",
             extra={"field": "resource_type"},
         )
-    body = await request.json()
+    body = await json_body(request)
     new_owner = str(body.get("username") or body.get("owner_id") or "").strip().lower()
     if not new_owner:
         raise APIError(

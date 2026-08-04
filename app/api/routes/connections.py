@@ -29,6 +29,7 @@ from app.storage.knowledge import KnowledgeStorage
 from app.storage.storage import AgentStorage, ConnectionStorage, SkillStorage
 from app.utils import flog
 from app.utils.generators import generate_id
+from app.utils.net import json_body
 from app.utils.origin import compute_origin_type
 
 
@@ -249,7 +250,7 @@ async def ollama_models(
     """Devuelve los modelos instalados en una instancia Ollama."""
     from app.connections.ollama import OllamaProvider
 
-    body = await request.json()
+    body = await json_body(request)
     host = (body.get("host") or "http://localhost:11434").strip().rstrip("/")
     try:
         assert_safe_url(host)
@@ -268,7 +269,7 @@ async def test_all_connections(
 ) -> List[Dict[str, Any]]:
     user, group_id = ctx.user, ctx.group_id
     body = (
-        await request.json()
+        await json_body(request)
         if request.headers.get("content-type", "").startswith("application/json")
         else {}
     )
@@ -387,7 +388,7 @@ async def save_connection(
     request: Request, ctx: GroupContext = Depends(require_group)
 ) -> Dict[str, Any]:
     user, group_id = ctx.user, ctx.group_id
-    payload = await request.json()
+    payload = await json_body(request)
     scope = payload.pop("scope", "group")
     if not get_provider(payload.get("type") or ""):
         raise APIError(

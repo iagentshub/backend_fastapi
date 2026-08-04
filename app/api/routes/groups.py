@@ -17,6 +17,7 @@ from app.config.session import SECURE_COOKIES
 from app.errors import APIError
 from app.storage.groups import GroupStorage
 from app.storage.guest import is_guest
+from app.utils.net import json_body
 
 router = APIRouter(prefix="/api/groups", tags=["groups"])
 
@@ -158,7 +159,7 @@ async def set_group_status(
     _assert_not_guest(ctx.user)
     if group_id == ctx.user:
         raise APIError(400, "personal_group_forbidden", "El grupo Personal no se puede desactivar")
-    body = await request.json()
+    body = await json_body(request)
     status = str(body.get("status") or "").strip()
     if status not in ("active", "disabled"):
         raise APIError(
@@ -380,7 +381,7 @@ async def transfer_group_ownership(
 ) -> Dict[str, Any]:
     """Transfiere la propiedad del grupo a otro miembro existente."""
     _assert_not_personal_group(group_id, username)
-    body = await request.json()
+    body = await json_body(request)
     new_owner = str(body.get("username", "")).strip()
     if not new_owner:
         raise APIError(

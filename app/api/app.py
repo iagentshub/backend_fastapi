@@ -47,9 +47,10 @@ from app.middleware.security import SecurityHeadersMiddleware
 from app.storage.db import close_db_pool, init_db, open_db
 from app.utils import flog
 
-_docs_url = (
-    "/docs" if os.getenv("GAIA_DEV_MODE", "").lower() in ("1", "true", "yes") else None
-)
+
+def _dev_mode() -> bool:
+    """Se lee en cada create_app() para que los tests puedan cambiarla."""
+    return os.getenv("GAIA_DEV_MODE", "").lower() in ("1", "true", "yes")
 
 
 async def _gdpr_purge_loop() -> None:
@@ -96,10 +97,14 @@ async def _lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
+    # El esquema describe la superficie entera de la API: fuera de desarrollo se
+    # cierra junto con /docs, que sin él no sirve de nada.
+    dev = _dev_mode()
     app = FastAPI(
         title="GAIA Backend",
         version="1.0.0",
-        docs_url=_docs_url,
+        docs_url="/docs" if dev else None,
+        openapi_url="/openapi.json" if dev else None,
         redoc_url=None,
         lifespan=_lifespan,
     )

@@ -10,6 +10,7 @@ from app.config.data import DB_FILE
 from app.errors import APIError
 from app.storage.chat import ChatStorage
 from app.storage.guest import is_guest
+from app.utils.net import json_body
 
 router = APIRouter(prefix="/api/chats", tags=["chats"])
 _chat = ChatStorage(DB_FILE)
@@ -40,7 +41,7 @@ async def new_conversation(
 ) -> Dict[str, Any]:
     if is_guest(user):
         raise APIError(403, "forbidden", "Los invitados no pueden guardar conversaciones")
-    body = await request.json()
+    body = await json_body(request)
     title = str(body.get("title") or "")
     return await _chat.new_conversation(user, agent_id, title)
 

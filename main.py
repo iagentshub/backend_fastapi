@@ -7,12 +7,12 @@ import os
 import uvicorn
 
 from app.config import data as _cfg
-from app.config.server import HOST, PORT, RELOAD
+from app.config.server import HOST, PORT, RELOAD, WORKERS
 from app.storage.db import migrate_schema
 
 
 def main() -> None:
-    workers = 1 if RELOAD else int(os.getenv("GAIA_WORKERS", "4"))
+    workers = WORKERS
 
     if workers > 1:
         # Migrar el esquema una sola vez en el proceso maestro, antes de que
