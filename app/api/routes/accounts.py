@@ -9,7 +9,6 @@ import httpx
 from fastapi import APIRouter, Depends, Request
 
 from app.api.routes.auth import require_auth
-from app.auth.auth import get_user_role
 from app.config.data import AGENTS_DIR, DB_FILE, SKILLS_DIR
 from app.errors import APIError
 from app.middleware.ratelimit import RateLimiter
@@ -26,7 +25,12 @@ _device_flow_limiter = RateLimiter(calls=30, window=60)
 
 
 async def _owner(user: str) -> str:
-    return "admin" if await get_user_role(user) == "admin" else user
+    """Las cuentas de proveedor, y las conexiones que generan al sincronizar,
+    son siempre personales del usuario — igual que una Connection creada a
+    mano con scope="personal" (ver `save_connection` en connections.py). No
+    hay un bucket especial para admins: `connections.py` lista por
+    `group_id`/`user`, nunca por un owner_id distinto del propio usuario."""
+    return user
 
 
 _agent_storage = AgentStorage(AGENTS_DIR)
