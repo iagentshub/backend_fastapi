@@ -416,3 +416,105 @@ def test_builder_recovers_complete_json_before_provider_timeout(
     )
     assert done["status"] == "ready"
     assert done["draft"]["name"] == "Especialista en ciberseguridad"
+
+
+def test_builder_retries_http_529_and_uses_second_response(admin_client, monkeypatch):
+    connection = admin_client.post(
+        "/api/connections",
+        json={
+            "name": "NIM overloaded once",
+            "type": "nvidia",
+            "api_key": "nvapi-test",
+            "model": "meta/llama-3.2-3b-instruct",
+        },
+    ).json()
+    calls = 0
+
+    async def overloaded_once(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            yield (
+                'data: {"type":"error","message":'
+                '"HTTP 529: Service temporarily overloaded"}\n\n'
+            )
+            return
+        reply = json.dumps(
+            {
+                "assistant_message": "Borrador listo.",
+                "status": "ready",
+                "draft": {
+                    "name": "Especialista Java",
+                    "description": "Programa Java con buenas prácticas",
+                    "system_prompt": (
+                        "Eres especialista senior en Java. Analiza los requisitos "
+                        "antes de proponer una solución, aplica diseño mantenible, "
+                        "valida entradas, protege datos sensibles y escribe pruebas "
+                        "automatizadas. Explica las decisiones importantes, señala "
+                        "suposiciones y nunca inventes resultados de una ejecución."
+                    ),
+                    "temperature": 0.2,
+                    "skills": [],
+                    "knowledge": [],
+                    "use_memory": False,
+                },
+            },
+            ensure_ascii=False,
+        )
+        yield f"data: {json.dumps({'type': 'done', 'reply': reply})}\n\n"
+
+    monkeypatch.setattr("app.api.routes.agent_builder.stream_chat", overloaded_once)
+
+    response = admin_client.post(
+        "/api/agent-builder/chat",
+        json={
+            "connection_id": connection["id"],
+            "mode": "guided",
+            "messages": [{"role": "user", "content": "Quiero programar en Java"}],
+        },
+    )
+
+    events = _events(response.text)
+    done = next(event for event in events if event["type"] == "builder_done")
+    assert done["draft"]["name"] == "Especialista Java"
+    assert calls == 2
+    assert not any(event["type"] == "error" for event in events)
+
+
+def test_builder_falls_back_when_http_529_persists(admin_client, monkeypatch):
+    connection = admin_client.post(
+        "/api/connections",
+        json={
+            "name": "NIM overloaded",
+            "type": "nvidia",
+            "api_key": "nvapi-test",
+            "model": "meta/llama-3.2-3b-instruct",
+        },
+    ).json()
+    calls = 0
+
+    async def always_overloaded(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        yield (
+            'data: {"type":"error","message":'
+            '"HTTP 529: Service temporarily overloaded"}\n\n'
+        )
+
+    monkeypatch.setattr("app.api.routes.agent_builder.stream_chat", always_overloaded)
+
+    response = admin_client.post(
+        "/api/agent-builder/chat",
+        json={
+            "connection_id": connection["id"],
+            "mode": "guided",
+            "messages": [{"role": "user", "content": "Quiero programar en Java"}],
+        },
+    )
+
+    events = _events(response.text)
+    done = next(event for event in events if event["type"] == "builder_done")
+    assert done["status"] == "ready"
+    assert "Java" in done["draft"]["system_prompt"]
+    assert calls == 2
+    assert not any(event["type"] == "error" for event in events)

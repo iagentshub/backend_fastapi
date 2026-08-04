@@ -47,6 +47,29 @@ def _sse(data: Dict[str, Any]) -> str:
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
+def _is_transient_provider_error(message: str) -> bool:
+    """Return whether retrying a provider failure can reasonably succeed."""
+    normalized = message.casefold()
+    transient_markers = (
+        "timed out",
+        "timeout",
+        "temporarily unavailable",
+        "temporarily overloaded",
+        "overloaded",
+        "rate limit",
+        "too many requests",
+        "capacity",
+        "http 408",
+        "http 429",
+        "http 500",
+        "http 502",
+        "http 503",
+        "http 504",
+        "http 529",
+    )
+    return any(marker in normalized for marker in transient_markers)
+
+
 @router.post("/chat")
 async def builder_chat(
     body: BuilderChatBody,
@@ -185,14 +208,15 @@ async def builder_chat(
 
             if provider_error:
                 last_issue = provider_error
-                is_timeout = (
-                    "timed out" in provider_error.lower()
-                    or "timeout" in provider_error.lower()
-                )
-                if attempt == 0 and is_timeout:
+                is_transient = _is_transient_provider_error(provider_error)
+                if attempt == 0 and is_transient:
                     yield _sse({"type": "progress"})
                     continue
-                if force_ready:
+                if force_ready or is_transient:
+                    logger.warning(
+                        "Agent builder provider unavailable; using local fallback: %s",
+                        provider_error,
+                    )
                     fallback = build_fallback_ready(
                         body.messages, body.resources, body.mode
                     )
@@ -203,14 +227,7 @@ async def builder_chat(
                         }
                     )
                     return
-                message = (
-                    "El modelo seleccionado tardó demasiado en responder incluso "
-                    "después de reintentarlo. Elige un modelo rápido para el "
-                    "asistente, como Llama 3B u 8B."
-                    if is_timeout
-                    else provider_error
-                )
-                yield _sse({"type": "error", "message": message})
+                yield _sse({"type": "error", "message": provider_error})
                 return
 
             if attempt == 0:
