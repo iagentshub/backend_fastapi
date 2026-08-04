@@ -316,9 +316,18 @@ def _do_claude_stream(
 
 
 def _do_ollama_call(
-    host: str, payload: Dict[str, Any], timeout: Optional[int]
+    host: str,
+    payload: Dict[str, Any],
+    timeout: Optional[int],
+    on_token: Optional[Callable[[str], None]] = None,
 ) -> "tuple[str, int, int]":
-    """Llama a Ollama y devuelve (reply, tok_in, tok_out)."""
+    """Llama a Ollama y devuelve (reply, tok_in, tok_out).
+
+    Era el último proveedor que devolvía la respuesta entera de una vez. Ollama
+    con ``"stream": true`` responde **NDJSON** —un objeto JSON por línea, no
+    SSE—, así que aquí no hay prefijo ``data: `` que quitar, a diferencia de los
+    otros dos caminos.
+    """
     data = json.dumps(payload).encode()
     req = urllib.request.Request(
         f"{host}/api/chat",
@@ -326,11 +335,27 @@ def _do_ollama_call(
         headers={"Content-Type": "application/json"},
         method="POST",
     )
+    full_reply = ""
+    tok_in = tok_out = 0
     with urllib.request.urlopen(req, timeout=timeout) as resp:
-        body = json.loads(resp.read().decode("utf-8"))
-    tok_in = body.get("prompt_eval_count", 0)
-    tok_out = body.get("eval_count", 0)
-    return body.get("message", {}).get("content") or "", tok_in, tok_out
+        for raw in resp:
+            line = raw.decode("utf-8", errors="replace").strip()
+            if not line:
+                continue
+            try:
+                obj = json.loads(line)
+            except ValueError:
+                continue
+            token = (obj.get("message") or {}).get("content") or ""
+            if token:
+                full_reply += token
+                if on_token is not None:
+                    on_token(token)
+            # El recuento solo viene en el último objeto, el que trae done:true.
+            # Se lee en todos por si alguna versión lo adelanta.
+            tok_in = obj.get("prompt_eval_count", tok_in)
+            tok_out = obj.get("eval_count", tok_out)
+    return full_reply, tok_in, tok_out
 
 
 def _validate_ollama_host(host: str) -> None:
@@ -551,12 +576,15 @@ async def stream_chat(
             payload_o: Dict[str, Any] = {
                 "model": model,
                 "messages": msgs_ollama,
-                "stream": False,
+                "stream": True,
                 "options": {"temperature": temperature},
             }
-            reply, tok_in, tok_out = await asyncio.to_thread(
-                _do_ollama_call, host, payload_o, timeout
-            )
+            out = []
+            async for frame in _stream_tokens(
+                out, _do_ollama_call, host, payload_o, timeout
+            ):
+                yield frame
+            reply, tok_in, tok_out = out[0]
 
         else:
             yield _sse(

@@ -620,17 +620,31 @@ async def test_claude_emite_cada_delta_segun_llega():
 def _ollama_response(
     reply: str = "Hi", prompt_eval_count: int = 15, eval_count: int = 6
 ) -> MagicMock:
-    body = json.dumps(
-        {
-            "message": {"content": reply},
-            "prompt_eval_count": prompt_eval_count,
-            "eval_count": eval_count,
-        }
-    ).encode()
+    """Respuesta NDJSON de Ollama: un objeto JSON por línea, no SSE.
+
+    Cada trozo del texto va en su propia línea; el recuento de tokens solo
+    aparece en la última, la que lleva done:true.
+    """
+    trozos = [reply[i : i + 3] for i in range(0, len(reply), 3)] or [""]
+    lines = [
+        json.dumps({"message": {"content": t}, "done": False}).encode() + b"\n"
+        for t in trozos
+    ]
+    lines.append(
+        json.dumps(
+            {
+                "message": {"content": ""},
+                "done": True,
+                "prompt_eval_count": prompt_eval_count,
+                "eval_count": eval_count,
+            }
+        ).encode()
+        + b"\n"
+    )
     mock_resp = MagicMock()
     mock_resp.__enter__ = lambda s: s
     mock_resp.__exit__ = MagicMock(return_value=False)
-    mock_resp.read.return_value = body
+    mock_resp.__iter__ = MagicMock(return_value=iter(lines))
     return mock_resp
 
 
@@ -650,6 +664,36 @@ async def test_ollama_done_event_includes_tokens():
     done_event = next(e for e in events if '"type": "done"' in e)
     data = json.loads(done_event.removeprefix("data: ").strip())
     assert data["tokens"] == {"in": 15, "out": 6}
+
+
+async def test_ollama_emite_cada_trozo_segun_llega():
+    """Ollama era el último proveedor que devolvía la respuesta de una vez.
+
+    Pedía "stream": False y el usuario se quedaba mirando una pantalla quieta,
+    el mismo síntoma que tenía Claude antes de BE-10. Aquí se comprueba que
+    salen eventos token, en orden, y que el texto reconstruido es el completo.
+    """
+    agent = _make_agent("ollama", model="llama3")
+    conn = {**_make_conn("ollama", model="llama3"), "host": "http://localhost:11434"}
+    mock_resp = _ollama_response("Hola mundo", prompt_eval_count=15, eval_count=6)
+
+    with patch("urllib.request.urlopen", return_value=mock_resp):
+        events = [
+            e
+            async for e in stream_chat(
+                agent, conn, [{"role": "user", "content": "Hi"}], _skill_storage()
+            )
+        ]
+
+    emitidos = [
+        json.loads(e.removeprefix("data: ").strip())["token"]
+        for e in events
+        if e.startswith("data: ") and '"type": "token"' in e
+    ]
+    assert emitidos == ["Hol", "a m", "und", "o"]
+
+    done_event = next(e for e in events if '"type": "done"' in e)
+    assert json.loads(done_event.removeprefix("data: ").strip())["reply"] == "Hola mundo"
 
 
 async def test_openai_usage_chunk_with_empty_choices():

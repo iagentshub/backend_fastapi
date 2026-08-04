@@ -1,5 +1,4 @@
 """Storage: Agentes, Conexiones, Skills y Memoria."""
-
 from __future__ import annotations
 
 import json
@@ -11,7 +10,23 @@ from typing import Any, Dict, List, Optional, TypedDict
 import yaml
 
 from app.models.agent import Agent
+
+# db se importa DOS veces a propósito y no es un descuido:
+#
+# - open_db y _compact_resource_data son funciones; da igual cuándo se resuelva
+#   el nombre, y traerlas por valor deja el código legible.
+# - IS_PG es un BOOLEANO que los tests reescriben con
+#   monkeypatch.setattr(db, "IS_PG", False). Traerlo por valor congelaría el
+#   del arranque y toda la suite correría contra el dialecto equivocado — la
+#   trampa que documenta CLAUDE.md. Leerlo como _db.IS_PG lo consulta en cada
+#   llamada, que es lo único correcto aquí.
+#
+# Los 31 imports de db que había dentro de funciones no rompían ningún ciclo:
+# db.py no alcanza storage.py ni directa ni indirectamente. Eran costumbre, y
+# escondían los pocos diferidos que sí tienen motivo (ver DATA_DIR más abajo).
+from app.storage import db as _db
 from app.storage.crypto import decrypt, encrypt
+from app.storage.db import _compact_resource_data, open_db
 from app.storage.migration import LegacyMigrationStorage
 from app.storage.resource_base import ResourceStorage
 from app.utils import flog
@@ -72,7 +87,6 @@ _ENCRYPTED_FIELDS = ("api_key", "password", "ssh_key")
 
 class ConnectionStorage(ResourceStorage):
     """DB-backed async connection storage."""
-
     table = "connections"
     resource_type = "connection"
 
@@ -84,8 +98,10 @@ class ConnectionStorage(ResourceStorage):
 
     async def _migrate_legacy_data(self) -> None:
         """One-time import from connections.json if table is empty."""
+        # Este SÍ tiene que quedarse dentro de la función: DATA_DIR se reescribe
+        # en cada test (conftest: patch_data_dir) y subirlo arriba lo congelaría
+        # al directorio de la fase de colección.
         from app.config.data import DATA_DIR
-        from app.storage.db import open_db
 
         async with open_db() as conn:
             try:
@@ -110,15 +126,13 @@ class ConnectionStorage(ResourceStorage):
         self, conn: Any, payload: Dict[str, Any], owner_id: str = "admin"
     ) -> None:
         """Insert or replace a connection row (uses AsyncConn, ? placeholders)."""
-        from app.storage.db import IS_PG, _compact_resource_data
-
         conn_id = str(payload.get("id") or "").strip() or generate_id()
         payload["id"] = conn_id
         name = _display_name(payload, conn_id)
         is_active = 1 if payload.get("is_active", True) else 0
         deactivated_at = payload.get("deactivated_at")
         data_json = _compact_resource_data(payload)
-        if IS_PG:
+        if _db.IS_PG:
             await conn.execute(
                 "INSERT INTO connections (id, owner_id, name, data, tokens_in, tokens_out, "
                 "is_active, deactivated_at, created_at, updated_at) "
@@ -188,7 +202,6 @@ class ConnectionStorage(ResourceStorage):
     async def list(self, owner_id: Optional[str] = None) -> List[Dict[str, Any]]:
         """owner_id=None → admin sees all. owner_id=str → own connections only."""
         await self._ensure_migrated()
-        from app.storage.db import open_db
 
         async with open_db() as conn:
             if owner_id is None:
@@ -208,7 +221,6 @@ class ConnectionStorage(ResourceStorage):
     async def get(
         self, conn_id: str, owner_id: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
-        from app.storage.db import open_db
 
         async with open_db() as conn:
             if owner_id is None:
@@ -229,7 +241,6 @@ class ConnectionStorage(ResourceStorage):
     async def save(
         self, payload: Dict[str, Any], owner_id: str = "admin"
     ) -> Dict[str, Any]:
-        from app.storage.db import open_db
 
         conn_id = str(payload.get("id") or "").strip() or generate_id()
         payload["id"] = conn_id
@@ -269,7 +280,6 @@ class ConnectionStorage(ResourceStorage):
         return payload
 
     async def delete(self, conn_id: str, owner_id: Optional[str] = None) -> bool:
-        from app.storage.db import open_db
 
         async with open_db() as conn:
             if owner_id is None:
@@ -297,7 +307,6 @@ class ConnectionStorage(ResourceStorage):
     async def add_tokens(
         self, conn_id: str, input_tokens: int, output_tokens: int
     ) -> None:
-        from app.storage.db import IS_PG, open_db
 
         async with open_db() as conn:
             async with conn.transaction():
@@ -313,7 +322,7 @@ class ConnectionStorage(ResourceStorage):
                     if row:
                         today = date.today().isoformat()
                         owner = row["owner_id"]
-                        if IS_PG:
+                        if _db.IS_PG:
                             await conn.execute(
                                 "INSERT INTO token_daily (day, owner_id, tokens) VALUES (?, ?, ?) "
                                 "ON CONFLICT (day, owner_id) DO UPDATE SET tokens = token_daily.tokens + EXCLUDED.tokens",
@@ -333,7 +342,6 @@ class ConnectionStorage(ResourceStorage):
 
 class AgentStorage(ResourceStorage):
     """Async DB-backed agent storage (SQLite / PostgreSQL)."""
-
     table = "agents"
     resource_type = "agent"
 
@@ -344,7 +352,6 @@ class AgentStorage(ResourceStorage):
     # ── one-time file→DB migration ───────────────────────────────────────────
 
     async def _migrate_legacy_data(self) -> None:
-        from app.storage.db import open_db
 
         async with open_db() as conn:
             try:
@@ -380,7 +387,6 @@ class AgentStorage(ResourceStorage):
     async def _upsert(
         self, conn: Any, agent_id: str, owner_id: str, scope: str, data: Dict[str, Any]
     ) -> None:
-        from app.storage.db import IS_PG, _compact_resource_data
 
         name = str(data.get("name") or "").strip()
         data_json = _compact_resource_data(data)
@@ -391,7 +397,7 @@ class AgentStorage(ResourceStorage):
         updated_at = str(data.get("updated_at") or now)
         is_active = 1 if data.get("is_active", True) else 0
         deactivated_at = data.get("deactivated_at")
-        if IS_PG:
+        if _db.IS_PG:
             await conn.execute(
                 "INSERT INTO agents (id, owner_id, name, scope, data, tokens_in, tokens_out, "
                 "is_active, deactivated_at, created_at, updated_at) "
@@ -461,7 +467,6 @@ class AgentStorage(ResourceStorage):
         self, scope: str = "all", owner_id: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         await self._ensure_migrated()
-        from app.storage.db import open_db
 
         async with open_db() as conn:
             if scope == "public":
@@ -496,7 +501,6 @@ class AgentStorage(ResourceStorage):
         self, agent_id: str, scope: Optional[str] = None, owner_id: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
         await self._ensure_migrated()
-        from app.storage.db import open_db
 
         async with open_db() as conn:
             if scope == "public":
@@ -530,7 +534,6 @@ class AgentStorage(ResourceStorage):
         owner_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         await self._ensure_migrated()
-        from app.storage.db import open_db
 
         name = str(payload.get("name") or "").strip()
         if not name:
@@ -567,7 +570,6 @@ class AgentStorage(ResourceStorage):
         tokens_out: int,
         owner_id: Optional[str] = None,
     ) -> None:
-        from app.storage.db import open_db
 
         async with open_db() as conn:
             if owner_id is not None:
@@ -594,7 +596,6 @@ class AgentStorage(ResourceStorage):
         await self._ensure_migrated()
         if scope == "public" and not allow_public:
             raise ValueError("Los agentes públicos son de solo lectura")
-        from app.storage.db import open_db
 
         async with open_db() as conn:
             if allow_public:
@@ -718,7 +719,6 @@ def _parse_skill_md(raw: str, default_id: str = "") -> Dict[str, Any]:
 
 class SkillStorage(ResourceStorage):
     """Async DB-backed skill storage (SQLite / PostgreSQL)."""
-
     table = "skills"
     resource_type = "skill"
 
@@ -729,7 +729,6 @@ class SkillStorage(ResourceStorage):
     # ── one-time file→DB migration ───────────────────────────────────────────
 
     async def _migrate_legacy_data(self) -> None:
-        from app.storage.db import open_db
 
         async with open_db() as conn:
             try:
@@ -767,7 +766,6 @@ class SkillStorage(ResourceStorage):
     async def _upsert(
         self, conn: Any, skill_id: str, owner_id: str, scope: str, data: Dict[str, Any]
     ) -> None:
-        from app.storage.db import IS_PG, _compact_resource_data
 
         name = str(data.get("name") or "").strip()
         content = str(data.get("content") or "")
@@ -782,7 +780,7 @@ class SkillStorage(ResourceStorage):
             k: v for k, v in data.items() if k not in ("content", "tags", "category")
         }
         meta_json = _compact_resource_data(meta)
-        if IS_PG:
+        if _db.IS_PG:
             await conn.execute(
                 "INSERT INTO skills (id, owner_id, name, category, scope, data, content, "
                 "is_active, deactivated_at, created_at, updated_at) "
@@ -853,7 +851,6 @@ class SkillStorage(ResourceStorage):
         self, scope: str = "all", owner_id: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         await self._ensure_migrated()
-        from app.storage.db import open_db
 
         async with open_db() as conn:
             if scope == "public":
@@ -888,7 +885,6 @@ class SkillStorage(ResourceStorage):
         self, scope: str, skill_id: str, owner_id: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
         await self._ensure_migrated()
-        from app.storage.db import open_db
 
         async with open_db() as conn:
             owner_filter = " AND owner_id=?" if owner_id is not None else ""
@@ -936,7 +932,6 @@ class SkillStorage(ResourceStorage):
         if scope == "public" and not owner_id:
             raise ValueError("Las skills públicas de sistema son de solo lectura")
         await self._ensure_migrated()
-        from app.storage.db import open_db
 
         name = str(payload.get("name") or "").strip()
         if not name:
@@ -995,7 +990,6 @@ class SkillStorage(ResourceStorage):
         if scope == "public" and owner_id is None and not allow_public:
             raise ValueError("Las skills públicas de sistema son de solo lectura")
         await self._ensure_migrated()
-        from app.storage.db import open_db
 
         async with open_db() as conn:
             if owner_id is not None:
@@ -1032,7 +1026,6 @@ PROMPT_ALIAS_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,28}[a-z0-9]$")
 
 class PromptStorage(ResourceStorage):
     """Async DB-backed prompt storage (SQLite / PostgreSQL)."""
-
     table = "prompts"
     resource_type = "prompt"
 
@@ -1041,7 +1034,6 @@ class PromptStorage(ResourceStorage):
     async def _upsert(
         self, conn: Any, prompt_id: str, owner_id: str, scope: str, data: Dict[str, Any]
     ) -> None:
-        from app.storage.db import IS_PG, _compact_resource_data
 
         name = str(data.get("name") or "").strip()
         content = str(data.get("content") or "")
@@ -1054,7 +1046,7 @@ class PromptStorage(ResourceStorage):
         # alias y content tienen columna propia — no duplicar en el JSON de meta.
         meta = {k: v for k, v in data.items() if k not in ("content", "alias")}
         meta_json = _compact_resource_data(meta)
-        if IS_PG:
+        if _db.IS_PG:
             await conn.execute(
                 "INSERT INTO prompts (id, owner_id, name, alias, scope, data, content, "
                 "is_active, deactivated_at, created_at, updated_at) "
@@ -1124,7 +1116,6 @@ class PromptStorage(ResourceStorage):
         self, scope: str = "all", owner_id: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         await self._ensure_migrated()
-        from app.storage.db import open_db
 
         async with open_db() as conn:
             if scope == "public":
@@ -1159,7 +1150,6 @@ class PromptStorage(ResourceStorage):
         self, scope: str, prompt_id: str, owner_id: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
         await self._ensure_migrated()
-        from app.storage.db import open_db
 
         async with open_db() as conn:
             owner_filter = " AND owner_id=?" if owner_id is not None else ""
@@ -1194,7 +1184,6 @@ class PromptStorage(ResourceStorage):
         if scope == "public" and not owner_id:
             raise ValueError("Los prompts públicos de sistema son de solo lectura")
         await self._ensure_migrated()
-        from app.storage.db import open_db
 
         name = str(payload.get("name") or "").strip()
         if not name:
@@ -1261,7 +1250,6 @@ class PromptStorage(ResourceStorage):
         if scope == "public" and owner_id is None and not allow_public:
             raise ValueError("Los prompts públicos de sistema son de solo lectura")
         await self._ensure_migrated()
-        from app.storage.db import open_db
 
         async with open_db() as conn:
             if owner_id is not None:
@@ -1296,7 +1284,6 @@ class PromptStorage(ResourceStorage):
         colisionar con uno ya existente del destino — la copia nunca debe
         fallar por esto ni tocar la fila del propietario original."""
         await self._ensure_migrated()
-        from app.storage.db import open_db
 
         base = alias
         candidate = base
@@ -1327,7 +1314,6 @@ def _safe_mem_id(filename: str) -> str:
 
 class MemoryStorage(LegacyMigrationStorage):
     """Async DB-backed memory storage (SQLite / PostgreSQL)."""
-
     def __init__(self, root_dir: Path) -> None:
         super().__init__()
         self._root_dir = Path(root_dir)  # solo para la migración única desde ficheros
@@ -1335,7 +1321,6 @@ class MemoryStorage(LegacyMigrationStorage):
     # ── one-time file→DB migration ───────────────────────────────────────────
 
     async def _migrate_legacy_data(self) -> None:
-        from app.storage.db import open_db
 
         async with open_db() as conn:
             try:
@@ -1362,7 +1347,6 @@ class MemoryStorage(LegacyMigrationStorage):
 
     async def list(self, owner_id: str = "admin") -> List[Dict[str, Any]]:
         await self._ensure_migrated()
-        from app.storage.db import open_db
 
         async with open_db() as conn:
             rows = await conn.fetchall(
@@ -1383,7 +1367,6 @@ class MemoryStorage(LegacyMigrationStorage):
     async def get(self, filename: str, owner_id: str = "admin") -> Optional[str]:
         await self._ensure_migrated()
         mem_id = _safe_mem_id(filename)
-        from app.storage.db import open_db
 
         async with open_db() as conn:
             row = await conn.fetchone(
@@ -1398,10 +1381,9 @@ class MemoryStorage(LegacyMigrationStorage):
         await self._ensure_migrated()
         mem_id = _safe_mem_id(filename)
         now = _now()
-        from app.storage.db import IS_PG, open_db
 
         async with open_db() as conn:
-            if IS_PG:
+            if _db.IS_PG:
                 await conn.execute(
                     "INSERT INTO memory_files (id, owner_id, content, updated_at) VALUES (?, ?, ?, ?) "
                     "ON CONFLICT (id, owner_id) DO UPDATE SET content=EXCLUDED.content, updated_at=EXCLUDED.updated_at",
@@ -1423,7 +1405,6 @@ class MemoryStorage(LegacyMigrationStorage):
     async def delete(self, filename: str, owner_id: str = "admin") -> bool:
         await self._ensure_migrated()
         mem_id = _safe_mem_id(filename)
-        from app.storage.db import open_db
 
         async with open_db() as conn:
             row = await conn.fetchone(
