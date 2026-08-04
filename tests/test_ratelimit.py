@@ -72,3 +72,37 @@ def test_rejects_invalid_configuration():
         except ValueError:
             continue
         raise AssertionError("La configuración inválida debía rechazarse")
+
+
+# ── Reparto entre workers (BE-06) ─────────────────────────────────────────────
+# uvicorn arranca GAIA_WORKERS procesos y cada uno lleva su propio contador en
+# memoria, así que el límite real era el declarado × workers. Se reparte.
+
+
+def test_la_cuota_se_reparte_entre_los_workers(monkeypatch):
+    import app.middleware.ratelimit as rl
+
+    monkeypatch.setattr(rl, "_WORKERS", 4)
+    assert rl.RateLimiter(calls=20, window=60)._calls == 5
+
+
+def test_con_un_worker_el_limite_no_cambia(monkeypatch):
+    import app.middleware.ratelimit as rl
+
+    monkeypatch.setattr(rl, "_WORKERS", 1)
+    assert rl.RateLimiter(calls=5, window=60)._calls == 5
+
+
+def test_nunca_baja_de_una_llamada(monkeypatch):
+    """Con más workers que llamadas la división daría 0 y cerraría el endpoint."""
+    import app.middleware.ratelimit as rl
+
+    monkeypatch.setattr(rl, "_WORKERS", 8)
+    assert rl.RateLimiter(calls=5, window=60)._calls == 1
+
+
+def test_los_tests_corren_con_un_solo_worker():
+    """Guardia: si esto falla, los límites de toda la suite cambian bajo los pies."""
+    from app.config.server import WORKERS
+
+    assert WORKERS == 1

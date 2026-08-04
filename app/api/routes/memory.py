@@ -11,6 +11,7 @@ from app.config.data import MEMORY_DIR
 from app.errors import APIError
 from app.storage.guest import get_session, is_guest
 from app.storage.storage import MemoryStorage
+from app.utils.net import json_body
 
 router = APIRouter(prefix="/api/memory", tags=["memory"])
 
@@ -53,7 +54,7 @@ async def get_memory(
 async def save_memory(
     filename: str, request: Request, user: str = Depends(require_session)
 ) -> Dict[str, Any]:
-    body = await request.json()
+    body = await json_body(request)
     content = str(body.get("content") or "")
     if is_guest(user):
         get_session(user).memory[filename] = content

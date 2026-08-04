@@ -77,6 +77,7 @@ from app.storage.tokens import (
 )
 from app.utils import flog
 from app.utils.net import client_ip as _client_ip
+from app.utils.net import json_body
 from app.utils.validation import is_valid_email, is_valid_username, normalize_username
 
 _groups = _GroupStorage(_DB_FILE)
@@ -391,7 +392,7 @@ async def register(request: Request, response: Response) -> dict[str, Any]:
             "El registro requiere invitación de un administrador.",
         )
     await _register_limiter(request)
-    body = await request.json()
+    body = await json_body(request)
     username = normalize_username(str(body.get("username") or ""))
     email = str(body.get("email") or "").strip().lower()
     password = str(body.get("password") or "")
@@ -409,6 +410,22 @@ async def register(request: Request, response: Response) -> dict[str, Any]:
         )
     if not email or not is_valid_email(email):
         raise APIError(400, "invalid_field", "Email inválido", extra={"field": "email"})
+    # username, email y password se validan; estos cuatro iban a la BD tal cual.
+    # El registro puede estar abierto, así que el único tope era el cuerpo
+    # máximo de la petición: 2 MB de "país" por cuenta creada.
+    for campo, valor in (
+        ("birth_date", birth_date),
+        ("gender", gender),
+        ("country", country),
+        ("phone", phone),
+    ):
+        if valor and len(valor) > 120:
+            raise APIError(
+                400,
+                "invalid_field",
+                f"Valor demasiado largo: {campo}",
+                extra={"field": campo},
+            )
     if len(password) < 8:
         raise APIError(
             400, "password_too_short", "La contraseña debe tener al menos 8 caracteres"
@@ -454,7 +471,7 @@ async def login(
     response: Response,
     _rl: None = Depends(_login_limiter),
 ) -> dict[str, Any]:
-    body = await request.json()
+    body = await json_body(request)
     identifier = str(body.get("identifier") or body.get("email") or "").strip().lower()
     password = str(body.get("password") or "")
 
@@ -567,7 +584,7 @@ async def github_login_device_token(
     GitHub y abre sesión — mismo mecanismo de cookie que `/login`."""
     from app.auth.github_oauth import fetch_github_identity, poll_device_token
 
-    body = await request.json()
+    body = await json_body(request)
     device_code = str(body.get("device_code") or "").strip()
     if not device_code:
         raise APIError(
@@ -658,7 +675,7 @@ async def forgot_password(
     request: Request,
     _rl: None = Depends(_forgot_limiter),
 ) -> dict[str, Any]:
-    body = await request.json()
+    body = await json_body(request)
     email = str(body.get("email") or "").strip().lower()
     if not email or not is_valid_email(email):
         raise APIError(400, "invalid_field", "Email inválido", extra={"field": "email"})
@@ -675,7 +692,7 @@ async def reset_password(
     request: Request,
     _rl: None = Depends(_reset_limiter),
 ) -> dict[str, Any]:
-    body = await request.json()
+    body = await json_body(request)
     token = str(body.get("token") or "").strip()
     new_password = str(body.get("password") or "").strip()
     if not token or not new_password:
@@ -693,7 +710,7 @@ async def reset_password(
 async def change_password(
     request: Request, username: str = Depends(require_auth)
 ) -> dict[str, Any]:
-    body = await request.json()
+    body = await json_body(request)
     current = str(body.get("current_password") or "")
     new_pw = str(body.get("new_password") or "").strip()
     if not current or not new_pw:
@@ -706,18 +723,12 @@ async def change_password(
         raise APIError(404, "not_found", "Usuario no encontrado", extra={"resource": "user"})
     if not await verify_password_async(current, user.get("password_hash", "")):
         raise APIError(401, "current_password_incorrect", "Contraseña actual incorrecta")
+    # ALTO-8 (.admin_pass) vive ahora dentro de set_own_password: era el único
+    # de los tres caminos que cambian contraseña que lo limpiaba, y encima
+    # dependía de GAIA_DATA_DIR —sin esa variable no borraba nada— y borraba el
+    # fichero en vez de vaciarlo, lo que hacía que el siguiente arranque
+    # regenerase la contraseña recién elegida.
     await set_own_password(username, new_pw)
-
-    # ALTO-8: al cambiar la contraseña del admin, borrar .admin_pass del disco
-    # para que la contraseña temporal no persista indefinidamente.
-    if user.get("role") == "admin":
-        import contextlib
-        import pathlib
-
-        _data_dir = os.getenv("GAIA_DATA_DIR", "").strip()
-        if _data_dir:
-            with contextlib.suppress(OSError):
-                pathlib.Path(_data_dir, ".admin_pass").unlink(missing_ok=True)
 
     return {"ok": True}
 
@@ -754,7 +765,7 @@ async def request_account_deletion(
 
 @router.post("/me/cancel-deletion")
 async def cancel_account_deletion(request: Request) -> dict[str, Any]:
-    body = await request.json()
+    body = await json_body(request)
     token = str(body.get("token", "")).strip()
     if not token or not await cancel_user_deletion(token):
         raise APIError(400, "invalid_deletion_token", "Token inválido o expirado")
@@ -795,7 +806,7 @@ async def update_profile(
 ) -> dict[str, Any]:
     import json
 
-    body = await request.json()
+    body = await json_body(request)
     bio = str(body.get("bio") or "").strip()[:500] or None
     raw_langs = body.get("languages") or []
     languages = json.dumps([lang for lang in raw_langs if lang in _ALLOWED_LANGUAGES])
@@ -882,7 +893,7 @@ async def create_pat(
         )
     await _login_limiter(request)
 
-    body = await request.json()
+    body = await json_body(request)
     name = str(body.get("name") or "").strip()
     if not name or len(name) > 100:
         raise APIError(
@@ -976,7 +987,7 @@ async def vscode_authorize(
             "Las sesiones de invitado no pueden conectar VS Code.",
         )
 
-    body = await request.json()
+    body = await json_body(request)
     state = str(body.get("state") or "")
     if not 8 <= len(state) <= 128:
         raise APIError(400, "invalid_field", "state inválido", extra={"field": "state"})
@@ -993,7 +1004,7 @@ async def vscode_exchange(request: Request) -> dict[str, Any]:
     """
     await _login_limiter(request)
 
-    body = await request.json()
+    body = await json_body(request)
     code = str(body.get("code") or "")
     state = str(body.get("state") or "")
     if not code or not state:

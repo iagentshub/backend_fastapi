@@ -412,3 +412,17 @@ def test_webhook_subscription_deleted_marks_canceled(client):
 
     state = client.get("/api/billing/subscription").json()
     assert state["tier"] == "free"  # canceled -> excluded from "active"
+
+
+# ── BE-09: /quote era el único POST de billing sin freno ──────────────────────
+
+
+def test_quote_tiene_rate_limit(client):
+    """Sin auth (a propósito: calcula un precio público) pero con límite."""
+    cuerpo = {"tier": "developer", "seats": 1, "interval": "month"}
+    for _ in range(30):
+        assert client.post("/api/billing/quote", json=cuerpo).status_code == 200
+
+    r = client.post("/api/billing/quote", json=cuerpo)
+    assert r.status_code == 429
+    assert r.json()["detail"]["code"] == "rate_limit_exceeded"

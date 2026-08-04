@@ -29,6 +29,7 @@ from app.middleware.ratelimit import RateLimiter
 from app.services.billing_pricing import InvalidPlanError, compute_total_cents
 from app.storage.billing import BillingStorage
 from app.utils.net import client_ip as _client_ip
+from app.utils.net import json_body
 
 stripe.api_key = STRIPE_SECRET_KEY
 stripe.api_version = STRIPE_API_VERSION
@@ -37,6 +38,7 @@ router = APIRouter(prefix="/api/billing", tags=["billing"])
 
 _billing = BillingStorage(DB_FILE)
 _subscribe_limiter = RateLimiter(calls=10, window=60, key_func=_client_ip)
+_quote_limiter = RateLimiter(calls=30, window=60, key_func=_client_ip)
 
 _SELF_HOSTED_PRICE_IDS = {
     "month": STRIPE_PRICE_SELFHOSTED_MONTHLY,
@@ -107,8 +109,15 @@ def _parse_body_plan(body: Dict[str, Any]) -> tuple[str, int, str, bool]:
 
 
 @router.post("/quote")
-async def quote(request: Request) -> Dict[str, Any]:
-    body = await request.json()
+async def quote(
+    request: Request,
+    _rl: None = Depends(_quote_limiter),
+) -> Dict[str, Any]:
+    # Sin auth a propósito: solo calcula un precio a partir de datos públicos y
+    # la página de precios lo consulta antes de que exista sesión. Lo que sí
+    # faltaba es el límite: era el único POST de billing que cualquiera podía
+    # llamar sin freno.
+    body = await json_body(request)
     tier, seats, interval, self_hosted = _parse_body_plan(body)
     try:
         return compute_total_cents(tier, seats, interval, self_hosted)
@@ -122,7 +131,7 @@ async def subscribe(
     user: str = Depends(require_auth),
     _rl: None = Depends(_subscribe_limiter),
 ) -> Dict[str, Any]:
-    body = await request.json()
+    body = await json_body(request)
     tier, seats, interval, self_hosted = _parse_body_plan(body)
     try:
         totals = compute_total_cents(tier, seats, interval, self_hosted)
@@ -219,7 +228,7 @@ def _extract_period_end(subscription: Any) -> Optional[str]:
 
 @router.post("/confirm")
 async def confirm(request: Request, user: str = Depends(require_auth)) -> Dict[str, Any]:
-    body = await request.json()
+    body = await json_body(request)
     subscription_id = str(body.get("subscription_id") or "")
     if not subscription_id:
         raise APIError(
@@ -326,7 +335,7 @@ async def revoke_license(
 
 @router.post("/change-seats")
 async def change_seats(request: Request, user: str = Depends(require_auth)) -> Dict[str, Any]:
-    body = await request.json()
+    body = await json_body(request)
     try:
         seats = int(body.get("seats", 0))
     except (TypeError, ValueError):
@@ -392,7 +401,7 @@ async def change_seats(request: Request, user: str = Depends(require_auth)) -> D
 
 @router.post("/cancel")
 async def cancel(request: Request, user: str = Depends(require_auth)) -> Dict[str, Any]:
-    body = await request.json()
+    body = await json_body(request)
     immediate = bool(body.get("immediate", False))
 
     row = await _billing.get_active_by_username(user)

@@ -21,6 +21,7 @@ from app.storage.storage import (
 )
 from app.utils import flog
 from app.utils.generators import generate_id
+from app.utils.net import json_body
 from app.utils.origin import compute_origin_type
 
 router = APIRouter(prefix="/api/prompts", tags=["prompts"])
@@ -175,7 +176,7 @@ async def save_prompt(
 ) -> Dict[str, Any]:
     user, group_id = ctx.user, ctx.group_id
     _check_scope(scope)
-    payload = await request.json()
+    payload = await json_body(request)
     raw_labels = payload.get("labels")
     if raw_labels is not None:
         if not isinstance(raw_labels, list):
