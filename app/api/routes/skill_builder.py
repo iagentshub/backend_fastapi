@@ -15,6 +15,7 @@ from app.auth.auth import get_user_role
 from app.config.data import DB_FILE
 from app.config.providers import PROVIDER_DEFAULT_MODELS
 from app.models.agent import Agent
+from app.services.builder_progress import partial_progress
 from app.services.chat import stream_chat
 from app.services.skill_builder import (
     SkillBuilderMessage,
@@ -123,6 +124,7 @@ async def builder_chat(
             reply = ""
             partial_reply = ""
             provider_error = ""
+            last_progress: Dict[str, Any] = {}
             async for chunk in stream_chat(
                 builder_agent, builder_conn, attempt_history, None
             ):
@@ -137,7 +139,13 @@ async def builder_chat(
                     continue
                 if event.get("type") == "token":
                     partial_reply += str(event.get("token") or "")
-                    yield _sse({"type": "progress"})
+                    # Mismo criterio que el constructor de agentes: la salida es
+                    # un único JSON, así que se informa la fase y el mensaje
+                    # visible ya recibido, y sólo cuando cambian.
+                    progress = partial_progress(partial_reply)
+                    if progress != last_progress:
+                        last_progress = progress
+                        yield _sse({"type": "progress", **progress})
                 elif event.get("type") == "error":
                     provider_error = str(event.get("message") or "")
                     break
