@@ -74,6 +74,26 @@ def test_device_code_success_mocked_no_auth_needed(client):
     assert "ga_token" not in r.cookies
 
 
+def test_device_code_ignores_platform_visibility_toggle(admin_client, client):
+    """El toggle de Admin (oauth_github_enabled en /api/settings/platform)
+    solo controla si se MUESTRA el botón en /login/ — nunca si el flujo de
+    login en sí funciona. Apagarlo no debe bloquear este endpoint."""
+    admin_client.put("/api/settings/platform", json={"oauth_github_enabled": False})
+    payload = {
+        "device_code": "devcode-login-toggle-off",
+        "user_code": "AAAA-1111",
+        "verification_uri": "https://github.com/login/device",
+        "expires_in": 900,
+        "interval": 5,
+    }
+    with patch("app.config.providers.GITHUB_OAUTH_CLIENT_ID", "test-client-id"), patch.object(
+        httpx.AsyncClient, "post", new=_mock_post_json(payload)
+    ):
+        r = client.post("/api/auth/github/device-code")
+    assert r.status_code == 200
+    assert r.json()["user_code"] == "AAAA-1111"
+
+
 # ── POST /api/auth/github/device-token ───────────────────────────────────────
 
 def test_device_token_missing_device_code(client):

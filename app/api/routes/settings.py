@@ -300,6 +300,16 @@ _PLATFORM_DEFAULTS: dict = {
     "oauth_google_enabled": True,
     "oauth_apple_enabled": True,
     "oauth_microsoft_enabled": True,
+    # A diferencia de los tres anteriores, GitHub sí tiene una integración
+    # real (Device Flow, ver app/auth/github_oauth.py) — este toggle solo
+    # decide si el admin quiere OFRECER el botón; la capacidad real (¿hay
+    # GITHUB_OAUTH_CLIENT_ID configurado?) se sigue comprobando aparte en
+    # GET /platform/public, así que apagar esto nunca puede "fingir" que el
+    # login funciona si no hay credenciales, y encenderlo nunca lo activa
+    # si no las hay. Los endpoints /api/auth/github/* no leen este valor en
+    # ningún momento — siguen respondiendo igual, esto es puramente la
+    # visibilidad del botón en /login/.
+    "oauth_github_enabled": True,
     # Solo lectura desde aquí — refleja si Watchtower está corriendo o no.
     # Se escribe EXCLUSIVAMENTE desde PUT /api/admin/auto-update (auth.py),
     # nunca desde PUT /api/settings/platform (por eso no está en
@@ -372,6 +382,7 @@ class PlatformConfigUpdate(BaseModel):
     oauth_google_enabled: Optional[bool] = None
     oauth_apple_enabled: Optional[bool] = None
     oauth_microsoft_enabled: Optional[bool] = None
+    oauth_github_enabled: Optional[bool] = None
     maintenance_enabled: Optional[bool] = None
     maintenance_message: Optional[str] = None
     maintenance_at: Optional[str] = None
@@ -396,11 +407,17 @@ async def get_platform_config_public() -> dict:
         "oauth_google_enabled": cfg.get("oauth_google_enabled", True),
         "oauth_apple_enabled": cfg.get("oauth_apple_enabled", True),
         "oauth_microsoft_enabled": cfg.get("oauth_microsoft_enabled", True),
-        # A diferencia de los tres anteriores (placeholders visuales, sin
-        # implementación real), este refleja una capacidad real del backend:
-        # solo se activa si hay una GitHub OAuth App configurada
-        # (GITHUB_OAUTH_CLIENT_ID) — no es un ajuste editable por el admin.
-        "oauth_github_enabled": bool(GITHUB_OAUTH_CLIENT_ID),
+        # A diferencia de los tres anteriores (placeholders visuales sin
+        # integración real), GitHub sí funciona de verdad — por eso su
+        # visibilidad exige AMBAS cosas: que el admin lo tenga activado
+        # (cfg, editable en Admin) Y que el servidor tenga credenciales
+        # configuradas (GITHUB_OAUTH_CLIENT_ID). Apagar el toggle nunca deja
+        # sin acceso a quien ya inició sesión por GitHub: solo oculta el
+        # botón en /login/, los endpoints /api/auth/github/* (y el login vía
+        # extensión de VS Code, que depende de una sesión web ya abierta,
+        # no de este flag) siguen respondiendo igual pase lo que pase aquí.
+        "oauth_github_enabled": bool(GITHUB_OAUTH_CLIENT_ID)
+        and cfg.get("oauth_github_enabled", True),
         "maintenance_enabled": cfg.get("maintenance_enabled", False),
         "maintenance_message": cfg.get("maintenance_message", ""),
         "maintenance_at": cfg.get("maintenance_at"),
