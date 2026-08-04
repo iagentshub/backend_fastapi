@@ -20,7 +20,7 @@ from app.storage.db import open_db
 from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
 from app.storage.knowledge import KnowledgeStorage
-from app.storage.storage import AgentStorage, SkillStorage
+from app.storage.storage import AgentStorage, PromptStorage, SkillStorage
 from app.storage.workflows import WorkflowStorage
 
 router = APIRouter(prefix="/api/sharing", tags=["sharing"])
@@ -54,6 +54,9 @@ async def _resource_owner(resource_type: str, resource_id: str) -> Optional[str]
         return item.get("owner_id") if item else None
     if resource_type == "workflow":
         item = await WorkflowStorage().get_any(resource_id)
+        return item.get("owner_id") if item else None
+    if resource_type == "prompt":
+        item = await PromptStorage().get_any(resource_id)
         return item.get("owner_id") if item else None
     # connection — ConnectionStorage.get() no incluye owner_id en el dict devuelto,
     # así que se resuelve con una consulta directa a la tabla.
@@ -114,7 +117,8 @@ async def _cascade_share_agent(
     shared_by: str,
     shared_by_group: str = "",
 ) -> List[str]:
-    """Al compartir un agente, comparte también sus skills y knowledge privados.
+    """Al compartir un agente, comparte también sus skills, knowledge y prompts
+    privados.
 
     Nunca comparte conexiones (credenciales) ni recursos ajenos al usuario que
     comparte. Devuelve la lista de IDs de recursos compartidos en cascada.
@@ -125,6 +129,7 @@ async def _cascade_share_agent(
     cascaded: List[str] = []
     skill_storage = SkillStorage(_cfg.SKILLS_DIR)
     knowledge_storage = KnowledgeStorage(_cfg.DB_FILE)
+    prompt_storage = PromptStorage()
 
     # Identidades válidas del usuario que comparte (personal + group de equipo)
     _owner_ids = {shared_by, shared_by_group} - {""}
@@ -151,6 +156,19 @@ async def _cascade_share_agent(
             continue
         await _shares.share_with_group("knowledge", know_id, group_id, shared_by)
         cascaded.append(know_id)
+
+    for prompt_id in (agent.get("prompts") or []):
+        prompt = await prompt_storage.get_any(prompt_id)
+        if not prompt:
+            continue
+        # Solo prompts privados; los públicos ya son accesibles para todos
+        if prompt.get("scope", "private") != "private":
+            continue
+        # No exponer prompts ajenos — solo los del usuario que comparte
+        if prompt.get("owner_id") not in _owner_ids:
+            continue
+        await _shares.share_with_group("prompt", prompt_id, group_id, shared_by)
+        cascaded.append(prompt_id)
 
     return cascaded
 

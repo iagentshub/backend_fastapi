@@ -34,6 +34,22 @@ CREATE TABLE IF NOT EXISTS skills (
     PRIMARY KEY (id, owner_id)
 );
 CREATE INDEX IF NOT EXISTS idx_skills_owner ON skills(owner_id, scope, updated_at DESC);
+CREATE TABLE IF NOT EXISTS prompts (
+    id          TEXT NOT NULL,
+    owner_id    TEXT NOT NULL DEFAULT '__public__',
+    name        TEXT NOT NULL DEFAULT '',
+    alias       TEXT NOT NULL DEFAULT '',
+    scope       TEXT NOT NULL DEFAULT 'private',
+    data        TEXT NOT NULL,
+    content     TEXT NOT NULL DEFAULT '',
+    is_active   INTEGER NOT NULL DEFAULT 1,
+    deactivated_at TEXT,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    PRIMARY KEY (id, owner_id)
+);
+CREATE INDEX IF NOT EXISTS idx_prompts_owner ON prompts(owner_id, scope, updated_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_prompts_alias_owner ON prompts(owner_id, alias);
 CREATE TABLE IF NOT EXISTS memory_files (
     id          TEXT NOT NULL,
     owner_id    TEXT NOT NULL,
@@ -314,6 +330,22 @@ CREATE TABLE IF NOT EXISTS skills (
     PRIMARY KEY (id, owner_id)
 );
 CREATE INDEX IF NOT EXISTS idx_skills_owner ON skills(owner_id, scope, updated_at DESC);
+CREATE TABLE IF NOT EXISTS prompts (
+    id          TEXT NOT NULL,
+    owner_id    TEXT NOT NULL DEFAULT '__public__',
+    name        TEXT NOT NULL DEFAULT '',
+    alias       TEXT NOT NULL DEFAULT '',
+    scope       TEXT NOT NULL DEFAULT 'private',
+    data        TEXT NOT NULL,
+    content     TEXT NOT NULL DEFAULT '',
+    is_active   SMALLINT NOT NULL DEFAULT 1,
+    deactivated_at TEXT,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    PRIMARY KEY (id, owner_id)
+);
+CREATE INDEX IF NOT EXISTS idx_prompts_owner ON prompts(owner_id, scope, updated_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_prompts_alias_owner ON prompts(owner_id, alias);
 CREATE TABLE IF NOT EXISTS memory_files (
     id          TEXT NOT NULL,
     owner_id    TEXT NOT NULL,

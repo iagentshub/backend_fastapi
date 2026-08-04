@@ -23,6 +23,7 @@ class GuestSession:
     memory: Dict[str, str] = field(default_factory=dict)
     skills: List[Dict[str, Any]] = field(default_factory=list)
     knowledge: List[Dict[str, Any]] = field(default_factory=list)
+    prompts: List[Dict[str, Any]] = field(default_factory=list)
 
 
 class GuestMemoryAdapter:

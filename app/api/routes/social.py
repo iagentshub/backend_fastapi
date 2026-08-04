@@ -24,6 +24,7 @@ from app.storage.knowledge import KnowledgeStorage
 from app.storage.storage import (
     AgentStorage,
     MemoryStorage,
+    PromptStorage,
     SkillStorage,
 )
 from app.storage.workflows import WorkflowStorage
@@ -52,18 +53,22 @@ async def _assert_public(resource_type: str, source_id: str) -> None:
 _inherit_skills_store = SkillStorage(_cfg.SKILLS_DIR)
 _inherit_knowledge_store = KnowledgeStorage(_cfg.DB_FILE)
 _inherit_memory_store = MemoryStorage(_cfg.MEMORY_DIR)
+_inherit_prompts_store = PromptStorage()
 
 
 async def _inherit_resource_ids(
     ids: List[str], resource_type: str, target_owner_id: str
 ) -> List[str]:
-    """Al enlazar un agente, sus skills/conocimiento privados se clonan junto
-    con él (heredados) para que sigan siendo accesibles desde el nuevo dueño. Los
-    públicos, o los que ya pertenecen al destino, se referencian tal cual (sin clonar)."""
+    """Al enlazar un agente, sus skills/conocimiento/prompts privados se clonan
+    junto con él (heredados) para que sigan siendo accesibles desde el nuevo
+    dueño. Los públicos, o los que ya pertenecen al destino, se referencian tal
+    cual (sin clonar)."""
     new_ids: List[str] = []
     for rid in ids:
         if resource_type == "skill":
             item = await _inherit_skills_store.get_any(rid)
+        elif resource_type == "prompt":
+            item = await _inherit_prompts_store.get_any(rid)
         else:
             item = await _inherit_knowledge_store.get(rid)
         if not item:
@@ -85,6 +90,24 @@ async def _inherit_resource_ids(
                 if lbl not in ("linked", "public")
             ] or ["private"]
             saved = await _inherit_skills_store.save(
+                "private", clone, owner_id=target_owner_id
+            )
+        elif resource_type == "prompt":
+            clone = {
+                k: v for k, v in item.items() if k not in ("id", "scope", "owner_id")
+            }
+            clone["id"] = generate_id()
+            clone["labels"] = [
+                lbl
+                for lbl in (clone.get("labels") or ["private"])
+                if lbl not in ("linked", "public")
+            ] or ["private"]
+            # El alias de origen puede colisionar con uno ya existente del
+            # destino — nunca debe romper el clonado, se sufija si hace falta.
+            clone["alias"] = await _inherit_prompts_store.unique_alias(
+                target_owner_id, str(clone.get("alias") or "")
+            )
+            saved = await _inherit_prompts_store.save(
                 "private", clone, owner_id=target_owner_id
             )
         else:
@@ -208,13 +231,53 @@ async def _publish_skill_cascade(
         await conn.commit()
 
 
+async def _publish_prompt_cascade(
+    prompt_id: str, username: str, owner_ids: set[str]
+) -> None:
+    prompt_storage = PromptStorage()
+    prompt = await prompt_storage.get_any(prompt_id)
+    if not prompt or prompt.get("owner_id") not in owner_ids:
+        return
+    labels = list(prompt.get("labels") or ["private"])
+    if "public" not in labels:
+        labels.append("public")
+        await prompt_storage.save(
+            "private", {**prompt, "labels": labels}, owner_id=prompt["owner_id"]
+        )
+    async with open_db() as conn:
+        row = await conn.fetchone(
+            "SELECT linked_to_id FROM resource_social "
+            "WHERE resource_type=? AND resource_id=? AND owner=?",
+            ("prompt", prompt_id, username),
+        )
+        if row and row["linked_to_id"]:
+            return
+        await _upsert_social(
+            conn,
+            "prompt",
+            prompt_id,
+            username,
+            prompt.get("name", prompt_id),
+            prompt.get("description", ""),
+            "Other",
+            "warn",
+            "[]",
+            1,
+            json.dumps(labels),
+        )
+        await conn.commit()
+
+
 async def _cascade_publish_agent(
     agent: Dict[str, Any], username: str, group_id: str = ""
 ) -> None:
-    """Al publicar un agente, publica en cascada sus skills y conocimiento propios."""
+    """Al publicar un agente, publica en cascada sus skills, conocimiento y
+    prompts propios."""
     owner_ids = {username, group_id} - {""}
     for skill_id in agent.get("skills") or []:
         await _publish_skill_cascade(skill_id, username, owner_ids)
+    for prompt_id in agent.get("prompts") or []:
+        await _publish_prompt_cascade(prompt_id, username, owner_ids)
 
 
 async def _cascade_publish_workflow(
@@ -382,6 +445,11 @@ class _SkillVisibilityBody(BaseModel):
     category: str
 
 
+class _PromptVisibilityBody(BaseModel):
+    is_public: bool
+    category: str
+
+
 class _WorkflowVisibilityBody(BaseModel):
     is_public: bool
     category: str
@@ -475,6 +543,49 @@ async def set_skill_visibility(
                 "DELETE FROM resource_social "
                 "WHERE resource_type=? AND resource_id=? AND owner=?",
                 ("skill", skill_id, username),
+            )
+        await conn.commit()
+    return {"ok": True}
+
+
+@router.put("/api/prompts/{scope}/{prompt_id}/visibility")
+async def set_prompt_visibility(
+    scope: str,
+    prompt_id: str,
+    body: _PromptVisibilityBody,
+    username: str = Depends(require_auth),
+) -> Dict[str, Any]:
+    _check_category(body.category)
+    prompts = PromptStorage()
+    prompt = await prompts.get(scope, prompt_id)
+    if not prompt:
+        raise APIError(
+            404, "not_found", "Prompt no encontrado", extra={"resource": "prompt"}
+        )
+    resource_labels = prompt.get("labels") or ["private"]
+    is_public_val = 1 if "public" in resource_labels else 0
+
+    async with open_db() as conn:
+        if body.is_public:
+            await _assert_not_linked_copy(conn, "prompt", prompt_id, username)
+            await _upsert_social(
+                conn,
+                "prompt",
+                prompt_id,
+                username,
+                prompt.get("name", prompt_id),
+                prompt.get("description", ""),
+                body.category,
+                "warn",
+                "[]",
+                is_public_val,
+                json.dumps(resource_labels),
+            )
+        else:
+            await conn.execute(
+                "DELETE FROM resource_social "
+                "WHERE resource_type=? AND resource_id=? AND owner=?",
+                ("prompt", prompt_id, username),
             )
         await conn.commit()
     return {"ok": True}

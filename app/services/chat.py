@@ -87,6 +87,13 @@ class _KnowledgeStorage(Protocol):
 
 
 @runtime_checkable
+class _PromptStorage(Protocol):
+    async def get_any(
+        self, prompt_id: str, owner_id: Any = None
+    ) -> Optional[Dict[str, Any]]: ...
+
+
+@runtime_checkable
 class _MemoryStorage(Protocol):
     def get(self, filename: str) -> Optional[str]: ...
     def save(self, filename: str, content: str) -> None: ...
@@ -300,6 +307,8 @@ async def stream_chat(
     chat_storage: Optional[_ChatStorage] = None,
     user_id: Optional[str] = None,
     conversation_id: Optional[str] = None,
+    *,
+    prompt_storage: Optional[_PromptStorage] = None,
 ) -> AsyncGenerator[str, None]:
     import asyncio
 
@@ -346,6 +355,31 @@ async def stream_chat(
         mem_content = await memory_storage.get(mem_file)
         if mem_content and mem_content.strip():
             system += f"\n\n## Memoria del agente\n{mem_content}"
+
+    # Prompt injection — "@alias" en el último mensaje del usuario referencia
+    # ocultamente un prompt del catálogo del agente: se añade su contenido al
+    # system sin modificar el texto visible del mensaje.
+    if (
+        prompt_storage is not None
+        and agent.prompts
+        and history
+        and history[-1].get("role") == "user"
+    ):
+        import re
+
+        mentions = {
+            m.lower()
+            for m in re.findall(
+                r"@([a-z0-9][a-z0-9_-]{1,28}[a-z0-9])",
+                str(history[-1].get("content", "")),
+                re.IGNORECASE,
+            )
+        }
+        if mentions:
+            for pid in agent.prompts:
+                p = await prompt_storage.get_any(pid)
+                if p and str(p.get("alias", "")).lower() in mentions:
+                    system += f"\n\n## Prompt: {p.get('name', pid)}\n{p.get('content', '')}"
 
     # Recuerdo de conversaciones anteriores del mismo usuario con este agente
     if agent.use_memory and chat_storage is not None and user_id:

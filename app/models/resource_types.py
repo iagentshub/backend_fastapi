@@ -8,12 +8,12 @@ from __future__ import annotations
 
 # Recursos gestionados por el usuario (heredan de BaseResource)
 RESOURCE_TYPES: frozenset[str] = frozenset(
-    {"agent", "skill", "connection", "knowledge", "workflow"}
+    {"agent", "skill", "connection", "knowledge", "workflow", "prompt"}
 )
 
 # Tipos con presencia social (star/publicación) — las conexiones no se publican
 SOCIAL_RESOURCE_TYPES: frozenset[str] = frozenset(
-    {"agent", "skill", "knowledge", "workflow"}
+    {"agent", "skill", "knowledge", "workflow", "prompt"}
 )
 
 # Alias legacy aceptados por compatibilidad con clientes existentes
@@ -24,6 +24,7 @@ ALIASES: dict[str, str] = {
     "url": "knowledge",
     "document": "knowledge",
     "workflows": "workflow",
+    "prompts": "prompt",
 }
 
 

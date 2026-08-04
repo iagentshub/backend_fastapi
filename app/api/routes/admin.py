@@ -58,6 +58,7 @@ _ADMIN_EXPLORE_TYPES = (
     "knowledge",
     "workflow",
     "skill",
+    "prompt",
     "memory",
 )
 
@@ -981,6 +982,38 @@ async def admin_delete_skill(
     return {"ok": True}
 
 
+@admin_router.get("/prompts")
+async def admin_list_prompts(_: str = Depends(require_admin)) -> list[dict[str, Any]]:
+    from app.storage.storage import PromptStorage
+
+    async with open_db() as conn:
+        user_rows = await conn.fetchall("SELECT id, username FROM users")
+    username_map = {r[0]: r[1] for r in user_rows}
+    items = await PromptStorage().list("all")
+    for item in items:
+        item["owner_username"] = username_map.get(
+            item.get("owner_id", ""), item.get("owner_id", "")
+        )
+        item.pop("content", None)
+    return items
+
+
+@admin_router.delete("/prompts/{item_id}")
+async def admin_delete_prompt(
+    item_id: str, _: str = Depends(require_admin)
+) -> dict[str, Any]:
+    from app.storage.storage import PromptStorage
+
+    storage = PromptStorage()
+    prompt = await storage.get_any(item_id)
+    if not prompt:
+        raise APIError(
+            404, "not_found", "Elemento no encontrado", extra={"resource": "item"}
+        )
+    await storage.delete(prompt["scope"], item_id, owner_id=None, allow_public=True)
+    return {"ok": True}
+
+
 @admin_router.get("/memory")
 async def admin_list_memory(_: str = Depends(require_admin)) -> list[dict[str, Any]]:
     """A diferencia del resto de recursos, el nombre de un fichero de memoria
@@ -1201,6 +1234,7 @@ def _explore_search_text(resource_type: str, item: dict[str, Any]) -> str:
         "knowledge": ("title", "id", "owner_username", "type"),
         "workflow": ("name", "id", "owner_username", "description"),
         "skill": ("name", "id", "owner_username", "category"),
+        "prompt": ("name", "id", "owner_username", "alias"),
         "memory": ("filename", "id", "owner_username"),
     }[resource_type]
     return " ".join(str(item.get(field) or "") for field in fields).lower()
@@ -1215,6 +1249,7 @@ async def _admin_inventory() -> dict[str, list[dict[str, Any]]]:
         knowledge,
         workflows,
         skills,
+        prompts,
         memory,
     ) = await asyncio.gather(
         admin_list_users(_=""),
@@ -1224,6 +1259,7 @@ async def _admin_inventory() -> dict[str, list[dict[str, Any]]]:
         admin_list_knowledge(_=""),
         admin_list_workflows(_=""),
         admin_list_skills(_=""),
+        admin_list_prompts(_=""),
         admin_list_memory(_=""),
     )
     return {
@@ -1234,6 +1270,7 @@ async def _admin_inventory() -> dict[str, list[dict[str, Any]]]:
         "knowledge": knowledge,
         "workflow": workflows,
         "skill": skills,
+        "prompt": prompts,
         "memory": memory,
     }
 
@@ -1440,6 +1477,14 @@ async def admin_resource_graph(
                 resource_label("skill", skill) if skill else str(skill_id),
             )
             add_edge(agent_node, skill_node, "uses")
+        for prompt_id in agent.get("prompts") or []:
+            prompt = resources_by_type["prompt"].get(str(prompt_id))
+            prompt_node = add_node(
+                "prompt",
+                str(prompt_id),
+                resource_label("prompt", prompt) if prompt else str(prompt_id),
+            )
+            add_edge(agent_node, prompt_node, "uses")
         memory_file = str(agent.get("memory_file") or "")
         if agent.get("use_memory") and memory_file:
             # El id de memoria es compuesto ("owner_id::filename", ver
@@ -1535,12 +1580,14 @@ async def admin_resource_graph(
                 )
                 add_edge(agent_node, root_id, "uses")
 
-    if resource_type in ("connection", "knowledge", "skill"):
+    if resource_type in ("connection", "knowledge", "skill", "prompt"):
         field = (
             "connection_id"
             if resource_type == "connection"
             else "knowledge"
             if resource_type == "knowledge"
+            else "prompts"
+            if resource_type == "prompt"
             else "skills"
         )
         for agent in agents.values():
@@ -1598,7 +1645,7 @@ async def admin_verify_resource(
     request: Request,
     _: str = Depends(require_admin),
 ) -> dict[str, Any]:
-    _valid_types = ("agent", "skill", "knowledge")
+    _valid_types = ("agent", "skill", "knowledge", "prompt")
     if resource_type not in _valid_types:
         raise APIError(
             422,
@@ -1641,6 +1688,7 @@ async def admin_set_resource_owner(
     table_map = {
         "agent": "agents",
         "skill": "skills",
+        "prompt": "prompts",
         "connection": "connections",
         "knowledge": "knowledge_items",
         "workflow": "agent_workflows",

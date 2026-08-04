@@ -674,3 +674,186 @@ async def test_estimate_tokens():
 
     assert _estimate_tokens("hola") == 1
     assert _estimate_tokens("a" * 400) == 100
+
+
+# ─── Tests de inyección de prompts vía mención "@alias" ────────────────────────
+
+
+def _prompt_storage_mock(prompts_by_id: dict) -> MagicMock:
+    storage = MagicMock()
+
+    async def _get_any(prompt_id, owner_id=None):
+        return prompts_by_id.get(prompt_id)
+
+    storage.get_any = _get_any
+    return storage
+
+
+async def test_prompt_mention_injected_into_system():
+    agent = _make_agent("openai")
+    agent["prompts"] = ["prompt-1"]
+    conn = _make_conn("openai")
+    prompt_storage = _prompt_storage_mock(
+        {
+            "prompt-1": {
+                "id": "prompt-1",
+                "alias": "resumen",
+                "name": "Resumen",
+                "content": "Resume el texto en 3 frases.",
+            }
+        }
+    )
+
+    sent_payloads = []
+
+    def fake_urlopen(req, timeout):
+        sent_payloads.append(json.loads(req.data.decode()))
+        return _sse_done_response()
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        [
+            e
+            async for e in stream_chat(
+                agent,
+                conn,
+                [{"role": "user", "content": "Hola @resumen por favor"}],
+                _skill_storage(),
+                prompt_storage=prompt_storage,
+            )
+        ]
+
+    system_message = sent_payloads[0]["messages"][0]["content"]
+    assert "Resume el texto en 3 frases." in system_message
+
+
+async def test_prompt_mention_is_case_insensitive():
+    agent = _make_agent("openai")
+    agent["prompts"] = ["prompt-1"]
+    conn = _make_conn("openai")
+    prompt_storage = _prompt_storage_mock(
+        {
+            "prompt-1": {
+                "id": "prompt-1",
+                "alias": "resumen",
+                "name": "Resumen",
+                "content": "Resume el texto en 3 frases.",
+            }
+        }
+    )
+
+    sent_payloads = []
+
+    def fake_urlopen(req, timeout):
+        sent_payloads.append(json.loads(req.data.decode()))
+        return _sse_done_response()
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        [
+            e
+            async for e in stream_chat(
+                agent,
+                conn,
+                [{"role": "user", "content": "Hola @RESUMEN por favor"}],
+                _skill_storage(),
+                prompt_storage=prompt_storage,
+            )
+        ]
+
+    system_message = sent_payloads[0]["messages"][0]["content"]
+    assert "Resume el texto en 3 frases." in system_message
+
+
+async def test_no_mention_does_not_inject_prompt():
+    agent = _make_agent("openai")
+    agent["prompts"] = ["prompt-1"]
+    conn = _make_conn("openai")
+    prompt_storage = _prompt_storage_mock(
+        {
+            "prompt-1": {
+                "id": "prompt-1",
+                "alias": "resumen",
+                "name": "Resumen",
+                "content": "Resume el texto en 3 frases.",
+            }
+        }
+    )
+
+    sent_payloads = []
+
+    def fake_urlopen(req, timeout):
+        sent_payloads.append(json.loads(req.data.decode()))
+        return _sse_done_response()
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        [
+            e
+            async for e in stream_chat(
+                agent,
+                conn,
+                [{"role": "user", "content": "Hola, sin menciones"}],
+                _skill_storage(),
+                prompt_storage=prompt_storage,
+            )
+        ]
+
+    system_message = sent_payloads[0]["messages"][0]["content"]
+    assert "Resume el texto en 3 frases." not in system_message
+
+
+async def test_mention_of_prompt_not_in_agent_catalog_is_ignored():
+    """El alias mencionado debe resolverse solo contra agent.prompts, no
+    contra cualquier prompt existente en la BD."""
+    agent = _make_agent("openai")
+    agent["prompts"] = []  # el agente no tiene ningún prompt vinculado
+    conn = _make_conn("openai")
+    prompt_storage = _prompt_storage_mock(
+        {
+            "prompt-1": {
+                "id": "prompt-1",
+                "alias": "resumen",
+                "name": "Resumen",
+                "content": "Resume el texto en 3 frases.",
+            }
+        }
+    )
+
+    sent_payloads = []
+
+    def fake_urlopen(req, timeout):
+        sent_payloads.append(json.loads(req.data.decode()))
+        return _sse_done_response()
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        [
+            e
+            async for e in stream_chat(
+                agent,
+                conn,
+                [{"role": "user", "content": "Hola @resumen"}],
+                _skill_storage(),
+                prompt_storage=prompt_storage,
+            )
+        ]
+
+    system_message = sent_payloads[0]["messages"][0]["content"]
+    assert "Resume el texto en 3 frases." not in system_message
+
+
+async def test_prompt_storage_none_does_not_break_stream_chat():
+    """Rama guest (prompt_storage=None): no debe intentar resolver menciones."""
+    agent = _make_agent("openai")
+    agent["prompts"] = ["prompt-1"]
+    conn = _make_conn("openai")
+
+    with patch("urllib.request.urlopen", return_value=_sse_done_response()):
+        events = [
+            e
+            async for e in stream_chat(
+                agent,
+                conn,
+                [{"role": "user", "content": "Hola @resumen"}],
+                _skill_storage(),
+            )
+        ]
+
+    assert any("done" in e for e in events)

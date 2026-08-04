@@ -39,6 +39,7 @@ from app.storage.storage import (
     AgentStorage,
     ConnectionStorage,
     MemoryStorage,
+    PromptStorage,
     SkillStorage,
 )
 from app.utils import flog
@@ -50,6 +51,7 @@ router = APIRouter(prefix="/api/agents", tags=["agents"])
 _agents = AgentStorage(AGENTS_DIR)
 _conns = ConnectionStorage(DB_FILE)
 _skills = SkillStorage(SKILLS_DIR)
+_prompts = PromptStorage()
 _memory = MemoryStorage(MEMORY_DIR)
 _shares = GroupShareStorage(DB_FILE)
 _groups = GroupStorage(DB_FILE)
@@ -66,12 +68,12 @@ class _AgentPreferenceBody(BaseModel):
 async def _validate_resource_refs(
     payload: Dict[str, Any], user: str, group_id: str
 ) -> None:
-    """Rechaza IDs de skills/knowledge que el usuario no puede legítimamente
-    usar (ni son suyos, públicos, ni están compartidos con él).
+    """Rechaza IDs de skills/knowledge/prompts que el usuario no puede
+    legítimamente usar (ni son suyos, públicos, ni están compartidos con él).
 
-    Sin esto, cualquiera puede adjuntar el ID de una skill o un knowledge
-    ajenos a su propio agente y leer su contenido completo vía chat o export
-    (mismo problema que ALTO-5/A1 en sharing.py, sin corregir aquí).
+    Sin esto, cualquiera puede adjuntar el ID de una skill, un knowledge o un
+    prompt ajenos a su propio agente y leer su contenido completo vía chat o
+    export (mismo problema que ALTO-5/A1 en sharing.py, sin corregir aquí).
     """
     for sid in payload.get("skills") or []:
         skill = await _skills.get_any(sid)
@@ -108,6 +110,24 @@ async def _validate_resource_refs(
                 "forbidden",
                 "No tienes acceso a uno de los elementos de conocimiento indicados",
                 extra={"resource": "knowledge", "id": kid},
+            )
+    for pid in payload.get("prompts") or []:
+        prompt = await _prompts.get_any(pid)
+        if not prompt or prompt.get("scope") == "public":
+            continue
+        if not await _shares.is_accessible(
+            _groups,
+            resource_type="prompt",
+            resource_id=pid,
+            owner_id=prompt.get("owner_id"),
+            requester=user,
+            requester_group=group_id,
+        ):
+            raise APIError(
+                403,
+                "forbidden",
+                "No tienes acceso a uno de los prompts indicados",
+                extra={"resource": "prompt", "id": pid},
             )
 
 
@@ -825,6 +845,7 @@ async def chat(
             _chat,
             history_user_id,
             conversation_id or None,
+            prompt_storage=None if is_guest(user) else _prompts,
         ):
             yield chunk
             if chunk.startswith("data: "):

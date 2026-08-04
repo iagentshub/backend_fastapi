@@ -21,7 +21,7 @@ from app.storage.db import IS_PG, open_db
 from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
 from app.storage.knowledge import KnowledgeStorage
-from app.storage.storage import AgentStorage, SkillStorage
+from app.storage.storage import AgentStorage, PromptStorage, SkillStorage
 from app.storage.workflows import WorkflowStorage
 
 router = APIRouter(tags=["explore"])
@@ -173,9 +173,27 @@ async def explore_preview(
                 ):
                     continue
                 knowledge_titles.append(item.get("title", kid))
+            prompts_storage = PromptStorage()
+            prompt_names = []
+            for pid in agent.get("prompts", []):
+                pr = await prompts_storage.get_any(pid)
+                if not pr:
+                    continue
+                # No revelar nombres de prompts privados ajenos en la vista
+                # previa pública, aunque el agente que los usa sí sea público.
+                if pr.get("scope") != "public" and not await shares.is_accessible(
+                    groups,
+                    resource_type="prompt",
+                    resource_id=pid,
+                    owner_id=pr.get("owner_id"),
+                    requester=username,
+                ):
+                    continue
+                prompt_names.append(pr.get("name", pid))
             base["system_prompt"] = (agent.get("system_prompt") or "")[:600]
             base["skills"] = skill_names
             base["knowledge"] = knowledge_titles
+            base["prompts"] = prompt_names
             base["use_memory"] = agent.get("use_memory", False)
             base["temperature"] = agent.get("temperature", 0.7)
             base["agent_type"] = agent.get("agent_type", "")
@@ -187,6 +205,14 @@ async def explore_preview(
             base["body"] = (sk.get("body") or "")[:3000]
             base["parameters"] = sk.get("parameters", [])
             base["icon"] = sk.get("icon", "")
+
+    elif resource_type == "prompt":
+        prompts_storage = PromptStorage()
+        pr = await prompts_storage.get_any(resource_id)
+        if pr:
+            base["content"] = (pr.get("content") or "")[:3000]
+            base["alias"] = pr.get("alias", "")
+            base["icon"] = pr.get("icon", "")
 
     elif resource_type == "knowledge":
         knowledge_storage = KnowledgeStorage(_cfg.DB_FILE)

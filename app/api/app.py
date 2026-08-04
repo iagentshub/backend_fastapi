@@ -25,6 +25,7 @@ from app.api.routes import (
     labels,
     logs,
     memory,
+    prompts,
     resource_linking,
     resource_management,
     settings,
@@ -146,6 +147,7 @@ def create_app() -> FastAPI:
     app.include_router(connections.router)
     app.include_router(agents.router)
     app.include_router(skills.router)
+    app.include_router(prompts.router)
     app.include_router(memory.router)
     app.include_router(settings.router)
     app.include_router(accounts.router)

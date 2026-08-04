@@ -903,6 +903,7 @@ def test_admin_explore_unifies_and_filters_resource_types(admin_client):
         "knowledge",
         "workflow",
         "skill",
+        "prompt",
         "memory",
     }
 

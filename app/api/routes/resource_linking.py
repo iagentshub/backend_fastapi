@@ -29,6 +29,7 @@ from app.storage.knowledge import KnowledgeStorage
 from app.storage.storage import (
     AgentStorage,
     ConnectionStorage,
+    PromptStorage,
     SkillStorage,
 )
 from app.storage.workflows import WorkflowStorage
@@ -285,6 +286,94 @@ async def link_skill(
     return {"ok": True, "skill_id": new_id, "name": link_name}
 
 
+@router.post("/api/prompts/{scope}/{source_id}/link")
+async def link_prompt(
+    scope: str,
+    source_id: str,
+    username: str = Depends(require_auth),
+) -> Dict[str, Any]:
+    prompts = PromptStorage()
+    source = await prompts.get(scope, source_id)
+    if not source:
+        raise APIError(
+            404, "not_found", "Prompt no encontrado", extra={"resource": "prompt"}
+        )
+
+    source_owner = source.get("owner_id") or ""
+    if scope != "public":
+        await _assert_public("prompt", source_id)
+    if source_owner == username:
+        raise APIError(400, "already_owner", "Ya eres el propietario de este recurso")
+
+    link_payload = {
+        k: v for k, v in source.items() if k not in ("id", "scope", "owner_id")
+    }
+    # id propio (no derivado del nombre): al no renombrar la copia, un id basado en
+    # el nombre colisionaría con el original (misma slug) y una lectura por id sin
+    # filtro de owner devolvería cualquiera de los dos.
+    link_payload["id"] = generate_id()
+    link_labels = list(link_payload.get("labels") or ["private"])
+    for ol in ("fork", "linked", "public"):
+        if ol in link_labels:
+            link_labels.remove(ol)
+    link_labels.append("linked")
+    link_payload["labels"] = link_labels
+    # El alias de origen puede colisionar con uno ya existente del destino —
+    # la copia debe crearse siempre, nunca fallar por esto ni tocar la fila
+    # del propietario original: se sufija (alias-2, alias-3…) si hace falta.
+    link_payload["alias"] = await prompts.unique_alias(
+        username, str(link_payload.get("alias") or "")
+    )
+
+    try:
+        result = await prompts.save("private", link_payload, owner_id=username)
+    except ValueError as exc:
+        raise APIError(422, "prompt_save_invalid", str(exc)) from exc
+
+    new_id = result["id"]
+    link_name = result["name"]
+    link_tags = "[]"
+
+    async with open_db() as conn:
+        if IS_PG:
+            await conn.execute(
+                "INSERT INTO resource_social "
+                "(resource_type, resource_id, owner, name, description, is_public, category, "
+                "trial_missing_deps, linked_to_user, linked_to_id, tags) "
+                "VALUES (?, ?, ?, ?, ?, 0, 'Other', 'warn', ?, ?, ?) "
+                "ON CONFLICT DO NOTHING",
+                (
+                    "prompt",
+                    new_id,
+                    username,
+                    link_name,
+                    source.get("description", ""),
+                    source_owner,
+                    source_id,
+                    link_tags,
+                ),
+            )
+        else:
+            await conn.execute(
+                "INSERT OR IGNORE INTO resource_social "
+                "(resource_type, resource_id, owner, name, description, is_public, category, "
+                "trial_missing_deps, linked_to_user, linked_to_id, tags) "
+                "VALUES (?, ?, ?, ?, ?, 0, 'Other', 'warn', ?, ?, ?)",
+                (
+                    "prompt",
+                    new_id,
+                    username,
+                    link_name,
+                    source.get("description", ""),
+                    source_owner,
+                    source_id,
+                    link_tags,
+                ),
+            )
+        await conn.commit()
+    return {"ok": True, "prompt_id": new_id, "name": link_name}
+
+
 async def _duplicate_workflow(source_id: str, username: str) -> Dict[str, Any]:
     """Clona una orquestación pública para el usuario.
 
@@ -477,6 +566,58 @@ async def sync_linked_skill(
     }
     updated = {**local, **sync_fields}
     await skills.save("private", updated, owner_id=local.get("owner_id"))
+
+    return {"ok": True, "synced_from": original_id}
+
+
+@router.post("/api/prompts/private/{prompt_id}/sync")
+async def sync_linked_prompt(
+    prompt_id: str,
+    username: str = Depends(require_auth),
+) -> Dict[str, Any]:
+    prompts = PromptStorage()
+    local = await prompts.get("private", prompt_id)
+    if not local or local.get("owner_id") != username:
+        raise APIError(
+            404, "not_found", "Prompt no encontrado", extra={"resource": "prompt"}
+        )
+
+    async with open_db() as conn:
+        row = await conn.fetchone(
+            "SELECT linked_to_id, linked_to_user FROM resource_social "
+            "WHERE resource_type=? AND resource_id=?",
+            ("prompt", prompt_id),
+        )
+
+    if not row or not row[0]:
+        raise APIError(
+            400, "prompt_not_linked", "El prompt no tiene enlace a un original"
+        )
+
+    original_id = row[0]
+    original = await prompts.get_any(original_id)
+    if not original:
+        raise APIError(
+            404,
+            "not_found",
+            "El prompt original ya no existe",
+            extra={"resource": "prompt"},
+        )
+    try:
+        if original.get("scope") != "public":
+            await _assert_public("prompt", original_id)
+    except HTTPException:
+        raise APIError(403, "forbidden", "El prompt original ya no es accesible")
+
+    # alias se excluye: sincronizar contenido no debe pisar el alias local
+    # redefinido por el usuario tras el enlace.
+    sync_fields = {
+        k: v
+        for k, v in original.items()
+        if k not in ("id", "scope", "owner_id", "name", "alias")
+    }
+    updated = {**local, **sync_fields}
+    await prompts.save("private", updated, owner_id=local.get("owner_id"))
 
     return {"ok": True, "synced_from": original_id}
 
