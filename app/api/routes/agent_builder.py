@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from app.api.routes.auth import GroupContext, require_group
+from app.api.routes.auth import GroupContext, require_group_session
 from app.auth.auth import get_user_role
 from app.config.data import DB_FILE
 from app.errors import APIError
@@ -74,7 +74,7 @@ def _is_transient_provider_error(message: str) -> bool:
 @router.post("/chat")
 async def builder_chat(
     body: BuilderChatBody,
-    ctx: GroupContext = Depends(require_group),
+    ctx: GroupContext = Depends(require_group_session),
 ) -> StreamingResponse:
     user, group_id = ctx.user, ctx.group_id
     raw_conn_id = body.connection_id

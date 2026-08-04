@@ -23,6 +23,12 @@ REGISTER_MAX    = int(os.getenv("GAIA_REGISTER_MAX",    "5"))     # registros po
 # open   → cualquiera puede registrarse (default, backward-compatible)
 # closed → registro desactivado
 # invite → solo el admin puede crear usuarios vía /api/admin/users
+#
+# La lista vive aquí y solo aquí: PUT /api/settings/platform la usa para validar.
+# Cuando estaba duplicada en settings.py, el panel rechazaba con 422 el modo
+# "invite" que auth.py sí implementa y que .env y docker-compose.yml ya usaban.
+REGISTRATION_MODES: frozenset[str] = frozenset({"open", "closed", "invite"})
+
 REGISTRATION_MODE: str = os.getenv("GAIA_REGISTRATION", "open").lower()
 
 # ── Verificación de email ──────────────────────────────────────────────────────

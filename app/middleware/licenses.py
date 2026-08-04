@@ -22,18 +22,41 @@ _PROTECTED_PREFIXES = (
 )
 
 
+# Antes esto leía y parseaba settings.json entero en CADA petición —incluidas
+# las que el middleware iba a dejar pasar sin mirar—, síncrono y dentro del
+# event loop.
+#
+# La invalidación es explícita, no por mtime: la resolución del mtime no es
+# fiable entre dos escrituras seguidas, y un falso acierto de caché aquí
+# significa dejar pasar a quien no tiene licencia. En una puerta de cobro eso
+# no se negocia. settings.json solo lo escribe _write_platform_cfg dentro del
+# proceso (el instalador y el entrypoint escriben antes de arrancar uvicorn),
+# así que ese único punto basta para mantener el caché al día.
+_cache: bool | None = None
+
+
+def invalidate_billing_cache() -> None:
+    """A llamar tras escribir settings.json. Ver _write_platform_cfg."""
+    global _cache
+    _cache = None
+
+
 def _billing_enabled() -> bool:
-    try:
-        data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        return False
-    return bool(data.get("billing_enabled", False))
+    global _cache
+    if _cache is None:
+        try:
+            data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+            _cache = bool(data.get("billing_enabled", False))
+        except Exception:
+            return False  # sin settings legibles: puerta cerrada, y sin cachearlo
+    return _cache
 
 
 class LicenseGateMiddleware(BaseHTTPMiddleware):
     async def dispatch(self, request, call_next):
         path = request.url.path
-        if not _billing_enabled() or not path.startswith(_PROTECTED_PREFIXES):
+        # El prefijo primero: descarta la mayoría de peticiones sin tocar disco.
+        if not path.startswith(_PROTECTED_PREFIXES) or not _billing_enabled():
             return await call_next(request)
 
         token = request.cookies.get("ga_token")

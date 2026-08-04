@@ -5,7 +5,7 @@ from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends, Query, Request
 
-from app.api.routes.auth import require_auth
+from app.api.routes.auth import require_session
 from app.config.data import DB_FILE
 from app.errors import APIError
 from app.storage.chat import ChatStorage
@@ -18,7 +18,7 @@ _chat = ChatStorage(DB_FILE)
 @router.get("/recent")
 async def list_recent_conversations(
     limit: int = Query(default=8, ge=1, le=50),
-    user: str = Depends(require_auth),
+    user: str = Depends(require_session),
 ) -> List[Dict[str, Any]]:
     if is_guest(user):
         return []
@@ -27,7 +27,7 @@ async def list_recent_conversations(
 
 @router.get("/{agent_id}")
 async def list_conversations(
-    agent_id: str, user: str = Depends(require_auth)
+    agent_id: str, user: str = Depends(require_session)
 ) -> List[Dict[str, Any]]:
     if is_guest(user):
         return []
@@ -36,7 +36,7 @@ async def list_conversations(
 
 @router.post("/{agent_id}")
 async def new_conversation(
-    agent_id: str, request: Request, user: str = Depends(require_auth)
+    agent_id: str, request: Request, user: str = Depends(require_session)
 ) -> Dict[str, Any]:
     if is_guest(user):
         raise APIError(403, "forbidden", "Los invitados no pueden guardar conversaciones")
@@ -47,7 +47,7 @@ async def new_conversation(
 
 @router.get("/{agent_id}/{conv_id}")
 async def get_messages(
-    agent_id: str, conv_id: str, user: str = Depends(require_auth)
+    agent_id: str, conv_id: str, user: str = Depends(require_session)
 ) -> List[Dict[str, Any]]:
     if is_guest(user):
         return []
@@ -59,7 +59,7 @@ async def get_messages(
 
 @router.delete("/{agent_id}/{conv_id}")
 async def delete_conversation(
-    agent_id: str, conv_id: str, user: str = Depends(require_auth)
+    agent_id: str, conv_id: str, user: str = Depends(require_session)
 ) -> Dict[str, Any]:
     if is_guest(user):
         raise APIError(403, "forbidden", "Los invitados no pueden borrar conversaciones")

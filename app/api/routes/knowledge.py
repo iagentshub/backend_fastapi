@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, File, Query, Request, UploadFile
 
-from app.api.routes.auth import GroupContext, require_group
+from app.api.routes.auth import GroupContext, require_group, require_group_session
 from app.auth.auth import get_user_role
 from app.config.data import AGENTS_DIR, DB_FILE
 from app.errors import APIError
@@ -70,7 +70,7 @@ async def list_items(
     include_inactive: bool = False,
     limit: int = Query(0, ge=0, description="Máx. items. 0 = sin límite"),
     offset: int = Query(0, ge=0),
-    ctx: GroupContext = Depends(require_group),
+    ctx: GroupContext = Depends(require_group_session),
 ) -> List[Dict[str, Any]]:
     user = ctx.user
     owner_id = user if owner_scope == "personal" else ctx.group_id
@@ -152,7 +152,7 @@ async def list_items(
 @router.post("/text")
 async def add_text(
     request: Request,
-    ctx: GroupContext = Depends(require_group),
+    ctx: GroupContext = Depends(require_group_session),
 ) -> Dict[str, Any]:
     user, group_id = ctx.user, ctx.group_id
     body = await request.json()
@@ -176,7 +176,7 @@ async def add_text(
 @router.post("/url")
 async def add_url(
     request: Request,
-    ctx: GroupContext = Depends(require_group),
+    ctx: GroupContext = Depends(require_group_session),
 ) -> Dict[str, Any]:
     user, group_id = ctx.user, ctx.group_id
     body = await request.json()
@@ -207,7 +207,7 @@ async def add_url(
 @router.post("/document")
 async def upload_document(
     file: UploadFile = File(...),
-    ctx: GroupContext = Depends(require_group),
+    ctx: GroupContext = Depends(require_group_session),
 ) -> Dict[str, Any]:
     user, group_id = ctx.user, ctx.group_id
     filename = file.filename or "documento"
@@ -258,7 +258,7 @@ async def upload_document(
 @router.delete("/{item_id}")
 async def delete_item(
     item_id: str,
-    ctx: GroupContext = Depends(require_group),
+    ctx: GroupContext = Depends(require_group_session),
 ) -> Dict[str, bool]:
     user, group_id = ctx.user, ctx.group_id
     if is_guest(user):

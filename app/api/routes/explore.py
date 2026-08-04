@@ -14,7 +14,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, Query
 
 import app.config.data as _cfg
-from app.api.routes.auth import require_auth
+from app.api.routes.auth import require_auth, require_session
 from app.api.routes.social import _PUBLIC_VAL, _social_limiter
 from app.errors import APIError
 from app.storage.db import IS_PG, open_db
@@ -51,7 +51,10 @@ async def explore(
     label: Optional[List[str]] = Query(None),
     limit: int = 40,
     offset: int = 0,
-    username: str = Depends(require_auth),
+    # Abierto al invitado: solo devuelve filas is_public y el usuario únicamente
+    # sirve para excluir lo propio. Es el catálogo público, y la superficie que
+    # tiene sentido enseñar en el demo.
+    username: str = Depends(require_session),
 ) -> List[Dict[str, Any]]:
     limit = min(limit, 100)
 
@@ -107,7 +110,7 @@ async def explore(
 async def explore_preview(
     resource_type: str,
     resource_id: str,
-    username: str = Depends(require_auth),
+    username: str = Depends(require_session),  # ver explore(): catálogo público
 ) -> Dict[str, Any]:
     """Rich preview data for a single public resource."""
 

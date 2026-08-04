@@ -139,6 +139,21 @@ def patch_data_dir(tmp_data_dir, tmp_path, monkeypatch):
     # en el TestClient (HTTP), lo que provoca 401 en todas las llamadas siguientes.
     monkeypatch.setattr(auth_routes, "SECURE_COOKIES", False)
 
+    # licenses.py importa SETTINGS_FILE por valor, igual que auth.py (ver arriba).
+    # El binding se fija cuando se importa el módulo: si algo lo importa durante
+    # la COLECCIÓN de pytest —basta con que un fichero de test lo importe a nivel
+    # superior— queda apuntando al directorio de colección (conftest.py:22) en vez
+    # de a tmp_data_dir, y _billing_enabled() lee un settings.json que no existe:
+    # la puerta de licencias no se activa nunca y los tests que esperan 403 pasan
+    # a recibir 200. Parchearlo aquí lo hace independiente del orden de import.
+    import app.middleware.licenses as licenses_mod
+
+    monkeypatch.setattr(licenses_mod, "SETTINGS_FILE", tmp_data_dir / "settings.json")
+
+    # Además, el caché de billing_enabled arranca limpio: varios tests escriben
+    # settings.json a mano, saltándose _write_platform_cfg (que es quien invalida).
+    licenses_mod.invalidate_billing_cache()
+
     yield
 
     # Reset DB state after test

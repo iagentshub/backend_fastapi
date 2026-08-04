@@ -6,7 +6,7 @@ from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends, Request
 
-from app.api.routes.auth import require_auth
+from app.api.routes.auth import require_session
 from app.config.data import MEMORY_DIR
 from app.errors import APIError
 from app.storage.guest import get_session, is_guest
@@ -18,7 +18,7 @@ _storage = MemoryStorage(MEMORY_DIR)
 
 
 @router.get("")
-async def list_memory(user: str = Depends(require_auth)) -> List[Dict[str, Any]]:
+async def list_memory(user: str = Depends(require_session)) -> List[Dict[str, Any]]:
     if is_guest(user):
         s = get_session(user)
         return [
@@ -30,7 +30,7 @@ async def list_memory(user: str = Depends(require_auth)) -> List[Dict[str, Any]]
 
 @router.get("/{filename}")
 async def get_memory(
-    filename: str, user: str = Depends(require_auth)
+    filename: str, user: str = Depends(require_session)
 ) -> Dict[str, Any]:
     if is_guest(user):
         content = get_session(user).memory.get(filename)
@@ -51,7 +51,7 @@ async def get_memory(
 
 @router.post("/{filename}")
 async def save_memory(
-    filename: str, request: Request, user: str = Depends(require_auth)
+    filename: str, request: Request, user: str = Depends(require_session)
 ) -> Dict[str, Any]:
     body = await request.json()
     content = str(body.get("content") or "")
@@ -63,7 +63,7 @@ async def save_memory(
 
 @router.delete("/{filename}")
 async def delete_memory(
-    filename: str, user: str = Depends(require_auth)
+    filename: str, user: str = Depends(require_session)
 ) -> Dict[str, Any]:
     if is_guest(user):
         s = get_session(user)
