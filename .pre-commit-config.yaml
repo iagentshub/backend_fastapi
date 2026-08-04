@@ -5,11 +5,25 @@ repos:
       - id: ruff
         args: [--fix]
 
+  # La suite entera (≈14 min) la corre CI en cada push y cada PR, así que aquí
+  # ya no está: un cuarto de hora por commit es lo que empuja a tirar de
+  # --no-verify, y eso también se salta ruff, que es lo que de verdad interesa
+  # que corra antes de commitear.
+  #
+  # Lo que sí se queda son los tres guardianes estructurales, 20 s en total.
+  # No son tests de negocio: comprueban que no se cambie el contorno de la API
+  # sin darse cuenta —una ruta que desaparece, un endpoint que cambia de guardia
+  # de sitio, un handler que vuelve a llamar a request.json() a pelo—. Ese es el
+  # fallo que sale barato aquí y caro tres commits después.
   - repo: local
     hooks:
-      - id: pytest
-        name: pytest
-        entry: python3 -m pytest tests/ -q
+      - id: pytest-guardianes
+        name: pytest (contrato de rutas, frontera del invitado, json_body)
+        entry: >-
+          python3 -m pytest -q
+          tests/api/test_contrato_rutas.py
+          tests/api/test_guest_boundary.py
+          tests/utils/test_json_body.py
         language: system
         pass_filenames: false
         always_run: true

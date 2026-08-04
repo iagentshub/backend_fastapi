@@ -1,4 +1,9 @@
-"""Tests for user profile: register with profile fields and update_user_profile."""
+"""Perfil de usuario: registro con los campos de perfil.
+
+Aquí vivían tres tests de update_user_profile(), borrados con la función: no
+la llamaba nadie, porque no hay endpoint que edite el perfil. Los campos se
+escriben en el registro y ya no se vuelven a tocar.
+"""
 from __future__ import annotations
 
 import pytest
@@ -7,7 +12,6 @@ from app.auth.auth import (
     get_user_by_email,
     get_user_by_username,
     register_user_email,
-    update_user_profile,
 )
 
 
@@ -55,25 +59,3 @@ async def test_register_username_is_separate_and_unique(patch_data_dir):
     assert u1 == "alice"
     with pytest.raises(ValueError, match="usuario"):
         await register_user_email("alice", "alice@bar.com", "pass1234")
-
-
-async def test_update_user_profile(patch_data_dir):
-    username, _ = await register_user_email("updateuser", "update@example.com", "pass1234")
-    await update_user_profile(username, country="MX", phone="+52 55 1234 5678")
-    user = await get_user_by_username(username)
-    assert user["country"] == "MX"
-    assert user["phone"] == "+52 55 1234 5678"
-
-
-async def test_update_user_profile_ignores_unknown_fields(patch_data_dir):
-    username, _ = await register_user_email("ignoreuser", "ignore@example.com", "pass1234")
-    await update_user_profile(username, country="FR", unknown_field="value")
-    user = await get_user_by_username(username)
-    assert user["country"] == "FR"
-
-
-async def test_update_user_profile_empty_update(patch_data_dir):
-    username, _ = await register_user_email("emptyuser", "empty@example.com", "pass1234")
-    await update_user_profile(username)
-    user = await get_user_by_username(username)
-    assert user is not None

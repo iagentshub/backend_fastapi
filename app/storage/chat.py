@@ -10,8 +10,10 @@ from app.utils.generators import generate_id
 
 
 class ChatStorage:
+    # db_path se acepta y se ignora: la conexión la abre open_db() con la
+    # config global. Ver el comentario largo en storage.py.
     def __init__(self, db_path: Path) -> None:
-        self._db_path = Path(db_path)
+        pass
 
     # ── Conversations ──────────────────────────────────────────────────────────
 

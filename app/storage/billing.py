@@ -13,10 +13,11 @@ _ACTIVE_STATUSES_EXCLUDED = ("canceled", "incomplete_expired")
 
 
 class BillingStorage:
-    """DB-backed subscription + webhook-event storage. Accepts the DB file path."""
+    """Suscripciones y eventos de webhook en BD. Acepta la ruta al fichero,
+    pero no la usa: la conexión la abre open_db() (ver storage.py)."""
 
     def __init__(self, db_path: Path) -> None:
-        self._db_path = Path(db_path)
+        pass
 
     async def get_by_username(self, username: str) -> Optional[Dict[str, Any]]:
         async with open_db() as conn:

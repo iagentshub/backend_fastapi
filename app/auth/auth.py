@@ -517,8 +517,12 @@ def _purge_user_files(username: str) -> None:
                 try:
                     if _json.loads(cfg.read_text()).get("owner_id") == username:
                         _shutil.rmtree(item_dir, ignore_errors=True)
-                except Exception:
-                    pass
+                except Exception as exc:
+                    # Esto es un borrado por GDPR: un config.json ilegible dejaba
+                    # atrás el agente de un usuario que pidió que se le borrara,
+                    # y sin rastro de que había pasado. Se sigue con el resto de
+                    # directorios, pero queda constancia de cuál se ha quedado.
+                    flog.error(f"[gdpr] No se pudo purgar {item_dir}: {exc}")
 
 
 async def purge_user_data(username: str) -> None:
@@ -604,33 +608,10 @@ async def purge_expired_deletions() -> int:
     return len(usernames)
 
 
-_PROFILE_SQL: dict = {
-    "birth_date": "birth_date = ?",
-    "gender": "gender = ?",
-    "country": "country = ?",
-    "phone": "phone = ?",
-    "display_name": "display_name = ?",
-}
-
 _ADMIN_SQL: dict = {
     "is_active": "is_active = ?",
     "role": "role = ?",
 }
-
-
-async def update_user_profile(username: str, **fields) -> None:
-    """Update allowed profile fields for a user."""
-    clauses = [(sql, fields[col]) for col, sql in _PROFILE_SQL.items() if col in fields]
-    if not clauses:
-        return
-    async with open_db() as conn:
-        await conn.execute(
-            "UPDATE users SET "
-            + ", ".join(c[0] for c in clauses)
-            + " WHERE id = ? OR username = ?",
-            [c[1] for c in clauses] + [username, normalize_username(username)],
-        )
-        await conn.commit()
 
 
 async def admin_update_user(username: str, **fields) -> bool:
@@ -813,8 +794,13 @@ async def ensure_admin_user() -> None:
                         stored_pass.encode(), _row["password_hash"].encode()
                     ):
                         reset_mode = True  # hash mismatch → regenerate
-        except Exception:
-            pass
+        except Exception as exc:
+            # No se escala: si la comprobación falla se deja reset_mode como
+            # está y el arranque continúa con la contraseña que ya hubiera.
+            # Pero se registra — un bcrypt que revienta aquí es la diferencia
+            # entre "la contraseña del fichero sirve" y "gaia.py enseña una
+            # contraseña obsoleta", y así no había forma de saber cuál era.
+            flog.error(f"[admin] No se pudo verificar .admin_pass: {exc}")
 
     password: Optional[str] = None
     action: Optional[str] = None

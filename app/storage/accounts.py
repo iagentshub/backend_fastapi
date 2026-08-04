@@ -24,10 +24,11 @@ def _mask(key: str) -> str:
 
 
 class AccountStorage:
-    """DB-backed account storage. Acepta la ruta al fichero de BD."""
+    """Almacén de cuentas en BD. Acepta la ruta al fichero, pero no la usa:
+    la conexión la abre open_db() con la config global (ver storage.py)."""
 
     def __init__(self, db_path: Path) -> None:
-        self._db_path = Path(db_path)
+        pass
 
     async def _migrate_files(self) -> None:
         """One-time import from per-provider JSON files (formato legado:

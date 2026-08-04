@@ -214,9 +214,9 @@ class KnowledgeStorage(ResourceStorage):
     table = "knowledge_items"
     resource_type = "knowledge"
 
+    # db_path se acepta y se ignora (ver storage.py): open_db() abre la conexión.
     def __init__(self, db_path: Path) -> None:
         super().__init__()
-        self._db_path = db_path
 
     async def list(
         self, owner_id: Optional[str], type: Optional[str] = None

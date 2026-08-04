@@ -562,6 +562,61 @@ async def test_claude_done_event_includes_tokens():
     assert data["tokens"] == {"in": 20, "out": 8}
 
 
+async def test_claude_emite_cada_delta_segun_llega():
+    """Claude pedía "stream": true y se guardaba los deltas hasta el final.
+
+    El usuario veía la pantalla quieta toda la generación y luego la respuesta
+    de golpe, mientras que con cualquier proveedor OpenAI-compat la veía
+    escribirse. Aquí se comprueba que sale un evento por delta y en orden.
+    """
+    agent = _make_agent("claude", model="claude-3-5-sonnet-20241022")
+    conn = _make_conn("claude", model="claude-3-5-sonnet-20241022")
+
+    trozos = ["Bon", "jour", " le", " monde"]
+    lines = [
+        b"data: "
+        + json.dumps(
+            {"type": "message_start", "message": {"usage": {"input_tokens": 20}}}
+        ).encode()
+        + b"\n"
+    ]
+    lines += [
+        b"data: "
+        + json.dumps({"type": "content_block_delta", "delta": {"text": t}}).encode()
+        + b"\n"
+        for t in trozos
+    ]
+    lines.append(
+        b"data: "
+        + json.dumps({"type": "message_delta", "usage": {"output_tokens": 8}}).encode()
+        + b"\n"
+    )
+    mock_resp = MagicMock()
+    mock_resp.__enter__ = lambda s: s
+    mock_resp.__exit__ = MagicMock(return_value=False)
+    mock_resp.__iter__ = MagicMock(return_value=iter(lines))
+
+    with patch("urllib.request.urlopen", return_value=mock_resp):
+        events = [
+            e
+            async for e in stream_chat(
+                agent, conn, [{"role": "user", "content": "Hi"}], _skill_storage()
+            )
+        ]
+
+    emitidos = [
+        json.loads(e.removeprefix("data: ").strip())["token"]
+        for e in events
+        if e.startswith("data: ") and '"type": "token"' in e
+    ]
+    assert emitidos == trozos
+
+    done_event = next(e for e in events if '"type": "done"' in e)
+    assert json.loads(done_event.removeprefix("data: ").strip())["reply"] == (
+        "Bonjour le monde"
+    )
+
+
 def _ollama_response(
     reply: str = "Hi", prompt_eval_count: int = 15, eval_count: int = 6
 ) -> MagicMock:

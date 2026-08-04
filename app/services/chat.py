@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import ipaddress
 import json
 import socket
@@ -17,7 +18,6 @@ from typing import (
     List,
     Optional,
     Protocol,
-    runtime_checkable,
 )
 
 if TYPE_CHECKING:
@@ -74,32 +74,37 @@ def _openai_compat_chat_url(conn_type: str, configured_url: str = "") -> str:
     return urlunparse(parsed._replace(path=path, params="", query="", fragment=""))
 
 
-@runtime_checkable
+# Estos Protocol existen para no importar app.storage.storage desde aquí (el
+# import es circular). Son solo anotaciones: se les quitó @runtime_checkable
+# porque ninguno se usaba nunca en un isinstance, y el decorador hacía creer
+# que había una comprobación en tiempo de ejecución que no existe.
 class _SkillStorage(Protocol):
-    def get(self, scope: str, skill_id: str) -> Optional[Dict[str, Any]]: ...
+    async def get(
+        self, scope: str, skill_id: str, owner_id: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]: ...
 
 
-@runtime_checkable
 class _KnowledgeStorage(Protocol):
     async def get(
         self, item_id: str, owner_id: Any = None
     ) -> Optional[Dict[str, Any]]: ...
 
 
-@runtime_checkable
 class _PromptStorage(Protocol):
     async def get_any(
         self, prompt_id: str, owner_id: Any = None
     ) -> Optional[Dict[str, Any]]: ...
 
 
-@runtime_checkable
 class _MemoryStorage(Protocol):
-    def get(self, filename: str) -> Optional[str]: ...
-    def save(self, filename: str, content: str) -> None: ...
+    # Declaraban get/save síncronos y el código los llama con await desde el
+    # primer día: las implementaciones reales (MemoryStorage) son async.
+    async def get(self, filename: str, owner_id: str = "admin") -> Optional[str]: ...
+    async def save(
+        self, filename: str, content: str, owner_id: str = "admin"
+    ) -> Dict[str, Any]: ...
 
 
-@runtime_checkable
 class _ChatStorage(Protocol):
     async def list_conversations(
         self, user_id: str, agent_id: str, limit: int = 50
@@ -111,6 +116,46 @@ class _ChatStorage(Protocol):
 
 def _sse(data: Dict[str, Any]) -> str:
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
+
+async def _stream_tokens(
+    out: "list[tuple[str, int, int]]",
+    fn: Callable[..., "tuple[str, int, int]"],
+    *args: Any,
+) -> AsyncGenerator[str, None]:
+    """Corre ``fn`` (bloqueante, urllib) en un hilo y va emitiendo su SSE.
+
+    ``fn`` recibe ``*args`` más un ``on_token`` al final. El resultado
+    ``(reply, tok_in, tok_out)`` se deja en ``out`` porque un generador
+    asíncrono no puede devolver valor: el llamador lee ``out[0]`` al terminar
+    de iterar.
+
+    Estaba escrito a mano dentro de la rama OpenAI-compat. Se saca aquí porque
+    la de Claude necesita exactamente lo mismo y copiar treinta líneas de cola,
+    hilo y heartbeat es como se acaba arreglando el bug en una sola de las dos.
+    """
+    token_queue: asyncio.Queue[str] = asyncio.Queue()
+    loop = asyncio.get_running_loop()
+
+    def _on_token(token: str) -> None:
+        loop.call_soon_threadsafe(token_queue.put_nowait, token)
+
+    provider_task = asyncio.create_task(asyncio.to_thread(fn, *args, _on_token))
+    last_heartbeat = loop.time()
+    while not provider_task.done() or not token_queue.empty():
+        try:
+            token = await asyncio.wait_for(token_queue.get(), timeout=0.1)
+        except asyncio.TimeoutError:
+            # Algunos modelos de razonamiento tardan más de un minuto en
+            # producir el primer token. Mantener el SSE activo evita que nginx
+            # o el cliente confundan esa espera con un cuelgue.
+            if loop.time() - last_heartbeat >= 10:
+                yield ": keep-alive\n\n"
+                last_heartbeat = loop.time()
+            continue
+        yield _sse({"type": "token", "token": token})
+        last_heartbeat = loop.time()
+    out.append(await provider_task)
 
 
 def _estimate_tokens(text: str) -> int:
@@ -229,9 +274,19 @@ def _do_openai_stream_with_dns_retry(
 
 
 def _do_claude_stream(
-    url: str, headers: Dict[str, str], payload: Dict[str, Any], timeout: Optional[int]
+    url: str,
+    headers: Dict[str, str],
+    payload: Dict[str, Any],
+    timeout: Optional[int],
+    on_token: Optional[Callable[[str], None]] = None,
 ) -> "tuple[str, int, int]":
-    """Llama a la API de Anthropic y devuelve (reply, tok_in, tok_out)."""
+    """Llama a la API de Anthropic y devuelve (reply, tok_in, tok_out).
+
+    Pedía "stream": true y luego se guardaba los deltas para el final, así que
+    Claude era el único proveedor donde el usuario miraba una pantalla quieta
+    hasta que la respuesta estaba entera. El on_token es el mismo contrato que
+    el del camino OpenAI-compat.
+    """
     data = json.dumps(payload).encode()
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     full_reply = ""
@@ -248,7 +303,10 @@ def _do_claude_stream(
                     usage = obj.get("message", {}).get("usage") or {}
                     tok_in = usage.get("input_tokens", 0)
                 elif ev_type == "content_block_delta":
-                    full_reply += obj.get("delta", {}).get("text", "")
+                    token = obj.get("delta", {}).get("text", "")
+                    full_reply += token
+                    if token and on_token is not None:
+                        on_token(token)
                 elif ev_type == "message_delta":
                     usage = obj.get("usage") or {}
                     tok_out = usage.get("output_tokens", tok_out)
@@ -310,8 +368,8 @@ async def stream_chat(
     *,
     prompt_storage: Optional[_PromptStorage] = None,
 ) -> AsyncGenerator[str, None]:
-    import asyncio
-
+    # asyncio estaba diferido aquí dentro. Es stdlib: no había ciclo que
+    # romper, y _stream_tokens lo necesita a nivel de módulo.
     from app.models.agent import Agent
 
     if not isinstance(agent, Agent):
@@ -449,37 +507,12 @@ async def stream_chat(
             # urllib lee el proveedor en un hilo. Reenviar cada delta mediante
             # una cola evita acumular la respuesta completa: con modelos lentos
             # el cliente recibe actividad y el proxy no corta por inactividad.
-            token_queue: asyncio.Queue[str] = asyncio.Queue()
-            loop = asyncio.get_running_loop()
-
-            def _on_token(token: str) -> None:
-                loop.call_soon_threadsafe(token_queue.put_nowait, token)
-
-            provider_task = asyncio.create_task(
-                asyncio.to_thread(
-                    _do_openai_stream_with_dns_retry,
-                    url,
-                    headers,
-                    payload,
-                    timeout,
-                    _on_token,
-                )
-            )
-            last_heartbeat = loop.time()
-            while not provider_task.done() or not token_queue.empty():
-                try:
-                    token = await asyncio.wait_for(token_queue.get(), timeout=0.1)
-                except asyncio.TimeoutError:
-                    # Algunos modelos de razonamiento tardan más de un minuto
-                    # en producir el primer token. Mantener el SSE activo evita
-                    # que nginx o el cliente confundan esa espera con un cuelgue.
-                    if loop.time() - last_heartbeat >= 10:
-                        yield ": keep-alive\n\n"
-                        last_heartbeat = loop.time()
-                    continue
-                yield _sse({"type": "token", "token": token})
-                last_heartbeat = loop.time()
-            reply, tok_in, tok_out = await provider_task
+            out: "list[tuple[str, int, int]]" = []
+            async for frame in _stream_tokens(
+                out, _do_openai_stream_with_dns_retry, url, headers, payload, timeout
+            ):
+                yield frame
+            reply, tok_in, tok_out = out[0]
 
         elif conn_type == "claude":
             url = (
@@ -501,9 +534,12 @@ async def stream_chat(
                 "x-api-key": api_key,
                 "anthropic-version": ANTHROPIC_API_VERSION,
             }
-            reply, tok_in, tok_out = await asyncio.to_thread(
-                _do_claude_stream, url, headers, payload, timeout
-            )
+            out = []
+            async for frame in _stream_tokens(
+                out, _do_claude_stream, url, headers, payload, timeout
+            ):
+                yield frame
+            reply, tok_in, tok_out = out[0]
 
         elif conn_type == "ollama":
             host = str(conn.get("host") or "http://localhost:11434").rstrip("/")

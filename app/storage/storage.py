@@ -76,9 +76,11 @@ class ConnectionStorage(ResourceStorage):
     table = "connections"
     resource_type = "connection"
 
+    # db_path no se usa: quien abre la conexión es open_db(), que lee la config
+    # él mismo. El parámetro sigue en la firma porque lo pasan ~20 sitios; el
+    # campo no, porque hacía creer que esta clase habla con ESE fichero.
     def __init__(self, db_path: Path) -> None:
         super().__init__()
-        self._db_path = Path(db_path)  # informational only
 
     async def _migrate_legacy_data(self) -> None:
         """One-time import from connections.json if table is empty."""

@@ -94,6 +94,11 @@ class _DBHandler(logging.Handler):
             if self._conn is not None:
                 self._conn.close()  # type: ignore[attr-defined]
         except Exception:
+            # ponytail: silencio deliberado. Aquí se llega porque la conexión ya
+            # falló; que cerrarla también falle no aporta nada, y logear desde el
+            # handler de logs es la forma de montar una recursión. El finally
+            # deja _conn a None, que es lo único que importa: _connect() la
+            # reconstruye en el siguiente emit.
             pass
         finally:
             self._conn = None
