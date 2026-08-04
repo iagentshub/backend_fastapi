@@ -9,7 +9,6 @@ import httpx
 from fastapi import APIRouter, Depends, Request
 
 from app.api.routes.auth import require_auth
-from app.auth.auth import get_user_role
 from app.config.data import AGENTS_DIR, DB_FILE, SKILLS_DIR
 from app.errors import APIError
 from app.middleware.ratelimit import RateLimiter
@@ -26,7 +25,12 @@ _device_flow_limiter = RateLimiter(calls=30, window=60)
 
 
 async def _owner(user: str) -> str:
-    return "admin" if await get_user_role(user) == "admin" else user
+    """Las cuentas de proveedor, y las conexiones que generan al sincronizar,
+    son siempre personales del usuario — igual que una Connection creada a
+    mano con scope="personal" (ver `save_connection` en connections.py). No
+    hay un bucket especial para admins: `connections.py` lista por
+    `group_id`/`user`, nunca por un owner_id distinto del propio usuario."""
+    return user
 
 
 _agent_storage = AgentStorage(AGENTS_DIR)
@@ -101,8 +105,9 @@ async def _fetch_models(provider: str, api_key: str, host: str = "") -> List[str
             base = (host or "http://localhost:11434").rstrip("/")
             from app.config.security import assert_safe_url as _assu
             _assu(base)  # C3: prevenir SSRF via hosts almacenados en cuentas
+            headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
             async with httpx.AsyncClient(timeout=10) as client:
-                r = await client.get(f"{base}/api/tags")
+                r = await client.get(f"{base}/api/tags", headers=headers)
             r.raise_for_status()
             data = r.json()
             return [m["name"] for m in data.get("models", [])]

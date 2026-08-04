@@ -302,6 +302,27 @@ def test_sync_two_accounts_same_provider_do_not_clash(client):
     assert {c["_account_id"] for c in gpt4o_conns} == {id1, id2}
 
 
+def test_sync_account_visible_in_connections_for_admin_user(admin_client):
+    """Las conexiones creadas al sincronizar deben aparecer en
+    GET /api/connections (lo que usa la pestaña APIs LLM) también para un
+    usuario con rol admin cuyo username no es literalmente "admin" — owner_id
+    tiene que ser el usuario real, no un bucket especial que connections.py
+    no reconoce."""
+    client = admin_client
+    account_id = client.post(
+        "/api/accounts", json={"provider": "openai", "api_key": "sk-test-openai-123456"}
+    ).json()["id"]
+
+    with patch.object(httpx.AsyncClient, "get", new=_mock_openai_models("gpt-4o")):
+        r = client.post(f"/api/accounts/{account_id}/sync")
+
+    assert r.status_code == 200
+    assert r.json()["sync_summary"]["connections_created"] == 1
+
+    conns = client.get("/api/connections").json()
+    assert any(c.get("model") == "gpt-4o" for c in conns)
+
+
 def test_sync_account_requires_auth(client):
     r = client.post("/api/accounts/some-id/sync")
     assert r.status_code == 401

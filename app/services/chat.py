@@ -319,6 +319,12 @@ def _do_ollama_call(
     host: str,
     payload: Dict[str, Any],
     timeout: Optional[int],
+    api_key: str = "",
+    # on_token va EL ÚLTIMO y no es casualidad: _stream_tokens llama a
+    # fn(*args, _on_token), o sea que el callback entra como último posicional.
+    # Si se cuela un parámetro nuevo detrás, el callback aterriza en él —y aquí
+    # el de al lado es api_key, con lo que acabaría dentro de una cabecera
+    # Authorization sin que nada fallara a la vista.
     on_token: Optional[Callable[[str], None]] = None,
 ) -> "tuple[str, int, int]":
     """Llama a Ollama y devuelve (reply, tok_in, tok_out).
@@ -329,10 +335,13 @@ def _do_ollama_call(
     otros dos caminos.
     """
     data = json.dumps(payload).encode()
+    headers = {"Content-Type": "application/json"}
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
     req = urllib.request.Request(
         f"{host}/api/chat",
         data=data,
-        headers={"Content-Type": "application/json"},
+        headers=headers,
         method="POST",
     )
     full_reply = ""
@@ -579,9 +588,10 @@ async def stream_chat(
                 "stream": True,
                 "options": {"temperature": temperature},
             }
+            ollama_api_key = str(conn.get("api_key") or "")
             out = []
             async for frame in _stream_tokens(
-                out, _do_ollama_call, host, payload_o, timeout
+                out, _do_ollama_call, host, payload_o, timeout, ollama_api_key
             ):
                 yield frame
             reply, tok_in, tok_out = out[0]
