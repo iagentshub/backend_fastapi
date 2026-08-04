@@ -394,11 +394,14 @@ async def sync_account(
 ) -> Dict[str, Any]:
     """Sincroniza modelos de la cuenta.
 
-    Body opcional `{"models": [...]}`: si se manda, solo se crean/actualizan
-    conexiones para esos modelos (intersección con lo que el proveedor
-    realmente reporta, nunca se confía ciegamente en el id que mande el
-    cliente). Sin body (o sin la clave `models`), sincroniza todos los
-    modelos encontrados.
+    Body opcional `{"models": [...]}`: si se manda, la selección es la
+    verdad — se crean/actualizan conexiones para esos modelos (intersección
+    con lo que el proveedor realmente reporta, nunca se confía ciegamente en
+    el id que mande el cliente) y se BORRAN las conexiones de esta cuenta
+    para modelos que ya estaban sincronizados y ahora no están en la lista
+    (el usuario los desmarcó). Sin body (o sin la clave `models`), sincroniza
+    todos los modelos encontrados y no borra nada — es un "traer todo", no
+    una selección explícita.
     """
     owner = await _owner(user)
     account = await _storage.get(account_id, owner)
@@ -442,6 +445,7 @@ async def sync_account(
     }
     connections_created = 0
     connections_updated = 0
+    connections_deleted = 0
     conn_ids: set = set()
 
     for model_id in models:
@@ -462,11 +466,19 @@ async def sync_account(
         saved_conn = await _conn_storage.save(conn_data, owner_id=owner)
         conn_ids.add(saved_conn["id"])
 
-    # Conexiones ya existentes de ESTA cuenta que no salieron en esta pasada
-    # (ej. quedaron desmarcadas): siguen contando para el resumen de impacto.
-    for c in existing_conns:
-        if c.get("_account_id") == account_id:
-            conn_ids.add(c["id"])
+    # Conexiones ya existentes de ESTA cuenta que no salieron en esta pasada:
+    # con selección explícita (`selected`) el usuario las desmarcó a
+    # propósito, se borran de verdad — no un "traer todo" donde el modelo
+    # simplemente ya no aparece en el catálogo del proveedor.
+    models_set = set(models)
+    for model_id, existing_conn in existing_by_model.items():
+        if model_id in models_set:
+            continue
+        if selected is not None:
+            if await _conn_storage.delete(existing_conn["id"], owner_id=owner):
+                connections_deleted += 1
+        else:
+            conn_ids.add(existing_conn["id"])
 
     account_conn_ids = conn_ids
 
@@ -492,6 +504,7 @@ async def sync_account(
     summary_data = {
         "connections_created": connections_created,
         "connections_updated": connections_updated,
+        "connections_deleted": connections_deleted,
         "agents_count": len(agents_linked),
         "agents": agents_linked,
         "routines_count": sum(a["routines_count"] for a in agents_linked),

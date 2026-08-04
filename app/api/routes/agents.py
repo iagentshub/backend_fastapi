@@ -886,7 +886,13 @@ async def chat(
                         conversation_id, "user", str(user_msg.get("content") or "")
                     )
                 if reply:
-                    await _chat.add_message(conversation_id, "assistant", reply)
+                    await _chat.add_message(
+                        conversation_id,
+                        "assistant",
+                        reply,
+                        tokens_in=tok_in,
+                        tokens_out=tok_out,
+                    )
                     title = str(user_msg.get("content") or "")[:80] if user_msg else ""
                     await _chat.touch_conversation(conversation_id, title)
 

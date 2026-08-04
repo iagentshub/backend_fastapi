@@ -109,6 +109,45 @@ def test_get_messages_with_content(alice, patch_data_dir):
     assert msgs[1]["role"] == "assistant"
 
 
+def test_get_messages_includes_tokens(alice, patch_data_dir):
+    """Los tokens de una respuesta sobreviven a recargar la conversación —
+    no solo están disponibles en el evento SSE de la sesión activa."""
+    conv = alice.post("/api/chats/agent-abc", json={"title": "Test"}).json()
+    storage = ChatStorage(DB_FILE)
+    asyncio.run(storage.add_message(conv["id"], "user", "Hola"))
+    asyncio.run(
+        storage.add_message(
+            conv["id"], "assistant", "Mundo", tokens_in=15, tokens_out=6
+        )
+    )
+    msgs = alice.get(f"/api/chats/agent-abc/{conv['id']}").json()
+    assert msgs[0]["tokens_in"] == 0
+    assert msgs[0]["tokens_out"] == 0
+    assert msgs[1]["tokens_in"] == 15
+    assert msgs[1]["tokens_out"] == 6
+
+
+def test_list_conversations_includes_token_totals(alice, patch_data_dir):
+    """La lista de conversaciones trae el total de tokens (suma de sus
+    mensajes) para poder mostrar consumo por chat sin leer los mensajes."""
+    conv = alice.post("/api/chats/agent-abc", json={"title": "Test"}).json()
+    storage = ChatStorage(DB_FILE)
+    asyncio.run(
+        storage.add_message(
+            conv["id"], "assistant", "Uno", tokens_in=10, tokens_out=4
+        )
+    )
+    asyncio.run(
+        storage.add_message(
+            conv["id"], "assistant", "Dos", tokens_in=5, tokens_out=2
+        )
+    )
+    convs = alice.get("/api/chats/agent-abc").json()
+    assert len(convs) == 1
+    assert convs[0]["tokens_in"] == 15
+    assert convs[0]["tokens_out"] == 6
+
+
 # ── Borrar conversación ────────────────────────────────────────────────────────
 
 def test_delete_conversation(alice):

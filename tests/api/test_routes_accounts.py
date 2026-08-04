@@ -302,6 +302,64 @@ def test_sync_two_accounts_same_provider_do_not_clash(client):
     assert {c["_account_id"] for c in gpt4o_conns} == {id1, id2}
 
 
+def test_sync_account_deselecting_deletes_connection(client):
+    """Desmarcar en una segunda sync un modelo que ya estaba sincronizado
+    borra de verdad su Connection — la selección explícita manda."""
+    _setup_user(client, "syncacc6")
+    account_id = client.post(
+        "/api/accounts", json={"provider": "openai", "api_key": "sk-test-openai-123456"}
+    ).json()["id"]
+
+    with patch.object(
+        httpx.AsyncClient,
+        "get",
+        new=_mock_openai_models("gpt-4o", "gpt-3.5-turbo"),
+    ):
+        client.post(
+            f"/api/accounts/{account_id}/sync",
+            json={"models": ["gpt-4o", "gpt-3.5-turbo"]},
+        )
+        r = client.post(
+            f"/api/accounts/{account_id}/sync", json={"models": ["gpt-4o"]}
+        )
+
+    assert r.status_code == 200
+    assert r.json()["sync_summary"]["connections_deleted"] == 1
+
+    conns = client.get("/api/connections/raw").json()
+    names = {c["name"] for c in conns}
+    assert "OpenAI / gpt-4o" in names
+    assert "OpenAI / gpt-3.5-turbo" not in names
+
+
+def test_sync_account_without_body_does_not_delete(client):
+    """Sin body (sincronizar "todo") no borra conexiones aunque el proveedor
+    ya no reporte un modelo previamente sincronizado — solo la selección
+    explícita del diálogo borra."""
+    _setup_user(client, "syncacc7")
+    account_id = client.post(
+        "/api/accounts", json={"provider": "openai", "api_key": "sk-test-openai-123456"}
+    ).json()["id"]
+
+    with patch.object(
+        httpx.AsyncClient,
+        "get",
+        new=_mock_openai_models("gpt-4o", "gpt-3.5-turbo"),
+    ):
+        client.post(f"/api/accounts/{account_id}/sync")
+
+    with patch.object(httpx.AsyncClient, "get", new=_mock_openai_models("gpt-4o")):
+        r = client.post(f"/api/accounts/{account_id}/sync")
+
+    assert r.status_code == 200
+    assert r.json()["sync_summary"]["connections_deleted"] == 0
+
+    conns = client.get("/api/connections/raw").json()
+    names = {c["name"] for c in conns}
+    assert "OpenAI / gpt-4o" in names
+    assert "OpenAI / gpt-3.5-turbo" in names
+
+
 def test_sync_account_visible_in_connections_for_admin_user(admin_client):
     """Las conexiones creadas al sincronizar deben aparecer en
     GET /api/connections (lo que usa la pestaña APIs LLM) también para un

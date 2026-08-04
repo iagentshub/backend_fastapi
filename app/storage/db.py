@@ -822,6 +822,27 @@ async def _migrate_sqlite(conn: Any) -> None:
             ON resource_labels(label, owner_id);
     """)
 
+    # 20. Tokens por mensaje — para mostrar consumo por respuesta al recargar
+    # una conversación, no solo en el evento SSE de la sesión activa.
+    cur = await conn.execute("PRAGMA table_info(messages)")
+    msg_cols = {row[1] for row in await cur.fetchall()}
+    if "tokens_in" not in msg_cols:
+        try:
+            await conn.execute(
+                "ALTER TABLE messages ADD COLUMN tokens_in INTEGER NOT NULL DEFAULT 0"
+            )
+            await conn.commit()
+        except Exception:
+            pass
+    if "tokens_out" not in msg_cols:
+        try:
+            await conn.execute(
+                "ALTER TABLE messages ADD COLUMN tokens_out INTEGER NOT NULL DEFAULT 0"
+            )
+            await conn.commit()
+        except Exception:
+            pass
+
 
 async def _migrate_users_json_sqlite(conn: Any) -> None:
     """Import users.json into the users table if it exists and the table is empty."""
@@ -1238,6 +1259,17 @@ async def _migrate_pg(conn: Any) -> None:
     await conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_resource_labels_label "
         "ON resource_labels(label, owner_id)"
+    )
+
+    # 20. Tokens por mensaje — para mostrar consumo por respuesta al recargar
+    # una conversación, no solo en el evento SSE de la sesión activa.
+    await conn.execute(
+        "ALTER TABLE messages ADD COLUMN IF NOT EXISTS "
+        "tokens_in INTEGER NOT NULL DEFAULT 0"
+    )
+    await conn.execute(
+        "ALTER TABLE messages ADD COLUMN IF NOT EXISTS "
+        "tokens_out INTEGER NOT NULL DEFAULT 0"
     )
 
 

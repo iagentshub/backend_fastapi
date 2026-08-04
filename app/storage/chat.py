@@ -17,14 +17,27 @@ class ChatStorage:
 
     # ── Conversations ──────────────────────────────────────────────────────────
 
+    # Total de tokens por conversación (suma de sus mensajes) — para mostrar
+    # consumo por chat en la lista de conversaciones sin traer los mensajes.
+    _CONVERSATION_TOKENS_SELECT = (
+        "SELECT c.id, c.user_id, c.agent_id, c.title, c.created_at, c.updated_at, "
+        "COALESCE(SUM(m.tokens_in), 0) AS tokens_in, "
+        "COALESCE(SUM(m.tokens_out), 0) AS tokens_out "
+        "FROM conversations c LEFT JOIN messages m ON m.conversation_id = c.id "
+    )
+    _CONVERSATION_TOKENS_GROUP_BY = (
+        "GROUP BY c.id, c.user_id, c.agent_id, c.title, c.created_at, c.updated_at "
+    )
+
     async def list_conversations(
         self, user_id: str, agent_id: str, limit: int = 50
     ) -> List[Dict[str, Any]]:
         async with open_db() as conn:
             rows = await conn.fetchall(
-                "SELECT id, user_id, agent_id, title, created_at, updated_at "
-                "FROM conversations WHERE user_id = ? AND agent_id = ? "
-                "ORDER BY updated_at DESC LIMIT ?",
+                self._CONVERSATION_TOKENS_SELECT
+                + "WHERE c.user_id = ? AND c.agent_id = ? "
+                + self._CONVERSATION_TOKENS_GROUP_BY
+                + "ORDER BY c.updated_at DESC LIMIT ?",
                 (user_id, agent_id, limit),
             )
             return [dict(r) for r in rows]
@@ -34,9 +47,10 @@ class ChatStorage:
     ) -> List[Dict[str, Any]]:
         async with open_db() as conn:
             rows = await conn.fetchall(
-                "SELECT id, user_id, agent_id, title, created_at, updated_at "
-                "FROM conversations WHERE user_id = ? "
-                "ORDER BY updated_at DESC LIMIT ?",
+                self._CONVERSATION_TOKENS_SELECT
+                + "WHERE c.user_id = ? "
+                + self._CONVERSATION_TOKENS_GROUP_BY
+                + "ORDER BY c.updated_at DESC LIMIT ?",
                 (user_id, limit),
             )
             return [dict(r) for r in rows]
@@ -109,15 +123,21 @@ class ChatStorage:
     # ── Messages ───────────────────────────────────────────────────────────────
 
     async def add_message(
-        self, conv_id: str, role: str, content: str
+        self,
+        conv_id: str,
+        role: str,
+        content: str,
+        tokens_in: int = 0,
+        tokens_out: int = 0,
     ) -> Dict[str, Any]:
         msg_id = generate_id(32)
         now = _now()
         async with open_db() as conn:
             await conn.execute(
-                "INSERT INTO messages (id, conversation_id, role, content, created_at) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (msg_id, conv_id, role, content, now),
+                "INSERT INTO messages "
+                "(id, conversation_id, role, content, tokens_in, tokens_out, created_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                (msg_id, conv_id, role, content, tokens_in, tokens_out, now),
             )
             await conn.commit()
         return {
@@ -125,6 +145,8 @@ class ChatStorage:
             "conversation_id": conv_id,
             "role": role,
             "content": content,
+            "tokens_in": tokens_in,
+            "tokens_out": tokens_out,
             "created_at": now,
         }
 
@@ -133,7 +155,7 @@ class ChatStorage:
     ) -> List[Dict[str, Any]]:
         async with open_db() as conn:
             rows = await conn.fetchall(
-                "SELECT m.id, m.role, m.content, m.created_at "
+                "SELECT m.id, m.role, m.content, m.tokens_in, m.tokens_out, m.created_at "
                 "FROM messages m "
                 "WHERE m.conversation_id = ? "
                 "  AND EXISTS (SELECT 1 FROM conversations c "
