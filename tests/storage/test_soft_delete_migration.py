@@ -4,7 +4,8 @@ from __future__ import annotations
 
 import asyncio
 
-from app.storage.db import _RESOURCE_TABLES, open_db
+from app.storage.db import open_db
+from app.storage.db_migrations import _RESOURCE_TABLES
 
 
 def _columns(table: str) -> set[str]:

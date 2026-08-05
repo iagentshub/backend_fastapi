@@ -6,7 +6,6 @@ donde duplicar el secreto sería un riesgo de seguridad.
 """
 from __future__ import annotations
 
-from pathlib import Path
 from typing import TYPE_CHECKING, List, Optional
 
 from app.storage.db import IS_PG, open_db
@@ -17,9 +16,6 @@ if TYPE_CHECKING:
 
 
 class GroupShareStorage:
-    def __init__(self, db_path: Path) -> None:
-        self._path = db_path
-
     async def share_with_group(
         self,
         resource_type: str,

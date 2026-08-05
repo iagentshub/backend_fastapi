@@ -51,7 +51,7 @@ async def _assert_public(resource_type: str, source_id: str) -> None:
 
 
 _inherit_skills_store = SkillStorage(_cfg.SKILLS_DIR)
-_inherit_knowledge_store = KnowledgeStorage(_cfg.DB_FILE)
+_inherit_knowledge_store = KnowledgeStorage()
 _inherit_memory_store = MemoryStorage(_cfg.MEMORY_DIR)
 _inherit_prompts_store = PromptStorage()
 

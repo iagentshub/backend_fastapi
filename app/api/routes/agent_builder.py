@@ -12,7 +12,6 @@ from pydantic import BaseModel, Field
 
 from app.api.routes.auth import GroupContext, require_group_session
 from app.auth.auth import get_user_role
-from app.config.data import DB_FILE
 from app.errors import APIError
 from app.models.agent import Agent
 from app.services.agent_builder import (
@@ -33,8 +32,8 @@ from app.storage.storage import ConnectionStorage
 
 router = APIRouter(prefix="/api/agent-builder", tags=["agent-builder"])
 logger = logging.getLogger(__name__)
-_conns = ConnectionStorage(DB_FILE)
-_groups = GroupStorage(DB_FILE)
+_conns = ConnectionStorage()
+_groups = GroupStorage()
 
 
 class BuilderChatBody(BaseModel):

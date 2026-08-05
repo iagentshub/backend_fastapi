@@ -8,8 +8,7 @@ from app.storage.knowledge import KnowledgeStorage, extract_document_text
 
 @pytest.fixture()
 async def storage(patch_data_dir):
-    from app.config.data import DB_FILE
-    return KnowledgeStorage(DB_FILE)
+    return KnowledgeStorage()
 
 
 _URL_ITEM = dict(

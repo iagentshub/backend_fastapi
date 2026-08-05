@@ -8,8 +8,7 @@ from app.storage.accounts import AccountStorage
 
 @pytest.fixture()
 async def storage(patch_data_dir):
-    from app.config.data import DB_FILE
-    return AccountStorage(DB_FILE)
+    return AccountStorage()
 
 
 async def test_list_empty(storage):

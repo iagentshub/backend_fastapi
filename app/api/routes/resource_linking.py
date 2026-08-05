@@ -33,6 +33,7 @@ from app.storage.storage import (
     SkillStorage,
 )
 from app.storage.workflows import WorkflowStorage
+from app.utils import flog
 from app.utils.generators import generate_id
 
 router = APIRouter(tags=["resource-linking"])
@@ -48,7 +49,7 @@ async def link_knowledge(
     source_id: str,
     username: str = Depends(require_auth),
 ) -> Dict[str, Any]:
-    knowledge = KnowledgeStorage(_cfg.DB_FILE)
+    knowledge = KnowledgeStorage()
     source = await knowledge.get(source_id)
     if not source:
         raise APIError(
@@ -657,7 +658,7 @@ async def try_agent(
         )
 
     # Step 3: Resolve caller's connection (group first, then personal fallback)
-    conn_storage = ConnectionStorage(_cfg.DB_FILE)
+    conn_storage = ConnectionStorage()
     conn_data = await conn_storage.get(body.connection_id, ctx.group_id)
     if conn_data is None and ctx.group_id != ctx.user:
         conn_data = await conn_storage.get(body.connection_id, ctx.user)
@@ -702,7 +703,9 @@ async def try_agent(
                 ev = json.loads(chunk[5:].strip())
                 if ev.get("type") == "chunk":
                     reply_parts.append(ev.get("content", ""))
-            except Exception:
-                pass
+            except (json.JSONDecodeError, AttributeError) as exc:
+                flog.warning(
+                    f"[resource-linking] Evento SSE inválido para {agent_id}: {exc}"
+                )
 
     return {"reply": "".join(reply_parts), "warnings": warnings}

@@ -12,7 +12,6 @@ from pydantic import BaseModel, Field
 
 from app.api.routes.auth import GroupContext, require_group_session
 from app.auth.auth import get_user_role
-from app.config.data import DB_FILE
 from app.config.providers import PROVIDER_DEFAULT_MODELS
 from app.models.agent import Agent
 from app.services.builder_progress import partial_progress
@@ -32,8 +31,8 @@ from app.storage.storage import ConnectionStorage
 
 router = APIRouter(prefix="/api/skill-builder", tags=["skill-builder"])
 logger = logging.getLogger(__name__)
-_conns = ConnectionStorage(DB_FILE)
-_groups = GroupStorage(DB_FILE)
+_conns = ConnectionStorage()
+_groups = GroupStorage()
 
 
 class SkillBuilderChatBody(BaseModel):

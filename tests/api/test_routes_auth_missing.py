@@ -271,7 +271,7 @@ def test_admin_patch_user_self_rejected(admin_client):
 def test_admin_patch_user_is_active_sends_notification(admin_client):
     """Cambiar is_active dispara send_account_status_email si el usuario tiene email."""
     _direct_register("patch_active_tgt")
-    with patch("app.api.routes.admin.send_account_status_email") as mock_email:
+    with patch("app.api.routes.admin.users.send_account_status_email") as mock_email:
         r = admin_client.patch("/api/admin/users/patch_active_tgt", json={"is_active": False})
     assert r.status_code == 200
     assert r.json()["ok"] is True
@@ -442,10 +442,9 @@ def test_admin_impersonate_ok(admin_client):
 
 def test_admin_stats_with_token_backfill(admin_client):
     """Si hay conexiones con tokens pero no hay token_daily, se hace backfill."""
-    from app.config.data import DB_FILE
     from app.storage.storage import ConnectionStorage
 
-    asyncio.run(ConnectionStorage(DB_FILE).save(
+    asyncio.run(ConnectionStorage().save(
         {"type": "openai", "label": "backfill-conn", "api_key": "sk-x", "model": "gpt-4o"},
         owner_id="testadmin",
     ))
@@ -471,10 +470,9 @@ def test_admin_stats_with_token_backfill(admin_client):
 
 def test_admin_list_agents_with_connection_tokens(admin_client):
     """Agente con connection_id → tokens_in / tokens_out se rellenan desde la conexión."""
-    from app.config.data import DB_FILE
     from app.storage.storage import ConnectionStorage
 
-    conn_data = asyncio.run(ConnectionStorage(DB_FILE).save(
+    conn_data = asyncio.run(ConnectionStorage().save(
         {"type": "openai", "label": "agent-conn", "api_key": "sk-z", "model": "gpt-4o"},
         owner_id="testadmin",
     ))

@@ -4,6 +4,7 @@ from __future__ import annotations
 import io
 import json
 import zipfile
+from unittest.mock import AsyncMock, patch
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
 
@@ -315,6 +316,24 @@ def test_export_no_knowledge_no_folder(admin_client):
         r = admin_client.get(f"/api/agents/{agent['id']}/export/{fmt}")
         names = _zip_names(r.content)
         assert not any("knowledge/" in n for n in names), fmt
+
+
+def test_export_omits_unreadable_knowledge_and_warns(admin_client):
+    doc = _create_knowledge(admin_client)
+    agent = _create_agent(admin_client, {"knowledge": [doc["id"]]})
+
+    with (
+        patch(
+            "app.api.routes.agents._knowledge.get",
+            new=AsyncMock(side_effect=RuntimeError("lectura fallida")),
+        ),
+        patch("app.api.routes.agents.flog.warning") as warning,
+    ):
+        response = admin_client.get(f"/api/agents/{agent['id']}/export/claude")
+
+    assert response.status_code == 200
+    assert not any("knowledge/" in name for name in _zip_names(response.content))
+    assert "omitido del export" in warning.call_args.args[0]
 
 
 # ── Unknown format ────────────────────────────────────────────────────────────

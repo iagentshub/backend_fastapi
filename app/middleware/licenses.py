@@ -8,7 +8,7 @@ from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.auth.auth import decode_token, get_user_by_identity, get_user_role
-from app.config.data import DB_FILE, SETTINGS_FILE
+from app.config.data import SETTINGS_FILE
 from app.storage.billing import BillingStorage
 from app.storage.guest import is_guest
 
@@ -72,7 +72,7 @@ class LicenseGateMiddleware(BaseHTTPMiddleware):
 
         user = await get_user_by_identity(username)
         user_id = user["id"] if user else username
-        if await BillingStorage(DB_FILE).has_active_license(user_id):
+        if await BillingStorage().has_active_license(user_id):
             return await call_next(request)
 
         return JSONResponse(

@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from app.services.chat import (
+    _do_claude_stream,
     _do_openai_stream_with_dns_retry,
     _openai_compat_chat_url,
     stream_chat,
@@ -542,6 +543,31 @@ def _sse_claude_response(
     mock_resp.__exit__ = MagicMock(return_value=False)
     mock_resp.__iter__ = MagicMock(return_value=iter(lines))
     return mock_resp
+
+
+def test_claude_invalid_event_warns_and_continues():
+    mock_resp = MagicMock()
+    mock_resp.__enter__ = lambda self: self
+    mock_resp.__exit__ = MagicMock(return_value=False)
+    mock_resp.__iter__ = MagicMock(
+        return_value=iter(
+            [
+                b"data: no-es-json\n",
+                b'data: {"type":"content_block_delta","delta":{"text":"ok"}}\n',
+            ]
+        )
+    )
+
+    with (
+        patch("urllib.request.urlopen", return_value=mock_resp),
+        patch("app.services.chat.flog.warning") as warning,
+    ):
+        reply, tokens_in, tokens_out = _do_claude_stream(
+            "https://api.example.test", {}, {}, 5
+        )
+
+    assert (reply, tokens_in, tokens_out) == ("ok", 0, 0)
+    assert "Evento Anthropic inválido" in warning.call_args.args[0]
 
 
 async def test_claude_done_event_includes_tokens():

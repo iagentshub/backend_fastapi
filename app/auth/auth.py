@@ -887,8 +887,8 @@ async def ensure_admin_user() -> None:
         _pass_file.write_text(password, encoding="utf-8")
         _pass_file.chmod(0o600)
         saved = True
-    except OSError:
-        pass
+    except OSError as exc:
+        flog.error(f"[admin] No se pudo persistir .admin_pass: {exc}")
 
     sep = "=" * 60
     flog.warning(sep)

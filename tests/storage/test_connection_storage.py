@@ -8,8 +8,7 @@ from app.storage.storage import ConnectionStorage
 
 @pytest.fixture()
 def storage(patch_data_dir):
-    from app.config.data import DB_FILE
-    return ConnectionStorage(DB_FILE)
+    return ConnectionStorage()
 
 
 async def test_list_empty(storage):

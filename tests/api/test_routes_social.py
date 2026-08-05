@@ -304,10 +304,15 @@ def test_try_agente_publico_ok(client, monkeypatch):
     conn_id = _create_connection_raw(user, f"conn-try-ok-{agent_id[:8]}")
 
     async def _fake_stream(*args, **kwargs):
+        yield "data: no-es-json\n\n"
         yield 'data: {"type":"chunk","content":"hola"}\n\n'
         yield 'data: {"type":"done"}\n\n'
 
     monkeypatch.setattr("app.api.routes.resource_linking.stream_chat", _fake_stream)
+    warnings = []
+    monkeypatch.setattr(
+        "app.api.routes.resource_linking.flog.warning", warnings.append
+    )
 
     r = client.post(
         f"/api/agents/private/{agent_id}/try",
@@ -322,6 +327,7 @@ def test_try_agente_publico_ok(client, monkeypatch):
     assert body["reply"] == "hola"
     assert "warnings" in body
     assert isinstance(body["warnings"], list)
+    assert any("Evento SSE inválido" in warning for warning in warnings)
 
 
 def test_try_agente_privado_devuelve_404(client):

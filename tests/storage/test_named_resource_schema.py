@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import sqlite3
 
-from app.config.data import AGENTS_DIR, DB_FILE, SKILLS_DIR
+from app.config.data import AGENTS_DIR, SKILLS_DIR
 from app.storage.db import open_db
 from app.storage.knowledge import KnowledgeStorage
 from app.storage.storage import AgentStorage, ConnectionStorage, SkillStorage
@@ -46,10 +46,10 @@ async def test_all_managed_resources_expose_common_contract(
         await SkillStorage(SKILLS_DIR).save(
             "private", {"name": "Skill", "content": "x"}, owner_id="alice"
         ),
-        await ConnectionStorage(DB_FILE).save(
+        await ConnectionStorage().save(
             {"name": "Conexión", "type": "openai"}, owner_id="alice"
         ),
-        await KnowledgeStorage(DB_FILE).save(
+        await KnowledgeStorage().save(
             type="text",
             title="Conocimiento",
             source="manual",
@@ -72,7 +72,7 @@ async def test_all_managed_resources_expose_common_contract(
 async def test_named_resources_store_metadata_once(patch_data_dir):  # noqa: ARG001
     agents = AgentStorage(AGENTS_DIR)
     skills = SkillStorage(SKILLS_DIR)
-    connections = ConnectionStorage(DB_FILE)
+    connections = ConnectionStorage()
 
     agent = await agents.save({"name": "Agente SQL"}, owner_id="alice")
     skill = await skills.save(

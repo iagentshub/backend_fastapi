@@ -6,7 +6,6 @@ import http.client
 import socket
 import ssl
 from html.parser import HTMLParser
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote, urljoin, urlsplit
 
@@ -213,10 +212,6 @@ def extract_document_text(content_bytes: bytes, filename: str, mime: str = "") -
 class KnowledgeStorage(ResourceStorage):
     table = "knowledge_items"
     resource_type = "knowledge"
-
-    # db_path se acepta y se ignora (ver storage.py): open_db() abre la conexión.
-    def __init__(self, db_path: Path) -> None:
-        super().__init__()
 
     async def list(
         self, owner_id: Optional[str], type: Optional[str] = None

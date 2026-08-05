@@ -6,7 +6,6 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-import app.config.data as _cfg
 from app.auth.auth import (
     cancel_user_deletion,
     get_owned_groups,
@@ -41,7 +40,7 @@ async def _set_deletion_date(username: str, dt: datetime) -> None:
 
 async def _group_storage():
     from app.storage.groups import GroupStorage
-    return GroupStorage(_cfg.DB_FILE)
+    return GroupStorage()
 
 
 # ── get_owned_groups ──────────────────────────────────────────────────────

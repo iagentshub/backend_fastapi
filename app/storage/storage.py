@@ -13,8 +13,8 @@ from app.models.agent import Agent
 
 # db se importa DOS veces a propósito y no es un descuido:
 #
-# - open_db y _compact_resource_data son funciones; da igual cuándo se resuelva
-#   el nombre, y traerlas por valor deja el código legible.
+# - open_db es una función; da igual cuándo se resuelva el nombre, y traerla por
+#   valor deja el código legible.
 # - IS_PG es un BOOLEANO que los tests reescriben con
 #   monkeypatch.setattr(db, "IS_PG", False). Traerlo por valor congelaría el
 #   del arranque y toda la suite correría contra el dialecto equivocado — la
@@ -26,7 +26,8 @@ from app.models.agent import Agent
 # escondían los pocos diferidos que sí tienen motivo (ver DATA_DIR más abajo).
 from app.storage import db as _db
 from app.storage.crypto import decrypt, encrypt
-from app.storage.db import _compact_resource_data, open_db
+from app.storage.db import open_db
+from app.storage.db_migrations import _compact_resource_data
 from app.storage.migration import LegacyMigrationStorage
 from app.storage.resource_base import ResourceStorage
 from app.utils import flog
@@ -89,12 +90,6 @@ class ConnectionStorage(ResourceStorage):
     """DB-backed async connection storage."""
     table = "connections"
     resource_type = "connection"
-
-    # db_path no se usa: quien abre la conexión es open_db(), que lee la config
-    # él mismo. El parámetro sigue en la firma porque lo pasan ~20 sitios; el
-    # campo no, porque hacía creer que esta clase habla con ESE fichero.
-    def __init__(self, db_path: Path) -> None:
-        super().__init__()
 
     async def _migrate_legacy_data(self) -> None:
         """One-time import from connections.json if table is empty."""

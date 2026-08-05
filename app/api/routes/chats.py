@@ -6,14 +6,13 @@ from typing import Any, Dict, List
 from fastapi import APIRouter, Depends, Query, Request
 
 from app.api.routes.auth import require_session
-from app.config.data import DB_FILE
 from app.errors import APIError
 from app.storage.chat import ChatStorage
 from app.storage.guest import is_guest
 from app.utils.net import json_body
 
 router = APIRouter(prefix="/api/chats", tags=["chats"])
-_chat = ChatStorage(DB_FILE)
+_chat = ChatStorage()
 
 
 @router.get("/recent")

@@ -9,7 +9,7 @@ import httpx
 from fastapi import APIRouter, Depends, Request
 
 from app.api.routes.auth import require_auth
-from app.config.data import AGENTS_DIR, DB_FILE, SKILLS_DIR
+from app.config.data import AGENTS_DIR, SKILLS_DIR
 from app.errors import APIError
 from app.middleware.ratelimit import RateLimiter
 from app.storage.accounts import AccountStorage, _mask
@@ -19,8 +19,8 @@ from app.utils.net import json_body
 
 router = APIRouter(prefix="/api/accounts", tags=["accounts"])
 
-_storage = AccountStorage(DB_FILE)
-_conn_storage = ConnectionStorage(DB_FILE)
+_storage = AccountStorage()
+_conn_storage = ConnectionStorage()
 _device_flow_limiter = RateLimiter(calls=30, window=60)
 
 

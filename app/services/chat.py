@@ -31,6 +31,7 @@ from app.config.providers import (
     PROVIDER_DEFAULT_MODELS,
 )
 from app.config.security import PRIVATE_HOST_PREFIXES
+from app.utils import flog
 
 _NVIDIA_DEEPSEEK_V4_MODELS = {
     "deepseek-ai/deepseek-v4-pro",
@@ -310,8 +311,8 @@ def _do_claude_stream(
                 elif ev_type == "message_delta":
                     usage = obj.get("usage") or {}
                     tok_out = usage.get("output_tokens", tok_out)
-            except Exception:
-                pass
+            except (json.JSONDecodeError, AttributeError, TypeError) as exc:
+                flog.warning(f"[chat] Evento Anthropic inválido omitido: {exc}")
     return full_reply, tok_in, tok_out
 
 
@@ -614,6 +615,9 @@ async def stream_chat(
         detail = body[:500]
         try:
             parsed = json.loads(body)
+        except json.JSONDecodeError:
+            parsed = {}
+        if isinstance(parsed, dict):
             error = parsed.get("error") or {}
             detail = (
                 parsed.get("detail")
@@ -621,8 +625,6 @@ async def stream_chat(
                 or (error.get("message") if isinstance(error, dict) else error)
                 or detail
             )
-        except Exception:
-            pass
         if exc.code == 404 and conn_type in OPENAI_COMPAT_URLS:
             detail = (
                 f"No se encontró el endpoint de chat o el modelo '{model}'. "

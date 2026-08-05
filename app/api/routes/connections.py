@@ -15,7 +15,7 @@ from app.api.routes.auth import (
     require_group_session,
 )
 from app.auth.auth import get_user_role
-from app.config.data import AGENTS_DIR, DB_FILE, SKILLS_DIR
+from app.config.data import AGENTS_DIR, SKILLS_DIR
 from app.config.security import assert_safe_url
 from app.config.session import (
     RATE_TEST_CALLS,
@@ -53,12 +53,12 @@ def _safe_name(name: str, taken: Set[str], hub_label: str) -> str:
 
 router = APIRouter(prefix="/api/connections", tags=["connections"])
 
-_storage = ConnectionStorage(DB_FILE)
+_storage = ConnectionStorage()
 _agent_storage = AgentStorage(AGENTS_DIR)
 _skill_storage = SkillStorage(SKILLS_DIR)
-_know_storage = KnowledgeStorage(DB_FILE)
-_shares = GroupShareStorage(DB_FILE)
-_groups = GroupStorage(DB_FILE)
+_know_storage = KnowledgeStorage()
+_shares = GroupShareStorage()
+_groups = GroupStorage()
 _test_limiter = RateLimiter(calls=RATE_TEST_CALLS, window=RATE_TEST_WINDOW)
 _test_all_limiter = RateLimiter(calls=RATE_TESTALL_CALLS, window=RATE_TESTALL_WINDOW)
 # N2: limitar hub-sync para evitar amplificación de peticiones HTTP externas
@@ -776,8 +776,8 @@ async def _run_hub_sync(conn_id: str, conn: Dict[str, Any], owner: str) -> Dict[
                         owner_id=owner,
                     )
                     know_created += 1
-                except Exception:
-                    pass
+                except Exception as exc:
+                    result["errors"].append(f"conocimiento {rk_id}: {exc}")
             result["knowledge"] += know_created
             result["updated"] += know_updated
         except Exception as e:

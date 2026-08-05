@@ -37,7 +37,6 @@ from app.auth.auth import (
     verify_email_token,
     verify_password_async,
 )
-from app.config.data import DB_FILE as _DB_FILE
 from app.config.session import (
     EMAIL_VERIFY_ENABLED,
     LOGIN_MAX_FAILS,
@@ -80,7 +79,7 @@ from app.utils.net import client_ip as _client_ip
 from app.utils.net import json_body
 from app.utils.validation import is_valid_email, is_valid_username, normalize_username
 
-_groups = _GroupStorage(_DB_FILE)
+_groups = _GroupStorage()
 _tokens = _TokenStorage()
 
 

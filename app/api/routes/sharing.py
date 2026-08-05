@@ -13,7 +13,6 @@ from fastapi import APIRouter, Depends, Request
 import app.config.data as _cfg
 from app.api.routes.auth import GroupContext, require_group
 from app.auth.auth import get_user_role
-from app.config.data import DB_FILE
 from app.errors import APIError
 from app.models.resource_types import RESOURCE_TYPES
 from app.storage.db import open_db
@@ -26,8 +25,8 @@ from app.utils.net import json_body
 
 router = APIRouter(prefix="/api/sharing", tags=["sharing"])
 
-_shares = GroupShareStorage(DB_FILE)
-_groups = GroupStorage(DB_FILE)
+_shares = GroupShareStorage()
+_groups = GroupStorage()
 
 _VALID_TYPES = RESOURCE_TYPES
 
@@ -51,7 +50,7 @@ async def _resource_owner(resource_type: str, resource_id: str) -> Optional[str]
         item = await SkillStorage(_cfg.SKILLS_DIR).get_any(resource_id)
         return item.get("owner_id") if item else None
     if resource_type == "knowledge":
-        item = await KnowledgeStorage(_cfg.DB_FILE).get(resource_id)
+        item = await KnowledgeStorage().get(resource_id)
         return item.get("owner_id") if item else None
     if resource_type == "workflow":
         item = await WorkflowStorage().get_any(resource_id)
@@ -129,7 +128,7 @@ async def _cascade_share_agent(
         return []
     cascaded: List[str] = []
     skill_storage = SkillStorage(_cfg.SKILLS_DIR)
-    knowledge_storage = KnowledgeStorage(_cfg.DB_FILE)
+    knowledge_storage = KnowledgeStorage()
     prompt_storage = PromptStorage()
 
     # Identidades válidas del usuario que comparte (personal + group de equipo)

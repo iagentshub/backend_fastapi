@@ -214,7 +214,7 @@ def test_check_update_uses_configured_image_variant(admin_client, monkeypatch):
     monkeypatch.setenv("IMAGE_VARIANT", "fastapi")
     latest = AsyncMock(return_value="20260101000000")
 
-    with patch("app.api.routes.admin._latest_ghcr_version", latest):
+    with patch("app.api.routes.admin.updates._latest_ghcr_version", latest):
         r = admin_client.get("/api/admin/check-update")
 
     assert r.status_code == 200
@@ -421,11 +421,15 @@ def test_update_now_swallows_connection_errors(admin_client, monkeypatch):
     async def fake_post(self, url, **kwargs):
         raise httpx.ConnectError("conexión perdida")
 
-    with patch.object(httpx.AsyncClient, "post", new=fake_post):
+    with (
+        patch.object(httpx.AsyncClient, "post", new=fake_post),
+        patch("app.api.routes.admin.updates.flog.debug") as debug,
+    ):
         r = admin_client.post("/api/admin/update-now")
 
     assert r.status_code == 200
     assert r.json() == {"triggered": True}
+    assert "Watchtower cerró o rechazó" in debug.call_args.args[0]
 
 
 def test_update_now_forbidden_for_standard(client, reset_rate_limiter):
@@ -713,11 +717,10 @@ def test_admin_agents_forbidden_for_standard(client, reset_rate_limiter):
 def _insert_connection(owner_id: str = "testadmin") -> str:
     import asyncio
 
-    from app.config.data import DB_FILE
     from app.storage.storage import ConnectionStorage
 
     c = asyncio.run(
-        ConnectionStorage(DB_FILE).save(
+        ConnectionStorage().save(
             {
                 "type": "openai",
                 "label": "test-conn",
@@ -931,7 +934,6 @@ def test_admin_explore_forbidden_for_standard(client, reset_rate_limiter):
 def test_admin_agent_graph_contains_owner_connection_and_workflow(admin_client):
     import asyncio
 
-    from app.config.data import DB_FILE
     from app.storage.storage import ConnectionStorage
 
     admin_user = next(
@@ -940,7 +942,7 @@ def test_admin_agent_graph_contains_owner_connection_and_workflow(admin_client):
         if user["username"] == "testadmin"
     )
     connection = asyncio.run(
-        ConnectionStorage(DB_FILE).save(
+        ConnectionStorage().save(
             {
                 "type": "openai",
                 "label": "graph-connection",
@@ -1124,6 +1126,25 @@ def test_admin_stats_server_health(admin_client):
     if stats["cpu_cores"] is not None:
         assert stats["cpu_cores"] >= 1
         assert stats["cpu_load_pct"] >= 0
+
+
+def test_server_health_optional_metrics_fail_visibly_without_breaking():
+    from app.api.routes.admin.stats import _server_health
+
+    with (
+        patch("shutil.disk_usage", side_effect=OSError("sin disco")),
+        patch("builtins.open", side_effect=OSError("sin proc")),
+        patch(
+            "app.api.routes.admin.stats.os.getloadavg",
+            side_effect=OSError("sin carga"),
+            create=True,
+        ),
+        patch("app.api.routes.admin.stats.flog.debug") as debug,
+    ):
+        health = _server_health()
+
+    assert all(value is None for value in health.values())
+    assert debug.call_count == 3
 
 
 def test_admin_stats_health_counts_and_failure_rate(admin_client, tmp_path):

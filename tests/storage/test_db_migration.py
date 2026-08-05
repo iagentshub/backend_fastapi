@@ -12,6 +12,7 @@ import sqlite3
 from pathlib import Path
 
 import aiosqlite
+import pytest
 
 # ── helpers ────────────────────────────────────────────────────────────────────
 
@@ -54,9 +55,35 @@ def _user_cols(path: Path) -> set:
 # ── Tests de _pre_migrate_sqlite ───────────────────────────────────────────────
 
 
+async def test_add_sqlite_column_is_idempotent(tmp_path):
+    import app.storage.db_migrations as migration_mod
+
+    async with aiosqlite.connect(tmp_path / "columns.db") as conn:
+        await conn.execute("CREATE TABLE sample (id TEXT PRIMARY KEY)")
+
+        assert await migration_mod._add_sqlite_column(
+            conn, "sample", "label", "TEXT"
+        )
+        assert not await migration_mod._add_sqlite_column(
+            conn, "sample", "label", "TEXT"
+        )
+
+
+async def test_add_sqlite_column_propagates_unexpected_failure(tmp_path):
+    import app.storage.db_migrations as migration_mod
+
+    async with aiosqlite.connect(tmp_path / "broken-column.db") as conn:
+        await conn.execute("CREATE TABLE sample (id TEXT PRIMARY KEY)")
+
+        with pytest.raises(sqlite3.OperationalError):
+            await migration_mod._add_sqlite_column(
+                conn, "sample", "broken", "TEXT CHECK ("
+            )
+
+
 async def test_pre_migrate_adds_stripe_customer_id(tmp_path):
     """_pre_migrate_sqlite añade stripe_customer_id en DBs que no la tienen."""
-    import app.storage.db as db_mod
+    import app.storage.db_migrations as migration_mod
 
     db = tmp_path / "old.db"
     _make_old_db(db)
@@ -65,7 +92,7 @@ async def test_pre_migrate_adds_stripe_customer_id(tmp_path):
     async with aiosqlite.connect(str(db)) as conn:
         conn.row_factory = sqlite3.Row
         await conn.execute("PRAGMA journal_mode=WAL")
-        await db_mod._pre_migrate_sqlite(conn)
+        await migration_mod._pre_migrate_sqlite(conn)
         await conn.commit()
 
     assert "stripe_customer_id" in _user_cols(db)
@@ -73,14 +100,14 @@ async def test_pre_migrate_adds_stripe_customer_id(tmp_path):
 
 async def test_pre_migrate_is_noop_on_fresh_empty_db(tmp_path):
     """_pre_migrate_sqlite no crea tablas ni falla en una DB vacía."""
-    import app.storage.db as db_mod
+    import app.storage.db_migrations as migration_mod
 
     db = tmp_path / "fresh.db"
 
     async with aiosqlite.connect(str(db)) as conn:
         conn.row_factory = sqlite3.Row
         await conn.execute("PRAGMA journal_mode=WAL")
-        await db_mod._pre_migrate_sqlite(conn)
+        await migration_mod._pre_migrate_sqlite(conn)
         cur = await conn.execute("SELECT name FROM sqlite_master WHERE type='table'")
         tables = [r[0] for r in await cur.fetchall()]
 
@@ -89,7 +116,7 @@ async def test_pre_migrate_is_noop_on_fresh_empty_db(tmp_path):
 
 async def test_pre_migrate_idempotent(tmp_path):
     """Llamar a _pre_migrate_sqlite dos veces no falla ni duplica columnas."""
-    import app.storage.db as db_mod
+    import app.storage.db_migrations as migration_mod
 
     db = tmp_path / "idem.db"
     _make_old_db(db)
@@ -98,7 +125,7 @@ async def test_pre_migrate_idempotent(tmp_path):
         async with aiosqlite.connect(str(db)) as conn:
             conn.row_factory = sqlite3.Row
             await conn.execute("PRAGMA journal_mode=WAL")
-            await db_mod._pre_migrate_sqlite(conn)
+            await migration_mod._pre_migrate_sqlite(conn)
             await conn.commit()
 
     all_names = [
@@ -110,7 +137,7 @@ async def test_pre_migrate_idempotent(tmp_path):
 
 async def test_pre_migrate_ok_when_column_already_exists(tmp_path):
     """_pre_migrate_sqlite no falla si stripe_customer_id ya existe."""
-    import app.storage.db as db_mod
+    import app.storage.db_migrations as migration_mod
 
     db = tmp_path / "already.db"
     conn_s = sqlite3.connect(str(db))
@@ -128,7 +155,7 @@ async def test_pre_migrate_ok_when_column_already_exists(tmp_path):
     async with aiosqlite.connect(str(db)) as conn:
         conn.row_factory = sqlite3.Row
         await conn.execute("PRAGMA journal_mode=WAL")
-        await db_mod._pre_migrate_sqlite(conn)
+        await migration_mod._pre_migrate_sqlite(conn)
         await conn.commit()
 
 
@@ -216,14 +243,14 @@ async def test_migration_removes_folders_from_database_without_social_tables(tmp
 
 async def test_future_dep_in_schema_index_deps_applied(tmp_path, monkeypatch):
     """Nuevas entradas en _SCHEMA_INDEX_DEPS se aplican en DBs existentes."""
-    import app.storage.db as db_mod
+    import app.storage.db_migrations as migration_mod
 
     db = tmp_path / "future.db"
     _make_old_db(db)
 
-    original = list(db_mod._SCHEMA_INDEX_DEPS)
+    original = list(migration_mod._SCHEMA_INDEX_DEPS)
     monkeypatch.setattr(
-        db_mod,
+        migration_mod,
         "_SCHEMA_INDEX_DEPS",
         original + [("users", "future_regression_col", "TEXT")],
     )
@@ -231,7 +258,7 @@ async def test_future_dep_in_schema_index_deps_applied(tmp_path, monkeypatch):
     async with aiosqlite.connect(str(db)) as conn:
         conn.row_factory = sqlite3.Row
         await conn.execute("PRAGMA journal_mode=WAL")
-        await db_mod._pre_migrate_sqlite(conn)
+        await migration_mod._pre_migrate_sqlite(conn)
         await conn.commit()
 
     assert "future_regression_col" in _user_cols(db)
@@ -242,7 +269,7 @@ async def test_future_dep_in_schema_index_deps_applied(tmp_path, monkeypatch):
 
 def test_schema_index_deps_covers_stripe():
     """_SCHEMA_INDEX_DEPS debe contener la entrada stripe_customer_id."""
-    from app.storage.db import _SCHEMA_INDEX_DEPS
+    from app.storage.db_migrations import _SCHEMA_INDEX_DEPS
 
     entry = next(
         (
@@ -259,7 +286,7 @@ def test_schema_index_deps_covers_stripe():
 
 def test_schema_index_deps_well_formed():
     """Cada entrada de _SCHEMA_INDEX_DEPS tiene exactamente 3 campos."""
-    from app.storage.db import _SCHEMA_INDEX_DEPS
+    from app.storage.db_migrations import _SCHEMA_INDEX_DEPS
 
     for entry in _SCHEMA_INDEX_DEPS:
         assert len(entry) == 3, f"Entrada mal formada: {entry!r}"
@@ -271,7 +298,7 @@ def test_schema_index_deps_well_formed():
 
 async def test_legacy_group_tables_keep_their_data(tmp_path):
     """The terminology migration renames tables, columns and keeps every row."""
-    import app.storage.db as db_mod
+    import app.storage.db_migrations as migration_mod
 
     db = tmp_path / "legacy-groups.db"
     legacy_scope = "work" + "space"
@@ -303,7 +330,7 @@ async def test_legacy_group_tables_keep_their_data(tmp_path):
 
     async with aiosqlite.connect(str(db)) as conn:
         conn.row_factory = sqlite3.Row
-        await db_mod._rename_legacy_group_schema_sqlite(conn)
+        await migration_mod._rename_legacy_group_schema_sqlite(conn)
 
     migrated = sqlite3.connect(str(db))
     tables = {

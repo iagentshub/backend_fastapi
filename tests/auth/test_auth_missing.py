@@ -222,6 +222,27 @@ def test_ensure_admin_user_uses_valid_default_email(patch_data_dir, monkeypatch)
     assert user["role"] == "admin"
 
 
+def test_ensure_admin_user_avisa_si_no_puede_proteger_admin_pass(patch_data_dir):
+    from unittest.mock import patch
+
+    from app.auth import auth
+
+    errors = []
+    env = {
+        "GAIA_ADMIN_USERNAME": "adminwritefail",
+        "GAIA_ADMIN_EMAIL": "adminwritefail@test.com",
+        "GAIA_ADMIN_RESET": "true",
+    }
+    with (
+        patch.dict("os.environ", env),
+        patch("pathlib.Path.chmod", side_effect=OSError("solo lectura")),
+        patch.object(auth.flog, "error", side_effect=errors.append),
+    ):
+        asyncio.run(auth.ensure_admin_user())
+
+    assert any("No se pudo persistir .admin_pass" in message for message in errors)
+
+
 def test_ensure_admin_user_creates_when_none_exists(patch_data_dir):
     from unittest.mock import patch
 

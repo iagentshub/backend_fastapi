@@ -27,8 +27,8 @@ _agents = AgentStorage(AGENTS_DIR)
 _skills = SkillStorage(DB_FILE)
 _versions = ResourceVersionStorage()
 _workflows = WorkflowStorage()
-_shares = GroupShareStorage(DB_FILE)
-_group_storage = GroupStorage(DB_FILE)
+_shares = GroupShareStorage()
+_group_storage = GroupStorage()
 
 
 class WorkflowBody(BaseModel):

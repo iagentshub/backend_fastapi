@@ -142,8 +142,8 @@ async def explore_preview(
         agents = AgentStorage(_cfg.AGENTS_DIR)
         agent = await agents.get(resource_id)
         if agent:
-            shares = GroupShareStorage(_cfg.DB_FILE)
-            groups = GroupStorage(_cfg.DB_FILE)
+            shares = GroupShareStorage()
+            groups = GroupStorage()
             skills_storage = SkillStorage(_cfg.SKILLS_DIR)
             skill_names = []
             for sid in agent.get("skills", []):
@@ -161,7 +161,7 @@ async def explore_preview(
                 ):
                     continue
                 skill_names.append(sk.get("name", sid))
-            knowledge_storage = KnowledgeStorage(_cfg.DB_FILE)
+            knowledge_storage = KnowledgeStorage()
             knowledge_titles = []
             for kid in agent.get("knowledge", []):
                 item = await knowledge_storage.get(kid)
@@ -218,7 +218,7 @@ async def explore_preview(
             base["icon"] = pr.get("icon", "")
 
     elif resource_type == "knowledge":
-        knowledge_storage = KnowledgeStorage(_cfg.DB_FILE)
+        knowledge_storage = KnowledgeStorage()
         item = await knowledge_storage.get(resource_id)
         if item:
             base["content"] = (item.get("content") or "")[:2000]

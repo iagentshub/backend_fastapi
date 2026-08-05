@@ -7,7 +7,6 @@ Solo los groups de equipo tienen filas en las tablas groups / group_members.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from app.storage.db import IS_PG, open_db
@@ -29,9 +28,6 @@ def _row(row: Any) -> Optional[Dict[str, Any]]:
 
 
 class GroupStorage:
-    def __init__(self, db_path: Path) -> None:
-        self._path = db_path
-
     # ── Groups ─────────────────────────────────────────────────────────────
 
     async def get(self, group_id: str) -> Optional[Dict[str, Any]]:

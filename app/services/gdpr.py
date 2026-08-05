@@ -33,8 +33,10 @@ async def export_user_data(username: str) -> io.BytesIO:
                 if profile.get("preferences"):
                     try:
                         profile["preferences"] = json.loads(profile["preferences"])
-                    except Exception:
-                        pass
+                    except (json.JSONDecodeError, TypeError) as exc:
+                        flog.warning(
+                            f"[gdpr] Preferencias no normalizadas para {username}: {exc}"
+                        )
                 zf.writestr("profile.json", json.dumps(profile, ensure_ascii=False, indent=2))
 
             # 2. Conexiones (con API keys cifradas — son datos del usuario)
@@ -45,8 +47,11 @@ async def export_user_data(username: str) -> io.BytesIO:
                 if isinstance(c.get("data"), str):
                     try:
                         c["data"] = json.loads(c["data"])
-                    except Exception:
-                        pass
+                    except (json.JSONDecodeError, TypeError) as exc:
+                        flog.warning(
+                            f"[gdpr] Conexión {c.get('id', '?')} no normalizada "
+                            f"para {username}: {exc}"
+                        )
                 connections.append(c)
             zf.writestr("connections.json", json.dumps(connections, ensure_ascii=False, indent=2))
 
@@ -127,6 +132,6 @@ def _collect_file_owned(base_dir, username: str) -> list:
                 data = json.loads(cfg.read_text(encoding="utf-8"))
                 if data.get("owner_id") == username:
                     items.append(data)
-            except Exception:
-                pass
+            except (OSError, UnicodeError, json.JSONDecodeError, TypeError) as exc:
+                flog.warning(f"[gdpr] Configuración omitida del export {cfg}: {exc}")
     return items

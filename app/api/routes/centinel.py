@@ -15,6 +15,7 @@ Endpoints:
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import json
 import math
 import os
@@ -83,14 +84,33 @@ def _sse(data: dict) -> str:
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
+def _put_latest(q: asyncio.Queue, event: dict, channel: str) -> None:
+    """Deliver the latest event, evicting one stale item for slow subscribers."""
+    try:
+        q.put_nowait(event)
+    except asyncio.QueueFull:
+        dropped = q.get_nowait()
+        q.put_nowait(event)
+        flog.warning(
+            f"[centinel] suscriptor lento en {channel}; "
+            f"evento {dropped.get('type', '?')} descartado"
+        )
+
+
+def _terminate_process(proc: Any, source: str) -> None:
+    if proc is None or proc.returncode is not None:
+        return
+    try:
+        proc.terminate()
+    except (OSError, RuntimeError) as exc:
+        flog.warning(f"[centinel] no se pudo terminar proceso ({source}): {exc}")
+
+
 def _broadcast_sync(event: dict) -> None:
     _run["events"].append(event)
     _persist_run_events()
     for q in list(_subscribers):
-        try:
-            q.put_nowait(event)
-        except asyncio.QueueFull:
-            pass
+        _put_latest(q, event, "run")
 
 
 async def _broadcast(event: dict) -> None:
@@ -261,12 +281,7 @@ async def abort_run(_: str = Depends(require_admin)) -> dict:
 
     if is_local:
         # Camino rápido: este mismo proceso está ejecutando el run.
-        proc = _run.get("proc")
-        if proc and proc.returncode is None:
-            try:
-                proc.terminate()
-            except Exception:
-                pass
+        _terminate_process(_run.get("proc"), "abort local")
         _run["status"] = "aborted"
         _run["finished_at"] = time.time()
         _broadcast_sync({"type": "aborted"})
@@ -408,11 +423,7 @@ async def _run_ticker(run_id: str, proc: "asyncio.subprocess.Process") -> None:
         ):
             _run["status"] = "aborted"
             _run["finished_at"] = time.time()
-            if proc.returncode is None:
-                try:
-                    proc.terminate()
-                except Exception:
-                    pass
+            _terminate_process(proc, "abort remoto")
             _broadcast_sync({"type": "aborted"})
             _persist_run_state()
             _push_history()
@@ -605,10 +616,7 @@ def _stress_sse(data: dict) -> str:
 def _stress_broadcast_sync(event: dict) -> None:
     _stress["events"].append(event)
     for q in list(_stress_subscribers):
-        try:
-            q.put_nowait(event)
-        except asyncio.QueueFull:
-            pass
+        _put_latest(q, event, "stress")
 
 
 # ── Estado compartido entre workers ──────────────────────────────────────────
@@ -650,9 +658,12 @@ def _read_centinel_state() -> dict:
 
     try:
         if CENTINEL_STATE_FILE.exists():
-            return json.loads(CENTINEL_STATE_FILE.read_text(encoding="utf-8"))
-    except Exception:
-        pass
+            state = json.loads(CENTINEL_STATE_FILE.read_text(encoding="utf-8"))
+            if not isinstance(state, dict):
+                raise TypeError("el estado compartido no contiene un objeto JSON")
+            return state
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError) as exc:
+        flog.warning(f"[centinel] estado compartido ilegible: {exc}")
     return {}
 
 
@@ -1137,10 +1148,8 @@ async def _execute_stress(run_id: str, cfg: StressRequest) -> None:
         finally:
             threading.stack_size(prev_stack_size)
         ticker_task.cancel()
-        try:
+        with contextlib.suppress(asyncio.CancelledError):
             await ticker_task
-        except asyncio.CancelledError:
-            pass
 
         if _stress["status"] == "aborted":
             _persist_stress_state()
@@ -1387,10 +1396,8 @@ async def _run_probe_step(
     finally:
         threading.stack_size(prev_stack_size)
     ticker_task.cancel()
-    try:
+    with contextlib.suppress(asyncio.CancelledError):
         await ticker_task
-    except asyncio.CancelledError:
-        pass
 
     actual = time.monotonic() - t_start
     error_rate = error_count / max(request_count, 1)

@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, Query, Request
 
 from app.api.routes.auth import GroupContext, require_group, require_group_session
 from app.auth.auth import get_user_role
-from app.config.data import DB_FILE, SKILLS_DIR
+from app.config.data import SKILLS_DIR
 from app.errors import APIError
 from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
@@ -27,8 +27,8 @@ from app.utils.origin import compute_origin_type
 router = APIRouter(prefix="/api/skills", tags=["skills"])
 
 _storage = SkillStorage(SKILLS_DIR)
-_shares = GroupShareStorage(DB_FILE)
-_groups = GroupStorage(DB_FILE)
+_shares = GroupShareStorage()
+_groups = GroupStorage()
 _versions = ResourceVersionStorage()
 
 _VALID_SCOPES = {"public", "private", "all"}

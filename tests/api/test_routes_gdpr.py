@@ -13,7 +13,6 @@ import zipfile
 import pytest
 from fastapi.testclient import TestClient
 
-import app.config.data as _cfg
 from app.auth.auth import create_token, register_user, schedule_user_deletion
 
 # ── Fixture: parcha gdpr.DB_FILE con la BD de test ───────────────────────────
@@ -109,7 +108,7 @@ def test_request_deletion_409_si_es_owner_de_group(client):
     import asyncio
 
     from app.storage.groups import GroupStorage
-    asyncio.run(GroupStorage(_cfg.DB_FILE).create("Group Bloqueante", created_by=_user_id("rd_group_owner")))
+    asyncio.run(GroupStorage().create("Group Bloqueante", created_by=_user_id("rd_group_owner")))
     r = client.post("/api/auth/me/request-deletion")
     assert r.status_code == 409
     data = r.json()

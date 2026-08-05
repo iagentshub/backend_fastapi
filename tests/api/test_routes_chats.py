@@ -6,7 +6,6 @@ import asyncio
 import pytest
 
 from app.auth.auth import create_token, register_user_email
-from app.config.data import DB_FILE
 from app.storage.chat import ChatStorage
 
 
@@ -98,7 +97,7 @@ def test_get_messages_not_found(alice):
 
 def test_get_messages_with_content(alice, patch_data_dir):
     conv = alice.post("/api/chats/agent-abc", json={"title": "Test"}).json()
-    storage = ChatStorage(DB_FILE)
+    storage = ChatStorage()
     asyncio.run(storage.add_message(conv["id"], "user", "Hola"))
     asyncio.run(storage.add_message(conv["id"], "assistant", "Mundo"))
     r = alice.get(f"/api/chats/agent-abc/{conv['id']}")
@@ -113,7 +112,7 @@ def test_get_messages_includes_tokens(alice, patch_data_dir):
     """Los tokens de una respuesta sobreviven a recargar la conversación —
     no solo están disponibles en el evento SSE de la sesión activa."""
     conv = alice.post("/api/chats/agent-abc", json={"title": "Test"}).json()
-    storage = ChatStorage(DB_FILE)
+    storage = ChatStorage()
     asyncio.run(storage.add_message(conv["id"], "user", "Hola"))
     asyncio.run(
         storage.add_message(
@@ -131,7 +130,7 @@ def test_list_conversations_includes_token_totals(alice, patch_data_dir):
     """La lista de conversaciones trae el total de tokens (suma de sus
     mensajes) para poder mostrar consumo por chat sin leer los mensajes."""
     conv = alice.post("/api/chats/agent-abc", json={"title": "Test"}).json()
-    storage = ChatStorage(DB_FILE)
+    storage = ChatStorage()
     asyncio.run(
         storage.add_message(
             conv["id"], "assistant", "Uno", tokens_in=10, tokens_out=4

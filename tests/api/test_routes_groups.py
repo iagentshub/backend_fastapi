@@ -470,10 +470,9 @@ def test_update_and_list_granular_member_permissions(client):
 
     import asyncio
 
-    from app.config.data import DB_FILE
     from app.storage.groups import GroupStorage
 
-    storage = GroupStorage(DB_FILE)
+    storage = GroupStorage()
     assert asyncio.run(
         storage.has_resource_permission(
             group["id"], _user_id("group_perm_member"), "agents", "agent-private", "use"
@@ -506,10 +505,9 @@ def test_existing_member_permissions_default_to_allow(client):
     )
     _switch(client, group["id"], "group_default_perm_member")
 
-    from app.config.data import DB_FILE
     from app.storage.groups import GroupStorage
 
-    storage = GroupStorage(DB_FILE)
+    storage = GroupStorage()
     import asyncio
 
     assert asyncio.run(

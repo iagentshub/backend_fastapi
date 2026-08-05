@@ -21,7 +21,7 @@ from app.api.routes.auth import (
     require_group_session,
 )
 from app.auth.auth import get_user_role
-from app.config.data import AGENTS_DIR, DB_FILE, MEMORY_DIR, SKILLS_DIR
+from app.config.data import AGENTS_DIR, MEMORY_DIR, SKILLS_DIR
 from app.config.session import RATE_CHAT_CALLS, RATE_CHAT_WINDOW
 from app.errors import APIError
 from app.middleware.locale import get_locale
@@ -55,14 +55,14 @@ from app.utils.origin import compute_origin_type
 router = APIRouter(prefix="/api/agents", tags=["agents"])
 
 _agents = AgentStorage(AGENTS_DIR)
-_conns = ConnectionStorage(DB_FILE)
+_conns = ConnectionStorage()
 _skills = SkillStorage(SKILLS_DIR)
 _prompts = PromptStorage()
 _memory = MemoryStorage(MEMORY_DIR)
-_shares = GroupShareStorage(DB_FILE)
-_groups = GroupStorage(DB_FILE)
-_chat = ChatStorage(DB_FILE)
-_knowledge = KnowledgeStorage(DB_FILE)
+_shares = GroupShareStorage()
+_groups = GroupStorage()
+_chat = ChatStorage()
+_knowledge = KnowledgeStorage()
 _versions = ResourceVersionStorage()
 _chat_limiter = RateLimiter(calls=RATE_CHAT_CALLS, window=RATE_CHAT_WINDOW)
 
@@ -204,11 +204,13 @@ def _apply_locale(agent: Dict[str, Any], locale: str) -> Dict[str, Any]:
     if locale_path.exists():
         try:
             overrides = json.loads(locale_path.read_text(encoding="utf-8"))
+            if not isinstance(overrides, dict):
+                raise TypeError("el fichero de locale no contiene un objeto JSON")
             for field in _LOCALE_FIELDS:
                 if field in overrides:
                     agent = {**agent, field: overrides[field]}
-        except Exception:
-            pass
+        except (OSError, UnicodeError, json.JSONDecodeError, TypeError) as exc:
+            flog.warning(f"[agents] Locale omitido {locale_path}: {exc}")
     return agent
 
 
@@ -586,8 +588,10 @@ async def export_agent(
             item = await knowledge_store.get(kid)
             if item:
                 resolved_knowledge.append(item)
-        except Exception:
-            pass
+        except Exception as exc:
+            flog.warning(
+                f"[agents] Knowledge {kid} omitido del export {agent_id}: {exc}"
+            )
 
     # Resolve memory
     mem_file = a.get("memory_file") or f"{agent_id}.md"
@@ -859,8 +863,10 @@ async def chat(
                     ev = json.loads(chunk[6:].strip())
                     if ev.get("type") == "done":
                         done_event.append(ev)
-                except Exception:
-                    pass
+                except (json.JSONDecodeError, AttributeError) as exc:
+                    flog.warning(
+                        f"[agents] Evento SSE inválido para {agent_id}: {exc}"
+                    )
 
     async def _on_done():
         if not done_event:

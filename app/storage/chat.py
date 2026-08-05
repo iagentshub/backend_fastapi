@@ -1,7 +1,6 @@
 """Chat history storage — SQLite/PostgreSQL conversations and messages."""
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from app.storage.db import open_db
@@ -10,11 +9,6 @@ from app.utils.generators import generate_id
 
 
 class ChatStorage:
-    # db_path se acepta y se ignora: la conexión la abre open_db() con la
-    # config global. Ver el comentario largo en storage.py.
-    def __init__(self, db_path: Path) -> None:
-        pass
-
     # ── Conversations ──────────────────────────────────────────────────────────
 
     # Total de tokens por conversación (suma de sus mensajes) — para mostrar

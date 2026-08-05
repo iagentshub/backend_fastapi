@@ -7,7 +7,6 @@ solo un campo más, no forma parte de la clave.
 from __future__ import annotations
 
 import json
-from pathlib import Path
 from typing import Any, Dict, List, Optional
 
 from app.storage.crypto import decrypt, encrypt
@@ -24,11 +23,7 @@ def _mask(key: str) -> str:
 
 
 class AccountStorage:
-    """Almacén de cuentas en BD. Acepta la ruta al fichero, pero no la usa:
-    la conexión la abre open_db() con la config global (ver storage.py)."""
-
-    def __init__(self, db_path: Path) -> None:
-        pass
+    """Almacén de cuentas en la base de datos configurada."""
 
     async def _migrate_files(self) -> None:
         """One-time import from per-provider JSON files (formato legado:

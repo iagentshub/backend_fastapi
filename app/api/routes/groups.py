@@ -12,7 +12,6 @@ from app.auth.auth import (
     get_user_by_username,
     get_user_role,
 )
-from app.config.data import DB_FILE
 from app.config.session import SECURE_COOKIES
 from app.errors import APIError
 from app.storage.groups import GroupStorage
@@ -21,7 +20,7 @@ from app.utils.net import json_body
 
 router = APIRouter(prefix="/api/groups", tags=["groups"])
 
-_groups = GroupStorage(DB_FILE)
+_groups = GroupStorage()
 _PERMISSION_ACTIONS = {
     "agents": {"use"},
     "connections": {"direct", "via_agent"},

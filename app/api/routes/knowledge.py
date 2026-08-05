@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends, File, Query, Request, UploadFile
 
 from app.api.routes.auth import GroupContext, require_group, require_group_session
 from app.auth.auth import get_user_role
-from app.config.data import AGENTS_DIR, DB_FILE
+from app.config.data import AGENTS_DIR
 from app.errors import APIError
 from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
@@ -27,10 +27,10 @@ from app.utils.net import json_body
 
 router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
 
-_storage = KnowledgeStorage(DB_FILE)
+_storage = KnowledgeStorage()
 _agents = AgentStorage(AGENTS_DIR)
-_shares = GroupShareStorage(DB_FILE)
-_groups = GroupStorage(DB_FILE)
+_shares = GroupShareStorage()
+_groups = GroupStorage()
 
 _ALLOWED_EXTS = {".txt", ".md", ".pdf"}
 

@@ -8,8 +8,7 @@ from app.storage.billing import BillingStorage
 
 @pytest.fixture()
 async def storage(patch_data_dir):
-    from app.config.data import DB_FILE
-    return BillingStorage(DB_FILE)
+    return BillingStorage()
 
 
 def _sub_kwargs(**overrides):

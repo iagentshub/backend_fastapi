@@ -223,6 +223,24 @@ def test_apply_locale_empty_agent_returns_early():
     assert result == {}
 
 
+def test_get_agent_invalid_locale_keeps_base_and_warns(admin_client):
+    from app.config.data import AGENTS_DIR
+
+    agent = _create_agent(admin_client, {"name": "Locale Base Inválido"})
+    locale_file = AGENTS_DIR / "private" / agent["id"] / "locale.es.json"
+    locale_file.parent.mkdir(parents=True, exist_ok=True)
+    locale_file.write_text("no-es-json", encoding="utf-8")
+
+    with patch("app.api.routes.agents.flog.warning") as warning:
+        response = admin_client.get(
+            f"/api/agents/{agent['id']}", headers={"Accept-Language": "es"}
+        )
+
+    assert response.status_code == 200
+    assert response.json()["name"] == "Locale Base Inválido"
+    assert "Locale omitido" in warning.call_args.args[0]
+
+
 # ── _conn_owner helper — línea 46 ────────────────────────────────────────────
 
 
@@ -460,11 +478,32 @@ def test_chat_streams_sse_response(admin_client):
     assert "text/event-stream" in r.headers.get("content-type", "")
 
 
+def test_chat_malformed_sse_event_warns_and_continues(admin_client):
+    conn = _create_connection(admin_client)
+    agent = _create_agent(
+        admin_client, {"name": "Malformed SSE Agent", "connection_id": conn["id"]}
+    )
+
+    async def malformed_stream(*args, **kwargs):
+        yield "data: no-es-json\n\n"
+        yield 'data: {"type":"done","tokens":{"in":0,"out":0}}\n\n'
+
+    with (
+        patch("app.api.routes.agents.stream_chat", new=malformed_stream),
+        patch("app.api.routes.agents.flog.warning") as warning,
+    ):
+        response = admin_client.post(
+            f"/api/agents/{agent['id']}/chat", json={"messages": []}
+        )
+
+    assert response.status_code == 200
+    assert "Evento SSE inválido" in warning.call_args.args[0]
+
+
 def test_chat_with_conversation_id(admin_client):
     """Chat con conversation_id guarda mensajes (líneas 429-438)."""
     import asyncio as _asyncio
 
-    from app.config.data import DB_FILE
     from app.storage.chat import ChatStorage
 
     conn = _create_connection(admin_client)
@@ -473,7 +512,7 @@ def test_chat_with_conversation_id(admin_client):
     )
 
     # Crear conversación previa para tener un conversation_id válido
-    chat_storage = ChatStorage(DB_FILE)
+    chat_storage = ChatStorage()
 
     async def _create_conv():
         return await chat_storage.new_conversation(

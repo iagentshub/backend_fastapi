@@ -258,6 +258,45 @@ def test_hub_sync_success_empty_hub(admin_client):
     assert data["connections"] == 0
 
 
+def test_hub_sync_reports_each_knowledge_save_failure(admin_client):
+    created = _create_conn(admin_client, _CONN_IAGENTSHUB)
+
+    empty_response = MagicMock()
+    empty_response.raise_for_status = MagicMock()
+    empty_response.json = MagicMock(return_value=[])
+    knowledge_response = MagicMock()
+    knowledge_response.raise_for_status = MagicMock()
+    knowledge_response.json = MagicMock(
+        return_value=[{"id": "doc-fallido", "title": "Documento"}]
+    )
+
+    mock_http = AsyncMock()
+    mock_http.__aenter__ = AsyncMock(return_value=mock_http)
+    mock_http.__aexit__ = AsyncMock(return_value=False)
+    mock_http.get = AsyncMock(
+        side_effect=lambda url, **kwargs: (
+            knowledge_response if url.endswith("/api/knowledge") else empty_response
+        )
+    )
+
+    with (
+        patch("app.connections.iagentshub._login", return_value="fake-token"),
+        patch("httpx.AsyncClient", return_value=mock_http),
+        patch(
+            "app.api.routes.connections._know_storage.save",
+            new=AsyncMock(side_effect=RuntimeError("escritura fallida")),
+        ),
+    ):
+        response = admin_client.post(
+            f"/api/connections/{created['id']}/hub-sync"
+        )
+
+    assert response.status_code == 200
+    data = response.json()
+    assert data["ok"] is False
+    assert data["errors"] == ["conocimiento doc-fallido: escritura fallida"]
+
+
 # ── 7. Expansión Ollama en list_connections ───────────────────────────────────
 
 def test_list_connections_expands_ollama_base(client):

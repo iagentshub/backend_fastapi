@@ -51,7 +51,7 @@ async def _insert_conversation(username: str, title: str = "Test conv") -> str:
 
 async def _group_storage():
     from app.storage.groups import GroupStorage
-    return GroupStorage(_cfg.DB_FILE)
+    return GroupStorage()
 
 
 def _zip_names(buf: io.BytesIO) -> list:
@@ -97,6 +97,29 @@ async def test_export_profile_contiene_username(patch_gdpr_db):
     buf = await export_user_data("exp_profile")
     profile = json.loads(_zip_read(buf, "profile.json"))
     assert profile["username"] == "exp_profile"
+
+
+async def test_export_profile_json_invalido_se_conserva_y_avisa(
+    patch_gdpr_db, monkeypatch
+):
+    import app.services.gdpr as gdpr_mod
+    from app.storage.db import open_db
+
+    await _make_user("exp_bad_prefs")
+    user_id = await _user_id("exp_bad_prefs")
+    async with open_db() as conn:
+        await conn.execute(
+            "UPDATE users SET preferences=? WHERE id=?", ("no-es-json", user_id)
+        )
+        await conn.commit()
+
+    warnings = []
+    monkeypatch.setattr(gdpr_mod.flog, "warning", warnings.append)
+
+    buf = await export_user_data("exp_bad_prefs")
+    profile = json.loads(_zip_read(buf, "profile.json"))
+    assert profile["preferences"] == "no-es-json"
+    assert any("Preferencias no normalizadas" in message for message in warnings)
 
 
 async def test_export_profile_no_contiene_password_hash(patch_gdpr_db):
@@ -200,9 +223,15 @@ def test_collect_file_owned_incluye_private_y_public(tmp_path):
     assert len(result) == 2
 
 
-def test_collect_file_owned_ignora_json_invalido(tmp_path):
+def test_collect_file_owned_ignora_json_invalido_y_avisa(tmp_path, monkeypatch):
+    import app.services.gdpr as gdpr_mod
+
     private = tmp_path / "private" / "bad-item"
     private.mkdir(parents=True)
     (private / "config.json").write_text("no-es-json", encoding="utf-8")
+    warnings = []
+    monkeypatch.setattr(gdpr_mod.flog, "warning", warnings.append)
+
     result = _collect_file_owned(tmp_path, "anyuser")
     assert result == []
+    assert any("Configuración omitida" in message for message in warnings)

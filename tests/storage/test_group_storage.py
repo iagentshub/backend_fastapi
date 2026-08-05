@@ -9,8 +9,7 @@ from app.storage.groups import GroupStorage
 @pytest.fixture()
 async def group(patch_data_dir) -> GroupStorage:
     """GroupStorage con BD aislada por test."""
-    from app.config.data import DB_FILE
-    return GroupStorage(DB_FILE)
+    return GroupStorage()
 
 
 # ── CRUD de groups ────────────────────────────────────────────────────────

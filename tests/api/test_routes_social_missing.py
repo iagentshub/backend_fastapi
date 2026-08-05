@@ -70,7 +70,6 @@ def _make_public_skill(client, name: str) -> str:
 
 def _insert_public_knowledge(username: str, title: str | None = None) -> str:
     """Inserta un knowledge item en la BD y en resource_social como público."""
-    import app.config.data as cfg
     from app.storage.db import open_db
     from app.storage.knowledge import KnowledgeStorage
 
@@ -78,7 +77,7 @@ def _insert_public_knowledge(username: str, title: str | None = None) -> str:
         title = f"Test Knowledge {uuid4().hex[:6]}"
 
     async def _do() -> str:
-        ks = KnowledgeStorage(cfg.DB_FILE)
+        ks = KnowledgeStorage()
         result = await ks.save(
             type="url",
             title=title,
@@ -103,14 +102,13 @@ def _insert_public_knowledge(username: str, title: str | None = None) -> str:
 
 def _insert_private_knowledge(username: str, title: str | None = None) -> str:
     """Inserta un knowledge item en la BD SIN añadirlo a resource_social como público."""
-    import app.config.data as cfg
     from app.storage.knowledge import KnowledgeStorage
 
     if title is None:
         title = f"Private Knowledge {uuid4().hex[:6]}"
 
     async def _do() -> str:
-        ks = KnowledgeStorage(cfg.DB_FILE)
+        ks = KnowledgeStorage()
         result = await ks.save(
             type="url",
             title=title,

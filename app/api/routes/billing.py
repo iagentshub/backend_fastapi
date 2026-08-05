@@ -23,7 +23,6 @@ from app.config.billing import (
     STRIPE_SECRET_KEY,
     STRIPE_WEBHOOK_SECRET,
 )
-from app.config.data import DB_FILE
 from app.errors import APIError
 from app.middleware.ratelimit import RateLimiter
 from app.services.billing_pricing import InvalidPlanError, compute_total_cents
@@ -36,7 +35,7 @@ stripe.api_version = STRIPE_API_VERSION
 
 router = APIRouter(prefix="/api/billing", tags=["billing"])
 
-_billing = BillingStorage(DB_FILE)
+_billing = BillingStorage()
 _subscribe_limiter = RateLimiter(calls=10, window=60, key_func=_client_ip)
 _quote_limiter = RateLimiter(calls=30, window=60, key_func=_client_ip)
 
