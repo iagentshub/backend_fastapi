@@ -755,6 +755,24 @@ async def chat(
     history: List[Dict[str, Any]] = body.get("messages") or []
     conversation_id: str = str(body.get("conversation_id") or "").strip()
 
+    # Knowledge adjuntado puntualmente desde el chat (selección "@" del
+    # usuario): se resuelve y autoriza aquí (no dentro de stream_chat) porque
+    # requiere consultar permisos de grupo, ajenos al servicio de chat.
+    attached_knowledge: List[Dict[str, Any]] = []
+    if not is_guest(user):
+        requested_ids = [
+            str(kid) for kid in (body.get("attached_knowledge_ids") or []) if kid
+        ][:5]
+        for kid in requested_ids:
+            item = await _knowledge.get(kid, owner_id=user)
+            if not item and group_id != user:
+                if await _groups.has_resource_permission(
+                    group_id, user, "knowledge", kid, "view"
+                ):
+                    item = await _knowledge.get(kid, owner_id=None)
+            if item and item.get("is_active", True):
+                attached_knowledge.append(item)
+
     # Ollama virtual connections: "base_id::model_name"
     raw_conn_id = a.get("connection_id") or ""
 
@@ -852,6 +870,7 @@ async def chat(
             history_user_id,
             conversation_id or None,
             prompt_storage=None if is_guest(user) else _prompts,
+            attached_knowledge=attached_knowledge,
         ):
             yield chunk
             if chunk.startswith("data: "):

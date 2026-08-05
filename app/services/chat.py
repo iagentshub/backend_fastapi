@@ -95,6 +95,10 @@ class _PromptStorage(Protocol):
         self, prompt_id: str, owner_id: Any = None
     ) -> Optional[Dict[str, Any]]: ...
 
+    async def find_by_alias(
+        self, alias: str, owner_id: Any = None
+    ) -> Optional[Dict[str, Any]]: ...
+
 
 class _MemoryStorage(Protocol):
     # Declaraban get/save síncronos y el código los llama con await desde el
@@ -401,6 +405,7 @@ async def stream_chat(
     conversation_id: Optional[str] = None,
     *,
     prompt_storage: Optional[_PromptStorage] = None,
+    attached_knowledge: Optional[List[Dict[str, Any]]] = None,
 ) -> AsyncGenerator[str, None]:
     # asyncio estaba diferido aquí dentro. Es stdlib: no había ciclo que
     # romper, y _stream_tokens lo necesita a nivel de módulo.
@@ -441,6 +446,17 @@ async def stream_chat(
                     f"\n\n## Conocimiento: {item.get('title', kid)}\n{item['content']}"
                 )
 
+    # Knowledge adjuntado puntualmente a este mensaje desde el chat (vía "@" en
+    # el composer) — ya viene resuelto y autorizado por el llamador (la ruta
+    # valida ownership/permiso de grupo antes de construir esta lista).
+    if attached_knowledge:
+        for item in attached_knowledge:
+            content = item.get("content")
+            if content:
+                system += (
+                    f"\n\n## Conocimiento adjunto: {item.get('title', item.get('id', ''))}\n{content}"
+                )
+
     # Memory injection
     if agent.use_memory and memory_storage is not None:
         mem_file = agent.memory_file or f"{agent.id}.md"
@@ -449,14 +465,10 @@ async def stream_chat(
             system += f"\n\n## Memoria del agente\n{mem_content}"
 
     # Prompt injection — "@alias" en el último mensaje del usuario referencia
-    # ocultamente un prompt del catálogo del agente: se añade su contenido al
-    # system sin modificar el texto visible del mensaje.
-    if (
-        prompt_storage is not None
-        and agent.prompts
-        and history
-        and history[-1].get("role") == "user"
-    ):
+    # ocultamente cualquier prompt accesible del usuario (propio o público),
+    # no solo los vinculados al agente: se añade su contenido al system sin
+    # modificar el texto visible del mensaje.
+    if prompt_storage is not None and history and history[-1].get("role") == "user":
         import re
 
         mentions = {
@@ -467,11 +479,10 @@ async def stream_chat(
                 re.IGNORECASE,
             )
         }
-        if mentions:
-            for pid in agent.prompts:
-                p = await prompt_storage.get_any(pid)
-                if p and str(p.get("alias", "")).lower() in mentions:
-                    system += f"\n\n## Prompt: {p.get('name', pid)}\n{p.get('content', '')}"
+        for alias in mentions:
+            p = await prompt_storage.find_by_alias(alias, owner_id=user_id)
+            if p:
+                system += f"\n\n## Prompt: {p.get('name', alias)}\n{p.get('content', '')}"
 
     # Recuerdo de conversaciones anteriores del mismo usuario con este agente
     if agent.use_memory and chat_storage is not None and user_id:
