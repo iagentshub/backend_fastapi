@@ -810,7 +810,22 @@ def _prompt_storage_mock(prompts_by_id: dict) -> MagicMock:
     async def _get_any(prompt_id, owner_id=None):
         return prompts_by_id.get(prompt_id)
 
+    async def _find_by_alias(alias, owner_id=None):
+        alias = alias.strip().lower()
+        candidates = [
+            p for p in prompts_by_id.values()
+            if str(p.get("alias", "")).lower() == alias
+        ]
+        for p in candidates:
+            if owner_id and p.get("owner_id") == owner_id:
+                return p
+        for p in candidates:
+            if p.get("scope", "public") == "public":
+                return p
+        return None
+
     storage.get_any = _get_any
+    storage.find_by_alias = _find_by_alias
     return storage
 
 
@@ -925,9 +940,9 @@ async def test_no_mention_does_not_inject_prompt():
     assert "Resume el texto en 3 frases." not in system_message
 
 
-async def test_mention_of_prompt_not_in_agent_catalog_is_ignored():
-    """El alias mencionado debe resolverse solo contra agent.prompts, no
-    contra cualquier prompt existente en la BD."""
+async def test_mention_of_prompt_not_in_agent_catalog_is_resolved():
+    """El alias mencionado se resuelve contra cualquier prompt accesible del
+    usuario (público o propio), no solo contra los vinculados al agente."""
     agent = _make_agent("openai")
     agent["prompts"] = []  # el agente no tiene ningún prompt vinculado
     conn = _make_conn("openai")
@@ -938,6 +953,7 @@ async def test_mention_of_prompt_not_in_agent_catalog_is_ignored():
                 "alias": "resumen",
                 "name": "Resumen",
                 "content": "Resume el texto en 3 frases.",
+                "scope": "public",
             }
         }
     )
@@ -961,6 +977,90 @@ async def test_mention_of_prompt_not_in_agent_catalog_is_ignored():
         ]
 
     system_message = sent_payloads[0]["messages"][0]["content"]
+    assert "Resume el texto en 3 frases." in system_message
+
+
+async def test_mention_of_own_private_prompt_not_in_agent_catalog_is_resolved():
+    """Un prompt privado propio del usuario, aunque no esté vinculado al
+    agente, debe poder mencionarse."""
+    agent = _make_agent("openai")
+    agent["prompts"] = []
+    conn = _make_conn("openai")
+    prompt_storage = _prompt_storage_mock(
+        {
+            "prompt-1": {
+                "id": "prompt-1",
+                "alias": "resumen",
+                "name": "Resumen",
+                "content": "Resume el texto en 3 frases.",
+                "scope": "private",
+                "owner_id": "alice",
+            }
+        }
+    )
+
+    sent_payloads = []
+
+    def fake_urlopen(req, timeout):
+        sent_payloads.append(json.loads(req.data.decode()))
+        return _sse_done_response()
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        [
+            e
+            async for e in stream_chat(
+                agent,
+                conn,
+                [{"role": "user", "content": "Hola @resumen"}],
+                _skill_storage(),
+                user_id="alice",
+                prompt_storage=prompt_storage,
+            )
+        ]
+
+    system_message = sent_payloads[0]["messages"][0]["content"]
+    assert "Resume el texto en 3 frases." in system_message
+
+
+async def test_mention_of_other_owners_private_prompt_is_ignored():
+    """Un prompt privado de otro usuario nunca debe filtrarse por mención,
+    aunque el alias coincida exactamente."""
+    agent = _make_agent("openai")
+    agent["prompts"] = []
+    conn = _make_conn("openai")
+    prompt_storage = _prompt_storage_mock(
+        {
+            "prompt-1": {
+                "id": "prompt-1",
+                "alias": "resumen",
+                "name": "Resumen",
+                "content": "Resume el texto en 3 frases.",
+                "scope": "private",
+                "owner_id": "bob",
+            }
+        }
+    )
+
+    sent_payloads = []
+
+    def fake_urlopen(req, timeout):
+        sent_payloads.append(json.loads(req.data.decode()))
+        return _sse_done_response()
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        [
+            e
+            async for e in stream_chat(
+                agent,
+                conn,
+                [{"role": "user", "content": "Hola @resumen"}],
+                _skill_storage(),
+                user_id="alice",
+                prompt_storage=prompt_storage,
+            )
+        ]
+
+    system_message = sent_payloads[0]["messages"][0]["content"]
     assert "Resume el texto en 3 frases." not in system_message
 
 
@@ -977,6 +1077,58 @@ async def test_prompt_storage_none_does_not_break_stream_chat():
                 agent,
                 conn,
                 [{"role": "user", "content": "Hola @resumen"}],
+                _skill_storage(),
+            )
+        ]
+
+    assert any("done" in e for e in events)
+
+
+# ─── Tests de knowledge adjuntado puntualmente ("attached_knowledge") ──────────
+
+
+async def test_attached_knowledge_injected_into_system():
+    """El contenido de un knowledge adjuntado puntualmente desde el chat debe
+    aparecer en el system prompt, ya resuelto/autorizado por el llamador."""
+    agent = _make_agent("openai")
+    conn = _make_conn("openai")
+    attached = [
+        {"id": "kn-1", "title": "Guía de estilo", "content": "Usa siempre tono formal."}
+    ]
+
+    sent_payloads = []
+
+    def fake_urlopen(req, timeout):
+        sent_payloads.append(json.loads(req.data.decode()))
+        return _sse_done_response()
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        [
+            e
+            async for e in stream_chat(
+                agent,
+                conn,
+                [{"role": "user", "content": "Hola"}],
+                _skill_storage(),
+                attached_knowledge=attached,
+            )
+        ]
+
+    system_message = sent_payloads[0]["messages"][0]["content"]
+    assert "Usa siempre tono formal." in system_message
+
+
+async def test_no_attached_knowledge_does_not_break_stream_chat():
+    agent = _make_agent("openai")
+    conn = _make_conn("openai")
+
+    with patch("urllib.request.urlopen", return_value=_sse_done_response()):
+        events = [
+            e
+            async for e in stream_chat(
+                agent,
+                conn,
+                [{"role": "user", "content": "Hola"}],
                 _skill_storage(),
             )
         ]

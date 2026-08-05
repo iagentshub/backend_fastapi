@@ -1171,6 +1171,32 @@ class PromptStorage(ResourceStorage):
                 return result
         return None
 
+    async def find_by_alias(
+        self, alias: str, owner_id: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Busca un prompt accesible por su alias exacto: primero uno propio
+        del owner, si no un público. Evita traer todo el listado solo para
+        resolver una mención "@alias" en el chat."""
+        await self._ensure_migrated()
+        alias = alias.strip().lower()
+        async with open_db() as conn:
+            row = None
+            if owner_id:
+                row = await conn.fetchone(
+                    "SELECT id, owner_id, name, alias, scope, data, content, is_active, "
+                    "deactivated_at, created_at, updated_at FROM prompts "
+                    "WHERE alias=? AND owner_id=? AND is_active=1 LIMIT 1",
+                    (alias, owner_id),
+                )
+            if row is None:
+                row = await conn.fetchone(
+                    "SELECT id, owner_id, name, alias, scope, data, content, is_active, "
+                    "deactivated_at, created_at, updated_at FROM prompts "
+                    "WHERE alias=? AND scope='public' AND is_active=1 LIMIT 1",
+                    (alias,),
+                )
+        return self._row_to_dict(row) if row else None
+
     async def save(
         self, scope: str, payload: Dict[str, Any], owner_id: Optional[str] = None
     ) -> Dict[str, Any]:

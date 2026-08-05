@@ -559,6 +559,73 @@ def test_chat_with_ollama_virtual_connection(admin_client):
     assert r.status_code == 200
 
 
+def test_chat_attached_knowledge_ids_injected(admin_client):
+    """Un knowledge propio referenciado vía attached_knowledge_ids llega
+    resuelto (con contenido) a stream_chat."""
+    conn = _create_connection(admin_client)
+    agent = _create_agent(
+        admin_client, {"name": "Attach KN Agent", "connection_id": conn["id"]}
+    )
+    item = admin_client.post(
+        "/api/knowledge/text",
+        json={"title": "Guía de estilo", "content": "Usa siempre tono formal."},
+    ).json()
+
+    captured_kwargs = {}
+
+    async def _fake_stream_capture(*args, **kwargs):
+        captured_kwargs.update(kwargs)
+        yield 'data: {"type": "done", "reply": "ok", "tokens": {"in": 0, "out": 0}}\n\n'
+
+    with patch("app.api.routes.agents.stream_chat", new=_fake_stream_capture):
+        r = admin_client.post(
+            f"/api/agents/{agent['id']}/chat",
+            json={
+                "messages": [{"role": "user", "content": "Hola"}],
+                "attached_knowledge_ids": [item["id"]],
+            },
+        )
+
+    assert r.status_code == 200
+    attached = captured_kwargs.get("attached_knowledge") or []
+    assert any(k.get("content") == "Usa siempre tono formal." for k in attached)
+
+
+def test_chat_attached_knowledge_ids_without_permission_ignored(client):
+    """Un id de knowledge ajeno/sin permiso no debe filtrar contenido ni
+    romper el envío del mensaje: se ignora silenciosamente."""
+    _register_and_login(client, "attach_kn_victim")
+    item = client.post(
+        "/api/knowledge/text",
+        json={"title": "Victim Notes", "content": "secret notes"},
+    ).json()
+
+    _register_and_login(client, "attach_kn_attacker")
+    conn = _create_connection(client)
+    agent = _create_agent(
+        client, {"name": "Attach KN Attacker Agent", "connection_id": conn["id"]}
+    )
+
+    captured_kwargs = {}
+
+    async def _fake_stream_capture(*args, **kwargs):
+        captured_kwargs.update(kwargs)
+        yield 'data: {"type": "done", "reply": "ok", "tokens": {"in": 0, "out": 0}}\n\n'
+
+    with patch("app.api.routes.agents.stream_chat", new=_fake_stream_capture):
+        r = client.post(
+            f"/api/agents/{agent['id']}/chat",
+            json={
+                "messages": [{"role": "user", "content": "Hola"}],
+                "attached_knowledge_ids": [item["id"]],
+            },
+        )
+
+    assert r.status_code == 200
+    attached = captured_kwargs.get("attached_knowledge") or []
+    assert attached == []
+
+
 def test_chat_guest_path(client):
     """Chat vía sesión guest (líneas 362-364, 383-386)."""
     _setup_guest(client)
