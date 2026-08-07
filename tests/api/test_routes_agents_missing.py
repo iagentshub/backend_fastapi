@@ -643,6 +643,56 @@ def test_chat_guest_agent_not_found(client):
     assert r.status_code == 404
 
 
+# ── tool_storage: gating de invitado (Fase 1.5) ────────────────────────────────
+# Tool no está en el allowlist de GuestSession (a diferencia de skills/prompts):
+# un invitado nunca debe recibir contenido de tools inyectado en el chat.
+
+
+def test_chat_tool_storage_passed_for_registered_user(admin_client):
+    conn = _create_connection(admin_client)
+    agent = _create_agent(
+        admin_client, {"name": "Tool Storage Agent", "connection_id": conn["id"]}
+    )
+
+    captured_kwargs = {}
+
+    async def _fake_stream_capture(*args, **kwargs):
+        captured_kwargs.update(kwargs)
+        yield 'data: {"type": "done", "reply": "ok", "tokens": {"in": 0, "out": 0}}\n\n'
+
+    with patch("app.api.routes.agents.stream_chat", new=_fake_stream_capture):
+        r = admin_client.post(
+            f"/api/agents/{agent['id']}/chat",
+            json={"messages": [{"role": "user", "content": "Hola"}]},
+        )
+
+    assert r.status_code == 200
+    assert captured_kwargs.get("tool_storage") is not None
+
+
+def test_chat_guest_tool_storage_is_none(client):
+    _setup_guest(client)
+    conn = _create_connection(client)
+    agent = _create_agent(
+        client, {"name": "Guest Tool Storage Agent", "connection_id": conn["id"]}
+    )
+
+    captured_kwargs = {}
+
+    async def _fake_stream_capture(*args, **kwargs):
+        captured_kwargs.update(kwargs)
+        yield 'data: {"type": "done", "reply": "ok", "tokens": {"in": 0, "out": 0}}\n\n'
+
+    with patch("app.api.routes.agents.stream_chat", new=_fake_stream_capture):
+        r = client.post(
+            f"/api/agents/{agent['id']}/chat",
+            json={"messages": [{"role": "user", "content": "Hola"}]},
+        )
+
+    assert r.status_code == 200
+    assert captured_kwargs.get("tool_storage") is None
+
+
 # ── save_agent rechaza skills/knowledge ajenos ────────────────────────────────
 # Sin esto, cualquiera puede adjuntar el ID de una skill/knowledge privados de
 # otro usuario a su propio agente y leer su contenido completo vía chat/export.

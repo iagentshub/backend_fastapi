@@ -892,6 +892,7 @@ async def chat(
             history_user_id,
             conversation_id or None,
             prompt_storage=None if is_guest(user) else _prompts,
+            tool_storage=None if is_guest(user) else _tools,
             attached_knowledge=attached_knowledge,
         ):
             yield chunk

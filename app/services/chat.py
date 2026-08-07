@@ -86,6 +86,12 @@ class _SkillStorage(Protocol):
     ) -> Optional[Dict[str, Any]]: ...
 
 
+class _ToolStorage(Protocol):
+    async def get(
+        self, scope: str, tool_id: str, owner_id: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]: ...
+
+
 class _KnowledgeStorage(Protocol):
     async def get(
         self, item_id: str, owner_id: Any = None
@@ -407,6 +413,7 @@ async def stream_chat(
     conversation_id: Optional[str] = None,
     *,
     prompt_storage: Optional[_PromptStorage] = None,
+    tool_storage: Optional[_ToolStorage] = None,
     attached_knowledge: Optional[List[Dict[str, Any]]] = None,
 ) -> AsyncGenerator[str, None]:
     # asyncio estaba diferido aquí dentro. Es stdlib: no había ciclo que
@@ -437,6 +444,36 @@ async def stream_chat(
                 system += (
                     f"\n\n## Skill: {sk.get('name', sid)}\n{sk.get('content', '')}"
                 )
+                break
+
+    # Tools injection — recurso estático vinculado al agente (agent.tools),
+    # misma familia que Skill: el modelo conoce el contenido para poder
+    # compartirlo con el usuario, nunca lo ejecuta (Fase 2, fuera de alcance).
+    for tid in agent.tools:
+        if tool_storage is None:
+            break
+        for scope in ("public", "private"):
+            t = await tool_storage.get(scope, tid)
+            if t:
+                language = str(t.get("language") or "")
+                name = t.get("name", tid)
+                if language == "cpp":
+                    system += (
+                        f"\n\n## Tool: {name} (binario C++)\n"
+                        f"{t.get('description', '') or 'Sin descripción.'}\n"
+                        "Es un binario precompilado: no hay código fuente en texto "
+                        "para mostrar en el chat. Indica al usuario que puede "
+                        "descargarlo desde la tarjeta de esta tool en Conocimiento."
+                    )
+                else:
+                    system += (
+                        f"\n\n## Tool: {name} ({language})\n"
+                        "No se ejecuta en el servidor: comparte este código con el "
+                        "usuario, tal cual, para que lo ejecute en su propia "
+                        "máquina. No digas que lo ejecutaste tú ni inventes su "
+                        "resultado.\n\n"
+                        f"```{language}\n{t.get('content', '')}\n```"
+                    )
                 break
 
     # Knowledge injection (URLs + documents attached to the agent)
