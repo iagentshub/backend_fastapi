@@ -182,6 +182,53 @@ def test_unlink_account_does_not_affect_sibling(client):
     assert {a["id"] for a in remaining} == {id2}
 
 
+def test_unlink_account_deletes_synced_connections(client):
+    """Desvincular una cuenta borra también las conexiones que había
+    sincronizado — dejarlas huérfanas (sin cuenta que las gestione) es más
+    confuso que útil."""
+    _setup_user(client, "delacc4")
+    account_id = client.post(
+        "/api/accounts", json={"provider": "openai", "api_key": "sk-test-openai-123456"}
+    ).json()["id"]
+
+    with patch.object(
+        httpx.AsyncClient, "get", new=_mock_openai_models("gpt-4o", "gpt-3.5-turbo")
+    ):
+        client.post(f"/api/accounts/{account_id}/sync")
+
+    r = client.delete(f"/api/accounts/{account_id}")
+    assert r.status_code == 200
+    assert r.json()["connections_deleted"] == 2
+
+    conns = client.get("/api/connections/raw").json()
+    names = {c["name"] for c in conns}
+    assert "OpenAI / gpt-4o" not in names
+    assert "OpenAI / gpt-3.5-turbo" not in names
+
+
+def test_unlink_account_does_not_delete_sibling_or_manual_connections(client):
+    """Desvincular una cuenta solo borra SUS conexiones — ni las de una
+    cuenta hermana del mismo proveedor ni una Connection creada a mano."""
+    _setup_user(client, "delacc5")
+    id1 = client.post("/api/accounts", json={"provider": "openai", "api_key": "sk-one-123456"}).json()["id"]
+    id2 = client.post("/api/accounts", json={"provider": "openai", "api_key": "sk-two-123456"}).json()["id"]
+    with patch.object(httpx.AsyncClient, "get", new=_mock_openai_models("gpt-4o")):
+        client.post(f"/api/accounts/{id1}/sync")
+        client.post(f"/api/accounts/{id2}/sync")
+    manual = client.post(
+        "/api/connections",
+        json={"type": "openai", "name": "Manual conn", "api_key": "sk-manual", "model": "gpt-4o"},
+    ).json()
+
+    r = client.delete(f"/api/accounts/{id1}")
+    assert r.status_code == 200
+    assert r.json()["connections_deleted"] == 1
+
+    remaining_ids = {c["id"] for c in client.get("/api/connections/raw").json()}
+    assert any(c["_account_id"] == id2 for c in client.get("/api/connections/raw").json())
+    assert manual["id"] in remaining_ids
+
+
 # ── POST /api/accounts/test (credenciales nuevas, sin guardar) ──────────────
 
 def test_test_new_account_openai_mocked(client):

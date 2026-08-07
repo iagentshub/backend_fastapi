@@ -360,9 +360,18 @@ async def update_account(
 async def unlink_account(
     account_id: str, user: str = Depends(require_auth)
 ) -> Dict[str, Any]:
-    if not await _storage.delete(account_id, await _owner(user)):
+    owner = await _owner(user)
+    if not await _storage.delete(account_id, owner):
         raise APIError(404, "not_found", "Cuenta no vinculada", extra={"resource": "account"})
-    return {"ok": True}
+    # Desvincular borra también las conexiones que esa cuenta había
+    # sincronizado — dejarlas huérfanas (sin cuenta que las gestione, pero
+    # con credenciales vigentes) es más confuso que útil.
+    connections_deleted = 0
+    for conn in await _conn_storage.list(owner):
+        if conn.get("_account_id") == account_id:
+            if await _conn_storage.delete(conn["id"], owner_id=owner):
+                connections_deleted += 1
+    return {"ok": True, "connections_deleted": connections_deleted}
 
 
 @router.post("/{account_id}/test")
