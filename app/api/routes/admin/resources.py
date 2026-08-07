@@ -11,9 +11,9 @@ from app.api.routes.admin._router import admin_router
 from app.api.routes.auth import require_admin
 from app.config.data import AGENTS_DIR as _AGENTS_DIR
 from app.errors import APIError
+from app.storage.agent_storage import AgentStorage as _AgentStorage
 from app.storage.db import open_db
 from app.storage.groups import GroupStorage as _GroupStorage
-from app.storage.storage import AgentStorage as _AgentStorage
 from app.storage.workflows import WorkflowStorage as _WorkflowStorage
 from app.utils.net import json_body
 
@@ -73,7 +73,7 @@ async def admin_list_connections(
 async def admin_delete_connection(
     conn_id: str, _: str = Depends(require_admin)
 ) -> dict[str, Any]:
-    from app.storage.storage import ConnectionStorage
+    from app.storage.connection_storage import ConnectionStorage
 
     if not await ConnectionStorage().delete(conn_id, owner_id=None):
         raise APIError(
@@ -155,7 +155,7 @@ async def admin_delete_agent(
 @admin_router.get("/skills")
 async def admin_list_skills(_: str = Depends(require_admin)) -> list[dict[str, Any]]:
     from app.config.data import SKILLS_DIR
-    from app.storage.storage import SkillStorage
+    from app.storage.skill_storage import SkillStorage
 
     async with open_db() as conn:
         user_rows = await conn.fetchall("SELECT id, username FROM users")
@@ -174,7 +174,7 @@ async def admin_delete_skill(
     item_id: str, _: str = Depends(require_admin)
 ) -> dict[str, Any]:
     from app.config.data import SKILLS_DIR
-    from app.storage.storage import SkillStorage
+    from app.storage.skill_storage import SkillStorage
 
     storage = SkillStorage(SKILLS_DIR)
     skill = await storage.get_any(item_id)
@@ -188,7 +188,7 @@ async def admin_delete_skill(
 
 @admin_router.get("/prompts")
 async def admin_list_prompts(_: str = Depends(require_admin)) -> list[dict[str, Any]]:
-    from app.storage.storage import PromptStorage
+    from app.storage.prompt_storage import PromptStorage
 
     async with open_db() as conn:
         user_rows = await conn.fetchall("SELECT id, username FROM users")
@@ -206,7 +206,7 @@ async def admin_list_prompts(_: str = Depends(require_admin)) -> list[dict[str, 
 async def admin_delete_prompt(
     item_id: str, _: str = Depends(require_admin)
 ) -> dict[str, Any]:
-    from app.storage.storage import PromptStorage
+    from app.storage.prompt_storage import PromptStorage
 
     storage = PromptStorage()
     prompt = await storage.get_any(item_id)
@@ -220,7 +220,7 @@ async def admin_delete_prompt(
 
 @admin_router.get("/tools")
 async def admin_list_tools(_: str = Depends(require_admin)) -> list[dict[str, Any]]:
-    from app.storage.storage import ToolStorage
+    from app.storage.tool_storage import ToolStorage
 
     async with open_db() as conn:
         user_rows = await conn.fetchall("SELECT id, username FROM users")
@@ -239,7 +239,7 @@ async def admin_list_tools(_: str = Depends(require_admin)) -> list[dict[str, An
 async def admin_delete_tool(
     item_id: str, _: str = Depends(require_admin)
 ) -> dict[str, Any]:
-    from app.storage.storage import ToolStorage
+    from app.storage.tool_storage import ToolStorage
 
     storage = ToolStorage()
     tool = await storage.get_any(item_id)
@@ -284,7 +284,7 @@ async def admin_delete_memory(
     item_id: str, _: str = Depends(require_admin)
 ) -> dict[str, Any]:
     from app.config.data import MEMORY_DIR
-    from app.storage.storage import MemoryStorage
+    from app.storage.memory_storage import MemoryStorage
 
     owner_id, sep, filename = item_id.partition("::")
     if not sep:

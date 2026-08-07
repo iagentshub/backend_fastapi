@@ -10,7 +10,7 @@ from app.api.routes.auth import require_session
 from app.config.data import MEMORY_DIR
 from app.errors import APIError
 from app.storage.guest import get_session, is_guest
-from app.storage.storage import MemoryStorage
+from app.storage.memory_storage import MemoryStorage
 from app.utils.net import json_body
 
 router = APIRouter(prefix="/api/memory", tags=["memory"])

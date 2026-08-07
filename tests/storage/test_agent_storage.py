@@ -7,7 +7,7 @@ import re
 
 import pytest
 
-from app.storage.storage import AgentStorage
+from app.storage.agent_storage import AgentStorage
 
 
 @pytest.fixture()

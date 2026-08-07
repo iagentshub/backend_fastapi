@@ -7,7 +7,8 @@ import re
 
 import pytest
 
-from app.storage.storage import _PUBLIC_OWNER, SkillStorage
+from app.storage._storage_helpers import _PUBLIC_OWNER
+from app.storage.skill_storage import SkillStorage
 
 
 @pytest.fixture()

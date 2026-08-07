@@ -19,15 +19,13 @@ from app.api.routes.auth import GroupContext, require_auth, require_group
 from app.errors import APIError
 from app.middleware.ratelimit import RateLimiter
 from app.models.resource_types import SOCIAL_RESOURCE_TYPES
+from app.storage.agent_storage import AgentStorage
 from app.storage.db import IS_PG, open_db
 from app.storage.knowledge import KnowledgeStorage
-from app.storage.storage import (
-    AgentStorage,
-    MemoryStorage,
-    PromptStorage,
-    SkillStorage,
-    ToolStorage,
-)
+from app.storage.memory_storage import MemoryStorage
+from app.storage.prompt_storage import PromptStorage
+from app.storage.skill_storage import SkillStorage
+from app.storage.tool_storage import ToolStorage
 from app.storage.workflows import WorkflowStorage
 from app.utils.generators import generate_id
 

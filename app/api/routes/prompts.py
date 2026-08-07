@@ -12,12 +12,9 @@ from app.errors import APIError
 from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
 from app.storage.guest import get_session, is_guest
+from app.storage.prompt_storage import PROMPT_ALIAS_RE, PromptStorage
 from app.storage.resource_versions import ResourceVersionStorage
-from app.storage.storage import (
-    PROMPT_ALIAS_RE,
-    SKILL_ASSIGNABLE_LABELS,
-    PromptStorage,
-)
+from app.storage.skill_storage import SKILL_ASSIGNABLE_LABELS
 from app.utils import flog
 from app.utils.generators import generate_id
 from app.utils.net import json_body

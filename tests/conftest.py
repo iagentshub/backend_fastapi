@@ -106,7 +106,7 @@ def patch_data_dir(tmp_data_dir, tmp_path, monkeypatch):
     monkeypatch.setattr(auth_mod, "SETTINGS_FILE", tmp_data_dir / "settings.json")
 
     # Patch MemoryStorage live instances
-    from app.storage.storage import MemoryStorage
+    from app.storage.memory_storage import MemoryStorage
 
     isolated_memory = MemoryStorage(memory_dir)
     import app.api.routes.agents as agents_routes

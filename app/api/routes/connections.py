@@ -26,12 +26,14 @@ from app.config.session import (
 from app.connections import all_providers, get_provider
 from app.errors import APIError
 from app.middleware.ratelimit import RateLimiter
+from app.storage.agent_storage import AgentStorage
+from app.storage.connection_storage import ConnectionStorage
 from app.storage.db import IS_PG, open_db
 from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
 from app.storage.guest import get_session, is_guest
 from app.storage.knowledge import KnowledgeStorage
-from app.storage.storage import AgentStorage, ConnectionStorage, SkillStorage
+from app.storage.skill_storage import SkillStorage
 from app.utils import flog
 from app.utils.generators import generate_id
 from app.utils.net import json_body

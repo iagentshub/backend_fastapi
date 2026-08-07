@@ -717,7 +717,7 @@ def test_admin_agents_forbidden_for_standard(client, reset_rate_limiter):
 def _insert_connection(owner_id: str = "testadmin") -> str:
     import asyncio
 
-    from app.storage.storage import ConnectionStorage
+    from app.storage.connection_storage import ConnectionStorage
 
     c = asyncio.run(
         ConnectionStorage().save(
@@ -935,7 +935,7 @@ def test_admin_explore_forbidden_for_standard(client, reset_rate_limiter):
 def test_admin_agent_graph_contains_owner_connection_and_workflow(admin_client):
     import asyncio
 
-    from app.storage.storage import ConnectionStorage
+    from app.storage.connection_storage import ConnectionStorage
 
     admin_user = next(
         user

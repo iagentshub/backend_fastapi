@@ -6,9 +6,11 @@ import json
 import sqlite3
 
 from app.config.data import AGENTS_DIR, SKILLS_DIR
+from app.storage.agent_storage import AgentStorage
+from app.storage.connection_storage import ConnectionStorage
 from app.storage.db import open_db
 from app.storage.knowledge import KnowledgeStorage
-from app.storage.storage import AgentStorage, ConnectionStorage, SkillStorage
+from app.storage.skill_storage import SkillStorage
 from app.storage.workflows import WorkflowStorage
 
 _DUPLICATE_KEYS = {

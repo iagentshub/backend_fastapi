@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.storage.storage import ConnectionStorage
+from app.storage.connection_storage import ConnectionStorage
 
 
 @pytest.fixture()

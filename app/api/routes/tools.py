@@ -25,7 +25,8 @@ from app.auth.auth import get_user_role
 from app.errors import APIError
 from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
-from app.storage.storage import SKILL_ASSIGNABLE_LABELS, TOOL_LANGUAGES, ToolStorage
+from app.storage.skill_storage import SKILL_ASSIGNABLE_LABELS
+from app.storage.tool_storage import TOOL_LANGUAGES, ToolStorage
 from app.utils import flog
 from app.utils.net import json_body
 from app.utils.origin import compute_origin_type

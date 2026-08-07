@@ -14,7 +14,7 @@ from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
 from app.storage.guest import get_session, is_guest
 from app.storage.resource_versions import ResourceVersionStorage
-from app.storage.storage import (
+from app.storage.skill_storage import (
     SKILL_ASSIGNABLE_LABELS,
     SKILL_CATEGORIES,
     SkillStorage,

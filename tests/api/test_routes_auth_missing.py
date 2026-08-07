@@ -442,7 +442,7 @@ def test_admin_impersonate_ok(admin_client):
 
 def test_admin_stats_with_token_backfill(admin_client):
     """Si hay conexiones con tokens pero no hay token_daily, se hace backfill."""
-    from app.storage.storage import ConnectionStorage
+    from app.storage.connection_storage import ConnectionStorage
 
     asyncio.run(ConnectionStorage().save(
         {"type": "openai", "label": "backfill-conn", "api_key": "sk-x", "model": "gpt-4o"},
@@ -470,7 +470,7 @@ def test_admin_stats_with_token_backfill(admin_client):
 
 def test_admin_list_agents_with_connection_tokens(admin_client):
     """Agente con connection_id → tokens_in / tokens_out se rellenan desde la conexión."""
-    from app.storage.storage import ConnectionStorage
+    from app.storage.connection_storage import ConnectionStorage
 
     conn_data = asyncio.run(ConnectionStorage().save(
         {"type": "openai", "label": "agent-conn", "api_key": "sk-z", "model": "gpt-4o"},

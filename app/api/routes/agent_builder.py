@@ -26,9 +26,9 @@ from app.services.agent_builder import (
 )
 from app.services.builder_progress import partial_progress
 from app.services.chat import stream_chat
+from app.storage.connection_storage import ConnectionStorage
 from app.storage.groups import GroupStorage
 from app.storage.guest import get_session, is_guest
-from app.storage.storage import ConnectionStorage
 
 router = APIRouter(prefix="/api/agent-builder", tags=["agent-builder"])
 logger = logging.getLogger(__name__)

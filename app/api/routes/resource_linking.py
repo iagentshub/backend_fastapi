@@ -24,15 +24,13 @@ from app.api.routes.social import (
 )
 from app.errors import APIError
 from app.services.chat import stream_chat
+from app.storage.agent_storage import AgentStorage
+from app.storage.connection_storage import ConnectionStorage
 from app.storage.db import IS_PG, open_db
 from app.storage.knowledge import KnowledgeStorage
-from app.storage.storage import (
-    AgentStorage,
-    ConnectionStorage,
-    PromptStorage,
-    SkillStorage,
-    ToolStorage,
-)
+from app.storage.prompt_storage import PromptStorage
+from app.storage.skill_storage import SkillStorage
+from app.storage.tool_storage import ToolStorage
 from app.storage.workflows import WorkflowStorage
 from app.utils import flog
 from app.utils.generators import generate_id

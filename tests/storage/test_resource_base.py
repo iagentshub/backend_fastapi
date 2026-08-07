@@ -6,7 +6,8 @@ import asyncio
 
 import pytest
 
-from app.storage.storage import AgentStorage, SkillStorage
+from app.storage.agent_storage import AgentStorage
+from app.storage.skill_storage import SkillStorage
 
 
 @pytest.fixture()

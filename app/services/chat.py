@@ -75,8 +75,9 @@ def _openai_compat_chat_url(conn_type: str, configured_url: str = "") -> str:
     return urlunparse(parsed._replace(path=path, params="", query="", fragment=""))
 
 
-# Estos Protocol existen para no importar app.storage.storage desde aquí (el
-# import es circular). Son solo anotaciones: se les quitó @runtime_checkable
+# Estos Protocol existen para no importar los storages de recurso desde aquí
+# (app.storage.skill_storage y compañía; el import es circular). Son solo
+# anotaciones: se les quitó @runtime_checkable
 # porque ninguno se usaba nunca en un isinstance, y el decorador hacía creer
 # que había una comprobación en tiempo de ejecución que no existe.
 class _SkillStorage(Protocol):

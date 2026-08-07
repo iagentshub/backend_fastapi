@@ -8,7 +8,8 @@ import re
 
 import pytest
 
-from app.storage.storage import _PUBLIC_OWNER, ToolStorage
+from app.storage._storage_helpers import _PUBLIC_OWNER
+from app.storage.tool_storage import ToolStorage
 
 
 @pytest.fixture()

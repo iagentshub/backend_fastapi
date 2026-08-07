@@ -7,7 +7,8 @@ import re
 
 import pytest
 
-from app.storage.storage import _PUBLIC_OWNER, PromptStorage
+from app.storage._storage_helpers import _PUBLIC_OWNER
+from app.storage.prompt_storage import PromptStorage
 
 
 @pytest.fixture()

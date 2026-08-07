@@ -28,7 +28,9 @@ from app.middleware.locale import get_locale
 from app.middleware.ratelimit import RateLimiter
 from app.models.agent import Agent
 from app.services.chat import stream_chat
+from app.storage.agent_storage import AgentStorage
 from app.storage.chat import ChatStorage
+from app.storage.connection_storage import ConnectionStorage
 from app.storage.db import IS_PG, PH, open_db
 from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
@@ -39,15 +41,11 @@ from app.storage.guest import (
     is_guest,
 )
 from app.storage.knowledge import KnowledgeStorage
+from app.storage.memory_storage import MemoryStorage
+from app.storage.prompt_storage import PromptStorage
 from app.storage.resource_versions import ResourceVersionStorage
-from app.storage.storage import (
-    AgentStorage,
-    ConnectionStorage,
-    MemoryStorage,
-    PromptStorage,
-    SkillStorage,
-    ToolStorage,
-)
+from app.storage.skill_storage import SkillStorage
+from app.storage.tool_storage import ToolStorage
 from app.utils import flog
 from app.utils.generators import generate_id
 from app.utils.net import json_body

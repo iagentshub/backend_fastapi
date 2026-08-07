@@ -9,10 +9,10 @@ import pytest
 from app.storage.accounts import AccountStorage
 from app.storage.billing import BillingStorage
 from app.storage.chat import ChatStorage
+from app.storage.connection_storage import ConnectionStorage
 from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
 from app.storage.knowledge import KnowledgeStorage
-from app.storage.storage import ConnectionStorage
 
 
 @pytest.mark.parametrize(

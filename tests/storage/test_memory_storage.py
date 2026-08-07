@@ -6,7 +6,7 @@ import asyncio
 
 import pytest
 
-from app.storage.storage import MemoryStorage
+from app.storage.memory_storage import MemoryStorage
 
 
 @pytest.fixture()

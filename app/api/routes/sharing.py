@@ -15,11 +15,14 @@ from app.api.routes.auth import GroupContext, require_group
 from app.auth.auth import get_user_role
 from app.errors import APIError
 from app.models.resource_types import RESOURCE_TYPES
+from app.storage.agent_storage import AgentStorage
 from app.storage.db import open_db
 from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
 from app.storage.knowledge import KnowledgeStorage
-from app.storage.storage import AgentStorage, PromptStorage, SkillStorage, ToolStorage
+from app.storage.prompt_storage import PromptStorage
+from app.storage.skill_storage import SkillStorage
+from app.storage.tool_storage import ToolStorage
 from app.storage.workflows import WorkflowStorage
 from app.utils.net import json_body
 

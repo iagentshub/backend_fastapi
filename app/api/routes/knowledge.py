@@ -12,6 +12,7 @@ from app.api.routes.auth import GroupContext, require_group, require_group_sessi
 from app.auth.auth import get_user_role
 from app.config.data import AGENTS_DIR
 from app.errors import APIError
+from app.storage.agent_storage import AgentStorage
 from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
 from app.storage.guest import get_session, is_guest
@@ -20,7 +21,6 @@ from app.storage.knowledge import (
     extract_document_text,
     fetch_url_text,
 )
-from app.storage.storage import AgentStorage
 from app.utils import flog
 from app.utils.generators import generate_id
 from app.utils.net import json_body

@@ -13,7 +13,9 @@ from app.config.data import AGENTS_DIR, SKILLS_DIR
 from app.errors import APIError
 from app.middleware.ratelimit import RateLimiter
 from app.storage.accounts import AccountStorage, _mask
-from app.storage.storage import AgentStorage, ConnectionStorage, SkillStorage
+from app.storage.agent_storage import AgentStorage
+from app.storage.connection_storage import ConnectionStorage
+from app.storage.skill_storage import SkillStorage
 from app.utils import now_iso as _now
 from app.utils.net import json_body
 
