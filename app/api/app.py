@@ -33,6 +33,7 @@ from app.api.routes import (
     skill_builder,
     skills,
     social,
+    tools,
 )
 from app.api.routes.admin import admin_router
 from app.api.routes.users import users_router
@@ -153,6 +154,7 @@ def create_app() -> FastAPI:
     app.include_router(agents.router)
     app.include_router(skills.router)
     app.include_router(prompts.router)
+    app.include_router(tools.router)
     app.include_router(memory.router)
     app.include_router(settings.router)
     app.include_router(accounts.router)

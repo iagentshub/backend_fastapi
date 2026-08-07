@@ -50,6 +50,25 @@ CREATE TABLE IF NOT EXISTS prompts (
 );
 CREATE INDEX IF NOT EXISTS idx_prompts_owner ON prompts(owner_id, scope, updated_at DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_prompts_alias_owner ON prompts(owner_id, alias);
+CREATE TABLE IF NOT EXISTS tools (
+    id          TEXT NOT NULL,
+    owner_id    TEXT NOT NULL DEFAULT '__public__',
+    name        TEXT NOT NULL DEFAULT '',
+    language    TEXT NOT NULL DEFAULT 'python' CHECK (language IN ('python','shell','cpp')),
+    scope       TEXT NOT NULL DEFAULT 'private',
+    data        TEXT NOT NULL,
+    content     TEXT NOT NULL DEFAULT '',
+    binary_b64         TEXT,
+    binary_filename    TEXT,
+    binary_size        INTEGER,
+    binary_uploaded_at TEXT,
+    is_active   INTEGER NOT NULL DEFAULT 1,
+    deactivated_at TEXT,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    PRIMARY KEY (id, owner_id)
+);
+CREATE INDEX IF NOT EXISTS idx_tools_owner ON tools(owner_id, scope, updated_at DESC);
 CREATE TABLE IF NOT EXISTS memory_files (
     id          TEXT NOT NULL,
     owner_id    TEXT NOT NULL,
@@ -348,6 +367,25 @@ CREATE TABLE IF NOT EXISTS prompts (
 );
 CREATE INDEX IF NOT EXISTS idx_prompts_owner ON prompts(owner_id, scope, updated_at DESC);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_prompts_alias_owner ON prompts(owner_id, alias);
+CREATE TABLE IF NOT EXISTS tools (
+    id          TEXT NOT NULL,
+    owner_id    TEXT NOT NULL DEFAULT '__public__',
+    name        TEXT NOT NULL DEFAULT '',
+    language    TEXT NOT NULL DEFAULT 'python' CHECK (language IN ('python','shell','cpp')),
+    scope       TEXT NOT NULL DEFAULT 'private',
+    data        TEXT NOT NULL,
+    content     TEXT NOT NULL DEFAULT '',
+    binary_b64         TEXT,
+    binary_filename    TEXT,
+    binary_size        INTEGER,
+    binary_uploaded_at TEXT,
+    is_active   SMALLINT NOT NULL DEFAULT 1,
+    deactivated_at TEXT,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL,
+    PRIMARY KEY (id, owner_id)
+);
+CREATE INDEX IF NOT EXISTS idx_tools_owner ON tools(owner_id, scope, updated_at DESC);
 CREATE TABLE IF NOT EXISTS memory_files (
     id          TEXT NOT NULL,
     owner_id    TEXT NOT NULL,

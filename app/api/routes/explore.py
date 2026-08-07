@@ -21,7 +21,7 @@ from app.storage.db import IS_PG, open_db
 from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
 from app.storage.knowledge import KnowledgeStorage
-from app.storage.storage import AgentStorage, PromptStorage, SkillStorage
+from app.storage.storage import AgentStorage, PromptStorage, SkillStorage, ToolStorage
 from app.storage.workflows import WorkflowStorage
 
 router = APIRouter(tags=["explore"])
@@ -193,10 +193,28 @@ async def explore_preview(
                 ):
                     continue
                 prompt_names.append(pr.get("name", pid))
+            tools_storage = ToolStorage()
+            tool_names = []
+            for tid in agent.get("tools", []):
+                tl = await tools_storage.get_any(tid)
+                if not tl:
+                    continue
+                # No revelar nombres de tools privadas ajenas en la vista
+                # previa pública, aunque el agente que las usa sí sea público.
+                if tl.get("scope") != "public" and not await shares.is_accessible(
+                    groups,
+                    resource_type="tool",
+                    resource_id=tid,
+                    owner_id=tl.get("owner_id"),
+                    requester=username,
+                ):
+                    continue
+                tool_names.append(tl.get("name", tid))
             base["system_prompt"] = (agent.get("system_prompt") or "")[:600]
             base["skills"] = skill_names
             base["knowledge"] = knowledge_titles
             base["prompts"] = prompt_names
+            base["tools"] = tool_names
             base["use_memory"] = agent.get("use_memory", False)
             base["temperature"] = agent.get("temperature", 0.7)
             base["agent_type"] = agent.get("agent_type", "")
@@ -216,6 +234,17 @@ async def explore_preview(
             base["content"] = (pr.get("content") or "")[:3000]
             base["alias"] = pr.get("alias", "")
             base["icon"] = pr.get("icon", "")
+
+    elif resource_type == "tool":
+        tools_storage = ToolStorage()
+        tl = await tools_storage.get_any(resource_id)
+        if tl:
+            base["language"] = tl.get("language", "")
+            base["binary_filename"] = tl.get("binary_filename")
+            base["binary_size"] = tl.get("binary_size")
+            base["icon"] = tl.get("icon", "")
+            if tl.get("language") != "cpp":
+                base["content"] = (tl.get("content") or "")[:3000]
 
     elif resource_type == "knowledge":
         knowledge_storage = KnowledgeStorage()

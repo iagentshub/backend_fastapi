@@ -17,6 +17,7 @@ from app.api.routes.admin.resources import (
     admin_list_memory,
     admin_list_prompts,
     admin_list_skills,
+    admin_list_tools,
     admin_list_workflows,
 )
 from app.api.routes.admin.users import admin_list_users
@@ -33,6 +34,7 @@ _ADMIN_EXPLORE_TYPES = (
     "workflow",
     "skill",
     "prompt",
+    "tool",
     "memory",
 )
 
@@ -47,6 +49,7 @@ def _explore_search_text(resource_type: str, item: dict[str, Any]) -> str:
         "workflow": ("name", "id", "owner_username", "description"),
         "skill": ("name", "id", "owner_username", "category"),
         "prompt": ("name", "id", "owner_username", "alias"),
+        "tool": ("name", "id", "owner_username", "language"),
         "memory": ("filename", "id", "owner_username"),
     }[resource_type]
     return " ".join(str(item.get(field) or "") for field in fields).lower()
@@ -62,6 +65,7 @@ async def _admin_inventory() -> dict[str, list[dict[str, Any]]]:
         workflows,
         skills,
         prompts,
+        tools,
         memory,
     ) = await asyncio.gather(
         admin_list_users(_=""),
@@ -72,6 +76,7 @@ async def _admin_inventory() -> dict[str, list[dict[str, Any]]]:
         admin_list_workflows(_=""),
         admin_list_skills(_=""),
         admin_list_prompts(_=""),
+        admin_list_tools(_=""),
         admin_list_memory(_=""),
     )
     return {
@@ -83,6 +88,7 @@ async def _admin_inventory() -> dict[str, list[dict[str, Any]]]:
         "workflow": workflows,
         "skill": skills,
         "prompt": prompts,
+        "tool": tools,
         "memory": memory,
     }
 
@@ -297,6 +303,14 @@ async def admin_resource_graph(
                 resource_label("prompt", prompt) if prompt else str(prompt_id),
             )
             add_edge(agent_node, prompt_node, "uses")
+        for tool_id in agent.get("tools") or []:
+            tool = resources_by_type["tool"].get(str(tool_id))
+            tool_node = add_node(
+                "tool",
+                str(tool_id),
+                resource_label("tool", tool) if tool else str(tool_id),
+            )
+            add_edge(agent_node, tool_node, "uses")
         memory_file = str(agent.get("memory_file") or "")
         if agent.get("use_memory") and memory_file:
             # El id de memoria es compuesto ("owner_id::filename", ver
@@ -392,7 +406,7 @@ async def admin_resource_graph(
                 )
                 add_edge(agent_node, root_id, "uses")
 
-    if resource_type in ("connection", "knowledge", "skill", "prompt"):
+    if resource_type in ("connection", "knowledge", "skill", "prompt", "tool"):
         field = (
             "connection_id"
             if resource_type == "connection"
@@ -400,6 +414,8 @@ async def admin_resource_graph(
             if resource_type == "knowledge"
             else "prompts"
             if resource_type == "prompt"
+            else "tools"
+            if resource_type == "tool"
             else "skills"
         )
         for agent in agents.values():

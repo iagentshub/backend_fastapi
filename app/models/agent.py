@@ -109,6 +109,11 @@ class Agent(BaseResource):
     skills: List[str] = field(default_factory=list)
     knowledge: List[str] = field(default_factory=list)
     prompts: List[str] = field(default_factory=list)
+    #: IDs de Tool asignadas al agente. Nota: no confundir con `language`
+    #: arriba (idioma de export del agente) — `Tool.language` vive en un
+    #: dataclass completamente distinto (app.models.tool). Fase 1: sin efecto
+    #: en tiempo de ejecución, el modelo aún no puede invocarlas.
+    tools: List[str] = field(default_factory=list)
     use_memory: bool = False
     memory_file: Optional[str] = None
     routines: List[dict] = field(default_factory=list)
@@ -160,6 +165,7 @@ class Agent(BaseResource):
             skills=[str(s) for s in (data.get("skills") or []) if s],
             knowledge=[str(k) for k in (data.get("knowledge") or []) if k],
             prompts=[str(p) for p in (data.get("prompts") or []) if p],
+            tools=[str(t) for t in (data.get("tools") or []) if t],
             use_memory=bool(data.get("use_memory", False)),
             memory_file=str(data.get("memory_file") or "").strip() or None,
             routines=[r for r in (data.get("routines") or []) if isinstance(r, dict)],
@@ -207,6 +213,7 @@ class Agent(BaseResource):
             "skills": self.skills,
             "knowledge": self.knowledge,
             "prompts": self.prompts,
+            "tools": self.tools,
             "use_memory": self.use_memory,
             "memory_file": self.memory_file,
             "routines": self.routines,

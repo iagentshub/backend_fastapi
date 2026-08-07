@@ -46,6 +46,7 @@ from app.storage.storage import (
     MemoryStorage,
     PromptStorage,
     SkillStorage,
+    ToolStorage,
 )
 from app.utils import flog
 from app.utils.generators import generate_id
@@ -58,6 +59,7 @@ _agents = AgentStorage(AGENTS_DIR)
 _conns = ConnectionStorage()
 _skills = SkillStorage(SKILLS_DIR)
 _prompts = PromptStorage()
+_tools = ToolStorage()
 _memory = MemoryStorage(MEMORY_DIR)
 _shares = GroupShareStorage()
 _groups = GroupStorage()
@@ -134,6 +136,24 @@ async def _validate_resource_refs(
                 "forbidden",
                 "No tienes acceso a uno de los prompts indicados",
                 extra={"resource": "prompt", "id": pid},
+            )
+    for tid in payload.get("tools") or []:
+        tool = await _tools.get_any(tid)
+        if not tool or tool.get("scope") == "public":
+            continue
+        if not await _shares.is_accessible(
+            _groups,
+            resource_type="tool",
+            resource_id=tid,
+            owner_id=tool.get("owner_id"),
+            requester=user,
+            requester_group=group_id,
+        ):
+            raise APIError(
+                403,
+                "forbidden",
+                "No tienes acceso a una de las tools indicadas",
+                extra={"resource": "tool", "id": tid},
             )
 
 

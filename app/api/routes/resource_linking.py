@@ -31,6 +31,7 @@ from app.storage.storage import (
     ConnectionStorage,
     PromptStorage,
     SkillStorage,
+    ToolStorage,
 )
 from app.storage.workflows import WorkflowStorage
 from app.utils import flog
@@ -285,6 +286,88 @@ async def link_skill(
             )
         await conn.commit()
     return {"ok": True, "skill_id": new_id, "name": link_name}
+
+
+@router.post("/api/tools/{scope}/{source_id}/link")
+async def link_tool(
+    scope: str,
+    source_id: str,
+    username: str = Depends(require_auth),
+) -> Dict[str, Any]:
+    tools = ToolStorage()
+    source = await tools.get(scope, source_id)
+    if not source:
+        raise APIError(
+            404, "not_found", "Tool no encontrada", extra={"resource": "tool"}
+        )
+
+    source_owner = source.get("owner_id") or ""
+    if scope != "public":
+        await _assert_public("tool", source_id)
+    if source_owner == username:
+        raise APIError(400, "already_owner", "Ya eres el propietario de este recurso")
+
+    link_payload = {
+        k: v for k, v in source.items() if k not in ("id", "scope", "owner_id")
+    }
+    # id propio (no derivado del nombre): al no renombrar la copia, un id basado en
+    # el nombre colisionaría con el original (misma slug) y una lectura por id sin
+    # filtro de owner devolvería cualquiera de los dos.
+    link_payload["id"] = generate_id()
+    link_labels = list(link_payload.get("labels") or ["private"])
+    for ol in ("fork", "linked", "public"):
+        if ol in link_labels:
+            link_labels.remove(ol)
+    link_labels.append("linked")
+    link_payload["labels"] = link_labels
+
+    try:
+        result = await tools.save("private", link_payload, owner_id=username)
+    except ValueError as exc:
+        raise APIError(422, "tool_save_invalid", str(exc)) from exc
+
+    new_id = result["id"]
+    link_name = result["name"]
+    link_tags = "[]"
+
+    async with open_db() as conn:
+        if IS_PG:
+            await conn.execute(
+                "INSERT INTO resource_social "
+                "(resource_type, resource_id, owner, name, description, is_public, category, "
+                "trial_missing_deps, linked_to_user, linked_to_id, tags) "
+                "VALUES (?, ?, ?, ?, ?, 0, 'Other', 'warn', ?, ?, ?) "
+                "ON CONFLICT DO NOTHING",
+                (
+                    "tool",
+                    new_id,
+                    username,
+                    link_name,
+                    source.get("description", ""),
+                    source_owner,
+                    source_id,
+                    link_tags,
+                ),
+            )
+        else:
+            await conn.execute(
+                "INSERT OR IGNORE INTO resource_social "
+                "(resource_type, resource_id, owner, name, description, is_public, category, "
+                "trial_missing_deps, linked_to_user, linked_to_id, tags) "
+                "VALUES (?, ?, ?, ?, ?, 0, 'Other', 'warn', ?, ?, ?)",
+                (
+                    "tool",
+                    new_id,
+                    username,
+                    link_name,
+                    source.get("description", ""),
+                    source_owner,
+                    source_id,
+                    link_tags,
+                ),
+            )
+        await conn.commit()
+    return {"ok": True, "tool_id": new_id, "name": link_name}
 
 
 @router.post("/api/prompts/{scope}/{source_id}/link")
@@ -567,6 +650,59 @@ async def sync_linked_skill(
     }
     updated = {**local, **sync_fields}
     await skills.save("private", updated, owner_id=local.get("owner_id"))
+
+    return {"ok": True, "synced_from": original_id}
+
+
+@router.post("/api/tools/private/{tool_id}/sync")
+async def sync_linked_tool(
+    tool_id: str,
+    username: str = Depends(require_auth),
+) -> Dict[str, Any]:
+    tools = ToolStorage()
+    local = await tools.get("private", tool_id)
+    if not local or local.get("owner_id") != username:
+        raise APIError(
+            404, "not_found", "Tool no encontrada", extra={"resource": "tool"}
+        )
+
+    async with open_db() as conn:
+        row = await conn.fetchone(
+            "SELECT linked_to_id, linked_to_user FROM resource_social "
+            "WHERE resource_type=? AND resource_id=?",
+            ("tool", tool_id),
+        )
+
+    if not row or not row[0]:
+        raise APIError(
+            400, "tool_not_linked", "La tool no tiene enlace a un original"
+        )
+
+    original_id = row[0]
+    original = await tools.get_any(original_id)
+    if not original:
+        raise APIError(
+            404,
+            "not_found",
+            "La tool original ya no existe",
+            extra={"resource": "tool"},
+        )
+    try:
+        if original.get("scope") != "public":
+            await _assert_public("tool", original_id)
+    except HTTPException:
+        raise APIError(403, "forbidden", "La tool original ya no es accesible")
+
+    # El dict que devuelve get_any() ya trae binary_b64/binary_filename/
+    # binary_size/binary_uploaded_at (mismo mecanismo que content) — se
+    # sincronizan directo, sin llamada aparte al binario.
+    sync_fields = {
+        k: v
+        for k, v in original.items()
+        if k not in ("id", "scope", "owner_id", "name")
+    }
+    updated = {**local, **sync_fields}
+    await tools.save("private", updated, owner_id=local.get("owner_id"))
 
     return {"ok": True, "synced_from": original_id}
 

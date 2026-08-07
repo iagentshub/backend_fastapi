@@ -19,7 +19,7 @@ from app.storage.db import open_db
 from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
 from app.storage.knowledge import KnowledgeStorage
-from app.storage.storage import AgentStorage, PromptStorage, SkillStorage
+from app.storage.storage import AgentStorage, PromptStorage, SkillStorage, ToolStorage
 from app.storage.workflows import WorkflowStorage
 from app.utils.net import json_body
 
@@ -57,6 +57,9 @@ async def _resource_owner(resource_type: str, resource_id: str) -> Optional[str]
         return item.get("owner_id") if item else None
     if resource_type == "prompt":
         item = await PromptStorage().get_any(resource_id)
+        return item.get("owner_id") if item else None
+    if resource_type == "tool":
+        item = await ToolStorage().get_any(resource_id)
         return item.get("owner_id") if item else None
     # connection — ConnectionStorage.get() no incluye owner_id en el dict devuelto,
     # así que se resuelve con una consulta directa a la tabla.

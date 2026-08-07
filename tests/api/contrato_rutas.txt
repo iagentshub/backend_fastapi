@@ -10,6 +10,7 @@ DELETE /api/admin/knowledge/{item_id}
 DELETE /api/admin/memory/{item_id}
 DELETE /api/admin/prompts/{item_id}
 DELETE /api/admin/skills/{item_id}
+DELETE /api/admin/tools/{item_id}
 DELETE /api/admin/users/{username}
 DELETE /api/admin/workflows/{workflow_id}
 DELETE /api/agents/{agent_id}
@@ -26,6 +27,7 @@ DELETE /api/prompts/{scope}/{prompt_id}
 DELETE /api/settings/notification-banners/{banner_id}
 DELETE /api/sharing/{resource_type}/{resource_id}
 DELETE /api/skills/{scope}/{skill_id}
+DELETE /api/tools/{scope}/{tool_id}
 DELETE /api/users/{target}/follow
 DELETE /api/workflows/{workflow_id}
 DELETE /api/{resource_type}/{resource_id}/star
@@ -53,6 +55,7 @@ GET /api/admin/prompts
 GET /api/admin/resources/{resource_type}/{resource_id}/graph
 GET /api/admin/skills
 GET /api/admin/stats
+GET /api/admin/tools
 GET /api/admin/users
 GET /api/admin/workflows
 GET /api/agents
@@ -105,6 +108,9 @@ GET /api/sharing/{resource_type}/{resource_id}/groups
 GET /api/skills
 GET /api/skills/{scope}/{skill_id}
 GET /api/social/me/resources
+GET /api/tools
+GET /api/tools/{scope}/{tool_id}
+GET /api/tools/{scope}/{tool_id}/binary
 GET /api/users
 GET /api/users/{target_username}/resources
 GET /api/users/{target}/follow-status
@@ -198,6 +204,12 @@ POST /api/skills/{scope}
 POST /api/skills/{scope}/{source_id}/link
 POST /api/skills/{skill_id}/activate
 POST /api/skills/{skill_id}/deactivate
+POST /api/tools/private/{tool_id}/sync
+POST /api/tools/{scope}
+POST /api/tools/{scope}/{source_id}/link
+POST /api/tools/{scope}/{tool_id}/binary
+POST /api/tools/{tool_id}/activate
+POST /api/tools/{tool_id}/deactivate
 POST /api/users/{target}/follow
 POST /api/workflows
 POST /api/workflows/{source_id}/link
@@ -222,4 +234,5 @@ PUT /api/settings/dashboard-layout-v2
 PUT /api/settings/notification-banners/{banner_id}
 PUT /api/settings/platform
 PUT /api/skills/{scope}/{skill_id}/visibility
+PUT /api/tools/{scope}/{tool_id}/visibility
 PUT /api/workflows/{workflow_id}/visibility

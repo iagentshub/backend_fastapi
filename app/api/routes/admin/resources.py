@@ -218,6 +218,39 @@ async def admin_delete_prompt(
     return {"ok": True}
 
 
+@admin_router.get("/tools")
+async def admin_list_tools(_: str = Depends(require_admin)) -> list[dict[str, Any]]:
+    from app.storage.storage import ToolStorage
+
+    async with open_db() as conn:
+        user_rows = await conn.fetchall("SELECT id, username FROM users")
+    username_map = {r[0]: r[1] for r in user_rows}
+    items = await ToolStorage().list("all")
+    for item in items:
+        item["owner_username"] = username_map.get(
+            item.get("owner_id", ""), item.get("owner_id", "")
+        )
+        item.pop("content", None)
+        item.pop("binary_b64", None)
+    return items
+
+
+@admin_router.delete("/tools/{item_id}")
+async def admin_delete_tool(
+    item_id: str, _: str = Depends(require_admin)
+) -> dict[str, Any]:
+    from app.storage.storage import ToolStorage
+
+    storage = ToolStorage()
+    tool = await storage.get_any(item_id)
+    if not tool:
+        raise APIError(
+            404, "not_found", "Elemento no encontrado", extra={"resource": "item"}
+        )
+    await storage.delete(tool["scope"], item_id, owner_id=None, allow_public=True)
+    return {"ok": True}
+
+
 @admin_router.get("/memory")
 async def admin_list_memory(_: str = Depends(require_admin)) -> list[dict[str, Any]]:
     """A diferencia del resto de recursos, el nombre de un fichero de memoria
@@ -434,7 +467,7 @@ async def admin_verify_resource(
     request: Request,
     _: str = Depends(require_admin),
 ) -> dict[str, Any]:
-    _valid_types = ("agent", "skill", "knowledge", "prompt")
+    _valid_types = ("agent", "skill", "knowledge", "prompt", "tool")
     if resource_type not in _valid_types:
         raise APIError(
             422,
@@ -478,6 +511,7 @@ async def admin_set_resource_owner(
         "agent": "agents",
         "skill": "skills",
         "prompt": "prompts",
+        "tool": "tools",
         "connection": "connections",
         "knowledge": "knowledge_items",
         "workflow": "agent_workflows",

@@ -26,6 +26,7 @@ from app.storage.storage import (
     MemoryStorage,
     PromptStorage,
     SkillStorage,
+    ToolStorage,
 )
 from app.storage.workflows import WorkflowStorage
 from app.utils.generators import generate_id
@@ -54,6 +55,7 @@ _inherit_skills_store = SkillStorage(_cfg.SKILLS_DIR)
 _inherit_knowledge_store = KnowledgeStorage()
 _inherit_memory_store = MemoryStorage(_cfg.MEMORY_DIR)
 _inherit_prompts_store = PromptStorage()
+_inherit_tools_store = ToolStorage()
 
 
 async def _inherit_resource_ids(
@@ -69,6 +71,8 @@ async def _inherit_resource_ids(
             item = await _inherit_skills_store.get_any(rid)
         elif resource_type == "prompt":
             item = await _inherit_prompts_store.get_any(rid)
+        elif resource_type == "tool":
+            item = await _inherit_tools_store.get_any(rid)
         else:
             item = await _inherit_knowledge_store.get(rid)
         if not item:
@@ -108,6 +112,21 @@ async def _inherit_resource_ids(
                 target_owner_id, str(clone.get("alias") or "")
             )
             saved = await _inherit_prompts_store.save(
+                "private", clone, owner_id=target_owner_id
+            )
+        elif resource_type == "tool":
+            # id propio (no derivado del nombre) — mismo motivo que skill: no
+            # colisionar con una tool homónima de otro owner.
+            clone = {
+                k: v for k, v in item.items() if k not in ("id", "scope", "owner_id")
+            }
+            clone["id"] = generate_id()
+            clone["labels"] = [
+                lbl
+                for lbl in (clone.get("labels") or ["private"])
+                if lbl not in ("linked", "public")
+            ] or ["private"]
+            saved = await _inherit_tools_store.save(
                 "private", clone, owner_id=target_owner_id
             )
         else:
@@ -231,6 +250,43 @@ async def _publish_skill_cascade(
         await conn.commit()
 
 
+async def _publish_tool_cascade(
+    tool_id: str, username: str, owner_ids: set[str]
+) -> None:
+    tool_storage = ToolStorage()
+    tool = await tool_storage.get_any(tool_id)
+    if not tool or tool.get("owner_id") not in owner_ids:
+        return
+    labels = list(tool.get("labels") or ["private"])
+    if "public" not in labels:
+        labels.append("public")
+        await tool_storage.save(
+            "private", {**tool, "labels": labels}, owner_id=tool["owner_id"]
+        )
+    async with open_db() as conn:
+        row = await conn.fetchone(
+            "SELECT linked_to_id FROM resource_social "
+            "WHERE resource_type=? AND resource_id=? AND owner=?",
+            ("tool", tool_id, username),
+        )
+        if row and row["linked_to_id"]:
+            return
+        await _upsert_social(
+            conn,
+            "tool",
+            tool_id,
+            username,
+            tool.get("name", tool_id),
+            tool.get("description", ""),
+            "Other",
+            "warn",
+            "[]",
+            1,
+            json.dumps(labels),
+        )
+        await conn.commit()
+
+
 async def _publish_prompt_cascade(
     prompt_id: str, username: str, owner_ids: set[str]
 ) -> None:
@@ -278,6 +334,8 @@ async def _cascade_publish_agent(
         await _publish_skill_cascade(skill_id, username, owner_ids)
     for prompt_id in agent.get("prompts") or []:
         await _publish_prompt_cascade(prompt_id, username, owner_ids)
+    for tool_id in agent.get("tools") or []:
+        await _publish_tool_cascade(tool_id, username, owner_ids)
 
 
 async def _cascade_publish_workflow(
@@ -450,6 +508,11 @@ class _PromptVisibilityBody(BaseModel):
     category: str
 
 
+class _ToolVisibilityBody(BaseModel):
+    is_public: bool
+    category: str
+
+
 class _WorkflowVisibilityBody(BaseModel):
     is_public: bool
     category: str
@@ -586,6 +649,49 @@ async def set_prompt_visibility(
                 "DELETE FROM resource_social "
                 "WHERE resource_type=? AND resource_id=? AND owner=?",
                 ("prompt", prompt_id, username),
+            )
+        await conn.commit()
+    return {"ok": True}
+
+
+@router.put("/api/tools/{scope}/{tool_id}/visibility")
+async def set_tool_visibility(
+    scope: str,
+    tool_id: str,
+    body: _ToolVisibilityBody,
+    username: str = Depends(require_auth),
+) -> Dict[str, Any]:
+    _check_category(body.category)
+    tools = ToolStorage()
+    tool = await tools.get(scope, tool_id)
+    if not tool:
+        raise APIError(
+            404, "not_found", "Tool no encontrada", extra={"resource": "tool"}
+        )
+    resource_labels = tool.get("labels") or ["private"]
+    is_public_val = 1 if "public" in resource_labels else 0
+
+    async with open_db() as conn:
+        if body.is_public:
+            await _assert_not_linked_copy(conn, "tool", tool_id, username)
+            await _upsert_social(
+                conn,
+                "tool",
+                tool_id,
+                username,
+                tool.get("name", tool_id),
+                tool.get("description", ""),
+                body.category,
+                "warn",
+                "[]",
+                is_public_val,
+                json.dumps(resource_labels),
+            )
+        else:
+            await conn.execute(
+                "DELETE FROM resource_social "
+                "WHERE resource_type=? AND resource_id=? AND owner=?",
+                ("tool", tool_id, username),
             )
         await conn.commit()
     return {"ok": True}
