@@ -120,14 +120,11 @@ async def _get_conn_any(
         group_id, "connection"
     )
     if conn_id in granted_ids:
-        async with open_db() as db:
-            owner_row = await db.fetchone(
-                "SELECT owner_id FROM connections WHERE id = ?", (conn_id,)
-            )
-        if owner_row and await _groups.owner_is_active(owner_row[0]):
+        owner_id_row = await _storage.get_owner_id(conn_id)
+        if owner_id_row and await _groups.owner_is_active(owner_id_row):
             conn = await _storage.get(conn_id, None)
             if conn is not None:
-                conn["owner_id"] = owner_row[0]
+                conn["owner_id"] = owner_id_row
                 conn["_shared"] = True
     return conn
 
@@ -148,11 +145,8 @@ async def _resolve_connections(
         )
         own_ids = {i["id"] for i in raw}
         for rid in shared_ids - own_ids:
-            async with open_db() as db:
-                owner_row = await db.fetchone(
-                    "SELECT owner_id FROM connections WHERE id = ?", (rid,)
-                )
-            if not owner_row or not await _groups.owner_is_active(owner_row[0]):
+            owner_id_row = await _storage.get_owner_id(rid)
+            if not owner_id_row or not await _groups.owner_is_active(owner_id_row):
                 continue
             c = await _storage.get(rid)
             if c:
@@ -333,11 +327,8 @@ async def list_connections(
         )
         raw: List[Dict[str, Any]] = []
         for rid in shared_ids:
-            async with open_db() as db:
-                owner_row = await db.fetchone(
-                    "SELECT owner_id FROM connections WHERE id = ?", (rid,)
-                )
-            if not owner_row or not await _groups.owner_is_active(owner_row[0]):
+            owner_id_row = await _storage.get_owner_id(rid)
+            if not owner_id_row or not await _groups.owner_is_active(owner_id_row):
                 continue
             c = await _storage.get(rid)
             if c:

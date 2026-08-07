@@ -176,6 +176,18 @@ class ConnectionStorage(ResourceStorage):
                 )
         return self._row_to_dict(row) if row else None
 
+    async def get_owner_id(self, conn_id: str) -> Optional[str]:
+        """owner_id de una conexión sin traer el resto de la fila.
+
+        Usado para resolver conexiones compartidas con un group: solo hace
+        falta saber si el dueño sigue activo antes de exponer la conexión.
+        """
+        async with open_db() as conn:
+            row = await conn.fetchone(
+                "SELECT owner_id FROM connections WHERE id = ?", (conn_id,)
+            )
+        return row[0] if row else None
+
     async def save(
         self, payload: Dict[str, Any], owner_id: str = "admin"
     ) -> Dict[str, Any]:

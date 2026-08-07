@@ -14,7 +14,7 @@ from app.auth.auth import get_user_by_username
 from app.errors import APIError
 from app.storage.db import open_db
 
-users_router = APIRouter(prefix="/api/users", tags=["users"])
+router = APIRouter(prefix="/api/users", tags=["users"])
 
 
 async def _get_social_fields(username: str) -> dict[str, Any]:
@@ -60,7 +60,7 @@ async def _get_social_fields(username: str) -> dict[str, Any]:
     }
 
 
-@users_router.get("")
+@router.get("")
 async def search_users(
     q: str | None = None,
     limit: int = 20,
@@ -101,7 +101,7 @@ async def search_users(
     ]
 
 
-@users_router.get("/{username}/avatar")
+@router.get("/{username}/avatar")
 async def get_avatar(username: str, _: str = Depends(require_auth)):
     import base64
     import binascii
@@ -126,7 +126,7 @@ async def get_avatar(username: str, _: str = Depends(require_auth)):
     return Response(content=data, media_type=mime)
 
 
-@users_router.get("/{username}")
+@router.get("/{username}")
 async def get_public_profile(
     username: str,
     _: str = Depends(require_auth),

@@ -34,9 +34,9 @@ from app.api.routes import (
     skills,
     social,
     tools,
+    users,
 )
 from app.api.routes.admin import admin_router
-from app.api.routes.users import users_router
 from app.auth.auth import ensure_admin_user
 from app.auth.gdpr import purge_expired_deletions
 from app.config import data as _cfg
@@ -150,7 +150,7 @@ def create_app() -> FastAPI:
 
     app.include_router(auth.router)
     app.include_router(admin_router)
-    app.include_router(users_router)
+    app.include_router(users.router)
     app.include_router(connections.router)
     app.include_router(agents.router)
     app.include_router(skills.router)
