@@ -8,7 +8,8 @@ from typing import Any
 from fastapi import Depends, Request, Response
 
 from app.api.routes.admin._router import admin_router
-from app.api.routes.auth import _public_base_url, require_admin
+from app.api.routes.auth import require_admin
+from app.api.routes.auth.login import _public_base_url
 from app.auth.auth import (
     admin_set_password,
     admin_update_user,

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import pytest
 
-from app.api.routes.auth import _assert_min_role
+from app.api.routes.auth.dependencies import _assert_min_role
 from app.auth.auth import get_user_role
 from app.errors import APIError
 from app.storage.guest import new_guest_id

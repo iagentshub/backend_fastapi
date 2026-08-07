@@ -16,7 +16,7 @@ def _direct_register(username: str, password: str = "pass1234", email: str = "")
 def test_public_base_url_ignores_untrusted_host_header():
     from starlette.requests import Request
 
-    from app.api.routes.auth import _public_base_url
+    from app.api.routes.auth.login import _public_base_url
 
     request = Request(
         {
@@ -35,7 +35,7 @@ def test_public_base_url_ignores_untrusted_host_header():
 def test_public_base_url_prefers_configured_frontend():
     from starlette.requests import Request
 
-    from app.api.routes.auth import _public_base_url
+    from app.api.routes.auth.login import _public_base_url
 
     request = Request({"type": "http", "headers": []})
     with patch.dict(
@@ -67,7 +67,7 @@ def test_require_group_invalid_token(client):
 # ── register — REGISTRATION_MODE closed (línea 104) ──────────────────────────
 
 def test_register_mode_closed(client, reset_rate_limiter):
-    with patch("app.api.routes.auth.REGISTRATION_MODE", "closed"):
+    with patch("app.api.routes.auth.login.REGISTRATION_MODE", "closed"):
         r = client.post("/api/auth/register", json={"email": "closed@test.com", "password": "pass1234"})
     assert r.status_code == 403
     assert r.json()["detail"]["code"] == "registration_disabled"
@@ -76,7 +76,7 @@ def test_register_mode_closed(client, reset_rate_limiter):
 # ── register — REGISTRATION_MODE invite (línea 106) ──────────────────────────
 
 def test_register_mode_invite(client, reset_rate_limiter):
-    with patch("app.api.routes.auth.REGISTRATION_MODE", "invite"):
+    with patch("app.api.routes.auth.login.REGISTRATION_MODE", "invite"):
         r = client.post("/api/auth/register", json={"email": "invite@test.com", "password": "pass1234"})
     assert r.status_code == 403
     assert r.json()["detail"]["code"] == "registration_invite_only"
@@ -88,9 +88,9 @@ def test_register_email_verify_enabled_returns_pending(client, reset_rate_limite
     """Con EMAIL_VERIFY_ENABLED=True el registro devuelve pending_verification=True."""
     # Hay que parchear en ambos módulos: el de rutas (para el if de la respuesta)
     # y el de auth (para que register_user_email genere el verify_token).
-    with patch("app.api.routes.auth.EMAIL_VERIFY_ENABLED", True), \
+    with patch("app.api.routes.auth.login.EMAIL_VERIFY_ENABLED", True), \
          patch("app.auth.auth.EMAIL_VERIFY_ENABLED", True), \
-         patch("app.api.routes.auth.send_verification_email"):
+         patch("app.api.routes.auth.login.send_verification_email"):
         r = client.post("/api/auth/register", json={
             "username": "pendingverify", "email": "pendingverify@test.com", "password": "pass1234"
         })
@@ -137,7 +137,7 @@ def test_login_unverified_account(client):
             await conn.commit()
 
     asyncio.run(_setup())
-    with patch("app.api.routes.auth.EMAIL_VERIFY_ENABLED", True):
+    with patch("app.api.routes.auth.login.EMAIL_VERIFY_ENABLED", True):
         r = client.post("/api/auth/login", json={
             "email": "unverified@test.com", "password": "pass1234"
         })

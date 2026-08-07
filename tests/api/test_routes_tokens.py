@@ -48,7 +48,7 @@ def _clear_auth_cache() -> None:
     Sin limpiarlo, un test que cambia la contraseña seguiría leyendo el valor
     viejo y verificaría el caché en lugar de la regla de invalidación.
     """
-    from app.api.routes.auth import _active_cache
+    from app.api.routes.auth.dependencies import _active_cache
 
     _active_cache.clear()
 
