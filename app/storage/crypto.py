@@ -32,7 +32,7 @@ def _get_fernet():
         return _fernet
     from cryptography.fernet import Fernet
 
-    from app.auth.auth import _secret
+    from app.auth.passwords import _secret
     raw = _secret().encode("utf-8")
     key_bytes = hashlib.pbkdf2_hmac("sha256", raw, _SALT, _ITERATIONS, dklen=32)
     _fernet = Fernet(base64.urlsafe_b64encode(key_bytes))

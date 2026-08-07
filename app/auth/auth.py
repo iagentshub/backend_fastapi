@@ -1,161 +1,50 @@
-"""Auth: JWT, password hashing y gestión de usuarios (DB-backed)."""
+"""Auth: gestión de usuarios (DB-backed) y bootstrap del admin inicial.
+
+El hashing de contraseñas y el JWT viven en ``app.auth.passwords``; la
+identidad OAuth de GitHub en ``app.auth.oauth_github``; el borrado RGPD en
+``app.auth.gdpr``; el vínculo con Stripe en ``app.services.billing_link``.
+Este módulo re-exporta lo de ``passwords`` para no romper a los ~70 callers
+existentes que hacían ``from app.auth.auth import hash_password, ...`` — los
+demás (GDPR, GitHub, billing) tienen pocos callers y se apuntan directamente
+al módulo nuevo para evitar un import circular (esos módulos importan de
+aquí).
+"""
 
 from __future__ import annotations
 
-import asyncio
-import hashlib
-import json
-import os
 import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
-import bcrypt as _bcrypt
-from jose import JWTError, jwt
-
-from app.config.data import AGENTS_DIR, DATA_DIR, SETTINGS_FILE, SKILLS_DIR
-from app.config.session import (
-    EMAIL_VERIFY_ENABLED,
-    JWT_ALGORITHM,
-    JWT_EXPIRE_HOURS,
-    JWT_SECRET_ENV,
-    JWT_UNSAFE_SECRETS,
+from app.auth.passwords import (  # noqa: F401 - re-exportadas para compat
+    _hash_token,
+    _secret,
+    create_token,
+    decode_group_token,
+    decode_group_token_full,
+    decode_token,
+    decode_token_with_iat,
+    hash_password,
+    hash_password_async,
+    verify_password,
+    verify_password_async,
 )
-from app.services.email import send_deletion_scheduled_email
+from app.auth.user_lookup import (  # noqa: F401 - re-exportadas para compat
+    _ALLOWED_USER_FIELDS,
+    _get_user_by,
+    get_user_by_email,
+    get_user_by_id,
+    get_user_by_identity,
+    get_user_by_login,
+    get_user_by_username,
+)
+from app.config.data import DATA_DIR
+from app.config.session import EMAIL_VERIFY_ENABLED
 from app.storage.db import IS_PG, open_db
 from app.storage.guest import is_guest
 from app.utils import flog
 from app.utils.generators import generate_date, generate_id
 from app.utils.validation import is_valid_username, normalize_username
-
-# ── Settings ───────────────────────────────────────────────────────────────────
-
-
-def _load_settings() -> dict:
-    if SETTINGS_FILE.exists():
-        return json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
-    return {}
-
-
-def _secret() -> str:
-    env_val = os.environ.get(JWT_SECRET_ENV)
-    secret = env_val or _load_settings().get("jwt_secret", "")
-    if secret in JWT_UNSAFE_SECRETS:
-        raise RuntimeError(
-            f"JWT secret no configurado. "
-            f"Define la variable de entorno {JWT_SECRET_ENV} o establece "
-            f"'jwt_secret' en data/settings.json antes de arrancar."
-        )
-    return secret
-
-
-# ── Token helpers ─────────────────────────────────────────────────────────────
-
-
-def _hash_token(token: str) -> str:
-    """SHA-256 hex digest — lo que se guarda en BD; el token raw va al usuario."""
-    return hashlib.sha256(token.encode()).hexdigest()
-
-
-# ── Password helpers ───────────────────────────────────────────────────────────
-
-
-def hash_password(plain: str) -> str:
-    return _bcrypt.hashpw(plain.encode("utf-8"), _bcrypt.gensalt(rounds=12)).decode(
-        "utf-8"
-    )
-
-
-async def hash_password_async(plain: str) -> str:
-    """Calcula bcrypt sin bloquear el event loop de FastAPI."""
-    return await asyncio.to_thread(hash_password, plain)
-
-
-def verify_password(plain: str, hashed: str) -> bool:
-    try:
-        return _bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
-    except Exception:
-        return False
-
-
-async def verify_password_async(plain: str, hashed: str) -> bool:
-    """Wrapper no-bloqueante — delega bcrypt al thread pool."""
-    return await asyncio.to_thread(verify_password, plain, hashed)
-
-
-# ── Internal DB helpers ────────────────────────────────────────────────────────
-
-_ALLOWED_USER_FIELDS = frozenset({"id", "email", "username"})
-
-
-async def _get_user_by(field: str, value: str) -> Optional[dict]:
-    if field not in _ALLOWED_USER_FIELDS:
-        raise ValueError(f"Campo no permitido para búsqueda de usuario: {field!r}")
-    async with open_db() as conn:
-        row = await conn.fetchone(f"SELECT * FROM users WHERE {field} = ?", (value,))
-        return dict(row) if row else None
-
-
-# ── Public user API ────────────────────────────────────────────────────────────
-
-
-async def get_user_by_email(email: str) -> Optional[dict]:
-    return await _get_user_by("email", email.strip().lower())
-
-
-async def get_user_by_username(username: str) -> Optional[dict]:
-    return await _get_user_by("username", normalize_username(username))
-
-
-async def get_user_by_id(user_id: str) -> Optional[dict]:
-    return await _get_user_by("id", user_id)
-
-
-async def get_user_by_identity(identity: str) -> Optional[dict]:
-    """Resolve an internal user id or a public username."""
-    async with open_db() as conn:
-        row = await conn.fetchone(
-            "SELECT * FROM users WHERE id = ? OR username = ?",
-            (identity, normalize_username(identity)),
-        )
-        return dict(row) if row else None
-
-
-async def get_user_by_login(identifier: str) -> Optional[dict]:
-    """Resolve a login identifier without exposing which field matched."""
-    normalized = identifier.strip().lower()
-    async with open_db() as conn:
-        row = await conn.fetchone(
-            "SELECT * FROM users WHERE username = ? OR email = ?",
-            (normalized, normalized),
-        )
-        return dict(row) if row else None
-
-
-async def get_stripe_customer_id(username: str) -> Optional[str]:
-    async with open_db() as conn:
-        row = await conn.fetchone(
-            "SELECT stripe_customer_id FROM users WHERE id = ? OR username = ?",
-            (username, normalize_username(username)),
-        )
-        return row["stripe_customer_id"] if row else None
-
-
-async def set_stripe_customer_id(username: str, customer_id: str) -> None:
-    async with open_db() as conn:
-        await conn.execute(
-            "UPDATE users SET stripe_customer_id = ? WHERE id = ? OR username = ?",
-            (customer_id, username, normalize_username(username)),
-        )
-        await conn.commit()
-
-
-async def get_username_by_stripe_customer_id(customer_id: str) -> Optional[str]:
-    async with open_db() as conn:
-        row = await conn.fetchone(
-            "SELECT id FROM users WHERE stripe_customer_id = ?", (customer_id,)
-        )
-        return row["id"] if row else None
 
 
 async def register_user(username: str, password: str, email: str = "") -> None:
@@ -242,62 +131,6 @@ async def register_user_email(
             )
     flog.ok(f"Nuevo usuario: {email}")
     return username, token
-
-
-async def get_or_create_github_user(
-    github_id: str, login: str, email: str, name: str
-) -> dict:
-    """Resuelve el usuario local ligado a una identidad de GitHub (columnas
-    `provider`/`provider_sub`), creándolo si es la primera vez que inicia
-    sesión así. Sin contraseña local (`password_hash=NULL`) — el login por
-    usuario/contraseña ya trata eso como "usuario no encontrado"."""
-    async with open_db() as conn:
-        row = await conn.fetchone(
-            "SELECT * FROM users WHERE provider = ? AND provider_sub = ?",
-            ("github", github_id),
-        )
-        if row:
-            return dict(row)
-
-        base_username = normalize_username(login)
-        if not is_valid_username(base_username):
-            base_username = normalize_username(f"gh-{github_id}")
-        username = base_username
-        suffix = 1
-        while await conn.fetchone("SELECT 1 FROM users WHERE username = ?", (username,)):
-            suffix += 1
-            username = f"{base_username}{suffix}"[:32]
-
-        account_email = (email or "").strip().lower()
-        if not account_email or await conn.fetchone(
-            "SELECT 1 FROM users WHERE email = ?", (account_email,)
-        ):
-            account_email = f"{username}@users.noreply.github.com"
-
-        now = generate_date()
-        user_id = generate_id(32)
-        async with conn.transaction():
-            await conn.execute(
-                "INSERT INTO users "
-                "(id, username, email, password_hash, display_name, provider, "
-                "provider_sub, role, is_active, is_verified, created_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-                (
-                    user_id,
-                    username,
-                    account_email,
-                    None,
-                    name or username,
-                    "github",
-                    github_id,
-                    "standard",
-                    1,
-                    1,
-                    now,
-                ),
-            )
-    flog.ok(f"Nuevo usuario vía GitHub: {username}")
-    return await get_user_by_id(user_id)  # type: ignore[return-value]
 
 
 async def verify_email_token(token: str) -> Optional[str]:
@@ -396,6 +229,7 @@ async def _clear_temp_admin_pass(conn: Any, username: str) -> None:
     recuperación y reseteo por admin).
     """
     import contextlib
+    import os
 
     target = os.environ.get("GAIA_ADMIN_EMAIL", "admin@localhost.com").strip().lower()
     row = await conn.fetchone(
@@ -450,162 +284,12 @@ async def list_users() -> list:
 async def delete_user(username: str) -> bool:
     if not await get_user_by_username(username):
         return False
+    # Import diferido: app.auth.gdpr importa get_user_by_identity de este
+    # módulo, así que un import a nivel de módulo aquí crearía un ciclo.
+    from app.auth.gdpr import purge_user_data
+
     await purge_user_data(username)
     return True
-
-
-# ── GDPR ──────────────────────────────────────────────────────────────────────
-
-
-async def get_owned_groups(username: str) -> list:
-    """Return groups where the user is owner (created_by)."""
-    user = await get_user_by_identity(username)
-    user_id = user["id"] if user else username
-    async with open_db() as conn:
-        rows = await conn.fetchall(
-            "SELECT id, name FROM groups WHERE created_by = ?",
-            (user_id,),
-        )
-        return [dict(r) for r in rows]
-
-
-async def schedule_user_deletion(username: str) -> str:
-    """Schedule account deletion 30 days from now. Returns cancellation token (raw)."""
-    token = secrets.token_urlsafe(32)
-    deletion_at = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
-    async with open_db() as conn:
-        await conn.execute(
-            "UPDATE users SET deletion_requested_at = ?, deletion_token = ? WHERE id = ? OR username = ?",
-            (deletion_at, _hash_token(token), username, normalize_username(username)),
-        )
-        await conn.commit()
-    user = await get_user_by_identity(username)
-    if user:
-        send_deletion_scheduled_email(user["email"], token, deletion_at)
-    flog.info(f"[gdpr] Borrado programado para {username} el {deletion_at}")
-    return token
-
-
-async def cancel_user_deletion(token: str) -> bool:
-    """Cancel a scheduled deletion via token. Returns True if found and cancelled."""
-    async with open_db() as conn:
-        if not await conn.fetchone(
-            "SELECT 1 FROM users WHERE deletion_token = ?", (_hash_token(token),)
-        ):
-            return False
-        await conn.execute(
-            "UPDATE users SET deletion_requested_at = NULL, deletion_token = NULL WHERE deletion_token = ?",
-            (_hash_token(token),),
-        )
-        await conn.commit()
-        return True
-
-
-def _purge_user_files(username: str) -> None:
-    """Borra ficheros del usuario del filesystem. Síncrono — llamar desde asyncio.to_thread."""
-    import json as _json
-    import shutil as _shutil
-
-    for base_dir in (AGENTS_DIR, SKILLS_DIR):
-        for scope_dir in (base_dir / "private", base_dir / "public"):
-            if not scope_dir.exists():
-                continue
-            for item_dir in scope_dir.iterdir():
-                cfg = item_dir / "config.json"
-                if not cfg.exists():
-                    continue
-                try:
-                    if _json.loads(cfg.read_text()).get("owner_id") == username:
-                        _shutil.rmtree(item_dir, ignore_errors=True)
-                except Exception as exc:
-                    # Esto es un borrado por GDPR: un config.json ilegible dejaba
-                    # atrás el agente de un usuario que pidió que se le borrara,
-                    # y sin rastro de que había pasado. Se sigue con el resto de
-                    # directorios, pero queda constancia de cuál se ha quedado.
-                    flog.error(f"[gdpr] No se pudo purgar {item_dir}: {exc}")
-
-
-async def purge_user_data(username: str) -> None:
-    """Hard-delete all user data from DB (cascade) and filesystem."""
-    import asyncio as _asyncio
-
-    user = await get_user_by_identity(username)
-    if not user:
-        return
-    user_id = user["id"]
-    public_username = user["username"]
-
-    try:
-        async with open_db() as conn:
-            async with conn.transaction():
-                await conn.execute(
-                    "DELETE FROM messages WHERE conversation_id IN (SELECT id FROM conversations WHERE user_id = ?)",
-                    (user_id,),
-                )
-                await conn.execute(
-                    "DELETE FROM conversations WHERE user_id = ?", (user_id,)
-                )
-                await conn.execute("DELETE FROM agents WHERE owner_id = ?", (user_id,))
-                await conn.execute("DELETE FROM skills WHERE owner_id = ?", (user_id,))
-                await conn.execute(
-                    "DELETE FROM knowledge_items WHERE owner_id = ?", (user_id,)
-                )
-                await conn.execute(
-                    "DELETE FROM connections WHERE owner_id = ?", (user_id,)
-                )
-                await conn.execute("DELETE FROM agent_workflows WHERE owner_id = ?", (user_id,))
-                await conn.execute("DELETE FROM resource_social WHERE owner = ?", (user_id,))
-                await conn.execute("DELETE FROM resource_stars WHERE username = ?", (user_id,))
-                await conn.execute(
-                    "DELETE FROM user_follows WHERE follower = ? OR following = ?",
-                    (user_id, user_id),
-                )
-                await conn.execute(
-                    "DELETE FROM token_daily WHERE owner_id = ?", (user_id,)
-                )
-                await conn.execute(
-                    "DELETE FROM accounts WHERE owner_id = ?", (user_id,)
-                )
-                await conn.execute(
-                    "DELETE FROM resource_group_shares WHERE shared_by = ?",
-                    (user_id,),
-                )
-                await conn.execute(
-                    "DELETE FROM group_invitations WHERE username = ?", (user_id,)
-                )
-                await conn.execute(
-                    "DELETE FROM group_members WHERE username = ?", (user_id,)
-                )
-                await conn.execute(
-                    "DELETE FROM groups WHERE created_by = ?", (user_id,)
-                )
-                await conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
-        flog.ok(f"[gdpr] BD purgada para {public_username}")
-    except Exception as exc:
-        flog.error(f"[gdpr] Error purgando BD de {username}: {exc}")
-        raise
-
-    await _asyncio.to_thread(_purge_user_files, user_id)
-    flog.ok(f"[gdpr] Purga completa de {public_username}")
-
-
-async def purge_expired_deletions() -> int:
-    """Hard-delete accounts whose 30-day grace period has passed. Returns count."""
-    now = generate_date()
-    async with open_db() as conn:
-        rows = await conn.fetchall(
-            "SELECT username FROM users WHERE deletion_requested_at IS NOT NULL AND deletion_requested_at <= ?",
-            (now,),
-        )
-    usernames = [r[0] for r in rows]
-
-    for username in usernames:
-        try:
-            await purge_user_data(username)
-        except Exception as exc:
-            flog.error(f"[gdpr] No se pudo purgar {username}: {exc}")
-
-    return len(usernames)
 
 
 _ADMIN_SQL: dict = {
@@ -651,88 +335,6 @@ async def admin_set_password(username: str, new_password: str) -> bool:
         return True
 
 
-# ── Gestor role helpers ────────────────────────────────────────────────────────
-
-
-# ── JWT ────────────────────────────────────────────────────────────────────────
-
-
-def create_token(username: str, group_id: Optional[str] = None) -> str:
-    now = datetime.now(timezone.utc)
-    expire = now + timedelta(hours=JWT_EXPIRE_HOURS)
-    payload = {
-        "sub": username,
-        "gid": group_id or username,  # group personal = username
-        "iat": now,  # A2: issued-at para invalidación por cambio de contraseña
-        "exp": expire,
-    }
-    return jwt.encode(payload, _secret(), algorithm=JWT_ALGORITHM)
-
-
-def decode_token(token: str) -> Optional[str]:
-    """Return the username or None if the token is invalid/expired."""
-    try:
-        data = jwt.decode(token, _secret(), algorithms=[JWT_ALGORITHM])
-        return data.get("sub")
-    except JWTError:
-        return None
-
-
-def decode_token_with_iat(token: str) -> tuple[Optional[str], Optional[float]]:
-    """Return (username, iat_epoch) o (None, None) si el token es inválido.
-
-    El campo ``iat`` (issued-at) se usa en ``require_auth`` para invalidar
-    sesiones cuyo token fue emitido antes de un cambio de contraseña.
-    """
-    try:
-        data = jwt.decode(token, _secret(), algorithms=[JWT_ALGORITHM])
-        iat = data.get("iat")
-        # python-jose puede devolver iat como datetime o como int; normalizamos a float
-        if isinstance(iat, datetime):
-            iat = iat.timestamp()
-        elif iat is not None:
-            iat = float(iat)
-        return data.get("sub"), iat
-    except JWTError:
-        return None, None
-
-
-def decode_group_token(token: str) -> tuple[Optional[str], Optional[str]]:
-    """Return (username, group_id). group_id defaults to username if not present."""
-    try:
-        data = jwt.decode(token, _secret(), algorithms=[JWT_ALGORITHM])
-        username = data.get("sub")
-        legacy_group_claim = "w" + "id"
-        group_id = data.get("gid") or data.get(legacy_group_claim) or username
-        return username, group_id
-    except JWTError:
-        return None, None
-
-
-def decode_group_token_full(
-    token: str,
-) -> tuple[Optional[str], Optional[str], Optional[float]]:
-    """Return (username, group_id, iat_epoch).
-
-    Versión extendida de ``decode_group_token`` que también extrae el campo
-    ``iat`` (issued-at) necesario para invalidar sesiones tras cambio de
-    contraseña (C1).
-    """
-    try:
-        data = jwt.decode(token, _secret(), algorithms=[JWT_ALGORITHM])
-        username = data.get("sub")
-        legacy_group_claim = "w" + "id"
-        group_id = data.get("gid") or data.get(legacy_group_claim) or username
-        iat = data.get("iat")
-        if isinstance(iat, datetime):
-            iat = iat.timestamp()
-        elif iat is not None:
-            iat = float(iat)
-        return username, group_id, iat
-    except JWTError:
-        return None, None, None
-
-
 # ── First-boot admin bootstrap ────────────────────────────────────────────────
 
 
@@ -759,6 +361,8 @@ async def ensure_admin_user() -> None:
     4. Si no se puede hacer nada con GAIA_ADMIN_EMAIL y ya hay otro admin
        sin reset_mode → no tocar nada.
     """
+    import os
+
     reset_mode = os.environ.get("GAIA_ADMIN_RESET", "").lower() in ("1", "true", "yes")
     target_email = os.environ.get("GAIA_ADMIN_EMAIL", "admin@localhost.com").strip().lower()
     target_username = normalize_username(os.environ.get("GAIA_ADMIN_USERNAME", "admin"))
@@ -773,6 +377,8 @@ async def ensure_admin_user() -> None:
     # usada". Cuando el admin cambia su contraseña el fichero se VACÍA, no se
     # borra (ver _clear_temp_admin_pass); borrarlo a mano hace que el siguiente
     # arranque regenere la contraseña y tire la que eligió el usuario.
+    import bcrypt as _bcrypt
+
     _pass_file = DATA_DIR / ".admin_pass"
     if not reset_mode and not _pass_file.exists():
         reset_mode = True

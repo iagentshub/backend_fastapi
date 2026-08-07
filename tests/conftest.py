@@ -103,7 +103,12 @@ def patch_data_dir(tmp_data_dir, tmp_path, monkeypatch):
     # que usa _pass_file = DATA_DIR / ".admin_pass" (sin esto, .admin_pass se escribía
     # en el path real por defecto en cada test, ver conftest.py:12-21).
     monkeypatch.setattr(auth_mod, "DATA_DIR", tmp_data_dir)
-    monkeypatch.setattr(auth_mod, "SETTINGS_FILE", tmp_data_dir / "settings.json")
+
+    # SETTINGS_FILE (igual trampa que arriba) vive ahora en app.auth.passwords,
+    # de donde auth.py ya no lo reexporta por valor.
+    import app.auth.passwords as passwords_mod
+
+    monkeypatch.setattr(passwords_mod, "SETTINGS_FILE", tmp_data_dir / "settings.json")
 
     # Patch MemoryStorage live instances
     from app.storage.memory_storage import MemoryStorage

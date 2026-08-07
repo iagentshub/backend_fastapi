@@ -19,24 +19,22 @@ from fastapi import (
 from fastapi.responses import RedirectResponse
 
 from app.auth.auth import (
-    cancel_user_deletion,
     consume_reset_token,
     create_password_reset_token,
     create_token,
     decode_group_token_full,
-    get_or_create_github_user,
-    get_owned_groups,
     get_user_by_id,
     get_user_by_identity,
     get_user_by_login,
     get_user_by_username,
     get_user_role,
     register_user_email,
-    schedule_user_deletion,
     set_own_password,
     verify_email_token,
     verify_password_async,
 )
+from app.auth.gdpr import cancel_user_deletion, get_owned_groups, schedule_user_deletion
+from app.auth.oauth_github import get_or_create_github_user
 from app.config.session import (
     EMAIL_VERIFY_ENABLED,
     LOGIN_MAX_FAILS,

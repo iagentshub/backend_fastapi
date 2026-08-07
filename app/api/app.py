@@ -37,7 +37,8 @@ from app.api.routes import (
 )
 from app.api.routes.admin import admin_router
 from app.api.routes.users import users_router
-from app.auth.auth import ensure_admin_user, purge_expired_deletions
+from app.auth.auth import ensure_admin_user
+from app.auth.gdpr import purge_expired_deletions
 from app.config import data as _cfg
 from app.config.cors import CORS_ORIGINS
 from app.middleware.body_limit import BodySizeLimitMiddleware

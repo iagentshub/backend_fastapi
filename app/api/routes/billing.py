@@ -8,13 +8,7 @@ import stripe
 from fastapi import APIRouter, Depends, HTTPException, Request
 
 from app.api.routes.auth import require_auth
-from app.auth.auth import (
-    get_stripe_customer_id,
-    get_user_by_id,
-    get_user_by_username,
-    get_username_by_stripe_customer_id,
-    set_stripe_customer_id,
-)
+from app.auth.auth import get_user_by_id, get_user_by_username
 from app.config.billing import (
     STRIPE_API_VERSION,
     STRIPE_PRICE_SELFHOSTED_ANNUAL,
@@ -25,6 +19,11 @@ from app.config.billing import (
 )
 from app.errors import APIError
 from app.middleware.ratelimit import RateLimiter
+from app.services.billing_link import (
+    get_stripe_customer_id,
+    get_username_by_stripe_customer_id,
+    set_stripe_customer_id,
+)
 from app.services.billing_pricing import InvalidPlanError, compute_total_cents
 from app.storage.billing import BillingStorage
 from app.utils.net import client_ip as _client_ip

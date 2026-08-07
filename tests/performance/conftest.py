@@ -30,8 +30,8 @@ def patch_data_dir(perf_data_dir, monkeypatch):  # type: ignore[override]
     monkeypatch.setattr(cfg, "MEMORY_DIR", perf_data_dir / "memory")
     monkeypatch.setattr(cfg, "SETTINGS_FILE", perf_data_dir / "settings.json")
 
-    import app.auth.auth as auth_mod
-    monkeypatch.setattr(auth_mod, "SETTINGS_FILE", perf_data_dir / "settings.json")
+    import app.auth.passwords as passwords_mod
+    monkeypatch.setattr(passwords_mod, "SETTINGS_FILE", perf_data_dir / "settings.json")
 
     monkeypatch.setattr(db_mod, "IS_PG", False)
     monkeypatch.setattr(db_mod, "PH", "?")

@@ -6,13 +6,12 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
-from app.auth.auth import (
+from app.auth.auth import get_user_by_username, register_user
+from app.auth.gdpr import (
     cancel_user_deletion,
     get_owned_groups,
-    get_user_by_username,
     purge_expired_deletions,
     purge_user_data,
-    register_user,
     schedule_user_deletion,
 )
 
@@ -157,9 +156,9 @@ async def test_purge_elimina_agents_del_filesystem(patch_data_dir, tmp_path, mon
     (agents_dir / "private").mkdir(parents=True)
     agent_dir = agents_dir / "private" / "agent-test"
     agent_dir.mkdir()
-    import app.auth.auth as auth_mod
-    monkeypatch.setattr(auth_mod, "AGENTS_DIR", agents_dir)
-    monkeypatch.setattr(auth_mod, "SKILLS_DIR", tmp_path / "skills_purge")
+    import app.auth.gdpr as gdpr_mod
+    monkeypatch.setattr(gdpr_mod, "AGENTS_DIR", agents_dir)
+    monkeypatch.setattr(gdpr_mod, "SKILLS_DIR", tmp_path / "skills_purge")
     (tmp_path / "skills_purge").mkdir()
 
     await _make_user("purge_fs_user")

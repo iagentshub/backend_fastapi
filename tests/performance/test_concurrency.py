@@ -60,8 +60,8 @@ def perf_app(perf_data_dir):
     cfg.MEMORY_DIR = perf_data_dir / "memory"
     cfg.SETTINGS_FILE = perf_data_dir / "settings.json"
 
-    import app.auth.auth as auth_mod
-    auth_mod.SETTINGS_FILE = perf_data_dir / "settings.json"
+    import app.auth.passwords as passwords_mod
+    passwords_mod.SETTINGS_FILE = perf_data_dir / "settings.json"
 
     db_mod.IS_PG = False
     db_mod.PH = "?"

@@ -13,7 +13,8 @@ import zipfile
 import pytest
 from fastapi.testclient import TestClient
 
-from app.auth.auth import create_token, register_user, schedule_user_deletion
+from app.auth.auth import create_token, register_user
+from app.auth.gdpr import schedule_user_deletion
 
 # ── Fixture: parcha gdpr.DB_FILE con la BD de test ───────────────────────────
 

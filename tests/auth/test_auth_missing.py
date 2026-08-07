@@ -26,7 +26,7 @@ def test_verify_password_async(patch_data_dir):
 
 
 def test_hash_password_async_delegates_to_thread(monkeypatch):
-    from app.auth import auth
+    from app.auth import auth, passwords
 
     calls = []
 
@@ -34,7 +34,7 @@ def test_hash_password_async_delegates_to_thread(monkeypatch):
         calls.append((func, args))
         return "threaded-hash"
 
-    monkeypatch.setattr(auth.asyncio, "to_thread", fake_to_thread)
+    monkeypatch.setattr(passwords.asyncio, "to_thread", fake_to_thread)
 
     result = asyncio.run(auth.hash_password_async("mi_clave"))
 
@@ -200,7 +200,8 @@ def test_reset_token_is_atomic_under_concurrency(patch_data_dir):
 # ── purge_user_data ────────────────────────────────────────────────────────────
 
 def test_purge_user_data(patch_data_dir):
-    from app.auth.auth import get_user_by_username, purge_user_data, register_user
+    from app.auth.auth import get_user_by_username, register_user
+    from app.auth.gdpr import purge_user_data
     asyncio.run(register_user("user_purge", "pass", email="user_purge@test.com"))
     asyncio.run(purge_user_data("user_purge"))
     assert asyncio.run(get_user_by_username("user_purge")) is None
