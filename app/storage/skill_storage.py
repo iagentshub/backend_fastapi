@@ -7,6 +7,8 @@ from typing import Any, Dict, List, Optional
 
 import yaml
 
+from app.config.content_languages import CONTENT_LANGUAGE_LABELS
+
 # db se importa DOS veces a propósito: ver app/storage/_storage_helpers.py.
 from app.storage import db as _db
 from app.storage._storage_helpers import _PUBLIC_OWNER, _slug
@@ -55,7 +57,7 @@ SKILL_LABELS = frozenset(
         "linked",
         "fork",
     }
-)
+) | CONTENT_LANGUAGE_LABELS
 SKILL_ASSIGNABLE_LABELS = SKILL_LABELS - {"linked", "fork"}
 
 

@@ -6,6 +6,10 @@ import json
 from dataclasses import dataclass, field
 from typing import ClassVar, List, Optional
 
+from app.config.content_languages import (
+    language_codes_from_labels,
+    language_label,
+)
 from app.models.base import BaseResource
 
 
@@ -143,6 +147,12 @@ class Agent(BaseResource):
 
     @classmethod
     def _build(cls, data: dict) -> "Agent":
+        labels = [str(lbl) for lbl in (data.get("labels") or ["private"]) if lbl]
+        legacy_language = str(data.get("language") or "").strip().lower()
+        legacy_label = language_label(legacy_language)
+        if legacy_label and legacy_label not in labels:
+            labels.append(legacy_label)
+        languages = language_codes_from_labels(labels)
         return cls(
             id=str(data.get("id") or ""),
             name=str(data.get("name") or "").strip(),
@@ -151,7 +161,7 @@ class Agent(BaseResource):
             description=str(data.get("description") or "").strip(),
             icon=str(data.get("icon") or "").strip(),
             tags=[str(t) for t in (data.get("tags") or []) if t],
-            language=str(data.get("language") or "").strip(),
+            language=languages[0] if languages else "",
             connection_id=str(data.get("connection_id") or "").strip() or None,
             op_connections=[str(c) for c in (data.get("op_connections") or []) if c],
             model=str(data.get("model") or "").strip(),
@@ -169,7 +179,7 @@ class Agent(BaseResource):
             use_memory=bool(data.get("use_memory", False)),
             memory_file=str(data.get("memory_file") or "").strip() or None,
             routines=[r for r in (data.get("routines") or []) if isinstance(r, dict)],
-            labels=[str(lbl) for lbl in (data.get("labels") or ["private"]) if lbl],
+            labels=labels,
             created_at=str(data.get("created_at") or ""),
             updated_at=str(data.get("updated_at") or ""),
             owner_id=str(data["owner_id"]).strip() or None

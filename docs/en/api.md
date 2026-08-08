@@ -25,6 +25,23 @@ Registration accepts `username`, `email`, and `password`. Login accepts `identif
 
 ---
 
+## Explore
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/explore` | Catalog of public resources owned by other users |
+| `GET` | `/api/explore/{resource_type}/{resource_id}/preview` | Preview a public resource |
+
+`GET /api/explore` accepts `type`, `category`, `q`, `tag`, repeated `label`,
+repeated `language`, `limit`, and `offset`. Supported content languages are
+`es`, `en`, `fr`, `de`, `pt`, `it`, `zh`, `ja`, and `ar`. Selected languages
+are combined with OR, while the language group is combined with category and
+labels using AND. For example, `?language=es&label=production` returns Spanish
+resources that are also in production. Every result includes `labels` and
+`languages`.
+
+---
+
 ## Admin
 
 All admin endpoints require the `admin` role.

@@ -12,6 +12,7 @@ import json
 import os
 from typing import Any
 
+from app.config.content_languages import language_label
 from app.utils import flog
 from app.utils.generators import generate_id
 
@@ -68,6 +69,78 @@ async def _add_sqlite_column(
             return False
         raise
     return True
+
+
+async def _migrate_legacy_agent_language_labels(
+    conn: Any, *, postgres: bool
+) -> None:
+    """Mirror the legacy scalar agent language into the canonical label list."""
+    if postgres:
+        rows = await conn.fetch("SELECT id, owner_id, data FROM agents")
+    else:
+        cursor = await conn.execute("SELECT id, owner_id, data FROM agents")
+        rows = await cursor.fetchall()
+    for row in rows:
+        try:
+            data = json.loads(row["data"] or "{}")
+        except (json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(data, dict):
+            continue
+        canonical = language_label(str(data.get("language") or ""))
+        if not canonical:
+            continue
+        labels = [str(value) for value in (data.get("labels") or ["private"]) if value]
+        if canonical in labels:
+            continue
+        labels.append(canonical)
+        data["labels"] = labels
+        compact_data = json.dumps(
+            data, ensure_ascii=False, separators=(",", ":")
+        )
+        serialized_labels = json.dumps(labels, ensure_ascii=False)
+        if postgres:
+            await conn.execute(
+                "UPDATE agents SET data=$1 WHERE id=$2 AND owner_id=$3",
+                compact_data,
+                row["id"],
+                row["owner_id"],
+            )
+            await conn.execute(
+                "INSERT INTO resource_labels "
+                "(resource_type, resource_id, owner_id, label) "
+                "VALUES ($1, $2, $3, $4) "
+                "ON CONFLICT(resource_type, resource_id, label) DO NOTHING",
+                "agent",
+                row["id"],
+                row["owner_id"],
+                canonical,
+            )
+            await conn.execute(
+                "UPDATE resource_social SET labels=$1 "
+                "WHERE resource_type='agent' AND resource_id=$2",
+                serialized_labels,
+                row["id"],
+            )
+        else:
+            await conn.execute(
+                "UPDATE agents SET data=? WHERE id=? AND owner_id=?",
+                (compact_data, row["id"], row["owner_id"]),
+            )
+            await conn.execute(
+                "INSERT INTO resource_labels "
+                "(resource_type, resource_id, owner_id, label) "
+                "VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(resource_type, resource_id, label) DO NOTHING",
+                ("agent", row["id"], row["owner_id"], canonical),
+            )
+            await conn.execute(
+                "UPDATE resource_social SET labels=? "
+                "WHERE resource_type='agent' AND resource_id=?",
+                (serialized_labels, row["id"]),
+            )
+    if not postgres:
+        await conn.commit()
 
 
 def _resource_name_from_data(raw_data: Any, resource_id: str) -> str:
@@ -786,6 +859,14 @@ async def _migrate_sqlite(conn: Any) -> None:
     await _add_sqlite_column(
         conn, "messages", "tokens_out", "INTEGER NOT NULL DEFAULT 0"
     )
+    # 21. Labels de contenido (incluido idioma) en elementos de knowledge.
+    await _add_sqlite_column(
+        conn,
+        "knowledge_items",
+        "labels",
+        "TEXT NOT NULL DEFAULT '[\"private\"]'",
+    )
+    await _migrate_legacy_agent_language_labels(conn, postgres=False)
 
 
 async def _migrate_users_json_sqlite(conn: Any) -> None:
@@ -1215,6 +1296,12 @@ async def _migrate_pg(conn: Any) -> None:
         "ALTER TABLE messages ADD COLUMN IF NOT EXISTS "
         "tokens_out INTEGER NOT NULL DEFAULT 0"
     )
+    # 21. Labels de contenido (incluido idioma) en elementos de knowledge.
+    await conn.execute(
+        "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS "
+        "labels TEXT NOT NULL DEFAULT '[\"private\"]'"
+    )
+    await _migrate_legacy_agent_language_labels(conn, postgres=True)
 
 
 async def _migrate_users_json_pg(conn: Any) -> None:

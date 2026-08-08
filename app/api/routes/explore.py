@@ -16,6 +16,10 @@ from fastapi import APIRouter, Depends, Query
 import app.config.data as _cfg
 from app.api.routes.auth import require_auth, require_session
 from app.api.routes.social import _PUBLIC_VAL, _social_limiter
+from app.config.content_languages import (
+    CONTENT_LANGUAGE_SET,
+    language_codes_from_labels,
+)
 from app.errors import APIError
 from app.storage.agent_storage import AgentStorage
 from app.storage.db import IS_PG, open_db
@@ -52,6 +56,7 @@ async def explore(
     q: Optional[str] = None,
     tag: Optional[str] = None,
     label: Optional[List[str]] = Query(None),
+    language: Optional[List[str]] = Query(None),
     limit: int = 40,
     offset: int = 0,
     # Abierto al invitado: solo devuelve filas is_public y el usuario únicamente
@@ -76,6 +81,28 @@ async def explore(
         if tag:
             conditions.append("tags LIKE ?")
             params.append(f'%"{tag}"%')
+        if language:
+            normalized_languages = [
+                str(value).strip().lower() for value in language if str(value).strip()
+            ]
+            invalid_languages = [
+                value for value in normalized_languages
+                if value not in CONTENT_LANGUAGE_SET
+            ]
+            if invalid_languages:
+                raise APIError(
+                    422,
+                    "invalid_field",
+                    "Idioma de contenido no soportado",
+                    extra={"field": "language", "invalid": invalid_languages},
+                )
+            if normalized_languages:
+                conditions.append(
+                    "(" + " OR ".join(["labels LIKE ?"] * len(normalized_languages)) + ")"
+                )
+                params.extend(
+                    f'%"lang_{value}"%' for value in normalized_languages
+                )
         if label:
             # Coincide con cualquiera de las etiquetas seleccionadas (OR)
             conditions.append(
@@ -104,6 +131,7 @@ async def explore(
             row["labels"] = json.loads(row.get("labels") or '["private"]')
         except (ValueError, TypeError):
             row["labels"] = ["private"]
+        row["languages"] = language_codes_from_labels(row["labels"])
         rows.append(row)
     await _add_owner_usernames(rows)
     return rows

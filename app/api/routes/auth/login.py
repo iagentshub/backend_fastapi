@@ -25,6 +25,7 @@ from app.auth.auth import (
     verify_password_async,
 )
 from app.auth.passwords import create_token
+from app.config.content_languages import CONTENT_LANGUAGE_SET
 from app.config.session import (
     EMAIL_VERIFY_ENABLED,
     RATE_FORGOT_CALLS,
@@ -374,7 +375,7 @@ async def change_password(
 
 # ── Social profile ────────────────────────────────────────────────────────────
 
-_ALLOWED_LANGUAGES = {"es", "en", "fr", "de", "pt", "it", "zh", "ja", "ar"}
+_ALLOWED_LANGUAGES = CONTENT_LANGUAGE_SET
 _MAX_AVATAR_BYTES = 10 * 1024 * 1024  # 10 MB (la compresión real ocurre en el cliente)
 _ALLOWED_AVATAR_EXT = {".jpg", ".jpeg", ".png", ".webp"}
 

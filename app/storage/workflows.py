@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 
 from app.storage.db import open_db
 from app.storage.resource_base import ResourceStorage
+from app.storage.skill_storage import SKILL_LABELS
 from app.utils.generators import generate_date as _now
 from app.utils.generators import generate_id
 
@@ -66,6 +67,11 @@ class WorkflowStorage(ResourceStorage):
         existing = await self.get(workflow_id, owner_id)
         now = _now()
         labels = [str(lbl) for lbl in (payload.get("labels") or ["private"]) if lbl]
+        invalid_labels = [
+            label for label in labels if label not in SKILL_LABELS
+        ]
+        if invalid_labels:
+            raise ValueError("invalid workflow labels")
         item = {
             "id": workflow_id,
             "resource_type": "workflow",

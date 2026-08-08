@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import http.client
+import json
 import socket
 import ssl
 from html.parser import HTMLParser
@@ -29,7 +30,13 @@ def _coerce_active(d: Dict[str, Any]) -> Dict[str, Any]:
     d.setdefault("description", "")
     d.setdefault("icon", "")
     d.setdefault("scope", "private")
-    d.setdefault("labels", ["private"])
+    try:
+        raw_labels = d.get("labels")
+        d["labels"] = (
+            json.loads(raw_labels) if isinstance(raw_labels, str) else raw_labels
+        ) or ["private"]
+    except (json.JSONDecodeError, TypeError):
+        d["labels"] = ["private"]
     if "is_active" in d:
         d["is_active"] = bool(d["is_active"])
     return d
@@ -218,7 +225,7 @@ class KnowledgeStorage(ResourceStorage):
     ) -> List[Dict[str, Any]]:
         query = (
             "SELECT id, owner_id, type, title, source, char_count, "
-            "is_active, deactivated_at, created_at, updated_at "
+            "labels, is_active, deactivated_at, created_at, updated_at "
             "FROM knowledge_items"
         )
         params: list = []
@@ -243,7 +250,7 @@ class KnowledgeStorage(ResourceStorage):
         async with open_db() as conn:
             row = await conn.fetchone(
                 f"SELECT id, owner_id, type, title, source, content, char_count, "
-                f"is_active, deactivated_at, created_at, updated_at "
+                f"labels, is_active, deactivated_at, created_at, updated_at "
                 f"FROM knowledge_items WHERE {cond}",
                 params,
             )
@@ -257,14 +264,15 @@ class KnowledgeStorage(ResourceStorage):
         source: str,
         content: str,
         owner_id: str,
+        labels: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         now = generate_date()
         item_id = generate_id(16)
         async with open_db() as conn:
             await conn.execute(
                 "INSERT INTO knowledge_items "
-                "(id, owner_id, type, title, source, content, char_count, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "(id, owner_id, type, title, source, content, char_count, labels, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     item_id,
                     owner_id,
@@ -273,11 +281,13 @@ class KnowledgeStorage(ResourceStorage):
                     source,
                     content,
                     len(content),
+                    json.dumps(labels or ["private"], ensure_ascii=False),
                     now,
                     now,
                 ),
             )
             await conn.commit()
+        await self.sync_labels(item_id, owner_id, labels or ["private"])
         return await self.get(item_id)  # type: ignore[return-value]
 
     async def delete(self, item_id: str, owner_id: Optional[str]) -> bool:
@@ -289,4 +299,5 @@ class KnowledgeStorage(ResourceStorage):
                 return False
             await conn.execute(f"DELETE FROM knowledge_items WHERE {cond}", params)
             await conn.commit()
-            return True
+        await self.clear_labels(item_id)
+        return True

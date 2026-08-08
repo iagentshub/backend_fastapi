@@ -25,6 +25,23 @@ El registro recibe `username`, `email` y `password`. El login recibe `identifier
 
 ---
 
+## Explorar
+
+| Método | Endpoint | Descripción |
+|---|---|---|
+| `GET` | `/api/explore` | Catálogo de recursos públicos de otros usuarios |
+| `GET` | `/api/explore/{resource_type}/{resource_id}/preview` | Vista previa de un recurso público |
+
+`GET /api/explore` admite `type`, `category`, `q`, `tag`, `label` repetido,
+`language` repetido, `limit` y `offset`. Los idiomas de contenido soportados son
+`es`, `en`, `fr`, `de`, `pt`, `it`, `zh`, `ja` y `ar`. Los idiomas seleccionados
+se combinan entre sí con OR, pero el grupo de idioma se combina con categoría y
+labels mediante AND. Por ejemplo, `?language=es&label=production` devuelve
+recursos en español que además estén en producción. Cada resultado incluye
+`labels` y `languages`.
+
+---
+
 ## Admin
 
 Todos los endpoints de admin requieren el rol `admin`.

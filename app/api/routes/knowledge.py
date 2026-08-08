@@ -21,6 +21,7 @@ from app.storage.knowledge import (
     extract_document_text,
     fetch_url_text,
 )
+from app.storage.skill_storage import SKILL_ASSIGNABLE_LABELS
 from app.utils import flog
 from app.utils.generators import generate_id
 from app.utils.net import json_body
@@ -39,7 +40,35 @@ async def _owner(user: str, group_id: str) -> Optional[str]:
     return None if await get_user_role(user) == "admin" else group_id
 
 
-def _guest_item(*, type: str, title: str, source: str, content: str) -> Dict[str, Any]:
+def _content_labels(body: Dict[str, Any]) -> List[str]:
+    raw = body.get("labels")
+    if raw is None:
+        return ["private"]
+    if not isinstance(raw, list):
+        raise APIError(
+            422,
+            "invalid_field",
+            "Las labels deben ser una lista del catálogo del sistema",
+            extra={"field": "labels"},
+        )
+    labels = list(
+        dict.fromkeys(str(value).strip() for value in raw if str(value).strip())
+    )
+    invalid = [value for value in labels if value not in SKILL_ASSIGNABLE_LABELS]
+    if invalid:
+        raise APIError(
+            422,
+            "invalid_field",
+            "Knowledge contiene labels fuera del catálogo del sistema",
+            extra={"field": "labels", "invalid": invalid},
+        )
+    labels = [value for value in labels if value not in {"public", "private"}]
+    return ["private", *labels]
+
+
+def _guest_item(
+    *, type: str, title: str, source: str, content: str, labels: List[str]
+) -> Dict[str, Any]:
     now = datetime.now(timezone.utc).isoformat()
     return {
         "id": generate_id(16),
@@ -48,7 +77,7 @@ def _guest_item(*, type: str, title: str, source: str, content: str) -> Dict[str
         "description": "",
         "icon": "",
         "scope": "private",
-        "labels": ["private"],
+        "labels": labels,
         "is_active": True,
         "type": type,
         "title": title,
@@ -160,17 +189,25 @@ async def add_text(
     title = str(body.get("title") or "").strip()
     content = str(body.get("content") or "").strip()
     source = str(body.get("source") or title).strip()
+    labels = _content_labels(body)
     if not title:
         raise APIError(422, "invalid_field", "Título requerido", extra={"field": "title"})
     if not content:
         raise APIError(422, "invalid_field", "Contenido requerido", extra={"field": "content"})
     if is_guest(user):
-        item = _guest_item(type="text", title=title, source=source, content=content)
+        item = _guest_item(
+            type="text", title=title, source=source, content=content, labels=labels
+        )
         get_session(user).knowledge.append(item)
         return item
     owner = await _owner(user, group_id) or group_id
     return await _storage.save(
-        type="text", title=title, source=source, content=content, owner_id=owner
+        type="text",
+        title=title,
+        source=source,
+        content=content,
+        owner_id=owner,
+        labels=labels,
     )
 
 
@@ -183,6 +220,7 @@ async def add_url(
     body = await json_body(request)
     url = str(body.get("url") or "").strip()
     title = str(body.get("title") or "").strip() or url
+    labels = _content_labels(body)
     if not url:
         raise APIError(422, "invalid_field", "URL requerida", extra={"field": "url"})
     try:
@@ -196,12 +234,19 @@ async def add_url(
             422, "url_text_extraction_failed", "No se pudo extraer texto de la URL"
         )
     if is_guest(user):
-        item = _guest_item(type="url", title=title, source=url, content=content)
+        item = _guest_item(
+            type="url", title=title, source=url, content=content, labels=labels
+        )
         get_session(user).knowledge.append(item)
         return item
     owner = await _owner(user, group_id) or group_id
     return await _storage.save(
-        type="url", title=title, source=url, content=content, owner_id=owner
+        type="url",
+        title=title,
+        source=url,
+        content=content,
+        owner_id=owner,
+        labels=labels,
     )
 
 
@@ -242,7 +287,11 @@ async def upload_document(
         )
     if is_guest(user):
         item = _guest_item(
-            type="document", title=filename, source=filename, content=content
+            type="document",
+            title=filename,
+            source=filename,
+            content=content,
+            labels=["private"],
         )
         get_session(user).knowledge.append(item)
         return item

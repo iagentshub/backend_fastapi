@@ -8,6 +8,7 @@ Caso concreto: stripe_customer_id en users (commit de Stripe billing).
 
 from __future__ import annotations
 
+import json
 import sqlite3
 from pathlib import Path
 
@@ -210,6 +211,55 @@ async def test_migration_removes_legacy_resource_folders(tmp_path):
     assert "resource_folder_items" not in tables
     assert stars == 0
     assert social == 0
+
+
+async def test_migration_mirrors_legacy_agent_language_into_labels(tmp_path):
+    import app.storage.db as db_mod
+
+    db = tmp_path / "legacy-agent-language.db"
+    await db_mod.migrate_schema(db)
+
+    conn = sqlite3.connect(str(db))
+    payload = {
+        "id": "legacy-agent",
+        "name": "Legacy Spanish agent",
+        "language": "es",
+        "labels": ["private"],
+    }
+    conn.execute(
+        "INSERT INTO agents "
+        "(id, owner_id, name, scope, data, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?)",
+        (
+            "legacy-agent",
+            "alice",
+            payload["name"],
+            "private",
+            json.dumps(payload),
+            "2026-01-01T00:00:00Z",
+            "2026-01-01T00:00:00Z",
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    await db_mod.migrate_schema(db)
+
+    migrated = sqlite3.connect(str(db))
+    stored = json.loads(
+        migrated.execute(
+            "SELECT data FROM agents WHERE id='legacy-agent'"
+        ).fetchone()[0]
+    )
+    indexed = migrated.execute(
+        "SELECT COUNT(*) FROM resource_labels "
+        "WHERE resource_type='agent' AND resource_id='legacy-agent' "
+        "AND label='lang_es'"
+    ).fetchone()[0]
+    migrated.close()
+
+    assert stored["labels"] == ["private", "lang_es"]
+    assert indexed == 1
 
 
 async def test_migration_removes_folders_from_database_without_social_tables(tmp_path):

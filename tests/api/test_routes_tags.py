@@ -152,3 +152,118 @@ def test_skill_free_tags_rejected(client):
     )
     assert r.status_code == 422
     assert r.json()["detail"]["field"] == "tags"
+
+
+def test_agent_legacy_language_is_mirrored_to_canonical_label(client):
+    _login(client, "taglanguagelegacy")
+    response = client.post(
+        "/api/agents",
+        json={
+            "name": "Agente heredado",
+            "language": "es",
+            "labels": ["private"],
+        },
+    )
+    assert response.status_code == 200
+    assert response.json()["language"] == "es"
+    assert "lang_es" in response.json()["labels"]
+
+
+def test_explore_language_filter_is_anded_with_regular_labels(client):
+    _login(client, "taglanguageowner")
+
+    def _publish(name, labels):
+        created = client.post(
+            "/api/agents",
+            json={"name": name, "description": name, "labels": labels},
+        )
+        assert created.status_code == 200
+        agent_id = created.json()["id"]
+        visible = client.put(
+            f"/api/agents/private/{agent_id}/visibility",
+            json={
+                "is_public": True,
+                "category": "Writing",
+                "trial_missing_deps": "warn",
+            },
+        )
+        assert visible.status_code == 200
+        return agent_id
+
+    spanish_production = _publish(
+        "Spanish production", ["public", "production", "lang_es"]
+    )
+    english_production = _publish(
+        "English production", ["public", "production", "lang_en"]
+    )
+    spanish_draft = _publish("Spanish draft", ["public", "draft", "lang_es"])
+
+    _login(client, "taglanguageviewer")
+    response = client.get(
+        "/api/explore", params={"language": "es", "label": "production"}
+    )
+    assert response.status_code == 200
+    result_ids = {item["resource_id"] for item in response.json()}
+    assert spanish_production in result_ids
+    assert english_production not in result_ids
+    assert spanish_draft not in result_ids
+    item = next(
+        item for item in response.json() if item["resource_id"] == spanish_production
+    )
+    assert item["languages"] == ["es"]
+
+
+def test_explore_rejects_unknown_content_language(client):
+    _login(client, "taglanguageinvalid")
+    response = client.get("/api/explore", params={"language": "klingon"})
+    assert response.status_code == 422
+    assert response.json()["detail"]["field"] == "language"
+
+
+def test_language_labels_are_valid_for_skill_and_knowledge(client):
+    _login(client, "taglanguageresources")
+    skill = client.post(
+        "/api/skills/private",
+        json={
+            "name": "Redacción española",
+            "description": "Instrucciones en español",
+            "content": "# Instrucciones\n\nEscribe siempre en español.",
+            "labels": ["private", "lang_es"],
+        },
+    )
+    assert skill.status_code == 200
+    assert "lang_es" in skill.json()["labels"]
+
+    knowledge = client.post(
+        "/api/knowledge/text",
+        json={
+            "title": "Manual español",
+            "content": "Contenido de referencia en español.",
+            "labels": ["private", "lang_es"],
+        },
+    )
+    assert knowledge.status_code == 200
+    assert knowledge.json()["labels"] == ["private", "lang_es"]
+
+    listed = client.get("/api/knowledge")
+    assert listed.status_code == 200
+    stored = next(item for item in listed.json() if item["id"] == knowledge.json()["id"])
+    assert stored["labels"] == ["private", "lang_es"]
+
+    workflow_agent = client.post(
+        "/api/agents", json={"name": "Paso del flujo"}
+    ).json()
+    workflow = client.post(
+        "/api/workflows",
+        json={
+            "name": "Flujo bilingüe",
+            "description": "Flujo en español e inglés",
+            "definition": {
+                "nodes": [{"id": "one", "agent_id": workflow_agent["id"]}],
+                "edges": [],
+            },
+            "labels": ["private", "lang_es", "lang_en"],
+        },
+    )
+    assert workflow.status_code == 200
+    assert workflow.json()["labels"] == ["private", "lang_es", "lang_en"]
