@@ -23,6 +23,7 @@ from app.api.routes import (
     groups,
     knowledge,
     labels,
+    llm_orchestrations,
     logs,
     memory,
     prompts,
@@ -188,6 +189,7 @@ def create_app() -> FastAPI:
     app.include_router(knowledge.router)
     app.include_router(labels.router)
     app.include_router(logs.router)
+    app.include_router(llm_orchestrations.router)
     app.include_router(sharing.router)
     app.include_router(groups.router)
     app.include_router(billing.router)

@@ -266,6 +266,7 @@ CREATE TABLE IF NOT EXISTS user_agent_preferences (
     username      TEXT NOT NULL,
     agent_id      TEXT NOT NULL,
     connection_id TEXT,
+    llm_orchestration_id TEXT,
     updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     PRIMARY KEY (username, agent_id)
 );
@@ -318,6 +319,21 @@ CREATE TABLE IF NOT EXISTS agent_workflows (
 );
 CREATE INDEX IF NOT EXISTS idx_agent_workflows_owner
     ON agent_workflows(owner_id, updated_at DESC);
+CREATE TABLE IF NOT EXISTS llm_orchestrations (
+    id TEXT NOT NULL,
+    owner_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    definition TEXT NOT NULL,
+    labels TEXT NOT NULL DEFAULT '["private"]',
+    is_active INTEGER NOT NULL DEFAULT 1,
+    deactivated_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(id, owner_id)
+);
+CREATE INDEX IF NOT EXISTS idx_llm_orchestrations_owner
+    ON llm_orchestrations(owner_id, updated_at DESC);
 """
 
 SCHEMA_PG = """
@@ -583,6 +599,7 @@ CREATE TABLE IF NOT EXISTS user_agent_preferences (
     username      TEXT NOT NULL,
     agent_id      TEXT NOT NULL,
     connection_id TEXT,
+    llm_orchestration_id TEXT,
     updated_at    TEXT NOT NULL DEFAULT (NOW()::TEXT),
     PRIMARY KEY (username, agent_id)
 );
@@ -635,4 +652,19 @@ CREATE TABLE IF NOT EXISTS agent_workflows (
 );
 CREATE INDEX IF NOT EXISTS idx_agent_workflows_owner
     ON agent_workflows(owner_id, updated_at DESC);
+CREATE TABLE IF NOT EXISTS llm_orchestrations (
+    id TEXT NOT NULL,
+    owner_id TEXT NOT NULL,
+    name TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    definition TEXT NOT NULL,
+    labels TEXT NOT NULL DEFAULT '["private"]',
+    is_active SMALLINT NOT NULL DEFAULT 1,
+    deactivated_at TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL,
+    PRIMARY KEY(id, owner_id)
+);
+CREATE INDEX IF NOT EXISTS idx_llm_orchestrations_owner
+    ON llm_orchestrations(owner_id, updated_at DESC);
 """

@@ -26,6 +26,7 @@ def test_admin_explore_unifies_and_filters_resource_types(admin_client):
         "connection",
         "knowledge",
         "workflow",
+        "llm_orchestration",
         "skill",
         "prompt",
         "tool",

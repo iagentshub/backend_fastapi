@@ -14,6 +14,7 @@ from app.api.routes.admin.resources import (
     admin_list_connections,
     admin_list_groups,
     admin_list_knowledge,
+    admin_list_llm_orchestrations,
     admin_list_memory,
     admin_list_prompts,
     admin_list_skills,
@@ -32,6 +33,7 @@ _ADMIN_EXPLORE_TYPES = (
     "connection",
     "knowledge",
     "workflow",
+    "llm_orchestration",
     "skill",
     "prompt",
     "tool",
@@ -47,6 +49,7 @@ def _explore_search_text(resource_type: str, item: dict[str, Any]) -> str:
         "connection": ("name", "id", "owner_username", "type"),
         "knowledge": ("title", "id", "owner_username", "type"),
         "workflow": ("name", "id", "owner_username", "description"),
+        "llm_orchestration": ("name", "id", "owner_username", "description", "mode"),
         "skill": ("name", "id", "owner_username", "category"),
         "prompt": ("name", "id", "owner_username", "alias"),
         "tool": ("name", "id", "owner_username", "language"),
@@ -63,6 +66,7 @@ async def _admin_inventory() -> dict[str, list[dict[str, Any]]]:
         connections,
         knowledge,
         workflows,
+        llm_orchestrations,
         skills,
         prompts,
         tools,
@@ -74,6 +78,7 @@ async def _admin_inventory() -> dict[str, list[dict[str, Any]]]:
         admin_list_connections(_=""),
         admin_list_knowledge(_=""),
         admin_list_workflows(_=""),
+        admin_list_llm_orchestrations(_=""),
         admin_list_skills(_=""),
         admin_list_prompts(_=""),
         admin_list_tools(_=""),
@@ -86,6 +91,7 @@ async def _admin_inventory() -> dict[str, list[dict[str, Any]]]:
         "connection": connections,
         "knowledge": knowledge,
         "workflow": workflows,
+        "llm_orchestration": llm_orchestrations,
         "skill": skills,
         "prompt": prompts,
         "tool": tools,
@@ -278,6 +284,18 @@ async def admin_resource_graph(
                     resource_label("connection", connection),
                 )
                 add_edge(agent_node, connection_node, "uses")
+        orchestration_id = str(agent.get("llm_orchestration_id") or "")
+        if orchestration_id:
+            orchestration = resources_by_type["llm_orchestration"].get(
+                orchestration_id
+            )
+            if orchestration:
+                orchestration_node = add_node(
+                    "llm_orchestration",
+                    orchestration_id,
+                    resource_label("llm_orchestration", orchestration),
+                )
+                add_edge(agent_node, orchestration_node, "uses")
         for knowledge_id in agent.get("knowledge") or []:
             knowledge = resources_by_type["knowledge"].get(str(knowledge_id))
             if knowledge:
@@ -433,6 +451,30 @@ async def admin_resource_graph(
                     str(value) for value in (agent.get(field) or [])
                 }
             if related:
+                agent_node = add_node(
+                    "agent", str(agent["id"]), resource_label("agent", agent)
+                )
+                add_edge(agent_node, root_id, "uses")
+
+    if resource_type == "llm_orchestration":
+        connection_ids = {
+            str(candidate.get("connection_id") or "")
+            for candidate in root.get("candidates") or []
+        }
+        router_id = str(root.get("router_connection_id") or "")
+        if router_id:
+            connection_ids.add(router_id)
+        for connection_id in connection_ids - {""}:
+            connection = resources_by_type["connection"].get(connection_id)
+            if connection:
+                connection_node = add_node(
+                    "connection",
+                    connection_id,
+                    resource_label("connection", connection),
+                )
+                add_edge(root_id, connection_node, "routes")
+        for agent in agents.values():
+            if str(agent.get("llm_orchestration_id") or "") == canonical_resource_id:
                 agent_node = add_node(
                     "agent", str(agent["id"]), resource_label("agent", agent)
                 )

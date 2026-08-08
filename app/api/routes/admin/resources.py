@@ -14,12 +14,16 @@ from app.errors import APIError
 from app.storage.agent_storage import AgentStorage as _AgentStorage
 from app.storage.db import open_db
 from app.storage.groups import GroupStorage as _GroupStorage
+from app.storage.llm_orchestrations import (
+    LLMOrchestrationStorage as _LLMOrchestrationStorage,
+)
 from app.storage.workflows import WorkflowStorage as _WorkflowStorage
 from app.utils.net import json_body
 
 _groups = _GroupStorage()
 _agents = _AgentStorage(_AGENTS_DIR)
 _workflows = _WorkflowStorage()
+_llm_orchestrations = _LLMOrchestrationStorage()
 
 
 @admin_router.get("/connections")
@@ -352,6 +356,36 @@ async def admin_delete_workflow(
             "not_found",
             "Orquestación no encontrada",
             extra={"resource": "workflow"},
+        )
+    return {"ok": True}
+
+
+@admin_router.get("/llm-orchestrations")
+async def admin_list_llm_orchestrations(
+    _: str = Depends(require_admin),
+) -> list[dict[str, Any]]:
+    items = await _llm_orchestrations.list_all()
+    async with open_db() as conn:
+        user_rows = await conn.fetchall("SELECT id, username FROM users")
+    username_map = {row[0]: row[1] for row in user_rows}
+    for item in items:
+        item["owner_username"] = username_map.get(
+            item.get("owner_id", ""), item.get("owner_id", "")
+        )
+        item["candidate_count"] = len(item.get("candidates") or [])
+    return items
+
+
+@admin_router.delete("/llm-orchestrations/{item_id}")
+async def admin_delete_llm_orchestration(
+    item_id: str, _: str = Depends(require_admin)
+) -> dict[str, Any]:
+    if not await _llm_orchestrations.delete_any(item_id):
+        raise APIError(
+            404,
+            "not_found",
+            "Orquestación LLM no encontrada",
+            extra={"resource": "llm_orchestration"},
         )
     return {"ok": True}
 

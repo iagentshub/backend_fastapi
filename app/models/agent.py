@@ -95,6 +95,7 @@ class Agent(BaseResource):
 
     # ── LLM — portable across platforms ───────────────────────────────────────
     connection_id: Optional[str] = None
+    llm_orchestration_id: Optional[str] = None
     op_connections: List[str] = field(default_factory=list)
     model: str = ""
     system_prompt: str = (
@@ -153,6 +154,8 @@ class Agent(BaseResource):
             tags=[str(t) for t in (data.get("tags") or []) if t],
             language=str(data.get("language") or "").strip(),
             connection_id=str(data.get("connection_id") or "").strip() or None,
+            llm_orchestration_id=str(data.get("llm_orchestration_id") or "").strip()
+            or None,
             op_connections=[str(c) for c in (data.get("op_connections") or []) if c],
             model=str(data.get("model") or "").strip(),
             system_prompt=str(data.get("system_prompt") or "").strip(),
@@ -203,6 +206,7 @@ class Agent(BaseResource):
             "labels": self.labels,
             "language": self.language,
             "connection_id": self.connection_id,
+            "llm_orchestration_id": self.llm_orchestration_id,
             "op_connections": self.op_connections,
             "model": self.model,
             "system_prompt": self.system_prompt,

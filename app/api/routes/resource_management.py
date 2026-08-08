@@ -17,6 +17,7 @@ from app.services.workflow_validator import validate_workflow
 from app.storage.agent_storage import AgentStorage
 from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
+from app.storage.llm_orchestrations import LLMOrchestrationStorage
 from app.storage.resource_versions import ResourceVersionStorage
 from app.storage.skill_storage import SkillStorage
 from app.storage.workflows import WorkflowStorage
@@ -30,6 +31,7 @@ _versions = ResourceVersionStorage()
 _workflows = WorkflowStorage()
 _shares = GroupShareStorage()
 _group_storage = GroupStorage()
+_llm_orchestrations = LLMOrchestrationStorage()
 
 
 class WorkflowBody(BaseModel):
@@ -297,11 +299,75 @@ async def run_saved_workflow(
                     break
             if not shared_agent:
                 raise RuntimeError(f"El agente {agent_id} no está disponible para tu grupo")
+        llm_orchestration_id = str(agent.get("llm_orchestration_id") or "")
+        if llm_orchestration_id:
+            orchestration = await _llm_orchestrations.get_any(llm_orchestration_id)
+            shared_llm_ids = set(
+                await _shares.get_group_shared_resource_ids(
+                    ctx.group_id, "llm_orchestration"
+                )
+            )
+            if (
+                not orchestration
+                or not orchestration.get("is_active", True)
+                or (
+                    orchestration.get("owner_id") != agent.get("owner_id")
+                    and llm_orchestration_id not in shared_llm_ids
+                )
+            ):
+                raise RuntimeError(
+                    f"La orquestación LLM del agente {agent.get('name')} no está disponible"
+                )
+            from app.api.routes.connections import _get_conn_any
+
+            ids = [
+                str(candidate.get("connection_id") or "")
+                for candidate in orchestration.get("candidates") or []
+            ]
+            router_id = str(orchestration.get("router_connection_id") or "")
+            if router_id:
+                ids.append(router_id)
+            resolved_connections: Dict[str, Dict[str, Any]] = {}
+            for target_id in set(ids):
+                if (
+                    ctx.group_id != ctx.user
+                    and not await _group_storage.has_resource_permission(
+                        ctx.group_id,
+                        ctx.user,
+                        "connections",
+                        target_id,
+                        "via_agent",
+                    )
+                ):
+                    raise RuntimeError(
+                        "No tienes permiso para usar una conexión de la "
+                        "orquestación LLM"
+                    )
+                connection = await _get_conn_any(target_id, ctx.user, ctx.group_id)
+                if connection:
+                    resolved_connections[target_id] = connection
+            return agent, {
+                "_llm_orchestration": orchestration,
+                "_connections": resolved_connections,
+            }
         connection_id = str(agent.get("connection_id") or "")
         if not connection_id:
             raise RuntimeError(f"El agente {agent.get('name')} no tiene conexión")
         from app.api.routes.connections import _get_conn_any
 
+        if (
+            ctx.group_id != ctx.user
+            and not await _group_storage.has_resource_permission(
+                ctx.group_id,
+                ctx.user,
+                "connections",
+                connection_id,
+                "via_agent",
+            )
+        ):
+            raise RuntimeError(
+                f"No tienes permiso para usar la conexión del agente {agent.get('name')}"
+            )
         connection = await _get_conn_any(connection_id, ctx.user, ctx.group_id)
         if not connection:
             raise RuntimeError(f"La conexión del agente {agent.get('name')} no está disponible")

@@ -284,6 +284,37 @@ async def test_empty_agent_reply_is_retried(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_llm_orchestration_workflow_accounts_router_and_executor(monkeypatch):
+    recorded: list[tuple[str, int, int]] = []
+
+    async def fake_orchestrated(*args, **kwargs):
+        yield f"data: {json.dumps({'type': 'done', 'reply': 'ok', 'usage_by_connection': {'router': {'in': 3, 'out': 2}, 'executor': {'in': 7, 'out': 4}}})}\n\n"
+
+    async def add_tokens(connection_id, tokens_in, tokens_out):
+        recorded.append((connection_id, tokens_in, tokens_out))
+
+    async def resolve(agent_id):
+        return _agent(agent_id), {
+            "_llm_orchestration": {"id": "route", "mode": "balanced"},
+            "_connections": {},
+        }
+
+    monkeypatch.setattr(
+        "app.services.workflow_runner.stream_orchestrated_chat",
+        fake_orchestrated,
+    )
+    monkeypatch.setattr(
+        "app.services.workflow_runner._connections.add_tokens", add_tokens
+    )
+    definition = validate_workflow({"nodes": [_node("routed")], "edges": []})
+
+    events = [event async for event in run_workflow(definition, "entrada", resolve)]
+
+    assert events[-1] == {"type": "workflow_done", "output": "ok"}
+    assert recorded == [("router", 3, 2), ("executor", 7, 4)]
+
+
+@pytest.mark.asyncio
 async def test_gate_can_repeat_one_branch_without_rerunning_approved_sibling(monkeypatch):
     events = await _events(
         {

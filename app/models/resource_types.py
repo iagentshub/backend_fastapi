@@ -8,7 +8,16 @@ from __future__ import annotations
 
 # Recursos gestionados por el usuario (heredan de BaseResource)
 RESOURCE_TYPES: frozenset[str] = frozenset(
-    {"agent", "skill", "connection", "knowledge", "workflow", "prompt", "tool"}
+    {
+        "agent",
+        "skill",
+        "connection",
+        "knowledge",
+        "workflow",
+        "llm_orchestration",
+        "prompt",
+        "tool",
+    }
 )
 
 # Tipos con presencia social (star/publicación) — las conexiones no se publican
@@ -24,6 +33,7 @@ ALIASES: dict[str, str] = {
     "url": "knowledge",
     "document": "knowledge",
     "workflows": "workflow",
+    "llm_orchestrations": "llm_orchestration",
     "prompts": "prompt",
     "tools": "tool",
 }

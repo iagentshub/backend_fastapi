@@ -28,6 +28,7 @@ _RESOURCE_TABLES: tuple[str, ...] = (
     "connections",
     "knowledge_items",
     "agent_workflows",
+    "llm_orchestrations",
 )
 
 _NAMED_RESOURCE_TABLES: tuple[str, ...] = ("agents", "skills", "connections")
@@ -752,6 +753,9 @@ async def _migrate_sqlite(conn: Any) -> None:
                 PRIMARY KEY (username, agent_id)
             );
         """)
+    await _add_sqlite_column(
+        conn, "user_agent_preferences", "llm_orchestration_id", "TEXT"
+    )
 
     # 18. Borrado suave: is_active + deactivated_at en todos los recursos.
     for table in _RESOURCE_TABLES:
@@ -1213,6 +1217,10 @@ async def _migrate_pg(conn: Any) -> None:
     await conn.execute(
         "ALTER TABLE messages ADD COLUMN IF NOT EXISTS "
         "tokens_out INTEGER NOT NULL DEFAULT 0"
+    )
+    await conn.execute(
+        "ALTER TABLE user_agent_preferences ADD COLUMN IF NOT EXISTS "
+        "llm_orchestration_id TEXT"
     )
 
 

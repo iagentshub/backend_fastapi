@@ -7,6 +7,7 @@ DELETE /api/admin/centinel/stress/run
 DELETE /api/admin/connections/{conn_id}
 DELETE /api/admin/groups/{group_id}
 DELETE /api/admin/knowledge/{item_id}
+DELETE /api/admin/llm-orchestrations/{item_id}
 DELETE /api/admin/memory/{item_id}
 DELETE /api/admin/prompts/{item_id}
 DELETE /api/admin/skills/{item_id}
@@ -22,6 +23,7 @@ DELETE /api/groups/{group_id}
 DELETE /api/groups/{group_id}/invitations/{inv_id}
 DELETE /api/groups/{group_id}/members/{username}
 DELETE /api/knowledge/{item_id}
+DELETE /api/llm-orchestrations/{item_id}
 DELETE /api/memory/{filename}
 DELETE /api/prompts/{scope}/{prompt_id}
 DELETE /api/settings/notification-banners/{banner_id}
@@ -45,6 +47,7 @@ GET /api/admin/connections
 GET /api/admin/explore
 GET /api/admin/groups
 GET /api/admin/knowledge
+GET /api/admin/llm-orchestrations
 GET /api/admin/logs
 GET /api/admin/logs/export
 GET /api/admin/logs/summary
@@ -89,6 +92,8 @@ GET /api/groups/{group_id}/members
 GET /api/health
 GET /api/knowledge
 GET /api/labels/{label}
+GET /api/llm-orchestrations
+GET /api/llm-orchestrations/{item_id}
 GET /api/memory
 GET /api/memory/{filename}
 GET /api/prompts
@@ -189,6 +194,9 @@ POST /api/knowledge/url
 POST /api/knowledge/{item_id}/activate
 POST /api/knowledge/{item_id}/deactivate
 POST /api/knowledge/{source_id}/link
+POST /api/llm-orchestrations
+POST /api/llm-orchestrations/{item_id}/activate
+POST /api/llm-orchestrations/{item_id}/deactivate
 POST /api/memory/{filename}
 POST /api/prompts/private/{prompt_id}/sync
 POST /api/prompts/{prompt_id}/activate

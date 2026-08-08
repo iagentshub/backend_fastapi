@@ -28,6 +28,7 @@ from app.middleware.locale import get_locale
 from app.middleware.ratelimit import RateLimiter
 from app.models.agent import Agent
 from app.services.chat import stream_chat
+from app.services.llm_routing import stream_orchestrated_chat
 from app.storage.agent_storage import AgentStorage
 from app.storage.chat import ChatStorage
 from app.storage.connection_storage import ConnectionStorage
@@ -41,6 +42,7 @@ from app.storage.guest import (
     is_guest,
 )
 from app.storage.knowledge import KnowledgeStorage
+from app.storage.llm_orchestrations import LLMOrchestrationStorage
 from app.storage.memory_storage import MemoryStorage
 from app.storage.prompt_storage import PromptStorage
 from app.storage.resource_versions import ResourceVersionStorage
@@ -63,12 +65,23 @@ _shares = GroupShareStorage()
 _groups = GroupStorage()
 _chat = ChatStorage()
 _knowledge = KnowledgeStorage()
+_llm_orchestrations = LLMOrchestrationStorage()
 _versions = ResourceVersionStorage()
 _chat_limiter = RateLimiter(calls=RATE_CHAT_CALLS, window=RATE_CHAT_WINDOW)
 
 
 class _AgentPreferenceBody(BaseModel):
     connection_id: Optional[str] = None
+    llm_orchestration_id: Optional[str] = None
+
+    def validate_target(self) -> None:
+        if self.connection_id and self.llm_orchestration_id:
+            raise APIError(
+                422,
+                "invalid_field",
+                "Selecciona una conexión o una orquestación LLM, no ambas",
+                extra={"field": "llm_target"},
+            )
 
 
 async def _validate_resource_refs(
@@ -363,6 +376,36 @@ async def save_agent(
 ) -> Dict[str, Any]:
     user, group_id = ctx.user, ctx.group_id
     payload = await json_body(request)
+    connection_id = str(payload.get("connection_id") or "").strip()
+    llm_orchestration_id = str(payload.get("llm_orchestration_id") or "").strip()
+    if connection_id and llm_orchestration_id:
+        raise APIError(
+            422,
+            "invalid_field",
+            "Selecciona una conexión o una orquestación LLM, no ambas",
+            extra={"field": "llm_target"},
+        )
+    if llm_orchestration_id and not is_guest(ctx.user):
+        orchestration = await _llm_orchestrations.get_any(llm_orchestration_id)
+        shared_llm_ids = set(
+            await _shares.get_group_shared_resource_ids(
+                ctx.group_id, "llm_orchestration"
+            )
+        )
+        if (
+            not orchestration
+            or (
+                orchestration.get("owner_id") not in {ctx.user, ctx.group_id}
+                and llm_orchestration_id not in shared_llm_ids
+            )
+            or not orchestration.get("is_active", True)
+        ):
+            raise APIError(
+                422,
+                "invalid_field",
+                "La orquestación LLM no está disponible",
+                extra={"field": "llm_orchestration_id"},
+            )
     scope = str(payload.pop("scope", "private") or "private")
     if scope not in ("public", "private"):
         raise APIError(
@@ -531,11 +574,14 @@ async def get_agent_preferences(
     """Return the saved connection preference for this user/agent pair."""
     async with open_db() as conn:
         row = await conn.fetchone(
-            f"SELECT connection_id FROM user_agent_preferences "
+            f"SELECT connection_id, llm_orchestration_id FROM user_agent_preferences "
             f"WHERE username={PH} AND agent_id={PH}",
             (user, agent_id),
         )
-    return {"connection_id": row["connection_id"] if row else None}
+    return {
+        "connection_id": row["connection_id"] if row else None,
+        "llm_orchestration_id": row["llm_orchestration_id"] if row else None,
+    }
 
 
 @router.put("/{agent_id}/preferences")
@@ -545,21 +591,26 @@ async def put_agent_preferences(
     user: str = Depends(require_auth),
 ) -> Dict[str, Any]:
     """Upsert a connection preference for this user/agent pair."""
+    body.validate_target()
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
     async with open_db() as conn:
         if IS_PG:
             await conn.execute(
-                f"INSERT INTO user_agent_preferences (username, agent_id, connection_id, updated_at) "
-                f"VALUES ({PH}, {PH}, {PH}, {PH}) "
+                f"INSERT INTO user_agent_preferences "
+                f"(username, agent_id, connection_id, llm_orchestration_id, updated_at) "
+                f"VALUES ({PH}, {PH}, {PH}, {PH}, {PH}) "
                 f"ON CONFLICT (username, agent_id) DO UPDATE SET "
-                f"connection_id=EXCLUDED.connection_id, updated_at=EXCLUDED.updated_at",
-                (user, agent_id, body.connection_id, now_str),
+                f"connection_id=EXCLUDED.connection_id, "
+                f"llm_orchestration_id=EXCLUDED.llm_orchestration_id, "
+                f"updated_at=EXCLUDED.updated_at",
+                (user, agent_id, body.connection_id, body.llm_orchestration_id, now_str),
             )
         else:
             await conn.execute(
                 f"INSERT OR REPLACE INTO user_agent_preferences "
-                f"(username, agent_id, connection_id, updated_at) VALUES ({PH}, {PH}, {PH}, {PH})",
-                (user, agent_id, body.connection_id, now_str),
+                f"(username, agent_id, connection_id, llm_orchestration_id, updated_at) "
+                f"VALUES ({PH}, {PH}, {PH}, {PH}, {PH})",
+                (user, agent_id, body.connection_id, body.llm_orchestration_id, now_str),
             )
         await conn.commit()
     return {"ok": True}
@@ -795,8 +846,9 @@ async def chat(
             if item and item.get("is_active", True):
                 attached_knowledge.append(item)
 
-    # Ollama virtual connections: "base_id::model_name"
+    # El destino puede ser una conexión directa (legacy) o una orquestación LLM.
     raw_conn_id = a.get("connection_id") or ""
+    raw_llm_orchestration_id = a.get("llm_orchestration_id") or ""
 
     # Preferencia por usuario/agente: también debe aplicarse al propietario.
     # La extensión usa esto para cambiar de modelo sin modificar el agente ni
@@ -804,12 +856,17 @@ async def chat(
     if not is_guest(user):
         async with open_db() as _pref_conn:
             _pref_row = await _pref_conn.fetchone(
-                f"SELECT connection_id FROM user_agent_preferences "
+                f"SELECT connection_id, llm_orchestration_id "
+                f"FROM user_agent_preferences "
                 f"WHERE username={PH} AND agent_id={PH}",
                 (user, agent_id),
             )
         if _pref_row and _pref_row["connection_id"]:
             raw_conn_id = _pref_row["connection_id"]
+            raw_llm_orchestration_id = ""
+        elif _pref_row and _pref_row["llm_orchestration_id"]:
+            raw_llm_orchestration_id = _pref_row["llm_orchestration_id"]
+            raw_conn_id = ""
 
     if "::" in raw_conn_id:
         base_conn_id, ollama_model = raw_conn_id.split("::", 1)
@@ -850,26 +907,79 @@ async def chat(
                     ),
                 )
 
+    orchestration: Dict[str, Any] | None = None
+    orchestration_connections: Dict[str, Dict[str, Any]] = {}
+    if raw_llm_orchestration_id and not is_guest(user):
+        orchestration = await _llm_orchestrations.get_any(raw_llm_orchestration_id)
+        shared_llm_ids = set(
+            await _shares.get_group_shared_resource_ids(
+                group_id, "llm_orchestration"
+            )
+        )
+        if (
+            not orchestration
+            or not orchestration.get("is_active", True)
+            or (
+                orchestration.get("owner_id")
+                not in {a.get("owner_id"), user, group_id}
+                and raw_llm_orchestration_id not in shared_llm_ids
+            )
+        ):
+            raise APIError(
+                422,
+                "invalid_field",
+                "La orquestación LLM del agente no está disponible",
+                extra={"field": "llm_orchestration_id"},
+            )
+        target_ids = [
+            str(candidate.get("connection_id") or "")
+            for candidate in orchestration.get("candidates") or []
+        ]
+        router_id = str(orchestration.get("router_connection_id") or "")
+        if router_id:
+            target_ids.append(router_id)
+        from app.api.routes.connections import _get_conn_any
+
+        for target_id in set(target_ids):
+            if not target_id:
+                continue
+            if group_id != user and role != "admin" and not await _groups.has_resource_permission(
+                group_id, user, "connections", target_id, "via_agent"
+            ):
+                raise APIError(
+                    403,
+                    "forbidden",
+                    "No tienes permiso para usar una conexión de la orquestación",
+                )
+            target = (
+                await _conns.get(target_id, None)
+                if role == "admin"
+                else await _get_conn_any(target_id, user, group_id)
+            )
+            if target:
+                orchestration_connections[target_id] = target
+
     if is_guest(user):
         s = get_session(user)
         conn = next((c for c in s.connections if c.get("id") == base_conn_id), None)
         memory_store = GuestMemoryAdapter(s)
         knowledge_store = GuestKnowledgeAdapter(s)
     else:
-        conn_id = base_conn_id
-        if role == "admin":
-            conn = await _conns.get(conn_id, None)
-        else:
-            from app.api.routes.connections import _get_conn_any
+        conn = None
+        if base_conn_id:
+            if role == "admin":
+                conn = await _conns.get(base_conn_id, None)
+            else:
+                from app.api.routes.connections import _get_conn_any
 
-            conn = await _get_conn_any(conn_id, user, group_id)
+                conn = await _get_conn_any(base_conn_id, user, group_id)
         memory_store = _memory
         knowledge_store = _knowledge
 
     if conn and ollama_model:
         conn = {**conn, "model": ollama_model}
 
-    if not conn:
+    if not conn and not orchestration:
         raise APIError(
             422, "agent_no_connection", "El agente no tiene conexión configurada"
         )
@@ -881,20 +991,20 @@ async def chat(
     history_user_id = None if is_guest(user) else user
 
     async def _gen():
-        async for chunk in stream_chat(
-            a,
-            conn,
-            history,
-            _skills,
-            memory_store,
-            knowledge_store,
-            _chat,
-            history_user_id,
-            conversation_id or None,
+        streamer = stream_chat(
+            a, conn, history, _skills, memory_store, knowledge_store, _chat,
+            history_user_id, conversation_id or None,
             prompt_storage=None if is_guest(user) else _prompts,
             tool_storage=None if is_guest(user) else _tools,
             attached_knowledge=attached_knowledge,
-        ):
+        ) if orchestration is None else stream_orchestrated_chat(
+            a, orchestration, orchestration_connections, history, _skills,
+            memory_store, knowledge_store, _chat, history_user_id,
+            conversation_id or None,
+            prompt_storage=_prompts, tool_storage=_tools,
+            attached_knowledge=attached_knowledge,
+        )
+        async for chunk in streamer:
             yield chunk
             if chunk.startswith("data: "):
                 try:
@@ -910,11 +1020,22 @@ async def chat(
         if not done_event:
             return
         ev = done_event[0]
-        tokens = ev.get("tokens") or {}
-        tok_in = int(tokens.get("in") or 0)
-        tok_out = int(tokens.get("out") or 0)
+        usage_by_connection = ev.get("usage_by_connection") or {}
+        if usage_by_connection:
+            tok_in = sum(int(value.get("in") or 0) for value in usage_by_connection.values())
+            tok_out = sum(int(value.get("out") or 0) for value in usage_by_connection.values())
+        else:
+            tokens = ev.get("tokens") or {}
+            tok_in = int(tokens.get("in") or 0)
+            tok_out = int(tokens.get("out") or 0)
         if not is_guest(user):
-            if base_conn_id and (tok_in or tok_out):
+            if usage_by_connection:
+                for usage_connection_id, usage in usage_by_connection.items():
+                    usage_in = int(usage.get("in") or 0)
+                    usage_out = int(usage.get("out") or 0)
+                    if usage_in or usage_out:
+                        await _conns.add_tokens(usage_connection_id, usage_in, usage_out)
+            elif base_conn_id and (tok_in or tok_out):
                 await _conns.add_tokens(base_conn_id, tok_in, tok_out)
             if (tok_in or tok_out) and a.get("scope", "private") == "private":
                 await _agents.add_tokens(

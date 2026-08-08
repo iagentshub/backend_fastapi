@@ -9,9 +9,12 @@ from typing import Any, AsyncGenerator, Awaitable, Callable, Dict, List, Set
 
 from app.models.agent import Agent
 from app.services.chat import stream_chat
+from app.services.llm_routing import stream_orchestrated_chat
+from app.storage.connection_storage import ConnectionStorage
 
 AgentResolver = Callable[[str], Awaitable[tuple[Dict[str, Any], Dict[str, Any]]]]
 WORKFLOW_HEARTBEAT_SECONDS = 10.0
+_connections = ConnectionStorage()
 
 
 def _sequence_edges(definition: Dict[str, Any]) -> List[Dict[str, Any]]:
@@ -105,12 +108,18 @@ async def _agent_reply(
     for attempt in range(2):
         reply = ""
         try:
-            async for chunk in stream_chat(
-                agent,
-                connection,
-                [{"role": "user", "content": content}],
-                None,
-            ):
+            history = [{"role": "user", "content": content}]
+            if connection.get("_llm_orchestration"):
+                streamer = stream_orchestrated_chat(
+                    agent,
+                    connection["_llm_orchestration"],
+                    connection.get("_connections") or {},
+                    history,
+                    None,
+                )
+            else:
+                streamer = stream_chat(agent, connection, history, None)
+            async for chunk in streamer:
                 if not chunk.startswith("data: "):
                     continue
                 try:
@@ -121,6 +130,23 @@ async def _agent_reply(
                     raise RuntimeError(str(event.get("message") or "Error del agente"))
                 if event.get("type") == "done":
                     reply = str(event.get("reply") or "")
+                    usage_by_connection = event.get("usage_by_connection") or {}
+                    if usage_by_connection:
+                        for connection_id, usage in usage_by_connection.items():
+                            await _connections.add_tokens(
+                                str(connection_id),
+                                int(usage.get("in") or 0),
+                                int(usage.get("out") or 0),
+                            )
+                    else:
+                        tokens = event.get("tokens") or {}
+                        connection_id = str(connection.get("id") or "")
+                        if connection_id:
+                            await _connections.add_tokens(
+                                connection_id,
+                                int(tokens.get("in") or 0),
+                                int(tokens.get("out") or 0),
+                            )
         except asyncio.CancelledError:
             raise
         except Exception as exc:
