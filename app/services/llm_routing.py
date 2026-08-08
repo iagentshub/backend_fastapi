@@ -55,9 +55,7 @@ def _router_prompt(
             "provider": connections.get(candidate["connection_id"], {}).get(
                 "type", "unavailable"
             ),
-            "model": connections.get(candidate["connection_id"], {}).get(
-                "model", ""
-            ),
+            "model": connections.get(candidate["connection_id"], {}).get("model", ""),
             "routing_hint": candidate.get("routing_hint", ""),
         }
         for candidate in candidates
@@ -74,7 +72,9 @@ def _router_prompt(
     )
 
 
-def _parse_ranking(reply: str, configured_ids: List[str]) -> tuple[List[str], Dict[str, str]]:
+def _parse_ranking(
+    reply: str, configured_ids: List[str]
+) -> tuple[List[str], Dict[str, str]]:
     raw = reply.strip()
     if raw.startswith("```"):
         raw = raw.strip("`").removeprefix("json").strip()
@@ -107,7 +107,7 @@ async def _rank(
     router_id = str(orchestration.get("router_connection_id") or "")
     router = connections.get(router_id)
     if not router or not router.get("is_active", True):
-        return configured, {}, {}, "La conexión enrutadora no está disponible"
+        return [], {}, {}, "La conexión orquestadora no está disponible"
     router_agent = Agent(
         id="llm-router",
         name="LLM Router",
@@ -149,12 +149,12 @@ async def _rank(
     except Exception as exc:
         error = str(exc)
     if error:
-        return configured, {}, usage, error
+        return [], {}, usage, error
     try:
         ranking, reasons = _parse_ranking(reply, configured)
         return ranking, reasons, usage, None
     except (ValueError, TypeError, json.JSONDecodeError) as exc:
-        return configured, {}, usage, f"Respuesta inválida del router: {exc}"
+        return [], {}, usage, f"Respuesta inválida del orquestador: {exc}"
 
 
 async def stream_orchestrated_chat(
@@ -194,12 +194,24 @@ async def stream_orchestrated_chat(
             yield _sse(
                 {
                     "type": "routing_warning",
-                    "message": (
-                        "El balanceador no está disponible; se usará el orden "
-                        "manual configurado."
-                    ),
+                    "message": "La conexión orquestadora ha fallado; se detiene la orquestación.",
                 }
             )
+            yield _sse(
+                {
+                    "type": "error",
+                    "message": "No se pudo decidir qué conexión LLM debía ejecutar la tarea.",
+                    "routing": {
+                        "orchestration_id": orchestration.get("id"),
+                        "mode": "balanced",
+                        "router_connection_id": orchestration.get(
+                            "router_connection_id"
+                        ),
+                    },
+                    "usage_by_connection": usage_by_connection,
+                }
+            )
+            return
     else:
         ranking = configured_ids
 
@@ -273,9 +285,7 @@ async def stream_orchestrated_chat(
                     emitted = True
                     yield frame
                 elif event and event.get("type") == "error":
-                    terminal_error = str(
-                        event.get("message") or "Error del proveedor"
-                    )
+                    terminal_error = str(event.get("message") or "Error del proveedor")
                     if emitted:
                         yield frame
                         return

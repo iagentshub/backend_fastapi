@@ -62,7 +62,7 @@ def test_llm_orchestration_crud_is_private_and_validated(admin_client):
     assert invalid.status_code == 422
 
 
-def test_balanced_requires_router_and_agent_targets_are_exclusive(admin_client):
+def test_balanced_requires_router_and_is_exposed_as_a_connection(admin_client):
     first = _connection(admin_client, "One")
     second = _connection(admin_client, "Two")
     missing_router = admin_client.post(
@@ -90,25 +90,23 @@ def test_balanced_requires_router_and_agent_targets_are_exclusive(admin_client):
             ],
         },
     ).json()
+    virtual_id = f"llm-orchestration:{orchestration['id']}"
+    connections = admin_client.get("/api/connections").json()
+    virtual = next(item for item in connections if item["id"] == virtual_id)
+    assert virtual["type"] == "llm_orchestration"
+    assert virtual["model"] == "balanced"
+    assert virtual["is_virtual"] is True
     agent = admin_client.post(
         "/api/agents",
         json={
             "name": "Routed",
             "system_prompt": "Ayuda",
-            "llm_orchestration_id": orchestration["id"],
+            "connection_id": virtual_id,
         },
     )
     assert agent.status_code == 200
-    assert agent.json()["llm_orchestration_id"] == orchestration["id"]
-    conflict = admin_client.post(
-        "/api/agents",
-        json={
-            "name": "Conflict",
-            "connection_id": first["id"],
-            "llm_orchestration_id": orchestration["id"],
-        },
-    )
-    assert conflict.status_code == 422
+    assert agent.json()["connection_id"] == virtual_id
+    assert "llm_orchestration_id" not in agent.json()
     assert admin_client.delete(
         f"/api/llm-orchestrations/{orchestration['id']}"
     ).status_code == 409
@@ -132,7 +130,6 @@ def test_legacy_connection_preference_remains_compatible(admin_client):
     ).json()
     assert saved_legacy == {
         "connection_id": second["id"],
-        "llm_orchestration_id": None,
     }
 
     orchestration = admin_client.post(
@@ -148,15 +145,14 @@ def test_legacy_connection_preference_remains_compatible(admin_client):
     ).json()
     routed = admin_client.put(
         f"/api/agents/{agent['id']}/preferences",
-        json={"llm_orchestration_id": orchestration["id"]},
+        json={"connection_id": f"llm-orchestration:{orchestration['id']}"},
     )
     assert routed.status_code == 200
     saved_routed = admin_client.get(
         f"/api/agents/{agent['id']}/preferences"
     ).json()
     assert saved_routed == {
-        "connection_id": None,
-        "llm_orchestration_id": orchestration["id"],
+        "connection_id": f"llm-orchestration:{orchestration['id']}",
     }
     assert admin_client.delete(
         f"/api/llm-orchestrations/{orchestration['id']}"
@@ -268,6 +264,7 @@ def test_group_member_can_use_shared_orchestration_without_publication(client):
         connection["id"] for connection in client.get("/api/connections").json()
     }
     assert {first["id"], second["id"]} <= available_connection_ids
+    assert f"llm-orchestration:{item['id']}" in available_connection_ids
     assert all(
         entry.get("resource_type") != "llm_orchestration"
         for entry in client.get("/api/explore").json()

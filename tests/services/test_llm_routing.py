@@ -18,9 +18,7 @@ async def test_stack_fails_over_before_first_token(monkeypatch):
             yield _frame({"type": "error", "message": "401"})
         else:
             yield _frame({"type": "token", "token": "ok"})
-            yield _frame(
-                {"type": "done", "reply": "ok", "tokens": {"in": 2, "out": 1}}
-            )
+            yield _frame({"type": "done", "reply": "ok", "tokens": {"in": 2, "out": 1}})
 
     monkeypatch.setattr("app.services.llm_routing.stream_chat", fake_stream)
     frames = [
@@ -182,9 +180,7 @@ async def test_balancer_ranking_and_minimal_context(monkeypatch):
                 {"type": "done", "reply": reply, "tokens": {"in": 3, "out": 2}}
             )
         else:
-            yield _frame(
-                {"type": "done", "reply": "ok", "tokens": {"in": 4, "out": 1}}
-            )
+            yield _frame({"type": "done", "reply": "ok", "tokens": {"in": 4, "out": 1}})
 
     monkeypatch.setattr("app.services.llm_routing.stream_chat", fake_stream)
     frames = [
@@ -218,3 +214,87 @@ async def test_balancer_ranking_and_minimal_context(monkeypatch):
     assert "current task" in router_prompt
     assert '"selected_connection_id": "second"' in joined
     assert '"router": {"in": 3, "out": 2}' in joined
+
+
+@pytest.mark.asyncio
+async def test_balanced_fails_when_router_fails(monkeypatch):
+    called: list[str] = []
+
+    async def fake_stream(_agent, connection, _history, _skills, *args, **kwargs):
+        called.append(connection["id"])
+        yield _frame({"type": "error", "message": "router unavailable"})
+
+    monkeypatch.setattr("app.services.llm_routing.stream_chat", fake_stream)
+    frames = [
+        frame
+        async for frame in stream_orchestrated_chat(
+            {"id": "agent", "name": "Agent"},
+            {
+                "id": "route",
+                "mode": "balanced",
+                "router_connection_id": "router",
+                "candidates": [
+                    {"connection_id": "first"},
+                    {"connection_id": "second"},
+                ],
+            },
+            {
+                "router": {"id": "router", "name": "Router", "type": "openai"},
+                "first": {"id": "first", "name": "First", "type": "openai"},
+                "second": {"id": "second", "name": "Second", "type": "openai"},
+            },
+            [{"role": "user", "content": "task"}],
+            None,
+        )
+    ]
+
+    joined = "".join(frames)
+    assert called == ["router"]
+    assert '"type": "routing_warning"' in joined
+    assert '"type": "error"' in joined
+    assert "orden manual" not in joined
+
+
+@pytest.mark.asyncio
+async def test_balanced_fails_when_router_returns_invalid_ranking(monkeypatch):
+    called: list[str] = []
+
+    async def fake_stream(_agent, connection, _history, _skills, *args, **kwargs):
+        called.append(connection["id"])
+        if connection["id"] == "router":
+            yield _frame(
+                {
+                    "type": "done",
+                    "reply": '{"ranking":[{"connection_id":"unknown"}]}',
+                    "tokens": {"in": 4, "out": 2},
+                }
+            )
+
+    monkeypatch.setattr("app.services.llm_routing.stream_chat", fake_stream)
+    frames = [
+        frame
+        async for frame in stream_orchestrated_chat(
+            {"id": "agent", "name": "Agent"},
+            {
+                "id": "route",
+                "mode": "balanced",
+                "router_connection_id": "router",
+                "candidates": [
+                    {"connection_id": "first"},
+                    {"connection_id": "second"},
+                ],
+            },
+            {
+                "router": {"id": "router", "name": "Router", "type": "openai"},
+                "first": {"id": "first", "name": "First", "type": "openai"},
+                "second": {"id": "second", "name": "Second", "type": "openai"},
+            },
+            [{"role": "user", "content": "task"}],
+            None,
+        )
+    ]
+
+    joined = "".join(frames)
+    assert called == ["router"]
+    assert '"type": "error"' in joined
+    assert '"router": {"in": 4, "out": 2}' in joined

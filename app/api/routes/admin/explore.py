@@ -24,6 +24,10 @@ from app.api.routes.admin.resources import (
 from app.api.routes.admin.users import admin_list_users
 from app.api.routes.auth import require_admin
 from app.errors import APIError
+from app.models.llm_orchestration import (
+    orchestration_connection_id,
+    orchestration_id_from_connection,
+)
 from app.storage.db import open_db
 
 _ADMIN_EXPLORE_TYPES = (
@@ -276,6 +280,19 @@ async def admin_resource_graph(
             for value in (agent.get("op_connections") or [])
         )
         for connection_id in {value for value in connection_ids if value}:
+            orchestration_id = orchestration_id_from_connection(connection_id)
+            if orchestration_id:
+                orchestration = resources_by_type["llm_orchestration"].get(
+                    orchestration_id
+                )
+                if orchestration:
+                    orchestration_node = add_node(
+                        "llm_orchestration",
+                        orchestration_id,
+                        resource_label("llm_orchestration", orchestration),
+                    )
+                    add_edge(agent_node, orchestration_node, "uses")
+                continue
             connection = resources_by_type["connection"].get(connection_id)
             if connection:
                 connection_node = add_node(
@@ -284,18 +301,6 @@ async def admin_resource_graph(
                     resource_label("connection", connection),
                 )
                 add_edge(agent_node, connection_node, "uses")
-        orchestration_id = str(agent.get("llm_orchestration_id") or "")
-        if orchestration_id:
-            orchestration = resources_by_type["llm_orchestration"].get(
-                orchestration_id
-            )
-            if orchestration:
-                orchestration_node = add_node(
-                    "llm_orchestration",
-                    orchestration_id,
-                    resource_label("llm_orchestration", orchestration),
-                )
-                add_edge(agent_node, orchestration_node, "uses")
         for knowledge_id in agent.get("knowledge") or []:
             knowledge = resources_by_type["knowledge"].get(str(knowledge_id))
             if knowledge:
@@ -474,7 +479,9 @@ async def admin_resource_graph(
                 )
                 add_edge(root_id, connection_node, "routes")
         for agent in agents.values():
-            if str(agent.get("llm_orchestration_id") or "") == canonical_resource_id:
+            if str(agent.get("connection_id") or "") == orchestration_connection_id(
+                canonical_resource_id
+            ):
                 agent_node = add_node(
                     "agent", str(agent["id"]), resource_label("agent", agent)
                 )

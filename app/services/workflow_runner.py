@@ -91,9 +91,7 @@ def _node_input(
         return initial_input
     if len(sources) == 1:
         return outputs[sources[0]]
-    sections = [
-        f"### {labels[source]}\n{outputs[source]}" for source in sources
-    ]
+    sections = [f"### {labels[source]}\n{outputs[source]}" for source in sources]
     return (
         "Resultados paralelos que debes consolidar para este paso:\n\n"
         + "\n\n".join(sections)
@@ -127,6 +125,14 @@ async def _agent_reply(
                 except json.JSONDecodeError:
                     continue
                 if event.get("type") == "error":
+                    for connection_id, usage in (
+                        event.get("usage_by_connection") or {}
+                    ).items():
+                        await _connections.add_tokens(
+                            str(connection_id),
+                            int(usage.get("in") or 0),
+                            int(usage.get("out") or 0),
+                        )
                     raise RuntimeError(str(event.get("message") or "Error del agente"))
                 if event.get("type") == "done":
                     reply = str(event.get("reply") or "")
@@ -158,7 +164,9 @@ async def _agent_reply(
                 f"{content}\n\nLa respuesta anterior llegó vacía. "
                 "Responde ahora con el contenido solicitado y sus marcadores."
             )
-    raise RuntimeError(f"El agente {agent.name} no devolvió respuesta tras reintentarlo")
+    raise RuntimeError(
+        f"El agente {agent.name} no devolvió respuesta tras reintentarlo"
+    )
 
 
 def _evaluation_payload(reply: str) -> Dict[str, Any] | None:
@@ -266,7 +274,9 @@ async def run_workflow(
             and all(source in completed for source in predecessors[node["id"]])
         ]
         if not ready:
-            raise RuntimeError("La orquestación no puede continuar por sus dependencias")
+            raise RuntimeError(
+                "La orquestación no puede continuar por sus dependencias"
+            )
 
         tasks: List[asyncio.Task[Any]] = []
         task_meta: List[tuple[Dict[str, Any], Agent, str, int, int | None]] = []

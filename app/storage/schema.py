@@ -266,7 +266,6 @@ CREATE TABLE IF NOT EXISTS user_agent_preferences (
     username      TEXT NOT NULL,
     agent_id      TEXT NOT NULL,
     connection_id TEXT,
-    llm_orchestration_id TEXT,
     updated_at    TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now')),
     PRIMARY KEY (username, agent_id)
 );
@@ -599,7 +598,6 @@ CREATE TABLE IF NOT EXISTS user_agent_preferences (
     username      TEXT NOT NULL,
     agent_id      TEXT NOT NULL,
     connection_id TEXT,
-    llm_orchestration_id TEXT,
     updated_at    TEXT NOT NULL DEFAULT (NOW()::TEXT),
     PRIMARY KEY (username, agent_id)
 );

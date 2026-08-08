@@ -26,6 +26,10 @@ from app.config.session import (
 from app.connections import all_providers, get_provider
 from app.errors import APIError
 from app.middleware.ratelimit import RateLimiter
+from app.models.llm_orchestration import (
+    orchestration_connection_id,
+    orchestration_id_from_connection,
+)
 from app.storage.agent_storage import AgentStorage
 from app.storage.connection_storage import ConnectionStorage
 from app.storage.db import IS_PG, open_db
@@ -33,6 +37,7 @@ from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
 from app.storage.guest import get_session, is_guest
 from app.storage.knowledge import KnowledgeStorage
+from app.storage.llm_orchestrations import LLMOrchestrationStorage
 from app.storage.skill_storage import SkillStorage
 from app.utils import flog
 from app.utils.generators import generate_id
@@ -59,6 +64,7 @@ _storage = ConnectionStorage()
 _agent_storage = AgentStorage(AGENTS_DIR)
 _skill_storage = SkillStorage(SKILLS_DIR)
 _know_storage = KnowledgeStorage()
+_llm_orchestration_storage = LLMOrchestrationStorage()
 _shares = GroupShareStorage()
 _groups = GroupStorage()
 _test_limiter = RateLimiter(calls=RATE_TEST_CALLS, window=RATE_TEST_WINDOW)
@@ -94,6 +100,108 @@ async def _list_accessible(user: str, group_id: str) -> List[Dict[str, Any]]:
     return group_conns
 
 
+def _orchestration_connection(
+    item: Dict[str, Any], *, shared: bool = False, personal: bool = False
+) -> Dict[str, Any]:
+    """Vista de solo lectura de una orquestación como conexión seleccionable."""
+    result: Dict[str, Any] = {
+        "id": orchestration_connection_id(str(item["id"])),
+        "name": str(item.get("name") or item["id"]),
+        "description": str(item.get("description") or ""),
+        "type": "llm_orchestration",
+        "category": "llm",
+        "model": "balanced" if item.get("mode") == "balanced" else "stack",
+        "owner_id": item.get("owner_id"),
+        "is_active": bool(item.get("is_active", True)),
+        "is_virtual": True,
+        "read_only": True,
+        "created_at": item.get("created_at"),
+        "updated_at": item.get("updated_at"),
+    }
+    if shared:
+        result["_shared"] = True
+    if personal:
+        result["_personal_key"] = True
+    return result
+
+
+async def _list_orchestration_connections(
+    user: str, group_id: str, *, shared_only: bool = False
+) -> List[Dict[str, Any]]:
+    items: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    if not shared_only:
+        owner_ids = [group_id] if group_id == user else [group_id, user]
+        for owner_id in owner_ids:
+            for item in await _llm_orchestration_storage.list(owner_id):
+                if item["id"] in seen:
+                    continue
+                seen.add(item["id"])
+                items.append(
+                    _orchestration_connection(
+                        item, personal=owner_id == user and group_id != user
+                    )
+                )
+    shared_ids = await _shares.get_group_shared_resource_ids(
+        group_id, "llm_orchestration"
+    )
+    for item_id in shared_ids:
+        if item_id in seen:
+            continue
+        item = await _llm_orchestration_storage.get_any(item_id)
+        if item and await _groups.owner_is_active(str(item.get("owner_id") or "")):
+            seen.add(item_id)
+            items.append(_orchestration_connection(item, shared=True))
+    return items
+
+
+async def _get_orchestration_connection(
+    connection_id: str, user: str, group_id: str
+) -> Dict[str, Any] | None:
+    orchestration_id = orchestration_id_from_connection(connection_id)
+    if not orchestration_id:
+        return None
+    item = await _llm_orchestration_storage.get_any(orchestration_id)
+    if not item or not item.get("is_active", True):
+        return None
+    role = await get_user_role(user)
+    shared_ids = await _shares.get_group_shared_resource_ids(
+        group_id, "llm_orchestration"
+    )
+    if (
+        role != "admin"
+        and item.get("owner_id") not in {user, group_id}
+        and orchestration_id not in shared_ids
+    ):
+        return None
+    target_ids = {
+        str(candidate.get("connection_id") or "")
+        for candidate in item.get("candidates") or []
+    }
+    router_id = str(item.get("router_connection_id") or "")
+    if router_id:
+        target_ids.add(router_id)
+    resolved: Dict[str, Dict[str, Any]] = {}
+    for target_id in target_ids - {""}:
+        if orchestration_id_from_connection(target_id):
+            continue
+        target = (
+            await _storage.get(target_id, None)
+            if role == "admin"
+            else await _get_conn_any(target_id, user, group_id)
+        )
+        if target:
+            resolved[target_id] = target
+    result = _orchestration_connection(
+        item,
+        shared=orchestration_id in shared_ids,
+        personal=item.get("owner_id") == user and group_id != user,
+    )
+    result["_llm_orchestration"] = item
+    result["_connections"] = resolved
+    return result
+
+
 async def _get_conn_any(
     conn_id: str, user: str, group_id: str
 ) -> Dict[str, Any] | None:
@@ -106,6 +214,8 @@ async def _get_conn_any(
     tener que volver a consultar — sin esto, un check de permiso posterior
     aplicado indiscriminadamente bloquea al propio dueño de su conexión
     personal en cuanto el group activo no es el suyo."""
+    if orchestration_id_from_connection(conn_id):
+        return await _get_orchestration_connection(conn_id, user, group_id)
     conn = await _storage.get(conn_id, group_id)
     if conn is not None:
         conn["owner_id"] = group_id
@@ -335,8 +445,17 @@ async def list_connections(
                 c["_shared"] = True
                 c["_group_id"] = requested_group_id
                 raw.append(c)
+        raw.extend(
+            await _list_orchestration_connections(
+                user, requested_group_id, shared_only=True
+            )
+        )
     else:
         raw = await _resolve_connections(user, active_group_id)
+        if not is_guest(user):
+            raw.extend(
+                await _list_orchestration_connections(user, active_group_id)
+            )
 
     if not include_inactive:
         raw = [c for c in raw if c.get("is_active", True)]

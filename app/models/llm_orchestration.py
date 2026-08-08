@@ -7,6 +7,19 @@ from typing import Any, ClassVar, Dict, List, Optional
 
 from app.models.base import BaseResource
 
+LLM_ORCHESTRATION_CONNECTION_PREFIX = "llm-orchestration:"
+
+
+def orchestration_connection_id(orchestration_id: str) -> str:
+    return f"{LLM_ORCHESTRATION_CONNECTION_PREFIX}{orchestration_id}"
+
+
+def orchestration_id_from_connection(connection_id: str) -> str | None:
+    if not connection_id.startswith(LLM_ORCHESTRATION_CONNECTION_PREFIX):
+        return None
+    value = connection_id.removeprefix(LLM_ORCHESTRATION_CONNECTION_PREFIX).strip()
+    return value or None
+
 
 @dataclass(kw_only=True)
 class LLMOrchestration(BaseResource):

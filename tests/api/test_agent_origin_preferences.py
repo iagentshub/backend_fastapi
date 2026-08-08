@@ -105,10 +105,7 @@ def test_agent_preferences_get_empty(client):
 
     r = client.get("/api/agents/nonexistent-agent-id/preferences")
     assert r.status_code == 200
-    assert r.json() == {
-        "connection_id": None,
-        "llm_orchestration_id": None,
-    }
+    assert r.json() == {"connection_id": None}
 
 
 # ── preferences: put and get ──────────────────────────────────────────────────

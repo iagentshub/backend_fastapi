@@ -12,8 +12,9 @@ from app.api.routes.connections import _get_conn_any
 from app.config.data import AGENTS_DIR
 from app.config.providers import OPENAI_COMPAT_URLS
 from app.errors import APIError
+from app.models.llm_orchestration import orchestration_connection_id
 from app.storage.agent_storage import AgentStorage
-from app.storage.db import open_db
+from app.storage.db import PH, open_db
 from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
 from app.storage.llm_orchestrations import LLMOrchestrationStorage
@@ -175,17 +176,18 @@ async def delete_llm_orchestration(
     item_id: str, ctx: GroupContext = Depends(require_group)
 ) -> Dict[str, bool]:
     await _owned(item_id, ctx)
+    virtual_connection_id = orchestration_connection_id(item_id)
     referenced = [
         agent
         for agent in await _agents.list("all")
-        if agent.get("llm_orchestration_id") == item_id
+        if agent.get("connection_id") == virtual_connection_id
     ]
     async with open_db() as conn:
         preference_count = int(
             await conn.fetchval(
                 "SELECT COUNT(*) FROM user_agent_preferences "
-                "WHERE llm_orchestration_id=?",
-                (item_id,),
+                f"WHERE connection_id={PH}",
+                (virtual_connection_id,),
             )
             or 0
         )
