@@ -54,4 +54,6 @@ Los recursos textuales pueden llevar cero o varias labels `lang_*`: `lang_es`,
 `lang_ar`. La ausencia de estas labels significa que el idioma no se ha
 declarado o no aplica. En agentes, el campo heredado `language` se conserva por
 compatibilidad y se sincroniza con la primera label de idioma; las labels son la
-fuente canónica para catálogo y búsqueda.
+fuente canónica para catálogo y búsqueda. Los documentos enviados como
+`multipart/form-data` aceptan las mismas labels mediante el campo `labels` en
+formato JSON.

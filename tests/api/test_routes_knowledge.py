@@ -193,6 +193,16 @@ def test_upload_txt_document(alice):
     assert data["title"] == "nota.txt"
 
 
+def test_upload_document_preserves_content_language_labels(alice):
+    response = alice.post(
+        "/api/knowledge/document",
+        files={"file": ("manual.txt", b"Manual en espanol", "text/plain")},
+        data={"labels": '["private", "lang_es", "lang_en"]'},
+    )
+    assert response.status_code == 200
+    assert response.json()["labels"] == ["private", "lang_es", "lang_en"]
+
+
 def test_upload_document_unsupported_format(alice):
     r = alice.post(
         "/api/knowledge/document",

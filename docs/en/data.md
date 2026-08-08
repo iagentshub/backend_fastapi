@@ -54,3 +54,5 @@ Textual resources may carry zero or more `lang_*` labels: `lang_es`, `lang_en`,
 No language label means that a language was not declared or does not apply. For
 agents, the legacy `language` field remains for compatibility and is mirrored
 to the first language label; labels are canonical for catalog and search.
+Documents uploaded as `multipart/form-data` accept the same labels through the
+`labels` field encoded as JSON.

@@ -3,10 +3,11 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, File, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
 
 from app.api.routes.auth import GroupContext, require_group, require_group_session
 from app.auth.auth import get_user_role
@@ -253,9 +254,20 @@ async def add_url(
 @router.post("/document")
 async def upload_document(
     file: UploadFile = File(...),
+    labels: str = Form("[]"),
     ctx: GroupContext = Depends(require_group_session),
 ) -> Dict[str, Any]:
     user, group_id = ctx.user, ctx.group_id
+    try:
+        parsed_labels = json.loads(labels)
+    except (TypeError, ValueError) as exc:
+        raise APIError(
+            422,
+            "invalid_field",
+            "Las labels del documento no tienen un formato válido",
+            extra={"field": "labels"},
+        ) from exc
+    content_labels = _content_labels({"labels": parsed_labels})
     filename = file.filename or "documento"
     ext = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     if ext not in _ALLOWED_EXTS:
@@ -291,7 +303,7 @@ async def upload_document(
             title=filename,
             source=filename,
             content=content,
-            labels=["private"],
+            labels=content_labels,
         )
         get_session(user).knowledge.append(item)
         return item
@@ -302,6 +314,7 @@ async def upload_document(
         source=filename,
         content=content,
         owner_id=owner,
+        labels=content_labels,
     )
 
 

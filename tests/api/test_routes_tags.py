@@ -220,8 +220,34 @@ def test_explore_rejects_unknown_content_language(client):
     assert response.json()["detail"]["field"] == "language"
 
 
-def test_language_labels_are_valid_for_skill_and_knowledge(client):
+def test_language_labels_are_valid_for_all_content_resources(client):
     _login(client, "taglanguageresources")
+    agent = client.post(
+        "/api/agents",
+        json={
+            "name": "Agente español",
+            "description": "Instrucciones en español",
+            "labels": ["private", "lang_es"],
+        },
+    )
+    assert agent.status_code == 200
+    assert agent.json()["labels"] == ["private", "lang_es"]
+
+    updated_agent = client.post(
+        "/api/agents",
+        json={
+            **agent.json(),
+            "name": "Agente bilingüe",
+            "labels": ["private", "lang_es", "lang_en"],
+        },
+    )
+    assert updated_agent.status_code == 200
+    assert updated_agent.json()["labels"] == [
+        "private",
+        "lang_es",
+        "lang_en",
+    ]
+
     skill = client.post(
         "/api/skills/private",
         json={
@@ -233,6 +259,50 @@ def test_language_labels_are_valid_for_skill_and_knowledge(client):
     )
     assert skill.status_code == 200
     assert "lang_es" in skill.json()["labels"]
+
+    updated_skill = client.post(
+        "/api/skills/private",
+        json={
+            "id": skill.json()["id"],
+            "name": "Redacción bilingüe",
+            "description": "Instrucciones en español e inglés",
+            "content": "# Instrucciones\n\nEscribe en español o inglés.",
+            "labels": ["private", "lang_es", "lang_en"],
+        },
+    )
+    assert updated_skill.status_code == 200
+    assert updated_skill.json()["labels"] == ["private", "lang_es", "lang_en"]
+
+    prompt = client.post(
+        "/api/prompts/private",
+        json={
+            "name": "Resumen español",
+            "alias": "resumen-es",
+            "description": "Resume textos en español",
+            "content": "Resume el texto manteniendo sus ideas principales.",
+            "labels": ["private", "lang_es"],
+        },
+    )
+    assert prompt.status_code == 200
+    assert prompt.json()["labels"] == ["private", "lang_es"]
+
+    updated_prompt = client.post(
+        "/api/prompts/private",
+        json={
+            "id": prompt.json()["id"],
+            "name": "Resumen bilingüe",
+            "alias": "resumen-bi",
+            "description": "Resume textos en español e inglés",
+            "content": "Resume el texto en español o inglés.",
+            "labels": ["private", "lang_es", "lang_en"],
+        },
+    )
+    assert updated_prompt.status_code == 200
+    assert updated_prompt.json()["labels"] == [
+        "private",
+        "lang_es",
+        "lang_en",
+    ]
 
     knowledge = client.post(
         "/api/knowledge/text",
@@ -249,6 +319,17 @@ def test_language_labels_are_valid_for_skill_and_knowledge(client):
     assert listed.status_code == 200
     stored = next(item for item in listed.json() if item["id"] == knowledge.json()["id"])
     assert stored["labels"] == ["private", "lang_es"]
+
+    url_knowledge = client.post(
+        "/api/knowledge/url",
+        json={
+            "title": "Referencia portuguesa",
+            "url": "https://example.com/pt",
+            "labels": ["private", "lang_pt"],
+        },
+    )
+    assert url_knowledge.status_code == 200
+    assert url_knowledge.json()["labels"] == ["private", "lang_pt"]
 
     workflow_agent = client.post(
         "/api/agents", json={"name": "Paso del flujo"}
@@ -267,3 +348,29 @@ def test_language_labels_are_valid_for_skill_and_knowledge(client):
     )
     assert workflow.status_code == 200
     assert workflow.json()["labels"] == ["private", "lang_es", "lang_en"]
+
+    updated_workflow = client.post(
+        "/api/workflows",
+        json={
+            "id": workflow.json()["id"],
+            "name": "Flujo en español",
+            "description": "Flujo actualizado",
+            "definition": workflow.json()["definition"],
+            "labels": ["private", "lang_es"],
+        },
+    )
+    assert updated_workflow.status_code == 200
+    assert updated_workflow.json()["labels"] == ["private", "lang_es"]
+
+    tool = client.post(
+        "/api/tools/private",
+        json={
+            "name": "Procesador español",
+            "description": "Comentarios e interfaz en español",
+            "language": "python",
+            "content": "print('hola')",
+            "labels": ["private", "lang_es"],
+        },
+    )
+    assert tool.status_code == 200
+    assert tool.json()["labels"] == ["private", "lang_es"]
