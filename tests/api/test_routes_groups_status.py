@@ -138,7 +138,7 @@ def test_admin_list_groups_includes_status(admin_client):
 
 
 def test_shared_connection_blocked_when_source_group_disabled(admin_client):
-    """Una conexión compartida desde un group desactivado deja de verse en el destino."""
+    """Una conexión legacy de un group desactivado deja de verse en el destino."""
     _register("group_status_owner_f")
     _register("group_status_member_f")
 
@@ -148,10 +148,16 @@ def test_shared_connection_blocked_when_source_group_disabled(admin_client):
     admin_client.post(f"/api/groups/{group_target['id']}/members",
                        json={"username": "group_status_member_f", "role": "member"})
 
-    _set_cookie(admin_client, "group_status_owner_f", group_id=group_source["id"])
-    conn = admin_client.post("/api/connections", json={
+    # Las conexiones nuevas ya no pueden pertenecer a un group. Insertamos una
+    # conexión legacy para mantener cubierta la compatibilidad con datos
+    # creados antes de ese cambio.
+    import asyncio
+
+    from app.storage.connection_storage import ConnectionStorage
+
+    conn = asyncio.run(ConnectionStorage().save({
         "type": "openai", "label": "L", "name": "Conn F", "api_key": "sk-f", "model": "gpt-4o",
-    }).json()
+    }, owner_id=group_source["id"]))
 
     _set_cookie(admin_client, "group_status_owner_f", group_id=group_target["id"])
     r = admin_client.post(

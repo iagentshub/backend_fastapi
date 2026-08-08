@@ -1,6 +1,6 @@
 """Tests de cobertura adicional para connections.py.
 
-Cubre: hub-sync, import-models, sesiones guest, scope=personal, test-all con
+Cubre: hub-sync, import-models, sesiones guest, ownership personal, test-all con
 filtro de ids, expansión Ollama, y ramas de error no cubiertas en otros tests.
 """
 from __future__ import annotations
@@ -55,15 +55,43 @@ def test_save_connection_invalid_type_returns_422(client):
     assert r.status_code == 422
 
 
-# ── 2. scope=personal ─────────────────────────────────────────────────────────
+# ── 2. Las conexiones nuevas siempre son personales ──────────────────────────
 
-def test_save_connection_scope_personal(client):
-    _setup_user(client, "personal_u1")
-    r = client.post("/api/connections", json={**_CONN_OPENAI, "scope": "personal"})
+def test_save_connection_in_team_group_is_still_personal(client):
+    username = _setup_user(client, "personal_u1")
+    group = client.post("/api/groups", json={"name": "Equipo personal"}).json()
+
+    from app.auth.auth import create_token, get_user_by_username
+    client.cookies.set("ga_token", create_token(username, group_id=group["id"]))
+    r = client.post("/api/connections", json={**_CONN_OPENAI, "scope": "group"})
     assert r.status_code == 200
     data = r.json()
     assert "id" in data
     assert "api_key" not in data
+    assert data["owner_id"] == asyncio.run(get_user_by_username(username))["id"]
+
+
+def test_edit_legacy_group_connection_preserves_owner_and_id(client):
+    username = _setup_user(client, "legacy_group_conn_u1")
+    group = client.post("/api/groups", json={"name": "Equipo legacy"}).json()
+
+    from app.auth.auth import create_token
+    from app.storage.connection_storage import ConnectionStorage
+
+    legacy = asyncio.run(
+        ConnectionStorage().save(_CONN_OPENAI, owner_id=group["id"])
+    )
+    client.cookies.set("ga_token", create_token(username, group_id=group["id"]))
+
+    r = client.post(
+        "/api/connections",
+        json={**_CONN_OPENAI, "id": legacy["id"], "name": "Legacy editada"},
+    )
+
+    assert r.status_code == 200
+    assert r.json()["id"] == legacy["id"]
+    assert r.json()["owner_id"] == group["id"]
+    assert r.json()["name"] == "Legacy editada"
 
 
 # ── 3. Sesión guest — save / get / delete / test ─────────────────────────────

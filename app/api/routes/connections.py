@@ -508,7 +508,11 @@ async def save_connection(
 ) -> Dict[str, Any]:
     user, group_id = ctx.user, ctx.group_id
     payload = await json_body(request)
-    scope = payload.pop("scope", "group")
+    # Las conexiones nuevas siempre pertenecen al usuario. Compartirlas con un
+    # group es una acción posterior y opcional, igual que para el resto de
+    # recursos privados. Se descarta `scope` por compatibilidad con clientes
+    # antiguos que todavía puedan enviarlo.
+    payload.pop("scope", None)
     if not get_provider(payload.get("type") or ""):
         raise APIError(
             422,
@@ -545,11 +549,17 @@ async def save_connection(
         s.connections = [c for c in s.connections if c.get("id") != conn["id"]]
         s.connections.append(conn)
         return {k: v for k, v in conn.items() if k != "api_key"}
-    owner = user if scope == "personal" else group_id
     conn_id_in_payload = payload.get("id")
-    existing = (
-        await _storage.get(conn_id_in_payload, owner) if conn_id_in_payload else None
-    )
+    owner = user
+    existing = None
+    if conn_id_in_payload:
+        existing = await _storage.get(conn_id_in_payload, user)
+        # Compatibilidad con conexiones antiguas creadas como propiedad del
+        # group: al editarlas conservan su propietario en vez de duplicarse.
+        if existing is None and group_id != user:
+            existing = await _storage.get(conn_id_in_payload, group_id)
+            if existing is not None:
+                owner = group_id
     if conn_id_in_payload and not existing:
         # Un id entrante solo es válido para editar una fila existente;
         # en altas el id lo genera siempre el servidor.

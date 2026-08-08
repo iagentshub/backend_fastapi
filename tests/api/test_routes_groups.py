@@ -571,6 +571,11 @@ def test_member_permissions_filter_group_resources(client):
         "/api/knowledge/text",
         json={"title": "Nota restringida", "content": "Contenido"},
     ).json()
+    shared_connection = client.post(
+        f"/api/sharing/connection/{connection['id']}",
+        json={"group_id": group["id"]},
+    )
+    assert shared_connection.status_code == 200
 
     permissions = {
         "agents": {
