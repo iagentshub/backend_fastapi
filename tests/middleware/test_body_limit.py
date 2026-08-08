@@ -10,15 +10,15 @@ import pytest
 from app.middleware.body_limit import BodySizeLimitMiddleware
 
 
-def _scope(headers: list[tuple[bytes, bytes]] | None = None) -> dict:
+def _scope(headers: list[tuple[bytes, bytes]] | None = None, path: str = "/test") -> dict:
     return {
         "type": "http",
         "asgi": {"version": "3.0"},
         "http_version": "1.1",
         "method": "POST",
         "scheme": "http",
-        "path": "/test",
-        "raw_path": b"/test",
+        "path": path,
+        "raw_path": path.encode(),
         "query_string": b"",
         "headers": headers or [],
         "client": ("127.0.0.1", 1234),
@@ -51,6 +51,25 @@ async def _run(
 
     middleware = BodySizeLimitMiddleware(_consume_body, max_bytes=5)
     await middleware(_scope(headers), receive, send)
+    return sent
+
+
+async def _run_with_middleware(
+    middleware: BodySizeLimitMiddleware,
+    messages: list[dict],
+    *,
+    path: str = "/test",
+) -> list[dict]:
+    pending = deque(messages)
+    sent: list[dict] = []
+
+    async def receive() -> dict:
+        return pending.popleft()
+
+    async def send(message: dict) -> None:
+        sent.append(message)
+
+    await middleware(_scope(path=path), receive, send)
     return sent
 
 
@@ -92,3 +111,33 @@ async def test_allows_body_at_exact_limit() -> None:
     )
 
     assert sent[0]["status"] == 204
+
+
+@pytest.mark.asyncio
+async def test_override_permite_mas_bytes_en_path_configurado() -> None:
+    middleware = BodySizeLimitMiddleware(
+        _consume_body, max_bytes=5, overrides={"/avatar": 100}
+    )
+    body = b"x" * 50
+    sent = await _run_with_middleware(
+        middleware,
+        [{"type": "http.request", "body": body, "more_body": False}],
+        path="/avatar",
+    )
+
+    assert sent[0]["status"] == 204
+
+
+@pytest.mark.asyncio
+async def test_override_no_afecta_paths_no_configurados() -> None:
+    middleware = BodySizeLimitMiddleware(
+        _consume_body, max_bytes=5, overrides={"/avatar": 100}
+    )
+    body = b"x" * 50
+    sent = await _run_with_middleware(
+        middleware,
+        [{"type": "http.request", "body": body, "more_body": False}],
+        path="/otra-ruta",
+    )
+
+    assert sent[0]["status"] == 413

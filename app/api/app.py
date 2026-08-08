@@ -112,7 +112,10 @@ def create_app() -> FastAPI:
     )
 
     app.add_middleware(RequestLoggerMiddleware)
-    app.add_middleware(BodySizeLimitMiddleware)
+    app.add_middleware(
+        BodySizeLimitMiddleware,
+        overrides={"/api/auth/me/avatar": 11 * 1024 * 1024},
+    )
     app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(LocaleMiddleware)
     app.add_middleware(LicenseGateMiddleware)
@@ -144,6 +147,28 @@ def create_app() -> FastAPI:
                 "detail": {
                     "code": "invalid_operation",
                     "message": "Operación no válida",
+                }
+            },
+        )
+
+    @app.exception_handler(Exception)
+    async def _unhandled_exception_handler(request, exc: Exception):
+        # Red de seguridad final: cualquier excepción no controlada en
+        # cualquier ruta (p.ej. fallos de BD dentro de require_auth) queda
+        # registrada con traceback completo y responde con el contrato JSON
+        # estándar de la API, en vez del 500 en texto plano de Starlette que
+        # además nunca pasaba por flog/app_logs porque RequestLoggerMiddleware
+        # solo loguea si call_next() llega a devolver una respuesta.
+        flog.error(
+            f"Excepción no capturada en {request.method} {request.url.path}: {exc}",
+            exc_info=True,
+        )
+        return JSONResponse(
+            status_code=500,
+            content={
+                "detail": {
+                    "code": "internal_error",
+                    "message": "Error interno del servidor.",
                 }
             },
         )

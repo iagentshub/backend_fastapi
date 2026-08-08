@@ -375,7 +375,7 @@ async def change_password(
 # ── Social profile ────────────────────────────────────────────────────────────
 
 _ALLOWED_LANGUAGES = {"es", "en", "fr", "de", "pt", "it", "zh", "ja", "ar"}
-_MAX_AVATAR_BYTES = 2 * 1024 * 1024  # 2 MB
+_MAX_AVATAR_BYTES = 10 * 1024 * 1024  # 10 MB (la compresión real ocurre en el cliente)
 _ALLOWED_AVATAR_EXT = {".jpg", ".jpeg", ".png", ".webp"}
 
 
@@ -420,29 +420,46 @@ async def upload_avatar(
 
     from fastapi import UploadFile
     from fastapi.datastructures import FormData
+    from starlette.datastructures import UploadFile as _StarletteUploadFile
 
-    form: FormData = await request.form()
-    file: UploadFile = form.get("avatar")  # type: ignore[assignment]
-    if not file:
-        raise APIError(400, "avatar_field_required", "Campo 'avatar' requerido")
+    try:
+        form: FormData = await request.form()
+        raw_field = form.get("avatar")
+        # request.form() construye starlette.datastructures.UploadFile, no
+        # fastapi.UploadFile (subclase usada solo vía inyección de FastAPI) —
+        # hay que comprobar contra la clase base real que devuelve el parser.
+        if not isinstance(raw_field, _StarletteUploadFile):
+            raise APIError(400, "avatar_field_required", "Campo 'avatar' requerido")
+        file: UploadFile = raw_field
 
-    ext = _Path(file.filename or "").suffix.lower()
-    if ext not in _ALLOWED_AVATAR_EXT:
-        raise APIError(
-            400, "avatar_format_not_allowed", "Formato no permitido. Usa jpg, png o webp."
+        ext = _Path(file.filename or "").suffix.lower()
+        if ext not in _ALLOWED_AVATAR_EXT:
+            raise APIError(
+                400,
+                "avatar_format_not_allowed",
+                "Formato no permitido. Usa jpg, png o webp.",
+            )
+
+        data = await file.read()
+        if len(data) > _MAX_AVATAR_BYTES:
+            raise APIError(400, "avatar_too_large", "El avatar no puede superar 10 MB.")
+
+        encoded = base64.b64encode(data).decode("ascii")
+        async with open_db() as conn:
+            await conn.execute(
+                "UPDATE users SET avatar=? WHERE id=?",
+                (encoded, username),
+            )
+            await conn.commit()
+        user = await get_user_by_id(username)
+    except APIError:
+        raise
+    except Exception as exc:
+        flog.error(
+            f"Fallo subiendo avatar para {username}: {exc}",
+            exc_info=True,
         )
+        raise APIError(500, "internal_error", "Error interno del servidor.") from exc
 
-    data = await file.read()
-    if len(data) > _MAX_AVATAR_BYTES:
-        raise APIError(400, "avatar_too_large", "El avatar no puede superar 2 MB.")
-
-    encoded = base64.b64encode(data).decode("ascii")
-    async with open_db() as conn:
-        await conn.execute(
-            "UPDATE users SET avatar=? WHERE id=?",
-            (encoded, username),
-        )
-        await conn.commit()
-    user = await get_user_by_id(username)
     public_username = user["username"] if user else ""
     return {"ok": True, "avatar_url": f"/api/users/{public_username}/avatar"}

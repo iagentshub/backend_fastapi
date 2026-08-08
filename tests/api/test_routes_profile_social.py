@@ -140,6 +140,35 @@ def test_avatar_sin_fichero_devuelve_204(client):
     assert r.status_code == 204
 
 
+def test_avatar_10mb_aceptado(client):
+    _register_and_login(client, "avatarbig")
+    data = b"x" * (9 * 1024 * 1024)  # 9 MB, bajo el límite de 10 MB
+    r = client.post(
+        "/api/auth/me/avatar",
+        files={"avatar": ("big.jpg", io.BytesIO(data), "image/jpeg")},
+    )
+    assert r.status_code == 200
+
+
+def test_avatar_mayor_10mb_rechazado_400_no_413(client):
+    _register_and_login(client, "avatartoobig")
+    data = b"x" * (10 * 1024 * 1024 + 1024)  # >10 MB, bajo el override de 11 MB del middleware
+    r = client.post(
+        "/api/auth/me/avatar",
+        files={"avatar": ("toobig.jpg", io.BytesIO(data), "image/jpeg")},
+    )
+    assert r.status_code == 400
+    assert r.json()["detail"]["code"] == "avatar_too_large"
+
+
+def test_avatar_campo_no_fichero_devuelve_400(client):
+    """Reproduce el bug original: 'avatar' llega como texto, no como fichero."""
+    _register_and_login(client, "avatarnotfile")
+    r = client.post("/api/auth/me/avatar", data={"avatar": "no-soy-un-fichero"})
+    assert r.status_code == 400
+    assert r.json()["detail"]["code"] == "avatar_field_required"
+
+
 def test_perfil_publico_avatar_url_presente_tras_subida(client):
     _register_and_login(client, "avprofile")
     png_bytes = (
