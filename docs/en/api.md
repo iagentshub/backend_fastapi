@@ -88,6 +88,20 @@ The graph response contains `root_id`, `nodes`, and `edges`, covering ownership,
 | `GET` | `/api/admin/knowledge` | List all knowledge items; each item includes `owner_username` and `char_count` |
 | `DELETE` | `/api/admin/knowledge/{id}` | Delete a knowledge item |
 
+### Official packages
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/admin/official-packages` | Sources with all their versions and components |
+| `POST` | `/api/admin/official-packages/import` | Import a GitHub repository (runs the first `sync`) |
+| `POST` | `/api/admin/official-packages/{id}/sync` | Fetch the current version; returns `changed`, `package`, and `version` |
+| `POST` | `/api/admin/official-packages/{id}/versions/{version}/publish` | Publish the version with the `component_ids` selection |
+| `DELETE` | `/api/admin/official-packages/{id}` | Delete the source and retire its links |
+
+`publish` accepts `component_ids`: it stores which components stay published (with the transitive closure of their dependencies) in `official_package_versions.published_components`. Discarded components are **not** deleted from the version, so they can be selected again by publishing anew without resyncing the repository; while they are out they do not show up in the catalogue, are not exported, and cannot be copied or linked.
+
+Retiring a component — or deleting the whole source — removes the resources users had materialised **in link mode**, along with their social row and shares; the response reports how many in `retired_links`. Forks (`mode=copy`) are independent resources and are kept.
+
 ### Stats
 
 | Method | Endpoint | Description |

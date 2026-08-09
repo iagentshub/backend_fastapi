@@ -84,6 +84,16 @@ async def _official_copy_mode(conn: Any) -> None:
         )
 
 
+async def _official_published_components(conn: Any) -> None:
+    rows = await conn.execute_fetchall("PRAGMA table_info(official_package_versions)")
+    columns = {str(row[1]) for row in rows}
+    if "published_components" not in columns:
+        await conn.execute(
+            "ALTER TABLE official_package_versions "
+            "ADD COLUMN published_components TEXT NOT NULL DEFAULT '[]'"
+        )
+
+
 SQLITE_MIGRATIONS = (
     Migration(1, "legacy_schema_catchup", _migrate_sqlite, repeatable=True),
     Migration(
@@ -92,6 +102,7 @@ SQLITE_MIGRATIONS = (
     Migration(3, "official_component_metadata", _official_component_metadata),
     Migration(4, "resource_origin_labels", _resource_origin_labels),
     Migration(5, "official_copy_mode", _official_copy_mode),
+    Migration(6, "official_published_components", _official_published_components),
 )
 
 

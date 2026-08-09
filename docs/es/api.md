@@ -88,6 +88,20 @@ El grafo devuelve `root_id`, `nodes` y `edges`. Incluye relaciones de propiedad,
 | `GET` | `/api/admin/knowledge` | Listar todos los elementos de conocimiento; cada item incluye `owner_username` y `char_count` |
 | `DELETE` | `/api/admin/knowledge/{id}` | Eliminar un elemento de conocimiento |
 
+### Paquetes oficiales
+
+| Método | Endpoint | Descripción |
+|---|---|---|
+| `GET` | `/api/admin/official-packages` | Fuentes con todas sus versiones y componentes |
+| `POST` | `/api/admin/official-packages/import` | Importar un repositorio de GitHub (hace el primer `sync`) |
+| `POST` | `/api/admin/official-packages/{id}/sync` | Traer la versión actual; devuelve `changed`, `package` y `version` |
+| `POST` | `/api/admin/official-packages/{id}/versions/{version}/publish` | Publicar la versión con la selección de `component_ids` |
+| `DELETE` | `/api/admin/official-packages/{id}` | Eliminar la fuente y retirar sus enlaces |
+
+`publish` acepta `component_ids`: guarda qué componentes quedan publicados (con el cierre transitivo de sus dependencias) en `official_package_versions.published_components`. Los descartados **no** se borran de la versión, así que se pueden volver a marcar publicando de nuevo sin resincronizar el repositorio; mientras están fuera no aparecen en el catálogo, ni se exportan, ni se pueden copiar o enlazar.
+
+Al retirar un componente —o al borrar la fuente entera— se eliminan los recursos que los usuarios tuvieran materializados **en modo enlace**, junto con su fila social y sus comparticiones; la respuesta devuelve cuántos en `retired_links`. Los forks (`mode=copy`) son recursos independientes y se conservan.
+
 ### Estadísticas
 
 | Método | Endpoint | Descripción |

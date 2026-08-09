@@ -197,6 +197,10 @@ CREATE TABLE IF NOT EXISTS official_package_versions (
     status              TEXT NOT NULL,
     manifest            TEXT NOT NULL DEFAULT '{}',
     validation_errors   TEXT NOT NULL DEFAULT '[]',
+    -- Componentes elegidos por el admin al publicar. Lista vacía = todos.
+    -- Se guarda la selección en vez de borrar los componentes descartados
+    -- para poder volver a marcarlos sin resincronizar el repositorio.
+    published_components TEXT NOT NULL DEFAULT '[]',
     created_at          TEXT NOT NULL,
     reviewed_at         TEXT,
     reviewed_by         TEXT,

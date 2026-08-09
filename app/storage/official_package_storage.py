@@ -266,6 +266,12 @@ class OfficialPackageStorage:
     async def get_published(
         self, package_id: str, *, include_content: bool = False
     ) -> Optional[Dict[str, Any]]:
+        """Versión publicada, recortada a los componentes elegidos por el admin.
+
+        Los descartados siguen en la tabla (para poder volver a marcarlos),
+        pero no deben salir por ninguna vía pública: catálogo, exportación,
+        copia o enlace.
+        """
         package = await self.get_package(package_id)
         if not package or not package.get("published_version"):
             return None
@@ -276,6 +282,16 @@ class OfficialPackageStorage:
         )
         if version is None:
             return None
+        selection = set(version.get("published_components") or [])
+        if selection:
+            version = {
+                **version,
+                "components": [
+                    component
+                    for component in version.get("components") or []
+                    if str(component["component_id"]) in selection
+                ],
+            }
         return {**package, "version": version}
 
     async def list_published_components(self) -> List[Dict[str, Any]]:
@@ -391,24 +407,34 @@ class OfficialPackageStorage:
         assert result is not None
         return result
 
-    async def retain_version_components(
+    async def set_published_components(
         self, package_id: str, version: str, component_ids: Iterable[str]
-    ) -> None:
-        """Conserva solo la selección revisada antes de publicar una versión."""
-        selected = {str(component_id) for component_id in component_ids}
+    ) -> List[str]:
+        """Guarda qué componentes de la versión quedan publicados.
+
+        La selección se persiste en vez de borrar los componentes descartados:
+        así el admin puede volver a marcarlos más tarde sin resincronizar el
+        repositorio. Una lista vacía significa "todos" (comportamiento previo
+        a la publicación selectiva).
+        """
         current = await self.get_version(package_id, version)
         if not current:
             raise KeyError("version_not_found")
+        available = [
+            str(component["component_id"]) for component in current.get("components") or []
+        ]
+        selected = {str(component_id) for component_id in component_ids}
+        retained = [
+            component_id for component_id in available if component_id in selected
+        ]
         async with open_db() as conn:
-            async with conn.transaction():
-                for component in current.get("components") or []:
-                    component_id = str(component["component_id"])
-                    if component_id not in selected:
-                        await conn.execute(
-                            "DELETE FROM official_package_components "
-                            "WHERE package_id=? AND version=? AND component_id=?",
-                            (package_id, version, component_id),
-                        )
+            await conn.execute(
+                "UPDATE official_package_versions SET published_components=? "
+                "WHERE package_id=? AND version=?",
+                (_json(retained), package_id, version),
+            )
+            await conn.commit()
+        return retained
 
     async def save_copy(self, data: Dict[str, Any]) -> Dict[str, Any]:
         copy_id = generate_id()
@@ -482,6 +508,9 @@ class OfficialPackageStorage:
         result = dict(row)
         result["manifest"] = _loads(result.get("manifest"), {})
         result["validation_errors"] = _loads(result.get("validation_errors"), [])
+        result["published_components"] = [
+            str(item) for item in _loads(result.get("published_components"), [])
+        ]
         return result
 
     @staticmethod

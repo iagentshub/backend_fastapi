@@ -452,6 +452,83 @@ def test_publicar_sin_un_componente_retira_solo_sus_enlaces(admin_client):
     assert package_components == {"replacement"}
 
 
+def test_desmarcar_borra_el_enlace_y_volver_a_marcar_lo_recupera(admin_client):
+    """La selección se guarda; no destruye el componente de la versión.
+
+    Republicar la misma versión con menos componentes retira los enlaces, y
+    volver a marcarlo lo devuelve al catálogo sin resincronizar GitHub.
+    """
+    async def seed() -> str:
+        storage = OfficialPackageStorage()
+        package = await storage.save_package(
+            {
+                "name": "Toggle Pack",
+                "repository_url": "https://github.com/example/toggle-pack",
+                "repository_owner": "example",
+                "repository_name": "toggle-pack",
+                "license": "MIT",
+            }
+        )
+        components = [
+            PackageComponent(
+                package_id=package["id"],
+                version="v1",
+                component_id="brainstorming",
+                component_type="skill",
+                name="Brainstorming",
+                source_path="skills/brainstorming/SKILL.md",
+                content="# Brainstorming",
+                content_hash="hash",
+            ),
+            PackageComponent(
+                package_id=package["id"],
+                version="v1",
+                component_id="checklists",
+                component_type="knowledge",
+                name="Checklists",
+                source_path="knowledge/checklists.md",
+                content="# Checklists",
+                content_hash="checklists",
+            ),
+        ]
+        await storage.save_version(package["id"], "v1", "sha", {}, components, [])
+        await storage.review_version(
+            package["id"], "v1", publish=True, reviewer="admin"
+        )
+        return str(package["id"])
+
+    package_id = asyncio.run(seed())
+    linked = admin_client.post(
+        f"/api/official-packages/{package_id}/link",
+        json={"component_ids": ["brainstorming"]},
+    )
+    link_id = linked.json()["links"][0]["resource_id"]
+
+    retired = admin_client.post(
+        f"/api/admin/official-packages/{package_id}/versions/v1/publish",
+        json={"component_ids": ["checklists"]},
+    )
+    assert retired.status_code == 200
+    assert retired.json()["retired_links"] == 1
+    assert admin_client.get(f"/api/skills/private/{link_id}").status_code == 404
+    catalogue = admin_client.get(f"/api/official-packages/{package_id}")
+    assert {
+        item["component_id"] for item in catalogue.json()["version"]["components"]
+    } == {"checklists"}
+
+    # El componente descartado sigue disponible para volver a publicarlo.
+    restored = admin_client.post(
+        f"/api/admin/official-packages/{package_id}/versions/v1/publish",
+        json={"component_ids": ["checklists", "brainstorming"]},
+    )
+    assert restored.status_code == 200
+    assert restored.json()["retired_links"] == 0
+    catalogue = admin_client.get(f"/api/official-packages/{package_id}")
+    assert {
+        item["component_id"] for item in catalogue.json()["version"]["components"]
+    } == {"checklists", "brainstorming"}
+
+
 def test_admin_edita_fuente_oficial_sin_cambiar_su_id(admin_client):
     package_id = _seed_published()
 

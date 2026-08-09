@@ -94,12 +94,20 @@ async def _official_copy_mode(conn: Any) -> None:
     )
 
 
+async def _official_published_components(conn: Any) -> None:
+    await conn.execute(
+        "ALTER TABLE official_package_versions "
+        "ADD COLUMN IF NOT EXISTS published_components TEXT NOT NULL DEFAULT '[]'"
+    )
+
+
 POSTGRES_MIGRATIONS = (
     Migration(1, "legacy_schema_catchup", _migrate_pg, repeatable=True),
     Migration(2, "users_json_to_relational", _migrate_users_json_pg, repeatable=True),
     Migration(3, "official_component_metadata", _official_component_metadata),
     Migration(4, "resource_origin_labels", _resource_origin_labels),
     Migration(5, "official_copy_mode", _official_copy_mode),
+    Migration(6, "official_published_components", _official_published_components),
 )
 
 

@@ -184,15 +184,15 @@ async def admin_publish_official_package(
         package = await _storage.get_package(package_id)
         if not package:
             raise KeyError("package_not_found")
-        previous_component_ids: set[str] = set()
-        if package.get("published_version"):
-            previous = await _storage.get_version(
-                package_id, str(package["published_version"])
+        # Lo que hoy ve el usuario: la selección publicada, no todo lo que el
+        # repositorio traía. Es la referencia para saber qué hay que retirar.
+        previous_published = await _storage.get_published(package_id)
+        previous_component_ids = {
+            str(component["component_id"])
+            for component in (previous_published or {}).get("version", {}).get(
+                "components", []
             )
-            previous_component_ids = {
-                str(component["component_id"])
-                for component in (previous or {}).get("components", [])
-            }
+        }
         if body and body.component_ids:
             candidate = await _storage.get_version(package_id, version)
             if not candidate:
@@ -200,7 +200,7 @@ async def admin_publish_official_package(
             selected = select_package_components(
                 candidate.get("components") or [], body.component_ids
             )
-            await _storage.retain_version_components(
+            await _storage.set_published_components(
                 package_id,
                 version,
                 [str(component["component_id"]) for component in selected],
@@ -208,11 +208,17 @@ async def admin_publish_official_package(
         published = await _storage.review_version(
             package_id, version, publish=True, reviewer=admin
         )
-        published_component_ids = {
-            str(component["component_id"])
-            for component in published.get("components", [])
+        # review_version devuelve la versión completa; lo que queda expuesto es
+        # la selección, así que la respuesta y el cálculo de retirados usan
+        # get_published.
+        current_published = await _storage.get_published(package_id)
+        published_components = (current_published or {}).get("version", {}).get(
+            "components", []
+        )
+        published["components"] = published_components
+        removed_component_ids = previous_component_ids - {
+            str(component["component_id"]) for component in published_components
         }
-        removed_component_ids = previous_component_ids - published_component_ids
         published["retired_links"] = await OfficialPackageCopier(
             _storage
         ).retire_links(package_id, removed_component_ids)

@@ -70,3 +70,33 @@ async def test_repeatable_migration_runs_again_but_is_recorded_once(tmp_path):
 
     assert calls == ["repair", "repair"]
     assert count == 1
+
+
+async def test_official_published_components_column_is_added_on_old_dbs(tmp_path):
+    """La selección publicada se añade a versiones creadas antes de existir."""
+    from app.storage.migrations.sqlite import _official_published_components
+
+    async with aiosqlite.connect(tmp_path / "official.db") as conn:
+        conn.row_factory = sqlite3.Row
+        await conn.execute(
+            "CREATE TABLE official_package_versions ("
+            "package_id TEXT NOT NULL, version TEXT NOT NULL, status TEXT NOT NULL)"
+        )
+        await conn.execute(
+            "INSERT INTO official_package_versions VALUES ('pkg','v1','published')"
+        )
+
+        await _official_published_components(conn)
+        # Idempotente: la segunda pasada no debe fallar ni duplicar la columna.
+        await _official_published_components(conn)
+
+        rows = await conn.execute_fetchall(
+            "PRAGMA table_info(official_package_versions)"
+        )
+        columns = [str(row[1]) for row in rows]
+        stored = await conn.execute_fetchall(
+            "SELECT published_components FROM official_package_versions"
+        )
+
+    assert columns.count("published_components") == 1
+    assert stored[0][0] == "[]"
