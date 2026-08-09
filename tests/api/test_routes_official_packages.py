@@ -99,3 +99,16 @@ def test_copia_pierde_sello_oficial(admin_client):
 def test_solo_admin_puede_revisar(client):
     response = client.get("/api/admin/official-packages")
     assert response.status_code == 401
+
+
+def test_admin_elimina_fuente_y_su_historial(admin_client):
+    package_id = _seed_published()
+    deleted = admin_client.delete(f"/api/admin/official-packages/{package_id}")
+    assert deleted.status_code == 200
+    assert deleted.json() == {"ok": True}
+
+    storage = OfficialPackageStorage()
+    assert asyncio.run(storage.get_package(package_id)) is None
+    assert asyncio.run(storage.list_versions(package_id)) == []
+    missing = admin_client.delete(f"/api/admin/official-packages/{package_id}")
+    assert missing.status_code == 404

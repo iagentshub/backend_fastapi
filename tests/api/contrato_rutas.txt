@@ -9,6 +9,7 @@ DELETE /api/admin/groups/{group_id}
 DELETE /api/admin/knowledge/{item_id}
 DELETE /api/admin/llm-orchestrations/{item_id}
 DELETE /api/admin/memory/{item_id}
+DELETE /api/admin/official-packages/{package_id}
 DELETE /api/admin/prompts/{item_id}
 DELETE /api/admin/skills/{item_id}
 DELETE /api/admin/tools/{item_id}

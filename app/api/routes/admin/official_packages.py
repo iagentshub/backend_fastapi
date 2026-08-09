@@ -68,6 +68,15 @@ async def admin_sync_official_package(
         raise APIError(422, "official_package_sync_failed", str(exc)) from exc
 
 
+@admin_router.delete("/official-packages/{package_id}")
+async def admin_delete_official_package(
+    package_id: str, _: str = Depends(require_admin)
+) -> Dict[str, bool]:
+    if not await _storage.delete_package(package_id):
+        raise _not_found()
+    return {"ok": True}
+
+
 @admin_router.get("/official-packages/{package_id}/versions/{version}/diff")
 async def admin_official_package_diff(
     package_id: str, version: str, _: str = Depends(require_admin)

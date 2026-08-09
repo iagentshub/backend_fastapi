@@ -95,6 +95,30 @@ class OfficialPackageStorage:
             )
             await conn.commit()
 
+    async def delete_package(self, package_id: str) -> bool:
+        if not await self.get_package(package_id):
+            return False
+        async with open_db() as conn:
+            async with conn.transaction():
+                # Las copias no tienen FK porque sus recursos privados deben
+                # sobrevivir; solo se elimina su registro de procedencia.
+                await conn.execute(
+                    "DELETE FROM official_package_copies WHERE package_id=?",
+                    (package_id,),
+                )
+                await conn.execute(
+                    "DELETE FROM official_package_components WHERE package_id=?",
+                    (package_id,),
+                )
+                await conn.execute(
+                    "DELETE FROM official_package_versions WHERE package_id=?",
+                    (package_id,),
+                )
+                await conn.execute(
+                    "DELETE FROM official_packages WHERE id=?", (package_id,)
+                )
+        return True
+
     async def save_version(
         self,
         package_id: str,

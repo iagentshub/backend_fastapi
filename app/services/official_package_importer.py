@@ -6,6 +6,7 @@ import asyncio
 import hashlib
 import io
 import json
+import posixpath
 import re
 import urllib.error
 import urllib.request
@@ -17,8 +18,10 @@ from urllib.parse import urlparse
 from app.models.official_package import EXPORT_TARGETS, PackageComponent
 from app.storage.official_package_storage import OfficialPackageStorage
 
-_MAX_ARCHIVE_BYTES = 25 * 1024 * 1024
-_MAX_UNPACKED_BYTES = 60 * 1024 * 1024
+_MAX_JSON_BYTES = 2 * 1024 * 1024
+_MAX_ARCHIVE_BYTES = 100 * 1024 * 1024
+_MAX_UNPACKED_BYTES = 500 * 1024 * 1024
+_MAX_IMPORTED_TEXT_BYTES = 60 * 1024 * 1024
 _MAX_TEXT_FILE_BYTES = 2 * 1024 * 1024
 _MAX_FILES = 4000
 _ALLOWED_LICENSES = frozenset(
@@ -56,7 +59,13 @@ def parse_github_repository(repository_url: str) -> Tuple[str, str, str]:
     return owner, repository, canonical
 
 
-def _request(url: str, *, accept: str = "application/vnd.github+json") -> bytes:
+def _request(
+    url: str,
+    *,
+    accept: str = "application/vnd.github+json",
+    max_bytes: int = _MAX_JSON_BYTES,
+    too_large_message: str = "La respuesta de GitHub supera 2 MB",
+) -> bytes:
     request = urllib.request.Request(
         url,
         headers={
@@ -68,17 +77,17 @@ def _request(url: str, *, accept: str = "application/vnd.github+json") -> bytes:
     try:
         with urllib.request.urlopen(request, timeout=30) as response:
             length = int(response.headers.get("Content-Length") or 0)
-            if length > _MAX_ARCHIVE_BYTES:
-                raise GitHubImportError("El repositorio comprimido supera 25 MB")
-            data = response.read(_MAX_ARCHIVE_BYTES + 1)
+            if length > max_bytes:
+                raise GitHubImportError(too_large_message)
+            data = response.read(max_bytes + 1)
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
             raise GitHubImportError("Repositorio o referencia no encontrados") from exc
         raise GitHubImportError(f"GitHub respondió con HTTP {exc.code}") from exc
     except urllib.error.URLError as exc:
         raise GitHubImportError("No se pudo conectar con GitHub") from exc
-    if len(data) > _MAX_ARCHIVE_BYTES:
-        raise GitHubImportError("El repositorio comprimido supera 25 MB")
+    if len(data) > max_bytes:
+        raise GitHubImportError(too_large_message)
     return data
 
 
@@ -110,6 +119,7 @@ def _frontmatter(text: str) -> Dict[str, str]:
 def _safe_archive_files(raw: bytes) -> Dict[str, str]:
     files: Dict[str, str] = {}
     unpacked = 0
+    imported_text = 0
     try:
         archive = zipfile.ZipFile(io.BytesIO(raw))
     except zipfile.BadZipFile as exc:
@@ -130,10 +140,13 @@ def _safe_archive_files(raw: bytes) -> Dict[str, str]:
             raise GitHubImportError("El repositorio contiene enlaces simbólicos")
         unpacked += info.file_size
         if unpacked > _MAX_UNPACKED_BYTES:
-            raise GitHubImportError("El repositorio descomprimido supera 60 MB")
+            raise GitHubImportError("El repositorio descomprimido supera 500 MB")
         suffix = relative.suffix.lower()
         if suffix not in _TEXT_EXTENSIONS or info.file_size > _MAX_TEXT_FILE_BYTES:
             continue
+        imported_text += info.file_size
+        if imported_text > _MAX_IMPORTED_TEXT_BYTES:
+            raise GitHubImportError("El contenido de texto importable supera 60 MB")
         try:
             files[relative.as_posix()] = archive.read(info).decode("utf-8")
         except UnicodeDecodeError:
@@ -222,14 +235,23 @@ def validate_components(
     warnings: List[str] = []
     markdown_link = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
     for component in components:
-        texts = {component.source_path: component.content, **component.files}
+        component_root = PurePosixPath(component.source_path).parent
+        texts = {component.source_path: component.content}
+        texts.update(
+            {
+                component_root.joinpath(relative).as_posix(): content
+                for relative, content in component.files.items()
+            }
+        )
         for path, content in texts.items():
             for match in markdown_link.finditer(content):
                 destination = match.group(1).strip().split("#", 1)[0]
                 if not destination or "://" in destination or destination.startswith(("#", "mailto:")):
                     continue
-                resolved = PurePosixPath(path).parent.joinpath(destination)
-                if ".." in resolved.parts:
+                resolved = posixpath.normpath(
+                    PurePosixPath(path).parent.joinpath(destination).as_posix()
+                )
+                if resolved == ".." or resolved.startswith("../") or resolved.startswith("/"):
                     errors.append(
                         f"{component.component_id}: referencia fuera del repositorio ({destination})"
                     )
@@ -276,15 +298,23 @@ class OfficialPackageImporter:
         try:
             version, sha, archive_url = await self._resolve_version(package)
             existing = await self.storage.get_version(package_id, version)
-            if existing and existing.get("commit_sha") == sha:
+            if (
+                existing
+                and existing.get("commit_sha") == sha
+                and existing.get("status") != "draft"
+            ):
                 await self.storage.mark_sync(package_id)
                 return {"changed": False, "package": package, "version": existing}
             # Una release de GitHub puede volver a apuntar a otro commit. No
             # mutamos la versión ya revisada: creamos otro candidato auditable.
-            if existing:
+            if existing and existing.get("commit_sha") != sha:
                 version = f"{version}+{sha[:8]}"
             raw = await asyncio.to_thread(
-                _request, archive_url, accept="application/vnd.github+json"
+                _request,
+                archive_url,
+                accept="application/vnd.github+json",
+                max_bytes=_MAX_ARCHIVE_BYTES,
+                too_large_message="El repositorio comprimido supera 100 MB",
             )
             files = _safe_archive_files(raw)
             components = detect_components(package_id, version, files)
