@@ -174,6 +174,68 @@ CREATE TABLE IF NOT EXISTS knowledge_items (
 );
 CREATE INDEX IF NOT EXISTS idx_knowledge_owner
     ON knowledge_items(owner_id, type, created_at DESC);
+CREATE TABLE IF NOT EXISTS official_packages (
+    id                  TEXT PRIMARY KEY,
+    name                TEXT NOT NULL,
+    description         TEXT NOT NULL DEFAULT '',
+    repository_url      TEXT NOT NULL UNIQUE,
+    repository_owner    TEXT NOT NULL,
+    repository_name     TEXT NOT NULL,
+    tracking_mode       TEXT NOT NULL DEFAULT 'release',
+    tracking_ref        TEXT NOT NULL DEFAULT 'main',
+    license             TEXT NOT NULL DEFAULT '',
+    published_version   TEXT,
+    latest_checked_at   TEXT,
+    last_sync_error     TEXT,
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS official_package_versions (
+    package_id          TEXT NOT NULL REFERENCES official_packages(id) ON DELETE CASCADE,
+    version             TEXT NOT NULL,
+    commit_sha          TEXT NOT NULL,
+    status              TEXT NOT NULL,
+    manifest            TEXT NOT NULL DEFAULT '{}',
+    validation_errors   TEXT NOT NULL DEFAULT '[]',
+    created_at          TEXT NOT NULL,
+    reviewed_at         TEXT,
+    reviewed_by         TEXT,
+    PRIMARY KEY (package_id, version)
+);
+CREATE INDEX IF NOT EXISTS idx_official_versions_status
+    ON official_package_versions(status, created_at DESC);
+CREATE TABLE IF NOT EXISTS official_package_components (
+    package_id          TEXT NOT NULL,
+    version             TEXT NOT NULL,
+    component_id        TEXT NOT NULL,
+    component_type      TEXT NOT NULL,
+    name                TEXT NOT NULL,
+    description         TEXT NOT NULL DEFAULT '',
+    source_path         TEXT NOT NULL,
+    content             TEXT NOT NULL DEFAULT '',
+    files               TEXT NOT NULL DEFAULT '{}',
+    targets             TEXT NOT NULL DEFAULT '[]',
+    content_hash        TEXT NOT NULL,
+    PRIMARY KEY (package_id, version, component_id),
+    FOREIGN KEY (package_id, version)
+        REFERENCES official_package_versions(package_id, version) ON DELETE CASCADE
+);
+CREATE TABLE IF NOT EXISTS official_package_copies (
+    id                  TEXT PRIMARY KEY,
+    owner_id            TEXT NOT NULL,
+    package_id          TEXT NOT NULL,
+    source_version      TEXT NOT NULL,
+    component_id        TEXT NOT NULL,
+    resource_type       TEXT NOT NULL,
+    resource_id         TEXT,
+    name                TEXT NOT NULL,
+    content             TEXT NOT NULL DEFAULT '',
+    source_content_hash TEXT NOT NULL,
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_official_copies_owner
+    ON official_package_copies(owner_id, package_id, created_at DESC);
 CREATE TABLE IF NOT EXISTS users (
     id                    TEXT PRIMARY KEY,
     username              TEXT UNIQUE NOT NULL,

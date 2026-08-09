@@ -54,6 +54,8 @@ GET /api/admin/logs/summary
 GET /api/admin/memory
 GET /api/admin/metadata/tables
 GET /api/admin/metadata/tables/{table_name}/data
+GET /api/admin/official-packages
+GET /api/admin/official-packages/{package_id}/versions/{version}/diff
 GET /api/admin/prompts
 GET /api/admin/resources/{resource_type}/{resource_id}/graph
 GET /api/admin/skills
@@ -96,6 +98,9 @@ GET /api/llm-orchestrations
 GET /api/llm-orchestrations/{item_id}
 GET /api/memory
 GET /api/memory/{filename}
+GET /api/official-packages
+GET /api/official-packages/copies
+GET /api/official-packages/{package_id}
 GET /api/prompts
 GET /api/prompts/{scope}/{prompt_id}
 GET /api/resources/{resource_type}/{resource_id}/versions
@@ -141,6 +146,10 @@ POST /api/admin/centinel/stress/run
 POST /api/admin/groups/{group_id}/status
 POST /api/admin/impersonate/{username}
 POST /api/admin/logs/client
+POST /api/admin/official-packages/import
+POST /api/admin/official-packages/{package_id}/sync
+POST /api/admin/official-packages/{package_id}/versions/{version}/publish
+POST /api/admin/official-packages/{package_id}/versions/{version}/reject
 POST /api/admin/update-now
 POST /api/admin/users
 POST /api/agent-builder/chat
@@ -201,6 +210,9 @@ POST /api/llm-orchestrations
 POST /api/llm-orchestrations/{item_id}/activate
 POST /api/llm-orchestrations/{item_id}/deactivate
 POST /api/memory/{filename}
+POST /api/official-packages/{package_id}/copy
+POST /api/official-packages/{package_id}/export-preview
+POST /api/official-packages/{package_id}/export/{target}
 POST /api/prompts/private/{prompt_id}/sync
 POST /api/prompts/{prompt_id}/activate
 POST /api/prompts/{prompt_id}/deactivate
