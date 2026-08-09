@@ -52,11 +52,15 @@ def select_components(
 ) -> List[PackageComponent]:
     """Selección con el cierre transitivo de dependencias, en orden estable.
 
-    Sin selección se entiende "todo": es lo que hace una primera importación.
+    ``None`` es "todo" —lo que hace una primera importación—; una lista vacía
+    es "nada", que es lo que pide quien desmarca todas las casillas. Confundir
+    ambos casos instalaba el repositorio entero al intentar vaciarlo.
     """
-    selected = {str(item) for item in (component_ids or []) if str(item)}
-    if not selected:
+    if component_ids is None:
         return list(components)
+    selected = {str(item) for item in component_ids if str(item)}
+    if not selected:
+        return []
     by_id = {component.component_id: component for component in components}
     missing = selected - by_id.keys()
     if missing:
@@ -237,7 +241,7 @@ class OfficialSourceMaterializer:
             resource = await self.skills.save("private", payload, owner_id=owner_id)
             return "skill", str(resource["id"])
 
-        if kind == "prompt":
+        if kind in ("prompt", "command"):
             alias = _slug(f"{component.component_id}-{component.source_id[:8]}")[:30]
             if len(alias) < 3:
                 alias = f"official-{alias}"[:30]

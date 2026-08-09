@@ -235,3 +235,121 @@ def test_solo_admin_gestiona_fuentes(client, reset_rate_limiter):
     )
 
     assert client.get("/api/admin/official-sources").status_code == 403
+
+
+def test_sync_por_el_endpoint_materializa_la_seleccion(admin_client, admin_id, monkeypatch):
+    """Camino real del panel: POST /sync con la selección del diálogo."""
+    from app.api.routes.admin import official_sources as routes
+
+    source_id = _seed_source()
+
+    async def fake_fetch(self, requested_id: str):
+        source = await OfficialSourceStorage().get_source(requested_id)
+        return {
+            "source": source,
+            "version": "v1",
+            "commit_sha": "sha",
+            "components": _components(requested_id),
+            "errors": [],
+            "security_warnings": [],
+        }
+
+    monkeypatch.setattr(routes._importer.__class__, "fetch", fake_fetch)
+
+    mirar = admin_client.post(f"/api/admin/official-sources/{source_id}/sync")
+    assert mirar.status_code == 200
+    assert {item["component_id"] for item in mirar.json()["components"]} == {
+        "brainstorming",
+        "researcher",
+        "checklists",
+    }
+    assert mirar.json()["selected"] == []
+    assert mirar.json()["applied"] is None
+
+    aplicar = admin_client.post(
+        f"/api/admin/official-sources/{source_id}/sync",
+        json={"component_ids": ["checklists"]},
+    )
+    assert aplicar.status_code == 200
+    payload = aplicar.json()
+    assert payload["applied"] is not None, "el sync con selección debe materializar"
+    assert {item["component_id"] for item in payload["applied"]["resources"]} == {
+        "checklists"
+    }
+    assert payload["selected"] == ["checklists"]
+
+    listado = admin_client.get("/api/admin/official-sources").json()
+    assert [item["component_id"] for item in listado[0]["resources"]] == ["checklists"]
+
+
+def test_el_admin_ve_en_explore_lo_que_el_mismo_sincroniza(admin_client, admin_id):
+    """El contenido oficial vive en la cuenta del admin, pero es del hub.
+
+    Sin esta excepción el admin era el único que no lo veía en el catálogo,
+    justo la persona que necesita comprobar que la sincronización funcionó.
+    """
+    source_id = _seed_source()
+    _materialize(source_id, ["checklists"], admin_id)
+
+    explore = admin_client.get("/api/explore")
+
+    assert explore.status_code == 200
+    assert [item["name"] for item in explore.json()] == ["Checklists"]
+
+
+def test_lo_propio_no_oficial_sigue_fuera_del_catalogo(admin_client):
+    admin_client.post(
+        "/api/skills/private",
+        json={
+            "name": "Skill propia publicada",
+            "description": "mía",
+            "content": "haz la cosa",
+            "labels": ["public"],
+        },
+    )
+
+    explore = admin_client.get("/api/explore")
+
+    assert "Skill propia publicada" not in [item["name"] for item in explore.json()]
+
+
+def test_una_seleccion_vacia_deja_la_fuente_sin_objetos(admin_client, admin_id):
+    """Desmarcar todo es una orden, no la ausencia de una."""
+    source_id = _seed_source()
+    _materialize(source_id, None, admin_id)
+
+    vaciado = _materialize(source_id, [], admin_id)
+
+    assert vaciado["resources"] == []
+    assert vaciado["removed"] == 3
+    assert await_resources(source_id) == []
+
+
+def await_resources(source_id: str) -> List[Any]:
+    return asyncio.run(OfficialSourceStorage().list_resources(source_id))
+
+
+def test_un_comando_se_materializa_como_prompt(admin_client, admin_id):
+    """Un comando de barra es un prompt: dejarlo fuera perdía objetos."""
+    source_id = _seed_source()
+
+    async def run() -> Dict[str, Any]:
+        storage = OfficialSourceStorage()
+        source = await storage.get_source(source_id)
+        assert source is not None
+        command = PackageComponent(
+            source_id=source_id,
+            component_id="caveman-commit",
+            component_type="command",
+            name="Caveman Commit",
+            source_path="commands/caveman-commit.md",
+            content="# Commit",
+            content_hash="hash-command",
+        )
+        return await OfficialSourceMaterializer(storage).materialize(
+            source, [command], None, owner_id=admin_id
+        )
+
+    applied = asyncio.run(run())
+
+    assert [item["resource_type"] for item in applied["resources"]] == ["prompt"]

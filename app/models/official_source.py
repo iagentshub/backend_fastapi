@@ -27,10 +27,14 @@ COMPONENT_TYPES = frozenset(
     }
 )
 
-# Tipos que tienen un storage de recurso detrás. El resto se detectan para
-# poder informar de ellos, pero no se materializan.
+# Tipos que tienen un storage de recurso detrás. El resto (hook, mcp, rule) se
+# detectan para poder informar de ellos, pero no se materializan.
+#
+# "command" entra porque un comando de barra es un prompt con nombre: son la
+# misma cosa con dos nombres según el IDE, y dejarlo fuera hacía que un
+# repositorio como caveman perdiera cinco objetos sin explicación.
 MATERIALIZABLE_TYPES = frozenset(
-    {"skill", "agent", "knowledge", "prompt", "workflow", "tool"}
+    {"skill", "agent", "knowledge", "prompt", "command", "workflow", "tool"}
 )
 
 # Fuente interna para lo que un admin marca como oficial a mano, sin que venga

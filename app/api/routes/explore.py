@@ -82,7 +82,14 @@ async def explore(
     username: str = Depends(require_session),
 ) -> List[Dict[str, Any]]:
     async with open_db() as conn:
-        conditions: List[str] = ["is_public = ?", "owner != ?"]
+        # Lo propio no se enseña en el catálogo… salvo el contenido oficial:
+        # vive en la cuenta del admin que sincroniza la fuente, pero es del
+        # hub, no suyo. Sin esta excepción el admin era el único usuario que
+        # no veía en Explorar lo que acababa de traer.
+        conditions: List[str] = [
+            "is_public = ?",
+            "(owner != ? OR labels LIKE '%\"official\"%')",
+        ]
         params: List[Any] = [_PUBLIC_VAL, username]
         if type and type != "all":
             conditions.append("resource_type = ?")
