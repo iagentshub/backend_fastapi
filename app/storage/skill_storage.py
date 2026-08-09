@@ -33,8 +33,8 @@ SKILL_CATEGORIES = frozenset(
     }
 )
 
-# Labels are selected from the shared system catalog. ``linked`` and ``fork``
-# are internal provenance labels used by linking/copy flows, not user tags.
+# Labels are selected from the shared system catalog. ``linked``/``fork`` and
+# the origin labels are system-managed, not user tags.
 #
 # El catálogo es compartido a propósito: prompt_storage y tool_storage validan
 # contra esta misma lista y la importan desde aquí. Vive en el módulo de skill
@@ -56,9 +56,26 @@ SKILL_LABELS = frozenset(
         "delete",
         "linked",
         "fork",
+        "official",
+        "community",
     }
 ) | CONTENT_LANGUAGE_LABELS
-SKILL_ASSIGNABLE_LABELS = SKILL_LABELS - {"linked", "fork"}
+ORIGIN_LABELS = frozenset({"official", "community"})
+SKILL_ASSIGNABLE_LABELS = SKILL_LABELS - {"linked", "fork"} - ORIGIN_LABELS
+
+
+def ensure_origin_label(labels: List[str], origin: Optional[str] = None) -> List[str]:
+    """Return one system origin label; legacy resources default to community."""
+    chosen = origin
+    if chosen not in ORIGIN_LABELS:
+        chosen = "official" if "official" in labels else "community"
+    normalized = list(dict.fromkeys(label for label in labels if label not in ORIGIN_LABELS))
+    insert_at = next(
+        (index + 1 for index, label in enumerate(normalized) if label in {"private", "public"}),
+        0,
+    )
+    normalized.insert(insert_at, chosen)
+    return normalized
 
 
 def _parse_skill_md(raw: str, default_id: str = "") -> Dict[str, Any]:
@@ -316,6 +333,7 @@ class SkillStorage(ResourceStorage):
         invalid_labels = [label for label in labels if label not in SKILL_LABELS]
         if invalid_labels:
             raise ValueError("invalid skill labels")
+        labels = ensure_origin_label(labels)
         data: Dict[str, Any] = {
             "id": skill_id,
             "name": name,

@@ -40,7 +40,7 @@ from app.storage.llm_orchestrations import LLMOrchestrationStorage
 from app.storage.skill_storage import SkillStorage
 from app.utils import flog
 from app.utils.generators import generate_id
-from app.utils.origin import compute_origin_type
+from app.utils.origin import assert_resource_writable, compute_origin_type
 
 router = APIRouter(prefix="/api/connections", tags=["connections"])
 
@@ -372,6 +372,8 @@ async def save_connection(
             existing = await _storage.get(conn_id_in_payload, group_id)
             if existing is not None:
                 owner = group_id
+        if existing:
+            assert_resource_writable(existing, "connection")
     if conn_id_in_payload and not existing:
         # Un id entrante solo es válido para editar una fila existente;
         # en altas el id lo genera siempre el servidor.
@@ -483,6 +485,9 @@ async def delete_connection(
                 extra={"resource": "connection"},
             )
         return {"ok": True}
+    existing = await _get_conn_any(conn_id, user, group_id)
+    if existing:
+        assert_resource_writable(existing, "connection")
     owner_id = await _owner(user, group_id)
     deleted = await _storage.delete(conn_id, owner_id)
     if not deleted and group_id != user:
@@ -503,6 +508,9 @@ async def _set_connection_active(
         raise APIError(
             403, "forbidden", "Los invitados no pueden desactivar conexiones"
         )
+    existing = await _get_conn_any(conn_id, user, group_id)
+    if existing:
+        assert_resource_writable(existing, "connection")
     owner_id = await _owner(user, group_id)
     ok = await _storage.set_active(conn_id, owner_id, active)
     if not ok and group_id != user:

@@ -13,6 +13,7 @@ from app.storage._storage_helpers import _PUBLIC_OWNER
 from app.storage.db import open_db
 from app.storage.db_migrations import _compact_resource_data
 from app.storage.resource_base import ResourceStorage
+from app.storage.skill_storage import ensure_origin_label
 from app.utils import flog
 from app.utils import now_iso as _now
 from app.utils.generators import generate_id
@@ -298,9 +299,11 @@ class AgentStorage(ResourceStorage):
         actual_owner = owner_id or "admin"
         existing = await self.get(agent_id, scope="private")
         now = _now()
+        raw_labels = [str(label) for label in (payload.get("labels") or [scope]) if label]
         agent = Agent.from_dict(
             {
                 **payload,
+                "labels": ensure_origin_label(raw_labels),
                 "id": agent_id,
                 "scope": scope,
                 "owner_id": actual_owner,

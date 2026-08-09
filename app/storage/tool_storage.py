@@ -16,7 +16,7 @@ from app.storage.db_migrations import _compact_resource_data
 from app.storage.resource_base import ResourceStorage
 
 # Catálogo de labels compartido; vive en skill_storage (ver comentario allí).
-from app.storage.skill_storage import SKILL_LABELS
+from app.storage.skill_storage import SKILL_LABELS, ensure_origin_label
 from app.utils import now_iso as _now
 from app.utils.generators import generate_id
 
@@ -265,6 +265,7 @@ class ToolStorage(ResourceStorage):
         invalid_labels = [label for label in labels if label not in SKILL_LABELS]
         if invalid_labels:
             raise ValueError("invalid tool labels")
+        labels = ensure_origin_label(labels)
         # El contenido de una tool cpp vive solo en el binario.
         content = "" if language == "cpp" else str(payload.get("content") or "").strip()
         # Preservar los campos de binario a través de ediciones que solo tocan

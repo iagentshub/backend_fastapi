@@ -23,7 +23,7 @@ from app.models.official_package import (
     PackageComponent,
 )
 from app.storage.official_package_storage import OfficialPackageStorage
-from app.storage.skill_storage import SKILL_ASSIGNABLE_LABELS
+from app.storage.skill_storage import SKILL_LABELS, ensure_origin_label
 
 _MAX_JSON_BYTES = 2 * 1024 * 1024
 _MAX_ARCHIVE_BYTES = 100 * 1024 * 1024
@@ -320,7 +320,7 @@ def detect_components(
                 content=content,
                 files=companion_files,
                 targets=_string_list(meta.get("targets")) or sorted(EXPORT_TARGETS),
-                labels=_string_list(meta.get("labels")) or ["production"],
+                labels=ensure_origin_label(_string_list(meta.get("labels")), "official"),
                 dependencies=_component_dependencies(meta),
                 content_hash=hashlib.sha256(digest_source.encode()).hexdigest(),
             )
@@ -360,7 +360,7 @@ def validate_components(
     markdown_link = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
     for component in components:
         invalid_labels = [
-            label for label in component.labels if label not in SKILL_ASSIGNABLE_LABELS
+            label for label in component.labels if label not in SKILL_LABELS
         ]
         if invalid_labels:
             errors.append(

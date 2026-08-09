@@ -18,6 +18,7 @@ from app.errors import APIError
 from app.models.request_bodies import GroupShareBody
 from app.models.resource_types import RESOURCE_TYPES
 from app.storage.agent_storage import AgentStorage
+from app.storage.connection_storage import ConnectionStorage
 from app.storage.db import open_db
 from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
@@ -27,6 +28,7 @@ from app.storage.prompt_storage import PromptStorage
 from app.storage.skill_storage import SkillStorage
 from app.storage.tool_storage import ToolStorage
 from app.storage.workflows import WorkflowStorage
+from app.utils.origin import is_linked_resource
 
 router = APIRouter(prefix="/api/sharing", tags=["sharing"])
 
@@ -37,6 +39,7 @@ _groups = GroupStorage()
 # su migración legacy (el flag era de instancia), y con ella un SELECT COUNT(*)
 # por petición. Mismo patrón que agents.py y connections.py.
 _agents_store = AgentStorage(_cfg.AGENTS_DIR)
+_connections_store = ConnectionStorage()
 _skills_store = SkillStorage(_cfg.SKILLS_DIR)
 _prompts_store = PromptStorage()
 _tools_store = ToolStorage()
@@ -57,50 +60,52 @@ def _assert_valid_type(resource_type: str) -> None:
         )
 
 
-async def _resource_owner(resource_type: str, resource_id: str) -> Optional[str]:
-    """Resuelve el owner_id actual de un recurso, sea cual sea su tipo."""
+async def _resource_record(
+    resource_type: str, resource_id: str
+) -> Optional[Dict[str, Any]]:
+    """Resuelve el recurso persistido, incluyendo etiquetas de propiedad."""
     if resource_type == "agent":
-        item = await _agents_store.get(resource_id)
-        return item.get("owner_id") if item else None
+        return await _agents_store.get(resource_id)
     if resource_type == "skill":
-        item = await _skills_store.get_any(resource_id)
-        return item.get("owner_id") if item else None
+        return await _skills_store.get_any(resource_id)
     if resource_type == "knowledge":
-        item = await _knowledge_store.get(resource_id)
-        return item.get("owner_id") if item else None
+        return await _knowledge_store.get(resource_id)
     if resource_type == "workflow":
-        item = await _workflows_store.get_any(resource_id)
-        return item.get("owner_id") if item else None
+        return await _workflows_store.get_any(resource_id)
     if resource_type == "llm_orchestration":
-        item = await _orch_store.get_any(resource_id)
-        return item.get("owner_id") if item else None
+        return await _orch_store.get_any(resource_id)
     if resource_type == "prompt":
-        item = await _prompts_store.get_any(resource_id)
-        return item.get("owner_id") if item else None
+        return await _prompts_store.get_any(resource_id)
     if resource_type == "tool":
-        item = await _tools_store.get_any(resource_id)
-        return item.get("owner_id") if item else None
-    # connection — ConnectionStorage.get() no incluye owner_id en el dict devuelto,
-    # así que se resuelve con una consulta directa a la tabla.
-    async with open_db() as conn:
-        row = await conn.fetchone(
-            "SELECT owner_id FROM connections WHERE id = ?", (resource_id,)
-        )
-    return row[0] if row else None
+        return await _tools_store.get_any(resource_id)
+    return await _connections_store.get(resource_id)
+
+
+async def _resource_owner(resource_type: str, resource_id: str) -> Optional[str]:
+    item = await _resource_record(resource_type, resource_id)
+    return str(item.get("owner_id")) if item and item.get("owner_id") else None
 
 
 async def _assert_can_share_resource(
     resource_type: str, resource_id: str, ctx: GroupContext
 ) -> None:
     """Solo el dueño directo del recurso, quien administra el group dueño, o un admin puede compartirlo."""
-    role = await get_user_role(ctx.user)
-    if role == "admin":
-        return  # los admins pueden compartir cualquier recurso
-    owner = await _resource_owner(resource_type, resource_id)
-    if owner is None:
+    item = await _resource_record(resource_type, resource_id)
+    if item is None:
         raise APIError(
             404, "not_found", "Recurso no encontrado", extra={"resource": "resource"}
         )
+    if is_linked_resource(item):
+        raise APIError(
+            403,
+            "linked_resource_read_only",
+            "Los enlaces son de solo lectura y no se pueden compartir",
+            extra={"resource": resource_type},
+        )
+    role = await get_user_role(ctx.user)
+    if role == "admin":
+        return  # los admins pueden compartir cualquier recurso gestionable
+    owner = str(item.get("owner_id") or "")
     if owner == ctx.user:
         return
     if await _groups.can_manage(owner, ctx.user):

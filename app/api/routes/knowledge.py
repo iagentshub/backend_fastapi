@@ -24,9 +24,14 @@ from app.storage.knowledge import (
     extract_document_text,
     fetch_url_text,
 )
-from app.storage.skill_storage import SKILL_ASSIGNABLE_LABELS
+from app.storage.skill_storage import (
+    SKILL_ASSIGNABLE_LABELS,
+    SKILL_LABELS,
+    ensure_origin_label,
+)
 from app.utils import flog
 from app.utils.generators import generate_id
+from app.utils.origin import assert_resource_writable
 
 router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
 
@@ -42,10 +47,10 @@ async def _owner(user: str, group_id: str) -> Optional[str]:
     return None if await get_user_role(user) == "admin" else group_id
 
 
-def _content_labels(body: Dict[str, Any]) -> List[str]:
+def _content_labels(body: Dict[str, Any], *, allow_origin: bool = False) -> List[str]:
     raw = body.get("labels")
     if raw is None:
-        return ["private"]
+        return ensure_origin_label(["private"], "community")
     if not isinstance(raw, list):
         raise APIError(
             422,
@@ -56,7 +61,12 @@ def _content_labels(body: Dict[str, Any]) -> List[str]:
     labels = list(
         dict.fromkeys(str(value).strip() for value in raw if str(value).strip())
     )
-    invalid = [value for value in labels if value not in SKILL_ASSIGNABLE_LABELS]
+    allowed_labels = (
+        SKILL_LABELS
+        if allow_origin
+        else SKILL_ASSIGNABLE_LABELS | {"community"}
+    )
+    invalid = [value for value in labels if value not in allowed_labels]
     if invalid:
         raise APIError(
             422,
@@ -65,7 +75,9 @@ def _content_labels(body: Dict[str, Any]) -> List[str]:
             extra={"field": "labels", "invalid": invalid},
         )
     labels = [value for value in labels if value not in {"public", "private"}]
-    return ["private", *labels]
+    return ensure_origin_label(
+        ["private", *labels], None if allow_origin else "community"
+    )
 
 
 def _guest_item(
@@ -183,7 +195,10 @@ async def add_text(
     title = str(body.get("title") or "").strip()
     content = str(body.get("content") or "").strip()
     source = str(body.get("source") or title).strip()
-    labels = _content_labels(body)
+    labels = _content_labels(
+        body,
+        allow_origin=not is_guest(user) and await get_user_role(user) == "admin",
+    )
     if not title:
         raise APIError(
             422, "invalid_field", "Título requerido", extra={"field": "title"}
@@ -218,7 +233,10 @@ async def add_url(
     body = body.payload()
     url = str(body.get("url") or "").strip()
     title = str(body.get("title") or "").strip() or url
-    labels = _content_labels(body)
+    labels = _content_labels(
+        body,
+        allow_origin=not is_guest(user) and await get_user_role(user) == "admin",
+    )
     if not url:
         raise APIError(422, "invalid_field", "URL requerida", extra={"field": "url"})
     try:
@@ -264,7 +282,10 @@ async def upload_document(
             "Las labels del documento no tienen un formato válido",
             extra={"field": "labels"},
         ) from exc
-    content_labels = _content_labels({"labels": parsed_labels})
+    content_labels = _content_labels(
+        {"labels": parsed_labels},
+        allow_origin=not is_guest(user) and await get_user_role(user) == "admin",
+    )
     filename = file.filename or "documento"
     ext = "." + filename.rsplit(".", 1)[-1].lower() if "." in filename else ""
     if ext not in _ALLOWED_EXTS:
@@ -334,6 +355,9 @@ async def delete_item(
                 404, "not_found", "Item no encontrado", extra={"resource": "item"}
             )
         return {"ok": True}
+    item = await _storage.get(item_id)
+    if item:
+        assert_resource_writable(item, "knowledge")
     owner = await _owner(user, group_id)
     if not await _storage.delete(item_id, owner):
         raise APIError(
@@ -350,6 +374,9 @@ async def _set_knowledge_active(
         raise APIError(
             403, "forbidden", "Los invitados no pueden desactivar conocimiento"
         )
+    item = await _storage.get(item_id)
+    if item:
+        assert_resource_writable(item, "knowledge")
     owner = await _owner(user, group_id)
     if not await _storage.set_active(item_id, owner, active):
         raise APIError(

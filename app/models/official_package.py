@@ -38,7 +38,7 @@ class PackageComponent:
     content: str = ""
     files: Dict[str, str] = field(default_factory=dict)
     targets: List[str] = field(default_factory=list)
-    labels: List[str] = field(default_factory=lambda: ["production"])
+    labels: List[str] = field(default_factory=lambda: ["official"])
     dependencies: List[str] = field(default_factory=list)
 
     def as_dict(self, *, include_content: bool = False) -> Dict[str, Any]:

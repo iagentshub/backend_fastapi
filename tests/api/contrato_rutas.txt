@@ -100,6 +100,7 @@ GET /api/llm-orchestrations/{item_id}
 GET /api/memory
 GET /api/memory/{filename}
 GET /api/official-packages
+GET /api/official-packages/components
 GET /api/official-packages/copies
 GET /api/official-packages/{package_id}
 GET /api/prompts
@@ -214,6 +215,7 @@ POST /api/memory/{filename}
 POST /api/official-packages/{package_id}/copy
 POST /api/official-packages/{package_id}/export-preview
 POST /api/official-packages/{package_id}/export/{target}
+POST /api/official-packages/{package_id}/link
 POST /api/prompts/private/{prompt_id}/sync
 POST /api/prompts/{prompt_id}/activate
 POST /api/prompts/{prompt_id}/deactivate
@@ -238,6 +240,7 @@ POST /api/users/{target}/follow
 POST /api/workflow-runs/{run_id}/cancel
 POST /api/workflows
 POST /api/workflows/{source_id}/link
+PUT /api/admin/official-packages/{package_id}
 POST /api/workflows/{workflow_id}/activate
 POST /api/workflows/{workflow_id}/deactivate
 POST /api/workflows/{workflow_id}/run

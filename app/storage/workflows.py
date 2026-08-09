@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 
 from app.storage.db import open_db
 from app.storage.resource_base import ResourceStorage
-from app.storage.skill_storage import SKILL_LABELS
+from app.storage.skill_storage import SKILL_LABELS, ensure_origin_label
 from app.utils.generators import generate_date as _now
 from app.utils.generators import generate_id
 
@@ -86,6 +86,7 @@ class WorkflowStorage(ResourceStorage):
         invalid_labels = [label for label in labels if label not in SKILL_LABELS]
         if invalid_labels:
             raise ValueError("invalid workflow labels")
+        labels = ensure_origin_label(labels)
         item = {
             "id": workflow_id,
             "resource_type": "workflow",

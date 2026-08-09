@@ -200,7 +200,12 @@ def test_upload_document_preserves_content_language_labels(alice):
         data={"labels": '["private", "lang_es", "lang_en"]'},
     )
     assert response.status_code == 200
-    assert response.json()["labels"] == ["private", "lang_es", "lang_en"]
+    assert response.json()["labels"] == [
+        "private",
+        "community",
+        "lang_es",
+        "lang_en",
+    ]
 
 
 def test_upload_document_unsupported_format(alice):

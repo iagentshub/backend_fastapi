@@ -82,6 +82,25 @@ async def copy_official_package(
         raise APIError(404, "not_found", "Paquete oficial no encontrado") from exc
 
 
+@router.post("/{package_id}/link")
+async def link_official_package(
+    package_id: str,
+    body: ComponentSelectionBody,
+    username: str = Depends(require_auth),
+) -> Dict[str, Any]:
+    try:
+        return await OfficialPackageCopier(_storage).link(
+            package_id, username, body.component_ids
+        )
+    except KeyError as exc:
+        raise APIError(
+            404,
+            "not_found",
+            "Paquete oficial no encontrado",
+            extra={"resource": "official_package"},
+        ) from exc
+
+
 @router.post("/{package_id}/export-preview")
 async def preview_official_package_export(
     package_id: str,

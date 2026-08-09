@@ -27,10 +27,14 @@ from app.errors import APIError
 from app.models.request_bodies import CatalogResourcePayload
 from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
-from app.storage.skill_storage import SKILL_ASSIGNABLE_LABELS
+from app.storage.skill_storage import (
+    SKILL_ASSIGNABLE_LABELS,
+    SKILL_LABELS,
+    ensure_origin_label,
+)
 from app.storage.tool_storage import TOOL_LANGUAGES, ToolStorage
 from app.utils import flog
-from app.utils.origin import compute_origin_type
+from app.utils.origin import assert_resource_writable, compute_origin_type
 
 router = APIRouter(prefix="/api/tools", tags=["tools"])
 
@@ -173,6 +177,12 @@ async def save_tool(
     user, group_id = ctx.user, ctx.group_id
     _check_scope(scope)
     payload = body.payload()
+    role = await get_user_role(user)
+    allowed_labels = (
+        SKILL_LABELS
+        if role == "admin"
+        else SKILL_ASSIGNABLE_LABELS | {"community", "fork"}
+    )
     raw_labels = payload.get("labels")
     if raw_labels is not None:
         if not isinstance(raw_labels, list):
@@ -188,7 +198,7 @@ async def save_tool(
             )
         )
         invalid_labels = [
-            label for label in labels if label not in SKILL_ASSIGNABLE_LABELS
+            label for label in labels if label not in allowed_labels
         ]
         if invalid_labels:
             raise APIError(
@@ -213,6 +223,11 @@ async def save_tool(
         if not visibility:
             labels.insert(0, scope if scope in {"private", "public"} else "private")
         payload["labels"] = labels
+    if role != "admin":
+        payload["labels"] = ensure_origin_label(
+            [str(label) for label in (payload.get("labels") or [scope]) if label],
+            "community",
+        )
 
     language = str(payload.get("language") or "").strip()
     if language not in TOOL_LANGUAGES:
@@ -231,6 +246,8 @@ async def save_tool(
     existing = None
     if tool_id_in_payload:
         existing = await _storage.get_any(tool_id_in_payload, owner_id=group_id)
+        if existing:
+            assert_resource_writable(existing, "tool")
         if not existing and await _storage.get_any(tool_id_in_payload):
             raise APIError(
                 403,
@@ -263,6 +280,8 @@ async def delete_tool(
     _check_scope(scope)
     # Ownership check before delete
     tl = await _storage.get_any(tool_id)
+    if tl:
+        assert_resource_writable(tl, "tool")
     role = await get_user_role(user)
     if tl and tl.get("scope") == "public" and tl.get("owner_id") is None:
         raise APIError(
@@ -297,6 +316,7 @@ async def _set_tool_active(
         raise APIError(
             404, "not_found", "Tool no encontrada", extra={"resource": "tool"}
         )
+    assert_resource_writable(tl, "tool")
     role = await get_user_role(user)
     if role != "admin" and tl.get("owner_id") not in (group_id, None):
         raise APIError(403, "forbidden", "Solo el propietario puede cambiar el estado")
@@ -343,6 +363,7 @@ async def upload_tool_binary(
         raise APIError(
             404, "not_found", "Tool no encontrada", extra={"resource": "tool"}
         )
+    assert_resource_writable(tl, "tool")
     role = await get_user_role(user)
     owner_id = tl.get("owner_id")
     if role != "admin" and owner_id not in (user, group_id):

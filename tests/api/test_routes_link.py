@@ -104,6 +104,75 @@ def test_link_agente_tiene_label_linked(client):
     assert "fork" not in labels
 
 
+def test_link_agente_es_solo_lectura(client):
+    owner = _login(client, "linkreadonly01")
+    created = client.post(
+        "/api/agents",
+        json={"name": "Agente solo lectura", "description": "original"},
+    )
+    assert created.status_code == 200
+    source_id = created.json()["id"]
+    _make_agent_public(source_id, owner)
+
+    _login(client, "linkreadonly02")
+    linked = client.post(f"/api/agents/private/{source_id}/link")
+    assert linked.status_code == 200
+    link_id = linked.json()["agent_id"]
+
+    detail = client.get(f"/api/agents/{link_id}")
+    assert detail.status_code == 200
+    payload = detail.json()
+    assert payload["origin_type"] == "linked"
+    payload["name"] = "Intento de edición"
+
+    edited = client.post("/api/agents", json=payload)
+    assert edited.status_code == 403
+    assert edited.json()["detail"]["code"] == "linked_resource_read_only"
+
+    deactivated = client.post(f"/api/agents/{link_id}/deactivate")
+    assert deactivated.status_code == 403
+    group = client.post("/api/groups", json={"name": "Equipo enlace"})
+    assert group.status_code == 200
+    shared = client.post(
+        f"/api/sharing/agent/{link_id}",
+        json={"group_id": group.json()["id"]},
+    )
+    assert shared.status_code == 403
+    deleted = client.delete(f"/api/agents/{link_id}")
+    assert deleted.status_code == 403
+
+
+def test_fork_agente_se_puede_editar_compartir_y_borrar(client):
+    _login(client, "forkpermissions01")
+    created = client.post(
+        "/api/agents",
+        json={
+            "name": "Fork gestionable",
+            "description": "copia",
+            "labels": ["private", "community", "fork"],
+        },
+    )
+    assert created.status_code == 200
+    fork = created.json()
+    assert fork["labels"] == ["private", "community", "fork"]
+
+    fork["name"] = "Fork editado"
+    edited = client.post("/api/agents", json=fork)
+    assert edited.status_code == 200
+    assert edited.json()["name"] == "Fork editado"
+
+    group = client.post("/api/groups", json={"name": "Equipo Fork"})
+    assert group.status_code == 200
+    shared = client.post(
+        f"/api/sharing/agent/{fork['id']}",
+        json={"group_id": group.json()["id"]},
+    )
+    assert shared.status_code == 200
+
+    deleted = client.delete(f"/api/agents/{fork['id']}")
+    assert deleted.status_code == 200
+
+
 def test_link_agente_guarda_linked_to_en_resource_social(client):
     owner = _login(client, "linktest05")
     r = client.post("/api/agents", json={"name": "Agente Social Link", "description": "d"})
@@ -182,7 +251,7 @@ def test_link_agente_copia_no_conserva_label_public(client):
         f"/api/agents/private/{link_id}/visibility",
         json={"is_public": True, "category": "Coding", "trial_missing_deps": "warn"},
     )
-    assert r4.status_code == 400
+    assert r4.status_code == 403
 
 
 # ---------------------------------------------------------------------------
@@ -321,7 +390,7 @@ def test_link_skill_copia_no_conserva_label_public(client):
         f"/api/skills/private/{link_id}/visibility",
         json={"is_public": True, "category": "Coding"},
     )
-    assert r4.status_code == 400
+    assert r4.status_code == 403
 
 
 # ---------------------------------------------------------------------------
@@ -608,7 +677,7 @@ def test_link_workflow_copia_no_conserva_label_public(client):
         f"/api/workflows/{link_id}/visibility",
         json={"is_public": True, "category": "Other"},
     )
-    assert r4.status_code == 400
+    assert r4.status_code == 403
 
 
 def test_link_workflow_propio_devuelve_400(client):

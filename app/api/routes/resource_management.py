@@ -11,6 +11,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.api.routes.auth import GroupContext, require_group
+from app.auth.auth import get_user_role
 from app.config.data import AGENTS_DIR, SKILLS_DIR
 from app.errors import APIError
 from app.services.workflow_errors import WorkflowPublicError, workflow_error_event
@@ -21,11 +22,15 @@ from app.storage.agent_storage import AgentStorage
 from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
 from app.storage.resource_versions import ResourceVersionStorage
-from app.storage.skill_storage import SkillStorage
+from app.storage.skill_storage import (
+    SKILL_ASSIGNABLE_LABELS,
+    SKILL_LABELS,
+    SkillStorage,
+)
 from app.storage.workflow_runs import TERMINAL_STATUSES, WorkflowRunStorage
 from app.storage.workflows import WorkflowStorage
 from app.utils import flog
-from app.utils.origin import compute_origin_type
+from app.utils.origin import assert_resource_writable, compute_origin_type
 
 router = APIRouter(prefix="/api", tags=["resource-management"])
 _agents = AgentStorage(AGENTS_DIR)
@@ -113,7 +118,8 @@ async def restore_version(
     version: int,
     ctx: GroupContext = Depends(require_group),
 ) -> Dict[str, Any]:
-    await _owned_resource(resource_type, resource_id, ctx.group_id)
+    resource = await _owned_resource(resource_type, resource_id, ctx.group_id)
+    assert_resource_writable(resource, resource_type)
     item = await _versions.get(
         _check_type(resource_type), resource_id, ctx.group_id, version
     )
@@ -211,9 +217,25 @@ async def save_workflow(
     body: WorkflowBody,
     ctx: GroupContext = Depends(require_group),
 ) -> Dict[str, Any]:
+    role = await get_user_role(ctx.user)
+    allowed_labels = (
+        SKILL_LABELS
+        if role == "admin"
+        else SKILL_ASSIGNABLE_LABELS | {"community", "fork"}
+    )
+    invalid_labels = [label for label in body.labels if label not in allowed_labels]
+    if invalid_labels:
+        raise APIError(
+            422,
+            "invalid_field",
+            "El origen del recurso solo puede definirlo un administrador",
+            extra={"field": "labels", "invalid": invalid_labels},
+        )
     workflow_id = body.id
     if workflow_id:
         existing = await _workflows.get_any(workflow_id)
+        if existing:
+            assert_resource_writable(existing, "workflow")
         if existing and existing["owner_id"] != ctx.group_id:
             raise APIError(
                 403,
@@ -248,6 +270,9 @@ async def delete_workflow(
     workflow_id: str,
     ctx: GroupContext = Depends(require_group),
 ) -> Dict[str, bool]:
+    existing = await _workflows.get_any(workflow_id)
+    if existing:
+        assert_resource_writable(existing, "workflow")
     if not await _workflows.delete(workflow_id, ctx.group_id):
         raise APIError(
             404,
@@ -261,6 +286,9 @@ async def delete_workflow(
 async def _set_workflow_active(
     workflow_id: str, active: bool, ctx: GroupContext
 ) -> Dict[str, Any]:
+    existing = await _workflows.get_any(workflow_id)
+    if existing:
+        assert_resource_writable(existing, "workflow")
     if not await _workflows.set_active(workflow_id, ctx.group_id, active):
         raise APIError(
             404,

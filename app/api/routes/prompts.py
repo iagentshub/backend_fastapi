@@ -16,10 +16,14 @@ from app.storage.groups import GroupStorage
 from app.storage.guest import get_session, is_guest
 from app.storage.prompt_storage import PROMPT_ALIAS_RE, PromptStorage
 from app.storage.resource_versions import ResourceVersionStorage
-from app.storage.skill_storage import SKILL_ASSIGNABLE_LABELS
+from app.storage.skill_storage import (
+    SKILL_ASSIGNABLE_LABELS,
+    SKILL_LABELS,
+    ensure_origin_label,
+)
 from app.utils import flog
 from app.utils.generators import generate_id
-from app.utils.origin import compute_origin_type
+from app.utils.origin import assert_resource_writable, compute_origin_type
 
 router = APIRouter(prefix="/api/prompts", tags=["prompts"])
 
@@ -171,6 +175,12 @@ async def save_prompt(
     user, group_id = ctx.user, ctx.group_id
     _check_scope(scope)
     payload = body.payload()
+    role = None if is_guest(user) else await get_user_role(user)
+    allowed_labels = (
+        SKILL_LABELS
+        if role == "admin"
+        else SKILL_ASSIGNABLE_LABELS | {"community", "fork"}
+    )
     raw_labels = payload.get("labels")
     if raw_labels is not None:
         if not isinstance(raw_labels, list):
@@ -186,7 +196,7 @@ async def save_prompt(
             )
         )
         invalid_labels = [
-            label for label in labels if label not in SKILL_ASSIGNABLE_LABELS
+            label for label in labels if label not in allowed_labels
         ]
         if invalid_labels:
             raise APIError(
@@ -211,6 +221,11 @@ async def save_prompt(
         if not visibility:
             labels.insert(0, scope if scope in {"private", "public"} else "private")
         payload["labels"] = labels
+    if role != "admin":
+        payload["labels"] = ensure_origin_label(
+            [str(label) for label in (payload.get("labels") or [scope]) if label],
+            "community",
+        )
     alias = str(payload.get("alias") or "").strip().lower()
     if not PROMPT_ALIAS_RE.match(alias):
         raise APIError(
@@ -245,6 +260,8 @@ async def save_prompt(
     existing = None
     if prompt_id_in_payload:
         existing = await _storage.get_any(prompt_id_in_payload, owner_id=group_id)
+        if existing:
+            assert_resource_writable(existing, "prompt")
         if not existing and await _storage.get_any(prompt_id_in_payload):
             raise APIError(
                 403,
@@ -299,6 +316,8 @@ async def delete_prompt(
         return {"ok": True}
     # Ownership check before delete
     pr = await _storage.get_any(prompt_id)
+    if pr:
+        assert_resource_writable(pr, "prompt")
     role = await get_user_role(user)
     if pr and pr.get("scope") == "public" and pr.get("owner_id") is None:
         raise APIError(
@@ -337,6 +356,7 @@ async def _set_prompt_active(
         raise APIError(
             404, "not_found", "Prompt no encontrado", extra={"resource": "prompt"}
         )
+    assert_resource_writable(pr, "prompt")
     role = await get_user_role(user)
     if role != "admin" and pr.get("owner_id") not in (group_id, None):
         raise APIError(403, "forbidden", "Solo el propietario puede cambiar el estado")

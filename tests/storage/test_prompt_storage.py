@@ -46,7 +46,7 @@ def test_save_owned_public_prompt(storage):
     prompt = asyncio.run(storage.save("public", _PROMPT, owner_id="user-id"))
     assert prompt["scope"] == "public"
     assert prompt["owner_id"] == "user-id"
-    assert prompt["labels"] == ["public"]
+    assert prompt["labels"] == ["public", "community"]
 
 
 def test_alias_is_normalized_to_lowercase(storage):

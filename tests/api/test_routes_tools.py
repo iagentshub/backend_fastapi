@@ -40,7 +40,7 @@ def test_save_public_tool(admin_client):
     assert r.status_code == 200
     data = r.json()
     assert data["scope"] == "public"
-    assert data["labels"] == ["public"]
+    assert data["labels"] == ["public", "community"]
     assert data["owner_id"]
 
 

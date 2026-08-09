@@ -13,7 +13,7 @@ from app.storage.db_migrations import _compact_resource_data
 from app.storage.resource_base import ResourceStorage
 
 # Catálogo de labels compartido; vive en skill_storage (ver comentario allí).
-from app.storage.skill_storage import SKILL_LABELS
+from app.storage.skill_storage import SKILL_LABELS, ensure_origin_label
 from app.utils import now_iso as _now
 from app.utils.generators import generate_id
 
@@ -233,6 +233,7 @@ class PromptStorage(ResourceStorage):
         invalid_labels = [label for label in labels if label not in SKILL_LABELS]
         if invalid_labels:
             raise ValueError("invalid prompt labels")
+        labels = ensure_origin_label(labels)
         data: Dict[str, Any] = {
             "id": prompt_id,
             "name": name,

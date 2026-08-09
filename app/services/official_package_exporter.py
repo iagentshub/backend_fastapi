@@ -12,7 +12,9 @@ from typing import Any, Dict, Iterable, List, Optional
 import yaml
 
 from app.config import data as _cfg
+from app.storage import db as _db
 from app.storage.agent_storage import AgentStorage
+from app.storage.db import open_db
 from app.storage.knowledge import KnowledgeStorage
 from app.storage.official_package_storage import OfficialPackageStorage
 from app.storage.prompt_storage import PromptStorage
@@ -212,6 +214,28 @@ class OfficialPackageCopier:
         owner_id: str,
         component_ids: Optional[Iterable[str]] = None,
     ) -> Dict[str, Any]:
+        return await self._materialize(
+            package_id, owner_id, component_ids, mode="copy"
+        )
+
+    async def link(
+        self,
+        package_id: str,
+        owner_id: str,
+        component_ids: Optional[Iterable[str]] = None,
+    ) -> Dict[str, Any]:
+        return await self._materialize(
+            package_id, owner_id, component_ids, mode="link"
+        )
+
+    async def _materialize(
+        self,
+        package_id: str,
+        owner_id: str,
+        component_ids: Optional[Iterable[str]],
+        *,
+        mode: str,
+    ) -> Dict[str, Any]:
         package = await self.storage.get_published(package_id, include_content=True)
         if not package:
             raise KeyError("package_not_found")
@@ -220,7 +244,7 @@ class OfficialPackageCopier:
         )
         copies: List[Dict[str, Any]] = []
         existing: Dict[str, Dict[str, Any]] = {}
-        for item in await self.storage.list_copies(owner_id):
+        for item in await self.storage.list_copies(owner_id, mode=mode):
             if (
                 item["package_id"] == package_id
                 and item["source_version"] == package["version"]["version"]
@@ -261,11 +285,22 @@ class OfficialPackageCopier:
                 continue
             resource_type = "package_component"
             resource_id: Optional[str] = None
-            labels = ["private", "fork"]
+            labels = (
+                ["private", "official", "linked"]
+                if mode == "link"
+                else ["private", "community", "fork"]
+            )
             labels.extend(
                 label
                 for label in (component.get("labels") or [])
-                if label not in {"private", "public", "fork", "linked"}
+                if label not in {
+                    "private",
+                    "public",
+                    "fork",
+                    "linked",
+                    "official",
+                    "community",
+                }
                 and label not in labels
             )
             if component["component_type"] == "skill":
@@ -377,27 +412,73 @@ class OfficialPackageCopier:
                     resource_type, resource_id = "workflow", resource["id"]
             if resource_id:
                 resource_ids[str(component["component_id"])] = str(resource_id)
-            copies.append(
-                await self.storage.save_copy(
-                    {
-                        "owner_id": owner_id,
-                        "package_id": package_id,
-                        "source_version": package["version"]["version"],
-                        "component_id": component["component_id"],
-                        "resource_type": resource_type,
-                        "resource_id": resource_id,
-                        "name": component["name"],
-                        "content": component.get("content", ""),
-                        "source_content_hash": component["content_hash"],
-                    }
-                )
+            copy = await self.storage.save_copy(
+                {
+                    "owner_id": owner_id,
+                    "package_id": package_id,
+                    "source_version": package["version"]["version"],
+                    "component_id": component["component_id"],
+                    "resource_type": resource_type,
+                    "resource_id": resource_id,
+                    "name": component["name"],
+                    "content": component.get("content", ""),
+                    "source_content_hash": component["content_hash"],
+                    "mode": mode,
+                }
             )
+            copies.append(copy)
+            if mode == "link" and resource_id:
+                await self._register_official_link(
+                    owner_id=owner_id,
+                    package=package,
+                    component=component,
+                    resource_type=resource_type,
+                    resource_id=str(resource_id),
+                    labels=labels,
+                )
         return {
             "package_id": package_id,
             "source_version": package["version"]["version"],
-            "is_official": False,
-            "copies": copies,
+            "is_official": mode == "link",
+            "links" if mode == "link" else "copies": copies,
         }
+
+    async def _register_official_link(
+        self,
+        *,
+        owner_id: str,
+        package: Dict[str, Any],
+        component: Dict[str, Any],
+        resource_type: str,
+        resource_id: str,
+        labels: List[str],
+    ) -> None:
+        columns = (
+            "resource_type, resource_id, owner, name, description, is_public, "
+            "category, trial_missing_deps, linked_to_user, linked_to_id, tags, labels"
+        )
+        values = "?, ?, ?, ?, ?, 0, '', '', ?, ?, '[]', ?"
+        sql = (
+            f"INSERT INTO resource_social ({columns}) VALUES ({values}) "
+            "ON CONFLICT DO NOTHING"
+            if _db.IS_PG
+            else f"INSERT OR IGNORE INTO resource_social ({columns}) VALUES ({values})"
+        )
+        async with open_db() as conn:
+            await conn.execute(
+                sql,
+                (
+                    resource_type,
+                    resource_id,
+                    owner_id,
+                    component["name"],
+                    component.get("description", ""),
+                    package.get("repository_owner", "official"),
+                    f"{package['id']}:{component['component_id']}",
+                    json.dumps(labels, ensure_ascii=False),
+                ),
+            )
+            await conn.commit()
 
     async def _copy_still_exists(self, copy: Dict[str, Any], owner_id: str) -> bool:
         resource_id = copy.get("resource_id")

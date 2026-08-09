@@ -44,7 +44,7 @@ def test_save_owned_public_skill(storage):
     skill = asyncio.run(storage.save("public", _SKILL, owner_id="user-id"))
     assert skill["scope"] == "public"
     assert skill["owner_id"] == "user-id"
-    assert skill["labels"] == ["public"]
+    assert skill["labels"] == ["public", "community"]
 
 
 def test_skill_tags_are_not_persisted(storage):

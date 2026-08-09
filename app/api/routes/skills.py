@@ -19,11 +19,13 @@ from app.storage.resource_versions import ResourceVersionStorage
 from app.storage.skill_storage import (
     SKILL_ASSIGNABLE_LABELS,
     SKILL_CATEGORIES,
+    SKILL_LABELS,
     SkillStorage,
+    ensure_origin_label,
 )
 from app.utils import flog
 from app.utils.generators import generate_id
-from app.utils.origin import compute_origin_type
+from app.utils.origin import assert_resource_writable, compute_origin_type
 
 router = APIRouter(prefix="/api/skills", tags=["skills"])
 
@@ -184,6 +186,12 @@ async def save_skill(
             extra={"field": "tags"},
         )
     payload.pop("tags", None)
+    role = None if is_guest(user) else await get_user_role(user)
+    allowed_labels = (
+        SKILL_LABELS
+        if role == "admin"
+        else SKILL_ASSIGNABLE_LABELS | {"community", "fork"}
+    )
     raw_labels = payload.get("labels")
     if raw_labels is not None:
         if not isinstance(raw_labels, list):
@@ -199,7 +207,7 @@ async def save_skill(
             )
         )
         invalid_labels = [
-            label for label in labels if label not in SKILL_ASSIGNABLE_LABELS
+            label for label in labels if label not in allowed_labels
         ]
         if invalid_labels:
             raise APIError(
@@ -224,6 +232,11 @@ async def save_skill(
         if not visibility:
             labels.insert(0, scope if scope in {"private", "public"} else "private")
         payload["labels"] = labels
+    if role != "admin":
+        payload["labels"] = ensure_origin_label(
+            [str(label) for label in (payload.get("labels") or [scope]) if label],
+            "community",
+        )
     category = str(payload.get("category") or "").strip()
     if category and category not in SKILL_CATEGORIES:
         raise APIError(
@@ -257,6 +270,8 @@ async def save_skill(
     existing = None
     if skill_id_in_payload:
         existing = await _storage.get_any(skill_id_in_payload, owner_id=group_id)
+        if existing:
+            assert_resource_writable(existing, "skill")
         if not existing and await _storage.get_any(skill_id_in_payload):
             raise APIError(
                 403,
@@ -306,6 +321,8 @@ async def delete_skill(
         return {"ok": True}
     # Ownership check before delete
     sk = await _storage.get_any(skill_id)
+    if sk:
+        assert_resource_writable(sk, "skill")
     role = await get_user_role(user)
     if sk and sk.get("scope") == "public" and sk.get("owner_id") is None:
         raise APIError(
@@ -344,6 +361,7 @@ async def _set_skill_active(
         raise APIError(
             404, "not_found", "Skill no encontrada", extra={"resource": "skill"}
         )
+    assert_resource_writable(sk, "skill")
     role = await get_user_role(user)
     if role != "admin" and sk.get("owner_id") not in (group_id, None):
         raise APIError(403, "forbidden", "Solo el propietario puede cambiar el estado")

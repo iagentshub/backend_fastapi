@@ -78,12 +78,19 @@ async def link_knowledge(
         raise APIError(400, "already_owner", "Ya eres el propietario de este recurso")
 
     link_title = source.get("title", source_id)
+    link_labels = [
+        label
+        for label in (source.get("labels") or ["private"])
+        if label not in ("fork", "linked", "public")
+    ]
+    link_labels.append("linked")
     result = await knowledge.save(
         type=source.get("type", "url"),
         title=link_title,
         source=source.get("source", ""),
         content=source.get("content", ""),
         owner_id=username,
+        labels=link_labels,
     )
     new_id = result["id"]
 

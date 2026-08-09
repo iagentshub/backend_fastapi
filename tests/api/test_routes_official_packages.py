@@ -9,6 +9,7 @@ import zipfile
 from app.config import data as _cfg
 from app.models.official_package import PackageComponent
 from app.storage.agent_storage import AgentStorage
+from app.storage.db import open_db
 from app.storage.official_package_storage import OfficialPackageStorage
 
 
@@ -110,6 +111,29 @@ def test_copia_pierde_sello_oficial(admin_client):
     assert updated.json()[0]["status"] == "Actualización disponible"
 
 
+def test_usuario_normal_puede_enlazar_recurso_oficial(client):
+    from app.auth.auth import create_token, register_user
+
+    asyncio.run(
+        register_user(
+            "officiallinkuser",
+            "pass1234",
+            email="officiallinkuser@example.com",
+        )
+    )
+    client.cookies.set("ga_token", create_token("officiallinkuser"))
+    package_id = _seed_published()
+
+    response = client.post(
+        f"/api/official-packages/{package_id}/link",
+        json={"component_ids": ["brainstorming"]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["is_official"] is True
+    assert response.json()["links"][0]["mode"] == "link"
+
+
 def test_explore_individualiza_oficiales_con_labels_y_dependencias(admin_client):
     async def seed() -> str:
         storage = OfficialPackageStorage()
@@ -134,7 +158,7 @@ def test_explore_individualiza_oficiales_con_labels_y_dependencias(admin_client)
                 content="# Research",
                 targets=["hub", "codex"],
                 content_hash="skill-hash",
-                labels=["production", "lang_es"],
+                labels=["official", "lang_es"],
             ),
             PackageComponent(
                 package_id=package["id"],
@@ -146,7 +170,7 @@ def test_explore_individualiza_oficiales_con_labels_y_dependencias(admin_client)
                 content="# Analyst",
                 targets=["hub", "codex"],
                 content_hash="agent-hash",
-                labels=["production"],
+                labels=["official"],
                 dependencies=["research"],
             ),
         ]
@@ -162,7 +186,7 @@ def test_explore_individualiza_oficiales_con_labels_y_dependencias(admin_client)
     official = next(item for item in response.json() if item.get("is_official"))
     assert official["resource_id"] == f"{package_id}:analyst"
     assert official["hub_installable"] is True
-    assert official["labels"] == ["production"]
+    assert official["labels"] == ["official"]
     assert official["dependencies"] == [
         {
             "component_id": "research",
@@ -199,7 +223,7 @@ def test_explore_individualiza_oficiales_con_labels_y_dependencias(admin_client)
     )
     assert agent is not None
     assert agent["skills"] == [skill_copy["resource_id"]]
-    assert agent["labels"] == ["private", "fork", "production"]
+    assert agent["labels"] == ["private", "community", "fork"]
 
     repeated = admin_client.post(
         f"/api/official-packages/{package_id}/copy",
@@ -208,6 +232,59 @@ def test_explore_individualiza_oficiales_con_labels_y_dependencias(admin_client)
     assert repeated.status_code == 200
     assert {item["id"] for item in repeated.json()["copies"]} == {
         item["id"] for item in copies
+    }
+
+    linked = admin_client.post(
+        f"/api/official-packages/{package_id}/link",
+        json={"component_ids": ["analyst"]},
+    )
+    assert linked.status_code == 200
+    assert linked.json()["is_official"] is True
+    links = linked.json()["links"]
+    assert {item["source_component_id"] for item in links} == {
+        "research",
+        "analyst",
+    }
+    linked_agent = next(item for item in links if item["resource_type"] == "agent")
+    linked_skill = next(item for item in links if item["resource_type"] == "skill")
+    agent = asyncio.run(
+        AgentStorage(_cfg.AGENTS_DIR).get(
+            linked_agent["resource_id"], scope="private"
+        )
+    )
+    assert agent is not None
+    assert agent["skills"] == [linked_skill["resource_id"]]
+    assert agent["labels"] == ["private", "official", "linked"]
+
+    async def linked_social_row():
+        async with open_db() as conn:
+                return await conn.fetchone(
+                    "SELECT linked_to_id, labels FROM resource_social "
+                    "WHERE resource_type='agent' AND resource_id=?",
+                    (linked_agent["resource_id"],),
+                )
+
+    social = asyncio.run(linked_social_row())
+    assert social is not None
+    assert social["linked_to_id"] == f"{package_id}:analyst"
+    assert social["labels"] == '["private", "official", "linked"]'
+
+    profile_resources = admin_client.get("/api/social/me/resources")
+    assert profile_resources.status_code == 200
+    profile_link = next(
+        item
+        for item in profile_resources.json()["resources"]
+        if item["resource_id"] == linked_agent["resource_id"]
+    )
+    assert profile_link["linked_broken"] is False
+
+    repeated_link = admin_client.post(
+        f"/api/official-packages/{package_id}/link",
+        json={"component_ids": ["analyst"]},
+    )
+    assert repeated_link.status_code == 200
+    assert {item["id"] for item in repeated_link.json()["links"]} == {
+        item["id"] for item in links
     }
 
 
@@ -227,3 +304,29 @@ def test_admin_elimina_fuente_y_su_historial(admin_client):
     assert asyncio.run(storage.list_versions(package_id)) == []
     missing = admin_client.delete(f"/api/admin/official-packages/{package_id}")
     assert missing.status_code == 404
+
+
+def test_admin_edita_fuente_oficial_sin_cambiar_su_id(admin_client):
+    package_id = _seed_published()
+
+    response = admin_client.put(
+        f"/api/admin/official-packages/{package_id}",
+        json={
+            "name": "Superpowers revisado",
+            "description": "Descripción administrada",
+            "repository_url": "https://github.com/obra/superpowers-renamed.git",
+            "tracking_mode": "branch",
+            "tracking_ref": "stable",
+            "license": "Apache-2.0",
+        },
+    )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["id"] == package_id
+    assert body["name"] == "Superpowers revisado"
+    assert body["repository_url"] == "https://github.com/obra/superpowers-renamed"
+    assert body["repository_owner"] == "obra"
+    assert body["repository_name"] == "superpowers-renamed"
+    assert body["tracking_mode"] == "branch"
+    assert body["tracking_ref"] == "stable"

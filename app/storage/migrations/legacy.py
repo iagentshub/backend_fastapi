@@ -88,9 +88,23 @@ async def _migrate_legacy_agent_language_labels(conn: Any, *, postgres: bool) ->
         if not canonical:
             continue
         labels = [str(value) for value in (data.get("labels") or ["private"]) if value]
-        if canonical in labels:
+        changed = False
+        if not any(label in {"official", "community"} for label in labels):
+            insert_at = next(
+                (
+                    index + 1
+                    for index, label in enumerate(labels)
+                    if label in {"private", "public"}
+                ),
+                0,
+            )
+            labels.insert(insert_at, "community")
+            changed = True
+        if canonical not in labels:
+            labels.append(canonical)
+            changed = True
+        if not changed:
             continue
-        labels.append(canonical)
         data["labels"] = labels
         compact_data = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
         serialized_labels = json.dumps(labels, ensure_ascii=False)
@@ -112,6 +126,16 @@ async def _migrate_legacy_agent_language_labels(conn: Any, *, postgres: bool) ->
                 canonical,
             )
             await conn.execute(
+                "INSERT INTO resource_labels "
+                "(resource_type, resource_id, owner_id, label) "
+                "VALUES ($1, $2, $3, $4) "
+                "ON CONFLICT(resource_type, resource_id, label) DO NOTHING",
+                "agent",
+                row["id"],
+                row["owner_id"],
+                "official" if "official" in labels else "community",
+            )
+            await conn.execute(
                 "UPDATE resource_social SET labels=$1 "
                 "WHERE resource_type='agent' AND resource_id=$2",
                 serialized_labels,
@@ -128,6 +152,18 @@ async def _migrate_legacy_agent_language_labels(conn: Any, *, postgres: bool) ->
                 "VALUES (?, ?, ?, ?) "
                 "ON CONFLICT(resource_type, resource_id, label) DO NOTHING",
                 ("agent", row["id"], row["owner_id"], canonical),
+            )
+            await conn.execute(
+                "INSERT INTO resource_labels "
+                "(resource_type, resource_id, owner_id, label) "
+                "VALUES (?, ?, ?, ?) "
+                "ON CONFLICT(resource_type, resource_id, label) DO NOTHING",
+                (
+                    "agent",
+                    row["id"],
+                    row["owner_id"],
+                    "official" if "official" in labels else "community",
+                ),
             )
             await conn.execute(
                 "UPDATE resource_social SET labels=? "

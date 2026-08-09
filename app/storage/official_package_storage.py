@@ -7,6 +7,7 @@ from typing import Any, Dict, Iterable, List, Optional
 
 from app.models.official_package import OfficialPackage, PackageComponent
 from app.storage.db import open_db
+from app.storage.skill_storage import ensure_origin_label
 from app.utils import now_iso
 from app.utils.generators import generate_id
 
@@ -106,6 +107,38 @@ class OfficialPackageStorage:
             )
             await conn.commit()
 
+    async def update_package(
+        self, package_id: str, data: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        if not await self.get_package(package_id):
+            return None
+        async with open_db() as conn:
+            duplicate = await conn.fetchone(
+                "SELECT id FROM official_packages WHERE repository_url=? AND id<>?",
+                (data["repository_url"], package_id),
+            )
+            if duplicate:
+                raise ValueError("repository_already_exists")
+            await conn.execute(
+                "UPDATE official_packages SET name=?,description=?,repository_url=?,"
+                "repository_owner=?,repository_name=?,tracking_mode=?,tracking_ref=?,"
+                "license=?,updated_at=? WHERE id=?",
+                (
+                    data["name"],
+                    data.get("description", ""),
+                    data["repository_url"],
+                    data["repository_owner"],
+                    data["repository_name"],
+                    data.get("tracking_mode", "release"),
+                    data.get("tracking_ref", "main"),
+                    data.get("license", ""),
+                    now_iso(),
+                    package_id,
+                ),
+            )
+            await conn.commit()
+        return await self.get_package(package_id)
+
     async def delete_package(self, package_id: str) -> bool:
         if not await self.get_package(package_id):
             return False
@@ -181,7 +214,7 @@ class OfficialPackageStorage:
                         c.content,
                         _json(c.files),
                         _json(c.targets),
-                        _json(c.labels),
+                        _json(ensure_origin_label(c.labels, "official")),
                         _json(c.dependencies),
                         c.content_hash,
                     )
@@ -298,8 +331,10 @@ class OfficialPackageStorage:
                         "resource_id": f"{package['id']}:{component['component_id']}",
                         "name": component["name"],
                         "description": component.get("description", ""),
-                        "category": "Other",
-                        "labels": component.get("labels") or ["production"],
+                        "category": "",
+                        "labels": ensure_origin_label(
+                            component.get("labels") or [], "official"
+                        ),
                         "tags": [],
                         "stars_count": 0,
                         "owner": package["repository_owner"],
@@ -362,8 +397,8 @@ class OfficialPackageStorage:
             await conn.execute(
                 "INSERT INTO official_package_copies "
                 "(id,owner_id,package_id,source_version,component_id,resource_type,"
-                "resource_id,name,content,source_content_hash,created_at,updated_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
+                "resource_id,name,content,source_content_hash,mode,created_at,updated_at) "
+                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
                     copy_id,
                     data["owner_id"],
@@ -375,6 +410,7 @@ class OfficialPackageStorage:
                     data["name"],
                     data.get("content", ""),
                     data["source_content_hash"],
+                    data.get("mode", "copy"),
                     now,
                     now,
                 ),
@@ -392,15 +428,18 @@ class OfficialPackageStorage:
             "status": "Sin cambios",
             "created_at": now,
             "updated_at": now,
-            "is_official": False,
+            "is_official": data.get("mode", "copy") == "link",
+            "mode": data.get("mode", "copy"),
         }
 
-    async def list_copies(self, owner_id: str) -> List[Dict[str, Any]]:
+    async def list_copies(
+        self, owner_id: str, *, mode: str = "copy"
+    ) -> List[Dict[str, Any]]:
         async with open_db() as conn:
             rows = await conn.fetchall(
-                "SELECT * FROM official_package_copies WHERE owner_id=? "
+                "SELECT * FROM official_package_copies WHERE owner_id=? AND mode=? "
                 "ORDER BY created_at DESC",
-                (owner_id,),
+                (owner_id, mode),
             )
         return [dict(row) for row in rows]
 
@@ -415,7 +454,9 @@ class OfficialPackageStorage:
     def _component_row(row: Any, *, include_content: bool) -> Dict[str, Any]:
         result = dict(row)
         result["targets"] = _loads(result.get("targets"), [])
-        result["labels"] = _loads(result.get("labels"), ["production"])
+        result["labels"] = ensure_origin_label(
+            _loads(result.get("labels"), []), "official"
+        )
         result["dependencies"] = _loads(result.get("dependencies"), [])
         result["files"] = _loads(result.get("files"), {}) if include_content else {}
         if not include_content:

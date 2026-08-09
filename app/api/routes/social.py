@@ -28,6 +28,7 @@ from app.storage.skill_storage import SkillStorage
 from app.storage.tool_storage import ToolStorage
 from app.storage.workflows import WorkflowStorage
 from app.utils.generators import generate_id
+from app.utils.origin import assert_resource_writable
 
 router = APIRouter(tags=["social"])
 
@@ -574,6 +575,7 @@ async def set_agent_visibility(
         raise APIError(
             404, "not_found", "Agente no encontrado", extra={"resource": "agent"}
         )
+    assert_resource_writable(agent, "agent")
     resource_labels = agent.get("labels") or ["private"]
 
     async with open_db() as conn:
@@ -617,6 +619,7 @@ async def set_skill_visibility(
         raise APIError(
             404, "not_found", "Skill no encontrada", extra={"resource": "skill"}
         )
+    assert_resource_writable(skill, "skill")
     resource_labels = skill.get("labels") or ["private"]
 
     async with open_db() as conn:
@@ -660,6 +663,7 @@ async def set_prompt_visibility(
         raise APIError(
             404, "not_found", "Prompt no encontrado", extra={"resource": "prompt"}
         )
+    assert_resource_writable(prompt, "prompt")
     resource_labels = prompt.get("labels") or ["private"]
 
     async with open_db() as conn:
@@ -703,6 +707,7 @@ async def set_tool_visibility(
         raise APIError(
             404, "not_found", "Tool no encontrada", extra={"resource": "tool"}
         )
+    assert_resource_writable(tool, "tool")
     resource_labels = tool.get("labels") or ["private"]
 
     async with open_db() as conn:
@@ -748,6 +753,7 @@ async def set_workflow_visibility(
             "Orquestación no encontrada",
             extra={"resource": "workflow"},
         )
+    assert_resource_writable(workflow, "workflow")
     resource_labels = workflow.get("labels") or ["private"]
 
     async with open_db() as conn:

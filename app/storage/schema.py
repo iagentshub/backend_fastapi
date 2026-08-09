@@ -215,7 +215,7 @@ CREATE TABLE IF NOT EXISTS official_package_components (
     content             TEXT NOT NULL DEFAULT '',
     files               TEXT NOT NULL DEFAULT '{}',
     targets             TEXT NOT NULL DEFAULT '[]',
-    labels              TEXT NOT NULL DEFAULT '["production"]',
+    labels              TEXT NOT NULL DEFAULT '["official"]',
     dependencies        TEXT NOT NULL DEFAULT '[]',
     content_hash        TEXT NOT NULL,
     PRIMARY KEY (package_id, version, component_id),
@@ -233,6 +233,7 @@ CREATE TABLE IF NOT EXISTS official_package_copies (
     name                TEXT NOT NULL,
     content             TEXT NOT NULL DEFAULT '',
     source_content_hash TEXT NOT NULL,
+    mode                TEXT NOT NULL DEFAULT 'copy',
     created_at          TEXT NOT NULL,
     updated_at          TEXT NOT NULL
 );

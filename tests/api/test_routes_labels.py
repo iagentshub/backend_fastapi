@@ -159,10 +159,32 @@ def test_skill_labels_stored_and_returned(client):
     assert "development" in (found.get("labels") or [])
 
 
-def test_agent_default_label_is_private(client):
-    """Test extra: agente sin labels explícitas usa 'private' por defecto."""
+def test_agent_default_labels_are_private_and_community(client):
+    """Un agente normal es privado y de comunidad por defecto."""
     _login(client, "labels_t6")
     agent = _create_agent(client, "Default Label Agent")
 
     assert "labels" in agent
-    assert agent["labels"] == ["private"]
+    assert agent["labels"] == ["private", "community"]
+
+
+def test_regular_user_cannot_define_resource_origin(client):
+    _login(client, "labels_origin_guard")
+
+    response = client.post(
+        "/api/agents",
+        json={"name": "False official", "labels": ["private", "official"]},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "invalid_field"
+
+
+def test_admin_can_define_official_resource_origin(admin_client):
+    response = admin_client.post(
+        "/api/agents",
+        json={"name": "Official agent", "labels": ["public", "official"]},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["labels"] == ["public", "official"]

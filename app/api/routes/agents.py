@@ -37,11 +37,15 @@ from app.storage.knowledge import KnowledgeStorage
 from app.storage.memory_storage import MemoryStorage
 from app.storage.prompt_storage import PromptStorage
 from app.storage.resource_versions import ResourceVersionStorage
-from app.storage.skill_storage import SkillStorage
+from app.storage.skill_storage import (
+    ORIGIN_LABELS,
+    SkillStorage,
+    ensure_origin_label,
+)
 from app.storage.tool_storage import ToolStorage
 from app.utils import flog
 from app.utils.generators import generate_id
-from app.utils.origin import compute_origin_type
+from app.utils.origin import assert_resource_writable, compute_origin_type
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
 
@@ -313,6 +317,16 @@ async def save_agent(
             400, "invalid_field", "Scope no válido", extra={"field": "scope"}
         )
     if is_guest(user):
+        labels = [str(label) for label in (payload.get("labels") or ["private"]) if label]
+        invalid = [label for label in labels if label == "official"]
+        if invalid:
+            raise APIError(
+                422,
+                "invalid_field",
+                "El origen del recurso solo puede definirlo un administrador",
+                extra={"field": "labels", "invalid": invalid},
+            )
+        payload["labels"] = ensure_origin_label(labels, "community")
         s = get_session(user)
         guest_id = payload.get("id")
         if guest_id and not any(a.get("id") == guest_id for a in s.agents):
@@ -328,11 +342,30 @@ async def save_agent(
         s.agents.append(agent)
         return agent
     role = await get_user_role(user)
+    labels = [str(label) for label in (payload.get("labels") or [scope]) if label]
+    invalid = [] if role == "admin" else [label for label in labels if label == "official"]
+    if invalid:
+        message = (
+            "El origen del recurso solo puede definirlo un administrador"
+            if any(label in ORIGIN_LABELS for label in invalid)
+            else "El agente contiene labels fuera del catálogo del sistema"
+        )
+        raise APIError(
+            422,
+            "invalid_field",
+            message,
+            extra={"field": "labels", "invalid": invalid},
+        )
+    payload["labels"] = ensure_origin_label(
+        labels, None if role == "admin" else "community"
+    )
     # Restrict editing to owner: if payload has an existing ID owned by someone else, block it
     agent_id_in_payload = payload.get("id")
     existing = None
     if agent_id_in_payload:
         existing = await _agents.get(agent_id_in_payload)
+        if existing:
+            assert_resource_writable(existing, "agent")
         if (
             existing
             and existing.get("owner_id") is not None
@@ -412,6 +445,8 @@ async def delete_agent(
             )
         return {"ok": True}
     a = await _agents.get(agent_id)
+    if a:
+        assert_resource_writable(a, "agent")
     role = await get_user_role(user)
     if a and role != "admin" and a.get("owner_id") != group_id:
         raise APIError(403, "forbidden", "No tienes permiso para eliminar este agente")
@@ -440,6 +475,7 @@ async def _set_agent_active(
         raise APIError(
             404, "not_found", "Agente no encontrado", extra={"resource": "agent"}
         )
+    assert_resource_writable(a, "agent")
     role = await get_user_role(user)
     if role != "admin" and a.get("owner_id") != group_id:
         raise APIError(403, "forbidden", "Solo el propietario puede cambiar el estado")

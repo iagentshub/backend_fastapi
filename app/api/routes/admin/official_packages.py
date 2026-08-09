@@ -13,6 +13,7 @@ from app.errors import APIError
 from app.services.official_package_importer import (
     GitHubImportError,
     OfficialPackageImporter,
+    parse_github_repository,
 )
 from app.storage.official_package_storage import OfficialPackageStorage
 
@@ -24,6 +25,12 @@ class ImportPackageBody(BaseModel):
     repository_url: str = Field(min_length=1, max_length=500)
     tracking_mode: Literal["release", "branch"] = "release"
     tracking_ref: str = Field(default="main", min_length=1, max_length=200)
+
+
+class UpdatePackageBody(ImportPackageBody):
+    name: str = Field(min_length=1, max_length=200)
+    description: str = Field(default="", max_length=2_000)
+    license: str = Field(default="", max_length=100)
 
 
 def _not_found() -> APIError:
@@ -54,6 +61,44 @@ async def admin_import_official_package(
         )
     except GitHubImportError as exc:
         raise APIError(422, "official_package_import_failed", str(exc)) from exc
+
+
+@admin_router.put("/official-packages/{package_id}")
+async def admin_update_official_package(
+    package_id: str,
+    body: UpdatePackageBody,
+    _: str = Depends(require_admin),
+) -> Dict[str, Any]:
+    try:
+        owner, repository, canonical_url = parse_github_repository(
+            body.repository_url
+        )
+        updated = await _storage.update_package(
+            package_id,
+            {
+                **body.model_dump(),
+                "repository_url": canonical_url,
+                "repository_owner": owner,
+                "repository_name": repository,
+            },
+        )
+    except GitHubImportError as exc:
+        raise APIError(
+            422,
+            "invalid_field",
+            str(exc),
+            extra={"field": "repository_url"},
+        ) from exc
+    except ValueError as exc:
+        raise APIError(
+            409,
+            "already_exists",
+            "Ya existe una fuente oficial para este repositorio",
+            extra={"resource": "official_package"},
+        ) from exc
+    if not updated:
+        raise _not_found()
+    return updated
 
 
 @admin_router.post("/official-packages/{package_id}/sync")

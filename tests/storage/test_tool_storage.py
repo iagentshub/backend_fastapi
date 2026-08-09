@@ -48,7 +48,7 @@ def test_save_owned_public_tool(storage):
     tool = asyncio.run(storage.save("public", _TOOL, owner_id="user-id"))
     assert tool["scope"] == "public"
     assert tool["owner_id"] == "user-id"
-    assert tool["labels"] == ["public"]
+    assert tool["labels"] == ["public", "community"]
 
 
 # ── language ─────────────────────────────────────────────────────────────────

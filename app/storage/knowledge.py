@@ -8,6 +8,7 @@ from typing import Any, Dict, List, Optional
 
 from app.storage.db import open_db
 from app.storage.resource_base import ResourceStorage
+from app.storage.skill_storage import ensure_origin_label
 from app.utils.generators import generate_date, generate_id
 from app.utils.safe_http import safe_urlopen
 
@@ -31,8 +32,9 @@ def _coerce_active(d: Dict[str, Any]) -> Dict[str, Any]:
         d["labels"] = (
             json.loads(raw_labels) if isinstance(raw_labels, str) else raw_labels
         ) or ["private"]
+        d["labels"] = ensure_origin_label([str(label) for label in d["labels"]])
     except (json.JSONDecodeError, TypeError):
-        d["labels"] = ["private"]
+        d["labels"] = ensure_origin_label(["private"])
     if "is_active" in d:
         d["is_active"] = bool(d["is_active"])
     return d
@@ -190,6 +192,7 @@ class KnowledgeStorage(ResourceStorage):
         labels: Optional[List[str]] = None,
     ) -> Dict[str, Any]:
         now = generate_date()
+        normalized_labels = ensure_origin_label(labels or ["private"])
         item_id = generate_id(16)
         async with open_db() as conn:
             await conn.execute(
@@ -204,13 +207,13 @@ class KnowledgeStorage(ResourceStorage):
                     source,
                     content,
                     len(content),
-                    json.dumps(labels or ["private"], ensure_ascii=False),
+                    json.dumps(normalized_labels, ensure_ascii=False),
                     now,
                     now,
                 ),
             )
             await conn.commit()
-        await self.sync_labels(item_id, owner_id, labels or ["private"])
+        await self.sync_labels(item_id, owner_id, normalized_labels)
         return await self.get(item_id)  # type: ignore[return-value]
 
     async def delete(self, item_id: str, owner_id: Optional[str]) -> bool:

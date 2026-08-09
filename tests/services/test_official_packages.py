@@ -88,7 +88,7 @@ def test_detecta_etiquetas_y_dependencias_del_catalogo():
     )
     agent = next(item for item in components if item.component_type == "agent")
     skill = next(item for item in components if item.component_type == "skill")
-    assert skill.labels == ["production", "lang_es"]
+    assert skill.labels == ["official", "production", "lang_es"]
     assert agent.dependencies == ["research"]
     assert validate_components(components)[0] == []
 
@@ -117,7 +117,7 @@ def test_manifiesto_oficial_aplica_metadata_a_cualquier_formato():
     )
     assert len(components) == 1
     assert components[0].component_id == "audit-tool"
-    assert components[0].labels == ["production", "lang_en"]
+    assert components[0].labels == ["official", "production", "lang_en"]
     assert components[0].targets == ["hub", "codex"]
 
 

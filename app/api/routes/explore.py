@@ -425,6 +425,13 @@ async def my_resources(
                 tuple(linked_ids) + (_PUBLIC_VAL,),
             )
         still_public = {r["resource_id"] for r in pub_rows}
+        official_candidates = {str(resource_id) for resource_id in linked_ids if ":" in str(resource_id)}
+        if official_candidates:
+            published_official_ids = {
+                str(item["resource_id"])
+                for item in await _official_packages.list_published_components()
+            }
+            still_public.update(official_candidates & published_official_ids)
         for row in rows:
             if row.get("linked_to_id"):
                 linked_owner = row.get("linked_to_user") or ""

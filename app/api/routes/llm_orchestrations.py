@@ -19,6 +19,7 @@ from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
 from app.storage.llm_orchestrations import LLMOrchestrationStorage
 from app.utils import flog
+from app.utils.origin import assert_resource_writable
 
 router = APIRouter(prefix="/api/llm-orchestrations", tags=["llm-orchestrations"])
 _storage = LLMOrchestrationStorage()
@@ -162,6 +163,8 @@ async def save_llm_orchestration(
     item_id = body.id
     if item_id:
         existing = await _storage.get_any(item_id)
+        if existing:
+            assert_resource_writable(existing, "llm_orchestration")
         if existing and existing.get("owner_id") != ctx.group_id:
             raise APIError(403, "forbidden", "Solo el propietario puede editarla")
         if not existing:
@@ -177,7 +180,8 @@ async def save_llm_orchestration(
 async def delete_llm_orchestration(
     item_id: str, ctx: GroupContext = Depends(require_group)
 ) -> Dict[str, bool]:
-    await _owned(item_id, ctx)
+    item = await _owned(item_id, ctx)
+    assert_resource_writable(item, "llm_orchestration")
     virtual_connection_id = orchestration_connection_id(item_id)
     referenced = [
         agent
@@ -208,7 +212,8 @@ async def delete_llm_orchestration(
 
 
 async def _set_active(item_id: str, active: bool, ctx: GroupContext) -> Dict[str, Any]:
-    await _owned(item_id, ctx)
+    item = await _owned(item_id, ctx)
+    assert_resource_writable(item, "llm_orchestration")
     await _storage.set_active(item_id, ctx.group_id, active)
     return {"ok": True, "is_active": active}
 

@@ -258,7 +258,7 @@ async def test_migration_mirrors_legacy_agent_language_into_labels(tmp_path):
     ).fetchone()[0]
     migrated.close()
 
-    assert stored["labels"] == ["private", "lang_es"]
+    assert stored["labels"] == ["private", "community", "lang_es"]
     assert indexed == 1
 
 
