@@ -215,6 +215,8 @@ CREATE TABLE IF NOT EXISTS official_package_components (
     content             TEXT NOT NULL DEFAULT '',
     files               TEXT NOT NULL DEFAULT '{}',
     targets             TEXT NOT NULL DEFAULT '[]',
+    labels              TEXT NOT NULL DEFAULT '["production"]',
+    dependencies        TEXT NOT NULL DEFAULT '[]',
     content_hash        TEXT NOT NULL,
     PRIMARY KEY (package_id, version, component_id),
     FOREIGN KEY (package_id, version)

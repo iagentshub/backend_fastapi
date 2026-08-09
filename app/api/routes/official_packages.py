@@ -32,7 +32,10 @@ async def _published(package_id: str, *, content: bool = False) -> Dict[str, Any
     package = await _storage.get_published(package_id, include_content=content)
     if not package:
         raise APIError(
-            404, "not_found", "Paquete oficial no encontrado", extra={"resource": "official_package"}
+            404,
+            "not_found",
+            "Paquete oficial no encontrado",
+            extra={"resource": "official_package"},
         )
     return package
 
@@ -49,6 +52,13 @@ async def list_official_package_copies(
     username: str = Depends(require_auth),
 ) -> List[Dict[str, Any]]:
     return await OfficialPackageCopier(_storage).list_for_user(username)
+
+
+@router.get("/components")
+async def list_official_components(
+    _: str = Depends(require_auth),
+) -> List[Dict[str, Any]]:
+    return await _storage.list_published_components()
 
 
 @router.get("/{package_id}")

@@ -23,7 +23,9 @@ def _loads(value: Any, fallback: Any) -> Any:
 
 
 class OfficialPackageStorage:
-    async def list_packages(self, *, published_only: bool = False) -> List[Dict[str, Any]]:
+    async def list_packages(
+        self, *, published_only: bool = False
+    ) -> List[Dict[str, Any]]:
         where = "WHERE published_version IS NOT NULL" if published_only else ""
         async with open_db() as conn:
             rows = await conn.fetchall(
@@ -58,10 +60,15 @@ class OfficialPackageStorage:
                     "repository_name=?, tracking_mode=?, tracking_ref=?, license=?, updated_at=? "
                     "WHERE id=?",
                     (
-                        data["name"], data.get("description", ""),
-                        data["repository_owner"], data["repository_name"],
-                        data.get("tracking_mode", "release"), data.get("tracking_ref", "main"),
-                        data.get("license", ""), now, package_id,
+                        data["name"],
+                        data.get("description", ""),
+                        data["repository_owner"],
+                        data["repository_name"],
+                        data.get("tracking_mode", "release"),
+                        data.get("tracking_ref", "main"),
+                        data.get("license", ""),
+                        now,
+                        package_id,
                     ),
                 )
             else:
@@ -71,11 +78,17 @@ class OfficialPackageStorage:
                     "tracking_mode,tracking_ref,license,created_at,updated_at) "
                     "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
                     (
-                        package_id, data["name"], data.get("description", ""),
-                        data["repository_url"], data["repository_owner"],
-                        data["repository_name"], data.get("tracking_mode", "release"),
-                        data.get("tracking_ref", "main"), data.get("license", ""),
-                        created_at, now,
+                        package_id,
+                        data["name"],
+                        data.get("description", ""),
+                        data["repository_url"],
+                        data["repository_owner"],
+                        data["repository_name"],
+                        data.get("tracking_mode", "release"),
+                        data.get("tracking_ref", "main"),
+                        data.get("license", ""),
+                        created_at,
+                        now,
                     ),
                 )
             await conn.commit()
@@ -83,9 +96,7 @@ class OfficialPackageStorage:
         assert result is not None
         return result
 
-    async def mark_sync(
-        self, package_id: str, *, error: Optional[str] = None
-    ) -> None:
+    async def mark_sync(self, package_id: str, *, error: Optional[str] = None) -> None:
         now = now_iso()
         async with open_db() as conn:
             await conn.execute(
@@ -149,15 +160,30 @@ class OfficialPackageStorage:
                     "(package_id,version,commit_sha,status,manifest,validation_errors,created_at) "
                     "VALUES (?,?,?,?,?,?,?)",
                     (
-                        package_id, version, commit_sha, status,
-                        _json(manifest), _json(validation_errors), now,
+                        package_id,
+                        version,
+                        commit_sha,
+                        status,
+                        _json(manifest),
+                        _json(validation_errors),
+                        now,
                     ),
                 )
                 rows = [
                     (
-                        c.package_id, c.version, c.component_id, c.component_type,
-                        c.name, c.description, c.source_path, c.content,
-                        _json(c.files), _json(c.targets), c.content_hash,
+                        c.package_id,
+                        c.version,
+                        c.component_id,
+                        c.component_type,
+                        c.name,
+                        c.description,
+                        c.source_path,
+                        c.content,
+                        _json(c.files),
+                        _json(c.targets),
+                        _json(c.labels),
+                        _json(c.dependencies),
+                        c.content_hash,
                     )
                     for c in components
                 ]
@@ -165,8 +191,8 @@ class OfficialPackageStorage:
                     await conn.executemany(
                         "INSERT INTO official_package_components "
                         "(package_id,version,component_id,component_type,name,description,"
-                        "source_path,content,files,targets,content_hash) "
-                        "VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                        "source_path,content,files,targets,labels,dependencies,content_hash) "
+                        "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
                         rows,
                     )
         result = await self.get_version(package_id, version)
@@ -204,16 +230,96 @@ class OfficialPackageStorage:
         ]
         return result
 
-    async def get_published(self, package_id: str, *, include_content: bool = False) -> Optional[Dict[str, Any]]:
+    async def get_published(
+        self, package_id: str, *, include_content: bool = False
+    ) -> Optional[Dict[str, Any]]:
         package = await self.get_package(package_id)
         if not package or not package.get("published_version"):
             return None
         version = await self.get_version(
-            package_id, str(package["published_version"]), include_content=include_content
+            package_id,
+            str(package["published_version"]),
+            include_content=include_content,
         )
         if version is None:
             return None
         return {**package, "version": version}
+
+    async def list_published_components(self) -> List[Dict[str, Any]]:
+        """Flatten published sources into resource-shaped catalogue items."""
+        result: List[Dict[str, Any]] = []
+        for package in await self.list_packages(published_only=True):
+            published = await self.get_published(str(package["id"]))
+            if not published:
+                continue
+            components = published["version"].get("components") or []
+            by_id = {str(item["component_id"]): item for item in components}
+            for component in components:
+                direct_dependency_ids = [
+                    str(item) for item in component.get("dependencies") or []
+                ]
+                dependency_ids = set(direct_dependency_ids)
+                pending = list(direct_dependency_ids)
+                while pending:
+                    dependency = by_id.get(pending.pop())
+                    if not dependency:
+                        continue
+                    for nested_id in dependency.get("dependencies") or []:
+                        normalized = str(nested_id)
+                        if normalized not in dependency_ids:
+                            dependency_ids.add(normalized)
+                            pending.append(normalized)
+                dependencies = [
+                    {
+                        "component_id": dependency["component_id"],
+                        "name": dependency["name"],
+                        "component_type": dependency["component_type"],
+                        "dependencies": dependency.get("dependencies") or [],
+                    }
+                    for dependency in components
+                    if str(dependency["component_id"]) in dependency_ids
+                ]
+                component_type = str(component["component_type"])
+                hub_installable = component_type in {
+                    "agent",
+                    "skill",
+                    "knowledge",
+                    "prompt",
+                    "workflow",
+                } or (
+                    component_type == "tool"
+                    and str(component.get("source_path") or "")
+                    .lower()
+                    .endswith((".py", ".sh"))
+                )
+                result.append(
+                    {
+                        "resource_type": component_type,
+                        "resource_id": f"{package['id']}:{component['component_id']}",
+                        "name": component["name"],
+                        "description": component.get("description", ""),
+                        "category": "Other",
+                        "labels": component.get("labels") or ["production"],
+                        "tags": [],
+                        "stars_count": 0,
+                        "owner": package["repository_owner"],
+                        "owner_username": package["repository_owner"],
+                        "is_official": True,
+                        "official_package_id": package["id"],
+                        "official_package_name": package["name"],
+                        "official_component_id": component["component_id"],
+                        "official_component_type": component_type,
+                        "official_version": published["version"]["version"],
+                        "official_license": package.get("license", ""),
+                        "official_repository_url": package["repository_url"],
+                        "hub_installable": hub_installable,
+                        "dependencies": dependencies,
+                        "direct_dependency_ids": direct_dependency_ids,
+                    }
+                )
+        return sorted(
+            result, key=lambda item: (item["resource_type"], item["name"].casefold())
+        )
 
     async def review_version(
         self, package_id: str, version: str, *, publish: bool, reviewer: str
@@ -222,7 +328,9 @@ class OfficialPackageStorage:
         if not current:
             raise KeyError("version_not_found")
         if publish and current["validation_errors"]:
-            raise ValueError("No se puede publicar una versión con errores de validación")
+            raise ValueError(
+                "No se puede publicar una versión con errores de validación"
+            )
         now = now_iso()
         next_status = "published" if publish else "rejected"
         async with open_db() as conn:
@@ -257,10 +365,18 @@ class OfficialPackageStorage:
                 "resource_id,name,content,source_content_hash,created_at,updated_at) "
                 "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)",
                 (
-                    copy_id, data["owner_id"], data["package_id"], data["source_version"],
-                    data["component_id"], data["resource_type"], data.get("resource_id"),
-                    data["name"], data.get("content", ""), data["source_content_hash"],
-                    now, now,
+                    copy_id,
+                    data["owner_id"],
+                    data["package_id"],
+                    data["source_version"],
+                    data["component_id"],
+                    data["resource_type"],
+                    data.get("resource_id"),
+                    data["name"],
+                    data.get("content", ""),
+                    data["source_content_hash"],
+                    now,
+                    now,
                 ),
             )
             await conn.commit()
@@ -299,6 +415,8 @@ class OfficialPackageStorage:
     def _component_row(row: Any, *, include_content: bool) -> Dict[str, Any]:
         result = dict(row)
         result["targets"] = _loads(result.get("targets"), [])
+        result["labels"] = _loads(result.get("labels"), ["production"])
+        result["dependencies"] = _loads(result.get("dependencies"), [])
         result["files"] = _loads(result.get("files"), {}) if include_content else {}
         if not include_content:
             result.pop("content", None)

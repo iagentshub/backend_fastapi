@@ -15,8 +15,15 @@ from pathlib import PurePosixPath
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
-from app.models.official_package import EXPORT_TARGETS, PackageComponent
+import yaml
+
+from app.models.official_package import (
+    COMPONENT_TYPES,
+    EXPORT_TARGETS,
+    PackageComponent,
+)
 from app.storage.official_package_storage import OfficialPackageStorage
+from app.storage.skill_storage import SKILL_ASSIGNABLE_LABELS
 
 _MAX_JSON_BYTES = 2 * 1024 * 1024
 _MAX_ARCHIVE_BYTES = 100 * 1024 * 1024
@@ -28,13 +35,35 @@ _ALLOWED_LICENSES = frozenset(
     {"MIT", "Apache-2.0", "BSD-2-Clause", "BSD-3-Clause", "ISC", "MPL-2.0"}
 )
 _TEXT_EXTENSIONS = frozenset(
-    {".md", ".json", ".yaml", ".yml", ".toml", ".txt", ".js", ".mjs", ".ts", ".py", ".sh", ".ps1"}
+    {
+        ".md",
+        ".json",
+        ".yaml",
+        ".yml",
+        ".toml",
+        ".txt",
+        ".js",
+        ".mjs",
+        ".ts",
+        ".py",
+        ".sh",
+        ".ps1",
+    }
 )
 _DANGEROUS_PATTERNS = (
     (re.compile(r"\brm\s+-rf\b", re.IGNORECASE), "borrado recursivo"),
-    (re.compile(r"\b(curl|wget)\b[^\n|]*\|\s*(sh|bash)\b", re.IGNORECASE), "descarga ejecutada por shell"),
-    (re.compile(r"\b(Invoke-Expression|IEX)\b", re.IGNORECASE), "ejecución dinámica de PowerShell"),
-    (re.compile(r"\b(child_process\.(exec|spawn)|subprocess\.)", re.IGNORECASE), "creación de procesos"),
+    (
+        re.compile(r"\b(curl|wget)\b[^\n|]*\|\s*(sh|bash)\b", re.IGNORECASE),
+        "descarga ejecutada por shell",
+    ),
+    (
+        re.compile(r"\b(Invoke-Expression|IEX)\b", re.IGNORECASE),
+        "ejecución dinámica de PowerShell",
+    ),
+    (
+        re.compile(r"\b(child_process\.(exec|spawn)|subprocess\.)", re.IGNORECASE),
+        "creación de procesos",
+    ),
 )
 
 
@@ -44,11 +73,16 @@ class GitHubImportError(ValueError):
 
 def parse_github_repository(repository_url: str) -> Tuple[str, str, str]:
     parsed = urlparse(repository_url.strip())
-    if parsed.scheme != "https" or parsed.hostname not in {"github.com", "www.github.com"}:
+    if parsed.scheme != "https" or parsed.hostname not in {
+        "github.com",
+        "www.github.com",
+    }:
         raise GitHubImportError("Solo se admiten repositorios https://github.com")
     parts = [part for part in parsed.path.strip("/").split("/") if part]
     if len(parts) != 2:
-        raise GitHubImportError("La URL debe apuntar a la raíz de un repositorio GitHub")
+        raise GitHubImportError(
+            "La URL debe apuntar a la raíz de un repositorio GitHub"
+        )
     owner, repository = parts
     repository = repository.removesuffix(".git")
     if not re.fullmatch(r"[A-Za-z0-9_.-]+", owner) or not re.fullmatch(
@@ -102,18 +136,17 @@ async def _json_request(url: str) -> Dict[str, Any]:
     return value
 
 
-def _frontmatter(text: str) -> Dict[str, str]:
+def _frontmatter(text: str) -> Dict[str, Any]:
     if not text.startswith("---"):
         return {}
     parts = text.split("---", 2)
     if len(parts) < 3:
         return {}
-    result: Dict[str, str] = {}
-    for line in parts[1].splitlines():
-        key, separator, value = line.partition(":")
-        if separator and key.strip() in {"name", "description"}:
-            result[key.strip()] = value.strip().strip('"\'')
-    return result
+    try:
+        value = yaml.safe_load(parts[1]) or {}
+    except yaml.YAMLError:
+        return {}
+    return value if isinstance(value, dict) else {}
 
 
 def _safe_archive_files(raw: bytes) -> Dict[str, str]:
@@ -165,17 +198,74 @@ def _component_kind(path: str) -> Optional[str]:
         return "skill"
     if "agents" in lowered and pure.suffix.lower() == ".md":
         return "agent"
+    if "knowledge" in lowered and pure.suffix.lower() in {".md", ".txt", ".json"}:
+        return "knowledge"
+    if "prompts" in lowered and pure.suffix.lower() == ".md":
+        return "prompt"
+    if "workflows" in lowered and pure.suffix.lower() in {".json", ".yaml", ".yml"}:
+        return "workflow"
     if "commands" in lowered and pure.suffix.lower() == ".md":
         return "command"
     if "rules" in lowered and pure.suffix.lower() == ".md":
         return "rule"
-    if "hooks" in lowered and pure.suffix.lower() in {".json", ".js", ".ts", ".py", ".sh", ".ps1"}:
+    if "hooks" in lowered and pure.suffix.lower() in {
+        ".json",
+        ".js",
+        ".ts",
+        ".py",
+        ".sh",
+        ".ps1",
+    }:
         return "hook"
-    if ("mcp" in lowered or "mcp-configs" in lowered) and pure.suffix.lower() == ".json":
+    if (
+        "mcp" in lowered or "mcp-configs" in lowered
+    ) and pure.suffix.lower() == ".json":
         return "mcp"
-    if "tools" in lowered and pure.suffix.lower() in {".md", ".json", ".yaml", ".yml"}:
+    if "tools" in lowered and pure.suffix.lower() in {
+        ".md",
+        ".json",
+        ".yaml",
+        ".yml",
+        ".py",
+        ".sh",
+    }:
         return "tool"
     return None
+
+
+def _string_list(value: Any) -> List[str]:
+    if isinstance(value, str):
+        return [item.strip() for item in value.split(",") if item.strip()]
+    if isinstance(value, list):
+        return [str(item).strip() for item in value if str(item).strip()]
+    return []
+
+
+def _component_dependencies(meta: Dict[str, Any]) -> List[str]:
+    values = _string_list(meta.get("dependencies"))
+    for key in ("skills", "knowledge", "prompts", "tools", "workflows"):
+        values.extend(_string_list(meta.get(key)))
+    return list(dict.fromkeys(_slug(item.split(":", 1)[-1]) for item in values))
+
+
+def _manifest_components(files: Dict[str, str]) -> Dict[str, Dict[str, Any]]:
+    for path in (".iagentshub/manifest.json", "iagentshub.json"):
+        raw = files.get(path)
+        if not raw:
+            continue
+        try:
+            manifest = json.loads(raw)
+        except json.JSONDecodeError:
+            return {}
+        declared = manifest.get("components") if isinstance(manifest, dict) else None
+        if not isinstance(declared, list):
+            return {}
+        return {
+            str(item.get("source_path") or ""): item
+            for item in declared
+            if isinstance(item, dict) and item.get("source_path")
+        }
+    return {}
 
 
 def detect_components(
@@ -183,15 +273,24 @@ def detect_components(
 ) -> List[PackageComponent]:
     components: List[PackageComponent] = []
     used_ids: set[str] = set()
+    declared_components = _manifest_components(files)
     for path, content in sorted(files.items()):
-        kind = _component_kind(path)
+        declared = declared_components.get(path, {})
+        declared_type = str(
+            declared.get("type") or declared.get("component_type") or ""
+        )
+        kind = (
+            declared_type if declared_type in COMPONENT_TYPES else _component_kind(path)
+        )
         if not kind:
             continue
         pure = PurePosixPath(path)
-        meta = _frontmatter(content)
+        meta = {**_frontmatter(content), **declared}
         inferred = pure.parent.name if pure.name.upper() == "SKILL.MD" else pure.stem
-        name = meta.get("name") or inferred.replace("-", " ").replace("_", " ").title()
-        base_id = _slug(meta.get("name") or inferred)
+        name = str(
+            meta.get("name") or inferred.replace("-", " ").replace("_", " ").title()
+        )
+        base_id = _slug(str(meta.get("id") or meta.get("name") or inferred))
         component_id = base_id
         number = 2
         while component_id in used_ids:
@@ -216,11 +315,13 @@ def detect_components(
                 component_id=component_id,
                 component_type=kind,
                 name=name,
-                description=meta.get("description", ""),
+                description=str(meta.get("description") or ""),
                 source_path=path,
                 content=content,
                 files=companion_files,
-                targets=sorted(EXPORT_TARGETS),
+                targets=_string_list(meta.get("targets")) or sorted(EXPORT_TARGETS),
+                labels=_string_list(meta.get("labels")) or ["production"],
+                dependencies=_component_dependencies(meta),
                 content_hash=hashlib.sha256(digest_source.encode()).hexdigest(),
             )
         )
@@ -233,8 +334,54 @@ def validate_components(
     """Devuelve errores bloqueantes y avisos de seguridad para la revisión."""
     errors: List[str] = []
     warnings: List[str] = []
+    component_ids = {component.component_id for component in components}
+    dependencies_by_id = {
+        component.component_id: component.dependencies for component in components
+    }
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def visit(component_id: str) -> bool:
+        if component_id in visiting:
+            return True
+        if component_id in visited:
+            return False
+        visiting.add(component_id)
+        cyclic = any(
+            dependency in dependencies_by_id and visit(dependency)
+            for dependency in dependencies_by_id.get(component_id, [])
+        )
+        visiting.remove(component_id)
+        visited.add(component_id)
+        return cyclic
+
+    if any(visit(component_id) for component_id in sorted(component_ids)):
+        errors.append("El grafo de dependencias contiene un ciclo")
     markdown_link = re.compile(r"!?\[[^\]]*\]\(([^)]+)\)")
     for component in components:
+        invalid_labels = [
+            label for label in component.labels if label not in SKILL_ASSIGNABLE_LABELS
+        ]
+        if invalid_labels:
+            errors.append(
+                f"{component.component_id}: etiquetas no válidas ({', '.join(invalid_labels)})"
+            )
+        invalid_targets = [
+            target for target in component.targets if target not in EXPORT_TARGETS
+        ]
+        if invalid_targets:
+            errors.append(
+                f"{component.component_id}: destinos no válidos "
+                f"({', '.join(invalid_targets)})"
+            )
+        missing_dependencies = [
+            item for item in component.dependencies if item not in component_ids
+        ]
+        if missing_dependencies:
+            errors.append(
+                f"{component.component_id}: dependencias no encontradas "
+                f"({', '.join(missing_dependencies)})"
+            )
         component_root = PurePosixPath(component.source_path).parent
         texts = {component.source_path: component.content}
         texts.update(
@@ -246,18 +393,28 @@ def validate_components(
         for path, content in texts.items():
             for match in markdown_link.finditer(content):
                 destination = match.group(1).strip().split("#", 1)[0]
-                if not destination or "://" in destination or destination.startswith(("#", "mailto:")):
+                if (
+                    not destination
+                    or "://" in destination
+                    or destination.startswith(("#", "mailto:"))
+                ):
                     continue
                 resolved = posixpath.normpath(
                     PurePosixPath(path).parent.joinpath(destination).as_posix()
                 )
-                if resolved == ".." or resolved.startswith("../") or resolved.startswith("/"):
+                if (
+                    resolved == ".."
+                    or resolved.startswith("../")
+                    or resolved.startswith("/")
+                ):
                     errors.append(
                         f"{component.component_id}: referencia fuera del repositorio ({destination})"
                     )
             for pattern, label in _DANGEROUS_PATTERNS:
                 if pattern.search(content):
-                    warnings.append(f"{component.component_id}: posible {label} en {path}")
+                    warnings.append(
+                        f"{component.component_id}: posible {label} en {path}"
+                    )
     return sorted(set(errors)), sorted(set(warnings))
 
 
@@ -275,7 +432,9 @@ class OfficialPackageImporter:
         owner, repository, canonical = parse_github_repository(repository_url)
         if tracking_mode not in {"release", "branch"}:
             raise GitHubImportError("tracking_mode debe ser 'release' o 'branch'")
-        metadata = await _json_request(f"https://api.github.com/repos/{owner}/{repository}")
+        metadata = await _json_request(
+            f"https://api.github.com/repos/{owner}/{repository}"
+        )
         license_id = str((metadata.get("license") or {}).get("spdx_id") or "")
         package = await self.storage.save_package(
             {
@@ -285,7 +444,8 @@ class OfficialPackageImporter:
                 "repository_owner": owner,
                 "repository_name": repository,
                 "tracking_mode": tracking_mode,
-                "tracking_ref": tracking_ref or str(metadata.get("default_branch") or "main"),
+                "tracking_ref": tracking_ref
+                or str(metadata.get("default_branch") or "main"),
                 "license": license_id,
             }
         )
@@ -320,7 +480,9 @@ class OfficialPackageImporter:
             components = detect_components(package_id, version, files)
             errors: List[str] = []
             if package.get("license") not in _ALLOWED_LICENSES:
-                errors.append("La licencia no está reconocida o no pertenece al catálogo permitido")
+                errors.append(
+                    "La licencia no está reconocida o no pertenece al catálogo permitido"
+                )
             if not components:
                 errors.append("No se detectaron componentes compatibles")
             content_errors, security_warnings = validate_components(components)
@@ -348,7 +510,9 @@ class OfficialPackageImporter:
             try:
                 results.append(await self.sync(str(package["id"])))
             except Exception as exc:
-                results.append({"changed": False, "package": package, "error": str(exc)})
+                results.append(
+                    {"changed": False, "package": package, "error": str(exc)}
+                )
         return results
 
     async def _resolve_version(self, package: Dict[str, Any]) -> Tuple[str, str, str]:
@@ -365,7 +529,11 @@ class OfficialPackageImporter:
                         f"https://api.github.com/repos/{owner}/{repository}/commits/{tag}"
                     )
                     sha = str(ref.get("sha") or "")
-                    return tag, sha, f"https://api.github.com/repos/{owner}/{repository}/zipball/{tag}"
+                    return (
+                        tag,
+                        sha,
+                        f"https://api.github.com/repos/{owner}/{repository}/zipball/{tag}",
+                    )
             except GitHubImportError:
                 pass
         branch = str(package.get("tracking_ref") or "main")
@@ -375,4 +543,8 @@ class OfficialPackageImporter:
         sha = str(ref.get("sha") or "")
         if not sha:
             raise GitHubImportError("GitHub no devolvió el commit de la referencia")
-        return sha[:12], sha, f"https://api.github.com/repos/{owner}/{repository}/zipball/{sha}"
+        return (
+            sha[:12],
+            sha,
+            f"https://api.github.com/repos/{owner}/{repository}/zipball/{sha}",
+        )

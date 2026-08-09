@@ -9,7 +9,18 @@ PACKAGE_STATUSES = frozenset(
     {"draft", "pending_review", "published", "rejected", "superseded"}
 )
 COMPONENT_TYPES = frozenset(
-    {"skill", "agent", "rule", "command", "hook", "mcp", "tool"}
+    {
+        "skill",
+        "agent",
+        "knowledge",
+        "prompt",
+        "workflow",
+        "rule",
+        "command",
+        "hook",
+        "mcp",
+        "tool",
+    }
 )
 EXPORT_TARGETS = frozenset({"hub", "codex", "claude", "cursor"})
 
@@ -27,6 +38,8 @@ class PackageComponent:
     content: str = ""
     files: Dict[str, str] = field(default_factory=dict)
     targets: List[str] = field(default_factory=list)
+    labels: List[str] = field(default_factory=lambda: ["production"])
+    dependencies: List[str] = field(default_factory=list)
 
     def as_dict(self, *, include_content: bool = False) -> Dict[str, Any]:
         result: Dict[str, Any] = {
@@ -38,6 +51,8 @@ class PackageComponent:
             "description": self.description,
             "source_path": self.source_path,
             "targets": self.targets,
+            "labels": self.labels,
+            "dependencies": self.dependencies,
             "content_hash": self.content_hash,
         }
         if include_content:

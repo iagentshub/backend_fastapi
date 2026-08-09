@@ -6,7 +6,9 @@ import asyncio
 import io
 import zipfile
 
+from app.config import data as _cfg
 from app.models.official_package import PackageComponent
+from app.storage.agent_storage import AgentStorage
 from app.storage.official_package_storage import OfficialPackageStorage
 
 
@@ -24,13 +26,20 @@ def _seed_published() -> str:
             }
         )
         component = PackageComponent(
-            package_id=package["id"], version="v1", component_id="brainstorming",
-            component_type="skill", name="Brainstorming",
-            source_path="skills/brainstorming/SKILL.md", content="# Brainstorming",
-            targets=["hub", "codex", "claude", "cursor"], content_hash="hash",
+            package_id=package["id"],
+            version="v1",
+            component_id="brainstorming",
+            component_type="skill",
+            name="Brainstorming",
+            source_path="skills/brainstorming/SKILL.md",
+            content="# Brainstorming",
+            targets=["hub", "codex", "claude", "cursor"],
+            content_hash="hash",
         )
         await storage.save_version(package["id"], "v1", "sha", {}, [component], [])
-        await storage.review_version(package["id"], "v1", publish=True, reviewer="admin")
+        await storage.review_version(
+            package["id"], "v1", publish=True, reviewer="admin"
+        )
         return str(package["id"])
 
     return asyncio.run(seed())
@@ -83,10 +92,15 @@ def test_copia_pierde_sello_oficial(admin_client):
     async def publish_update() -> None:
         storage = OfficialPackageStorage()
         component = PackageComponent(
-            package_id=package_id, version="v2", component_id="brainstorming",
-            component_type="skill", name="Brainstorming",
-            source_path="skills/brainstorming/SKILL.md", content="# Brainstorming v2",
-            targets=["hub", "codex", "claude", "cursor"], content_hash="hash-v2",
+            package_id=package_id,
+            version="v2",
+            component_id="brainstorming",
+            component_type="skill",
+            name="Brainstorming",
+            source_path="skills/brainstorming/SKILL.md",
+            content="# Brainstorming v2",
+            targets=["hub", "codex", "claude", "cursor"],
+            content_hash="hash-v2",
         )
         await storage.save_version(package_id, "v2", "sha-v2", {}, [component], [])
         await storage.review_version(package_id, "v2", publish=True, reviewer="admin")
@@ -94,6 +108,107 @@ def test_copia_pierde_sello_oficial(admin_client):
     asyncio.run(publish_update())
     updated = admin_client.get("/api/official-packages/copies")
     assert updated.json()[0]["status"] == "Actualización disponible"
+
+
+def test_explore_individualiza_oficiales_con_labels_y_dependencias(admin_client):
+    async def seed() -> str:
+        storage = OfficialPackageStorage()
+        package = await storage.save_package(
+            {
+                "name": "Research Pack",
+                "description": "Recursos de investigación",
+                "repository_url": "https://github.com/example/research-pack",
+                "repository_owner": "example",
+                "repository_name": "research-pack",
+                "license": "MIT",
+            }
+        )
+        components = [
+            PackageComponent(
+                package_id=package["id"],
+                version="v1",
+                component_id="research",
+                component_type="skill",
+                name="Research",
+                source_path="skills/research/SKILL.md",
+                content="# Research",
+                targets=["hub", "codex"],
+                content_hash="skill-hash",
+                labels=["production", "lang_es"],
+            ),
+            PackageComponent(
+                package_id=package["id"],
+                version="v1",
+                component_id="analyst",
+                component_type="agent",
+                name="Analyst",
+                source_path="agents/analyst.md",
+                content="# Analyst",
+                targets=["hub", "codex"],
+                content_hash="agent-hash",
+                labels=["production"],
+                dependencies=["research"],
+            ),
+        ]
+        await storage.save_version(package["id"], "v1", "sha", {}, components, [])
+        await storage.review_version(
+            package["id"], "v1", publish=True, reviewer="admin"
+        )
+        return str(package["id"])
+
+    package_id = asyncio.run(seed())
+    response = admin_client.get("/api/explore", params={"type": "agent"})
+    assert response.status_code == 200
+    official = next(item for item in response.json() if item.get("is_official"))
+    assert official["resource_id"] == f"{package_id}:analyst"
+    assert official["hub_installable"] is True
+    assert official["labels"] == ["production"]
+    assert official["dependencies"] == [
+        {
+            "component_id": "research",
+            "name": "Research",
+            "component_type": "skill",
+            "dependencies": [],
+        }
+    ]
+    assert official["direct_dependency_ids"] == ["research"]
+
+    export_preview = admin_client.post(
+        f"/api/official-packages/{package_id}/export-preview",
+        json={"target": "codex", "component_ids": ["analyst"]},
+    )
+    assert export_preview.status_code == 200
+    exported_component_ids = {
+        item["component_id"]
+        for item in export_preview.json()["files"]
+        if item["component_id"] != "_manifest"
+    }
+    assert exported_component_ids == {"research", "analyst"}
+
+    copied = admin_client.post(
+        f"/api/official-packages/{package_id}/copy",
+        json={"component_ids": ["analyst"]},
+    )
+    assert copied.status_code == 200
+    copies = copied.json()["copies"]
+    assert {item["source_component_id"] for item in copies} == {"research", "analyst"}
+    agent_copy = next(item for item in copies if item["resource_type"] == "agent")
+    skill_copy = next(item for item in copies if item["resource_type"] == "skill")
+    agent = asyncio.run(
+        AgentStorage(_cfg.AGENTS_DIR).get(agent_copy["resource_id"], scope="private")
+    )
+    assert agent is not None
+    assert agent["skills"] == [skill_copy["resource_id"]]
+    assert agent["labels"] == ["private", "fork", "production"]
+
+    repeated = admin_client.post(
+        f"/api/official-packages/{package_id}/copy",
+        json={"component_ids": ["analyst"]},
+    )
+    assert repeated.status_code == 200
+    assert {item["id"] for item in repeated.json()["copies"]} == {
+        item["id"] for item in copies
+    }
 
 
 def test_solo_admin_puede_revisar(client):
