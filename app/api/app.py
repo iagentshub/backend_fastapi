@@ -47,6 +47,10 @@ from app.middleware.licenses import LicenseGateMiddleware
 from app.middleware.locale import LocaleMiddleware
 from app.middleware.request_logging import RequestLoggerMiddleware
 from app.middleware.security import SecurityHeadersMiddleware
+from app.services.workflow_run_executor import (
+    stop_workflow_runs,
+    workflow_run_maintenance_loop,
+)
 from app.storage.db import close_db_pool, init_db, open_db
 from app.utils import flog
 
@@ -87,6 +91,9 @@ async def _lifespan(app: FastAPI):
     tasks = (
         asyncio.create_task(_gdpr_purge_loop(), name="gdpr-purge"),
         asyncio.create_task(_log_purge_loop(), name="log-purge"),
+        asyncio.create_task(
+            workflow_run_maintenance_loop(), name="workflow-run-maintenance"
+        ),
     )
     flog.ok("iAgents Hub arrancado")
     try:
@@ -95,6 +102,7 @@ async def _lifespan(app: FastAPI):
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        await stop_workflow_runs()
         await close_db_pool()
         flog.info("iAgents Hub detenido")
 

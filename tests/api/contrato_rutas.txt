@@ -121,6 +121,9 @@ GET /api/users/{target_username}/resources
 GET /api/users/{target}/follow-status
 GET /api/users/{username}
 GET /api/users/{username}/avatar
+GET /api/workflow-runs
+GET /api/workflow-runs/{run_id}
+GET /api/workflow-runs/{run_id}/events
 GET /api/workflows
 GET /api/workflows/{workflow_id}
 PATCH /api/admin/users/{username}
@@ -219,11 +222,13 @@ POST /api/tools/{scope}/{tool_id}/binary
 POST /api/tools/{tool_id}/activate
 POST /api/tools/{tool_id}/deactivate
 POST /api/users/{target}/follow
+POST /api/workflow-runs/{run_id}/cancel
 POST /api/workflows
 POST /api/workflows/{source_id}/link
 POST /api/workflows/{workflow_id}/activate
 POST /api/workflows/{workflow_id}/deactivate
 POST /api/workflows/{workflow_id}/run
+POST /api/workflows/{workflow_id}/runs
 POST /api/{resource_type}/{resource_id}/star
 PUT /api/accounts/{account_id}
 PUT /api/admin/agents/{agent_id}

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from typing import Any, Dict, Literal
 
@@ -12,6 +13,7 @@ from pydantic import BaseModel, Field
 from app.api.routes.auth import GroupContext, require_group
 from app.config.data import AGENTS_DIR, DB_FILE
 from app.errors import APIError
+from app.services.workflow_run_executor import start_workflow_run
 from app.services.workflow_runner import run_workflow
 from app.services.workflow_validator import validate_workflow
 from app.storage.agent_storage import AgentStorage
@@ -19,6 +21,7 @@ from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
 from app.storage.resource_versions import ResourceVersionStorage
 from app.storage.skill_storage import SkillStorage
+from app.storage.workflow_runs import TERMINAL_STATUSES, WorkflowRunStorage
 from app.storage.workflows import WorkflowStorage
 from app.utils import flog
 from app.utils.origin import compute_origin_type
@@ -30,6 +33,7 @@ _versions = ResourceVersionStorage()
 _workflows = WorkflowStorage()
 _shares = GroupShareStorage()
 _group_storage = GroupStorage()
+_workflow_runs = WorkflowRunStorage()
 
 
 class WorkflowBody(BaseModel):
@@ -260,12 +264,7 @@ async def deactivate_workflow(
     return await _set_workflow_active(workflow_id, False, ctx)
 
 
-@router.post("/workflows/{workflow_id}/run")
-async def run_saved_workflow(
-    workflow_id: str,
-    body: WorkflowRunBody,
-    ctx: GroupContext = Depends(require_group),
-) -> StreamingResponse:
+async def _prepare_workflow_run(workflow_id: str, ctx: GroupContext):
     workflow = await _accessible_workflow(workflow_id, ctx)
     if not workflow:
         raise HTTPException(status_code=404, detail="Orquestación no encontrada")
@@ -333,6 +332,17 @@ async def run_saved_workflow(
                     )
         return agent, connection
 
+    return workflow, definition, resolve
+
+
+@router.post("/workflows/{workflow_id}/run")
+async def run_saved_workflow(
+    workflow_id: str,
+    body: WorkflowRunBody,
+    ctx: GroupContext = Depends(require_group),
+) -> StreamingResponse:
+    _, definition, resolve = await _prepare_workflow_run(workflow_id, ctx)
+
     async def events():
         try:
             async for event in run_workflow(definition, body.input, resolve):
@@ -351,3 +361,109 @@ async def run_saved_workflow(
             "X-Accel-Buffering": "no",
         },
     )
+
+
+@router.post("/workflows/{workflow_id}/runs", status_code=202)
+async def start_saved_workflow_run(
+    workflow_id: str,
+    body: WorkflowRunBody,
+    ctx: GroupContext = Depends(require_group),
+) -> Dict[str, Any]:
+    workflow, definition, resolve = await _prepare_workflow_run(workflow_id, ctx)
+    agent_snapshots: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for node in definition.get("nodes") or []:
+        agent_id = str(node.get("agent_id") or "")
+        if not agent_id or agent_id in seen:
+            continue
+        seen.add(agent_id)
+        agent = await _agents.get(agent_id)
+        agent_snapshots.append(
+            {"id": agent_id, "name": (agent or {}).get("name") or agent_id}
+        )
+    run = await _workflow_runs.create(
+        workflow_id=workflow_id,
+        started_by=ctx.user,
+        group_id=ctx.group_id,
+        workflow_name=str(workflow.get("name") or workflow_id),
+        definition=definition,
+        agents=agent_snapshots,
+        input_text=body.input,
+    )
+    start_workflow_run(run["id"], definition, body.input, resolve)
+    return run
+
+
+@router.get("/workflow-runs")
+async def list_workflow_runs(
+    limit: int = 100,
+    ctx: GroupContext = Depends(require_group),
+) -> list[Dict[str, Any]]:
+    await _workflow_runs.fail_stale()
+    await _workflow_runs.purge()
+    return await _workflow_runs.list_for_user(ctx.user, limit=limit)
+
+
+@router.get("/workflow-runs/{run_id}")
+async def workflow_run_detail(
+    run_id: str,
+    ctx: GroupContext = Depends(require_group),
+) -> Dict[str, Any]:
+    run = await _workflow_runs.get_for_user(run_id, ctx.user)
+    if not run:
+        raise HTTPException(status_code=404, detail="Ejecución no encontrada")
+    return run
+
+
+@router.get("/workflow-runs/{run_id}/events")
+async def stream_workflow_run_events(
+    run_id: str,
+    after: int = 0,
+    ctx: GroupContext = Depends(require_group),
+) -> StreamingResponse:
+    run = await _workflow_runs.get_for_user(run_id, ctx.user)
+    if not run:
+        raise HTTPException(status_code=404, detail="Ejecución no encontrada")
+
+    async def persisted_events():
+        cursor = max(0, after)
+        idle_ticks = 0
+        while True:
+            events = await _workflow_runs.events_after(run_id, cursor)
+            for event in events:
+                cursor = int(event["sequence"])
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+            current = await _workflow_runs.get_for_user(run_id, ctx.user)
+            if not current:
+                return
+            if current["status"] in TERMINAL_STATUSES and cursor >= current["last_sequence"]:
+                return
+            if not events:
+                idle_ticks += 1
+                if idle_ticks >= 30:
+                    idle_ticks = 0
+                    yield ": keep-alive\n\n"
+            else:
+                idle_ticks = 0
+            await asyncio.sleep(0.5)
+
+    return StreamingResponse(
+        persisted_events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache, no-transform", "X-Accel-Buffering": "no"},
+    )
+
+
+@router.post("/workflow-runs/{run_id}/cancel")
+async def cancel_workflow_run(
+    run_id: str,
+    ctx: GroupContext = Depends(require_group),
+) -> Dict[str, Any]:
+    run = await _workflow_runs.get_for_user(run_id, ctx.user)
+    if not run:
+        raise HTTPException(status_code=404, detail="Ejecución no encontrada")
+    if run["status"] in ("completed", "failed"):
+        raise APIError(409, "workflow_run_not_active", "La ejecución ya ha terminado")
+    if run["status"] != "cancelled":
+        run = await _workflow_runs.request_cancel(run_id, ctx.user) or run
+    return run

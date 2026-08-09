@@ -319,6 +319,42 @@ CREATE TABLE IF NOT EXISTS agent_workflows (
 );
 CREATE INDEX IF NOT EXISTS idx_agent_workflows_owner
     ON agent_workflows(owner_id, updated_at DESC);
+CREATE TABLE IF NOT EXISTS workflow_runs (
+    id              TEXT PRIMARY KEY,
+    workflow_id     TEXT NOT NULL,
+    started_by      TEXT NOT NULL,
+    group_id        TEXT NOT NULL,
+    workflow_name   TEXT NOT NULL,
+    definition      TEXT NOT NULL,
+    agents          TEXT NOT NULL DEFAULT '[]',
+    input           TEXT NOT NULL,
+    status          TEXT NOT NULL,
+    completed_steps INTEGER NOT NULL DEFAULT 0,
+    total_steps     INTEGER NOT NULL DEFAULT 0,
+    active_node_id  TEXT,
+    final_output    TEXT,
+    error           TEXT,
+    last_sequence   INTEGER NOT NULL DEFAULT 0,
+    heartbeat_at    TEXT NOT NULL,
+    created_at      TEXT NOT NULL,
+    started_at      TEXT,
+    finished_at     TEXT,
+    updated_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_runs_user
+    ON workflow_runs(started_by, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflow_runs_status
+    ON workflow_runs(status, heartbeat_at);
+CREATE TABLE IF NOT EXISTS workflow_run_events (
+    run_id      TEXT NOT NULL,
+    sequence    INTEGER NOT NULL,
+    payload     TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    PRIMARY KEY(run_id, sequence),
+    FOREIGN KEY(run_id) REFERENCES workflow_runs(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_run_events_run
+    ON workflow_run_events(run_id, sequence);
 CREATE TABLE IF NOT EXISTS llm_orchestrations (
     id TEXT NOT NULL,
     owner_id TEXT NOT NULL,
@@ -652,6 +688,41 @@ CREATE TABLE IF NOT EXISTS agent_workflows (
 );
 CREATE INDEX IF NOT EXISTS idx_agent_workflows_owner
     ON agent_workflows(owner_id, updated_at DESC);
+CREATE TABLE IF NOT EXISTS workflow_runs (
+    id              TEXT PRIMARY KEY,
+    workflow_id     TEXT NOT NULL,
+    started_by      TEXT NOT NULL,
+    group_id        TEXT NOT NULL,
+    workflow_name   TEXT NOT NULL,
+    definition      TEXT NOT NULL,
+    agents          TEXT NOT NULL DEFAULT '[]',
+    input           TEXT NOT NULL,
+    status          TEXT NOT NULL,
+    completed_steps INTEGER NOT NULL DEFAULT 0,
+    total_steps     INTEGER NOT NULL DEFAULT 0,
+    active_node_id  TEXT,
+    final_output    TEXT,
+    error           TEXT,
+    last_sequence   INTEGER NOT NULL DEFAULT 0,
+    heartbeat_at    TEXT NOT NULL,
+    created_at      TEXT NOT NULL,
+    started_at      TEXT,
+    finished_at     TEXT,
+    updated_at      TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_runs_user
+    ON workflow_runs(started_by, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_workflow_runs_status
+    ON workflow_runs(status, heartbeat_at);
+CREATE TABLE IF NOT EXISTS workflow_run_events (
+    run_id      TEXT NOT NULL REFERENCES workflow_runs(id) ON DELETE CASCADE,
+    sequence    INTEGER NOT NULL,
+    payload     TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    PRIMARY KEY(run_id, sequence)
+);
+CREATE INDEX IF NOT EXISTS idx_workflow_run_events_run
+    ON workflow_run_events(run_id, sequence);
 CREATE TABLE IF NOT EXISTS llm_orchestrations (
     id TEXT NOT NULL,
     owner_id TEXT NOT NULL,

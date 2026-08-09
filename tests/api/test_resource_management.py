@@ -1,3 +1,6 @@
+import time
+
+
 def test_agent_save_creates_version_and_restores(admin_client):
     created = admin_client.post(
         "/api/agents",
@@ -77,6 +80,63 @@ def test_workflow_run_exposes_sse_heartbeat_headers(admin_client, monkeypatch):
     assert '"type": "workflow_done"' in response.text
 
 
+def test_persisted_workflow_run_replays_after_start_response(admin_client, monkeypatch):
+    workflow = _workflow_for_run(admin_client)
+
+    async def fake_run_workflow(_definition, _input, _resolve):
+        yield {"type": "stage_started", "node_id": "one"}
+        yield {"type": "stage_done", "node_id": "one", "output": "resultado"}
+        yield {"type": "workflow_done", "output": "resultado"}
+
+    monkeypatch.setattr(
+        "app.services.workflow_run_executor.run_workflow", fake_run_workflow
+    )
+    started = admin_client.post(
+        f"/api/workflows/{workflow['id']}/runs", json={"input": "prueba"}
+    )
+    assert started.status_code == 202
+    run_id = started.json()["id"]
+
+    completed = _wait_run(admin_client, run_id, "completed")
+    assert completed["final_output"] == "resultado"
+    assert completed["definition"] == workflow["definition"]
+    assert completed["progress"]["completed"] == 1
+
+    replay = admin_client.get(f"/api/workflow-runs/{run_id}/events?after=1")
+    assert replay.status_code == 200
+    assert '"sequence": 1' not in replay.text
+    assert '"sequence": 2' in replay.text
+    assert '"type": "workflow_done"' in replay.text
+
+
+def test_persisted_workflow_run_is_cancelled_on_server(admin_client, monkeypatch):
+    import asyncio
+
+    workflow = _workflow_for_run(admin_client, "Flujo cancelable")
+
+    async def slow_run_workflow(_definition, _input, _resolve):
+        yield {"type": "stage_started", "node_id": "one"}
+        while True:
+            await asyncio.sleep(0.02)
+            yield {"type": "heartbeat"}
+
+    monkeypatch.setattr(
+        "app.services.workflow_run_executor.run_workflow", slow_run_workflow
+    )
+    started = admin_client.post(
+        f"/api/workflows/{workflow['id']}/runs", json={"input": "prueba"}
+    ).json()
+    _wait_run(admin_client, started["id"], "running")
+
+    cancelling = admin_client.post(
+        f"/api/workflow-runs/{started['id']}/cancel"
+    )
+    assert cancelling.status_code == 200
+    assert cancelling.json()["status"] in {"cancelling", "cancelled"}
+    cancelled = _wait_run(admin_client, started["id"], "cancelled")
+    assert cancelled["finished_at"] is not None
+
+
 def test_workflow_persists_canvas_positions_and_loops(admin_client):
     created = admin_client.post(
         "/api/agents",
@@ -120,3 +180,28 @@ def test_workflow_persists_canvas_positions_and_loops(admin_client):
     listed = admin_client.get("/api/workflows").json()
     restored = next(item for item in listed if item["id"] == response.json()["id"])
     assert restored["definition"] == saved
+def _workflow_for_run(client, name="Flujo persistente"):
+    agent = client.post(
+        "/api/agents",
+        json={"name": "Paso persistente", "system_prompt": "Procesa"},
+    ).json()
+    return client.post(
+        "/api/workflows",
+        json={
+            "name": name,
+            "definition": {
+                "nodes": [{"id": "one", "agent_id": agent["id"]}],
+                "edges": [],
+            },
+        },
+    ).json()
+
+
+def _wait_run(client, run_id, expected, timeout=3.0):
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        response = client.get(f"/api/workflow-runs/{run_id}")
+        if response.status_code == 200 and response.json()["status"] == expected:
+            return response.json()
+        time.sleep(0.03)
+    raise AssertionError(f"La ejecución {run_id} no alcanzó {expected}")
