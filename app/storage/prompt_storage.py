@@ -65,11 +65,17 @@ class PromptStorage(ResourceStorage):
                 ),
             )
         else:
+            # Ver skill_storage._upsert: upsert explícito para no perder las
+            # columnas que este INSERT no nombra (las de fuente oficial).
             await conn.execute(
-                "INSERT OR REPLACE INTO prompts "
+                "INSERT INTO prompts "
                 "(id, owner_id, name, alias, scope, data, content, "
                 "is_active, deactivated_at, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT (id, owner_id) DO UPDATE SET name=excluded.name, "
+                "alias=excluded.alias, scope=excluded.scope, data=excluded.data, "
+                "content=excluded.content, is_active=excluded.is_active, "
+                "deactivated_at=excluded.deactivated_at, updated_at=excluded.updated_at",
                 (
                     prompt_id,
                     owner_id,

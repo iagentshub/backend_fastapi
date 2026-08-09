@@ -99,12 +99,21 @@ class ToolStorage(ResourceStorage):
                 ),
             )
         else:
+            # Ver skill_storage._upsert: upsert explícito para no perder las
+            # columnas que este INSERT no nombra (las de fuente oficial).
             await conn.execute(
-                "INSERT OR REPLACE INTO tools "
+                "INSERT INTO tools "
                 "(id, owner_id, name, language, scope, data, content, "
                 "binary_b64, binary_filename, binary_size, binary_uploaded_at, "
                 "is_active, deactivated_at, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT (id, owner_id) DO UPDATE SET name=excluded.name, "
+                "language=excluded.language, scope=excluded.scope, data=excluded.data, "
+                "content=excluded.content, binary_b64=excluded.binary_b64, "
+                "binary_filename=excluded.binary_filename, binary_size=excluded.binary_size, "
+                "binary_uploaded_at=excluded.binary_uploaded_at, "
+                "is_active=excluded.is_active, deactivated_at=excluded.deactivated_at, "
+                "updated_at=excluded.updated_at",
                 (
                     tool_id,
                     owner_id,

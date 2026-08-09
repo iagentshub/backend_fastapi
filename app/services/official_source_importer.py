@@ -1,4 +1,7 @@
-"""Importación segura y determinista de paquetes oficiales desde GitHub."""
+"""Descarga segura y determinista del contenido de una fuente oficial.
+
+Lo detectado aquí no se persiste: se lo lleva official_source_sync para
+materializarlo como recursos normales."""
 
 from __future__ import annotations
 
@@ -17,12 +20,8 @@ from urllib.parse import urlparse
 
 import yaml
 
-from app.models.official_package import (
-    COMPONENT_TYPES,
-    EXPORT_TARGETS,
-    PackageComponent,
-)
-from app.storage.official_package_storage import OfficialPackageStorage
+from app.models.official_source import COMPONENT_TYPES, PackageComponent
+from app.storage.official_source_storage import OfficialSourceStorage
 from app.storage.skill_storage import SKILL_LABELS, ensure_origin_label
 
 _MAX_JSON_BYTES = 2 * 1024 * 1024
@@ -269,7 +268,7 @@ def _manifest_components(files: Dict[str, str]) -> Dict[str, Dict[str, Any]]:
 
 
 def detect_components(
-    package_id: str, version: str, files: Dict[str, str]
+    source_id: str, files: Dict[str, str]
 ) -> List[PackageComponent]:
     components: List[PackageComponent] = []
     used_ids: set[str] = set()
@@ -310,8 +309,7 @@ def detect_components(
         )
         components.append(
             PackageComponent(
-                package_id=package_id,
-                version=version,
+                source_id=source_id,
                 component_id=component_id,
                 component_type=kind,
                 name=name,
@@ -319,7 +317,6 @@ def detect_components(
                 source_path=path,
                 content=content,
                 files=companion_files,
-                targets=_string_list(meta.get("targets")) or sorted(EXPORT_TARGETS),
                 labels=ensure_origin_label(_string_list(meta.get("labels")), "official"),
                 dependencies=_component_dependencies(meta),
                 content_hash=hashlib.sha256(digest_source.encode()).hexdigest(),
@@ -366,14 +363,6 @@ def validate_components(
             errors.append(
                 f"{component.component_id}: etiquetas no válidas ({', '.join(invalid_labels)})"
             )
-        invalid_targets = [
-            target for target in component.targets if target not in EXPORT_TARGETS
-        ]
-        if invalid_targets:
-            errors.append(
-                f"{component.component_id}: destinos no válidos "
-                f"({', '.join(invalid_targets)})"
-            )
         missing_dependencies = [
             item for item in component.dependencies if item not in component_ids
         ]
@@ -418,9 +407,11 @@ def validate_components(
     return sorted(set(errors)), sorted(set(warnings))
 
 
-class OfficialPackageImporter:
-    def __init__(self, storage: Optional[OfficialPackageStorage] = None) -> None:
-        self.storage = storage or OfficialPackageStorage()
+class OfficialSourceImporter:
+    """Alta de fuentes y descarga de su contenido. No persiste componentes."""
+
+    def __init__(self, storage: Optional[OfficialSourceStorage] = None) -> None:
+        self.storage = storage or OfficialSourceStorage()
 
     async def import_repository(
         self,
@@ -436,7 +427,7 @@ class OfficialPackageImporter:
             f"https://api.github.com/repos/{owner}/{repository}"
         )
         license_id = str((metadata.get("license") or {}).get("spdx_id") or "")
-        package = await self.storage.save_package(
+        source = await self.storage.save_source(
             {
                 "name": str(metadata.get("name") or repository),
                 "description": str(metadata.get("description") or ""),
@@ -449,26 +440,21 @@ class OfficialPackageImporter:
                 "license": license_id,
             }
         )
-        return await self.sync(str(package["id"]))
+        return await self.fetch(str(source["id"]))
 
-    async def sync(self, package_id: str) -> Dict[str, Any]:
-        package = await self.storage.get_package(package_id)
-        if not package:
-            raise KeyError("package_not_found")
+    async def fetch(self, source_id: str) -> Dict[str, Any]:
+        """Descarga la fuente y devuelve sus componentes, sin guardarlos.
+
+        Quien decide qué se queda es el admin (ver
+        ``services/official_source_sync.materialize``), así que aquí no hay
+        nada que publicar ni versión que revisar: solo el contenido de GitHub
+        y los problemas que se le hayan encontrado.
+        """
+        source = await self.storage.get_source(source_id)
+        if not source:
+            raise KeyError("source_not_found")
         try:
-            version, sha, archive_url = await self._resolve_version(package)
-            existing = await self.storage.get_version(package_id, version)
-            if (
-                existing
-                and existing.get("commit_sha") == sha
-                and existing.get("status") != "draft"
-            ):
-                await self.storage.mark_sync(package_id)
-                return {"changed": False, "package": package, "version": existing}
-            # Una release de GitHub puede volver a apuntar a otro commit. No
-            # mutamos la versión ya revisada: creamos otro candidato auditable.
-            if existing and existing.get("commit_sha") != sha:
-                version = f"{version}+{sha[:8]}"
+            version, sha, archive_url = await self._resolve_version(source)
             raw = await asyncio.to_thread(
                 _request,
                 archive_url,
@@ -477,9 +463,9 @@ class OfficialPackageImporter:
                 too_large_message="El repositorio comprimido supera 100 MB",
             )
             files = _safe_archive_files(raw)
-            components = detect_components(package_id, version, files)
+            components = detect_components(source_id, files)
             errors: List[str] = []
-            if package.get("license") not in _ALLOWED_LICENSES:
+            if source.get("license") not in _ALLOWED_LICENSES:
                 errors.append(
                     "La licencia no está reconocida o no pertenece al catálogo permitido"
                 )
@@ -487,38 +473,23 @@ class OfficialPackageImporter:
                 errors.append("No se detectaron componentes compatibles")
             content_errors, security_warnings = validate_components(components)
             errors.extend(content_errors)
-            manifest = {
-                "schema_version": 1,
-                "source": package["repository_url"],
+            await self.storage.mark_sync(source_id, version=version)
+            return {
+                "source": await self.storage.get_source(source_id),
                 "version": version,
                 "commit_sha": sha,
-                "components": [item.as_dict() for item in components],
+                "components": components,
+                "errors": errors,
                 "security_warnings": security_warnings,
             }
-            saved = await self.storage.save_version(
-                package_id, version, sha, manifest, components, errors
-            )
-            await self.storage.mark_sync(package_id)
-            return {"changed": True, "package": package, "version": saved}
         except Exception as exc:
-            await self.storage.mark_sync(package_id, error=str(exc))
+            await self.storage.mark_sync(source_id, error=str(exc))
             raise
 
-    async def sync_all(self) -> List[Dict[str, Any]]:
-        results: List[Dict[str, Any]] = []
-        for package in await self.storage.list_packages():
-            try:
-                results.append(await self.sync(str(package["id"])))
-            except Exception as exc:
-                results.append(
-                    {"changed": False, "package": package, "error": str(exc)}
-                )
-        return results
-
-    async def _resolve_version(self, package: Dict[str, Any]) -> Tuple[str, str, str]:
-        owner = package["repository_owner"]
-        repository = package["repository_name"]
-        if package["tracking_mode"] == "release":
+    async def _resolve_version(self, source: Dict[str, Any]) -> Tuple[str, str, str]:
+        owner = source["repository_owner"]
+        repository = source["repository_name"]
+        if source["tracking_mode"] == "release":
             try:
                 release = await _json_request(
                     f"https://api.github.com/repos/{owner}/{repository}/releases/latest"
@@ -536,7 +507,7 @@ class OfficialPackageImporter:
                     )
             except GitHubImportError:
                 pass
-        branch = str(package.get("tracking_ref") or "main")
+        branch = str(source.get("tracking_ref") or "main")
         ref = await _json_request(
             f"https://api.github.com/repos/{owner}/{repository}/commits/{branch}"
         )

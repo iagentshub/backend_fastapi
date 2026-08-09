@@ -19,6 +19,15 @@ from app.utils.generators import generate_id
 
 _SCHEMA_INDEX_DEPS: list[tuple[str, str, str]] = [
     ("users", "stripe_customer_id", "TEXT"),
+    # idx_<tabla>_official se crea en el esquema sobre esta columna, así que
+    # una base anterior a las fuentes oficiales necesita tenerla antes de que
+    # corra executescript (la migración 7 la añadiría demasiado tarde).
+    ("agents", "official_source_id", "TEXT"),
+    ("skills", "official_source_id", "TEXT"),
+    ("prompts", "official_source_id", "TEXT"),
+    ("tools", "official_source_id", "TEXT"),
+    ("knowledge_items", "official_source_id", "TEXT"),
+    ("agent_workflows", "official_source_id", "TEXT"),
 ]
 
 # Tablas de recursos que reciben el borrado suave (is_active + deactivated_at)

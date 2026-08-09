@@ -29,7 +29,7 @@ from app.api.routes.admin._router import admin_router
 
 from . import (  # noqa: F401 — registran rutas en admin_router al importarse
     explore,
-    official_packages,
+    official_sources,
     resources,
     stats,
     updates,

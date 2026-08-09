@@ -55,8 +55,6 @@ All admin endpoints require the `admin` role.
 
 `/api/admin/explore` accepts repeated `type`, `q`, `owner`, `limit`, and `offset` parameters. Every item includes the `resource_type` discriminator; the response also returns `total` and per-type counts. Valid types are `user`, `group`, `agent`, `connection`, `knowledge`, and `workflow`.
 
-The inventory also lists the components of published official packages (types `agent`, `skill`, `prompt`, `tool`, `knowledge`, and `workflow`). They are not rows of the resource database, so they arrive flagged with `is_official: true`, a composite `package:component` id, `official_package_name`/`official_version`, and their origin `labels`; the client renders them read-only (no delete, owner change, or graph).
-
 The graph response contains `root_id`, `nodes`, and `edges`, covering ownership, group membership, sharing, connection/knowledge usage, and orchestration participation.
 
 ### Users
@@ -88,19 +86,22 @@ The graph response contains `root_id`, `nodes`, and `edges`, covering ownership,
 | `GET` | `/api/admin/knowledge` | List all knowledge items; each item includes `owner_username` and `char_count` |
 | `DELETE` | `/api/admin/knowledge/{id}` | Delete a knowledge item |
 
-### Official packages
+### Official sources
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/admin/official-packages` | Sources with all their versions and components |
-| `POST` | `/api/admin/official-packages/import` | Import a GitHub repository (runs the first `sync`) |
-| `POST` | `/api/admin/official-packages/{id}/sync` | Fetch the current version; returns `changed`, `package`, and `version` |
-| `POST` | `/api/admin/official-packages/{id}/versions/{version}/publish` | Publish the version with the `component_ids` selection |
-| `DELETE` | `/api/admin/official-packages/{id}` | Delete the source and retire its links |
+| `GET` | `/api/admin/official-sources` | Registered sources and the objects each one has in the hub |
+| `POST` | `/api/admin/official-sources/import` | Register a GitHub repository and download its content |
+| `POST` | `/api/admin/official-sources/{id}/sync` | With no body, returns what the source brings; with `component_ids`, applies that selection |
+| `PUT` | `/api/admin/official-sources/{id}` | Edit the source |
+| `DELETE` | `/api/admin/official-sources/{id}` | Delete the source and every object it brought |
+| `POST` | `/api/admin/resources/{type}/{id}/official` | Flag or unflag a resource as official by hand |
 
-`publish` accepts `component_ids`: it stores which components stay published (with the transitive closure of their dependencies) in `official_package_versions.published_components`. Discarded components are **not** deleted from the version, so they can be selected again by publishing anew without resyncing the repository; while they are out they do not show up in the catalogue, are not exported, and cannot be copied or linked.
+What a source brings **does not live in tables of its own**: it is materialised as a normal resource (agent, skill, prompt, tool, knowledge, workflow) owned by the admin who syncs, with the `official` label, its public `resource_social` row, and the `official_source_id` / `official_component_id` columns recording where it came from. That is why it shows up in Explore as one more row, is linked and forked through the usual routes, and exports like any other agent.
 
-Retiring a component — or deleting the whole source — removes the resources users had materialised **in link mode**, along with their social row and shares; the response reports how many in `retired_links`. Forks (`mode=copy`) are independent resources and are kept.
+`sync` with `component_ids` leaves the source at exactly that selection: what is selected is created or updated — with the transitive closure of its dependencies — and what is no longer selected is deleted. Without `component_ids` nothing changes; it only returns `components` and `selected` so the panel can pre-check what is already there.
+
+Flagging by hand uses the internal `official_by_iagentshub` source, which has no repository behind it.
 
 ### Stats
 

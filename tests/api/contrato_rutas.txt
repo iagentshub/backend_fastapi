@@ -9,7 +9,7 @@ DELETE /api/admin/groups/{group_id}
 DELETE /api/admin/knowledge/{item_id}
 DELETE /api/admin/llm-orchestrations/{item_id}
 DELETE /api/admin/memory/{item_id}
-DELETE /api/admin/official-packages/{package_id}
+DELETE /api/admin/official-sources/{source_id}
 DELETE /api/admin/prompts/{item_id}
 DELETE /api/admin/skills/{item_id}
 DELETE /api/admin/tools/{item_id}
@@ -55,8 +55,7 @@ GET /api/admin/logs/summary
 GET /api/admin/memory
 GET /api/admin/metadata/tables
 GET /api/admin/metadata/tables/{table_name}/data
-GET /api/admin/official-packages
-GET /api/admin/official-packages/{package_id}/versions/{version}/diff
+GET /api/admin/official-sources
 GET /api/admin/prompts
 GET /api/admin/resources/{resource_type}/{resource_id}/graph
 GET /api/admin/skills
@@ -99,10 +98,6 @@ GET /api/llm-orchestrations
 GET /api/llm-orchestrations/{item_id}
 GET /api/memory
 GET /api/memory/{filename}
-GET /api/official-packages
-GET /api/official-packages/components
-GET /api/official-packages/copies
-GET /api/official-packages/{package_id}
 GET /api/prompts
 GET /api/prompts/{scope}/{prompt_id}
 GET /api/resources/{resource_type}/{resource_id}/versions
@@ -148,10 +143,9 @@ POST /api/admin/centinel/stress/run
 POST /api/admin/groups/{group_id}/status
 POST /api/admin/impersonate/{username}
 POST /api/admin/logs/client
-POST /api/admin/official-packages/import
-POST /api/admin/official-packages/{package_id}/sync
-POST /api/admin/official-packages/{package_id}/versions/{version}/publish
-POST /api/admin/official-packages/{package_id}/versions/{version}/reject
+POST /api/admin/official-sources/import
+POST /api/admin/official-sources/{source_id}/sync
+POST /api/admin/resources/{resource_type}/{resource_id}/official
 POST /api/admin/update-now
 POST /api/admin/users
 POST /api/agent-builder/chat
@@ -212,10 +206,6 @@ POST /api/llm-orchestrations
 POST /api/llm-orchestrations/{item_id}/activate
 POST /api/llm-orchestrations/{item_id}/deactivate
 POST /api/memory/{filename}
-POST /api/official-packages/{package_id}/copy
-POST /api/official-packages/{package_id}/export-preview
-POST /api/official-packages/{package_id}/export/{target}
-POST /api/official-packages/{package_id}/link
 POST /api/prompts/private/{prompt_id}/sync
 POST /api/prompts/{prompt_id}/activate
 POST /api/prompts/{prompt_id}/deactivate
@@ -240,7 +230,6 @@ POST /api/users/{target}/follow
 POST /api/workflow-runs/{run_id}/cancel
 POST /api/workflows
 POST /api/workflows/{source_id}/link
-PUT /api/admin/official-packages/{package_id}
 POST /api/workflows/{workflow_id}/activate
 POST /api/workflows/{workflow_id}/deactivate
 POST /api/workflows/{workflow_id}/run
@@ -249,6 +238,7 @@ POST /api/{resource_type}/{resource_id}/star
 PUT /api/accounts/{account_id}
 PUT /api/admin/agents/{agent_id}
 PUT /api/admin/auto-update
+PUT /api/admin/official-sources/{source_id}
 PUT /api/admin/resources/{resource_type}/{resource_id}/owner
 PUT /api/admin/resources/{resource_type}/{resource_id}/verify
 PUT /api/agents/{agent_id}/preferences

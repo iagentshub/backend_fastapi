@@ -100,3 +100,89 @@ async def test_official_published_components_column_is_added_on_old_dbs(tmp_path
 
     assert columns.count("published_components") == 1
     assert stored[0][0] == "[]"
+
+
+async def test_migraciones_del_catalogo_viejo_no_fallan_sin_sus_tablas(tmp_path):
+    """En una base nueva esas tablas ya no existen: deben ser no-ops."""
+    from app.storage.migrations.sqlite import (
+        _official_component_metadata,
+        _official_copy_mode,
+        _official_published_components,
+    )
+
+    async with aiosqlite.connect(tmp_path / "fresh.db") as conn:
+        conn.row_factory = sqlite3.Row
+        await _official_component_metadata(conn)
+        await _official_copy_mode(conn)
+        await _official_published_components(conn)
+
+        tables = await conn.execute_fetchall(
+            "SELECT name FROM sqlite_master WHERE type='table'"
+        )
+
+    assert tables == []
+
+
+async def test_el_contenido_oficial_pasa_a_columnas_de_recurso(tmp_path):
+    """La migración 7 marca los recursos y retira las tablas del catálogo."""
+    from app.storage.migrations.sqlite import _official_content_as_resources
+
+    async with aiosqlite.connect(tmp_path / "catalogo.db") as conn:
+        conn.row_factory = sqlite3.Row
+        for table in (
+            "agents",
+            "skills",
+            "prompts",
+            "tools",
+            "knowledge_items",
+            "agent_workflows",
+        ):
+            await conn.execute(
+                f"CREATE TABLE {table} (id TEXT PRIMARY KEY, owner_id TEXT NOT NULL)"
+            )
+        await conn.execute(
+            "CREATE TABLE official_packages ("
+            "id TEXT PRIMARY KEY, name TEXT NOT NULL, description TEXT NOT NULL "
+            "DEFAULT '', repository_url TEXT NOT NULL, repository_owner TEXT NOT NULL, "
+            "repository_name TEXT NOT NULL, tracking_mode TEXT NOT NULL, "
+            "tracking_ref TEXT NOT NULL, license TEXT NOT NULL DEFAULT '', "
+            "latest_checked_at TEXT, last_sync_error TEXT, created_at TEXT NOT NULL, "
+            "updated_at TEXT NOT NULL)"
+        )
+        await conn.execute(
+            "INSERT INTO official_packages VALUES ('pkg','Superpowers','',"
+            "'https://github.com/obra/superpowers','obra','superpowers','release',"
+            "'main','MIT',NULL,NULL,'2026-01-01','2026-01-01')"
+        )
+        await conn.execute("CREATE TABLE official_package_versions (package_id TEXT)")
+        await conn.execute("CREATE TABLE official_package_components (package_id TEXT)")
+        await conn.execute("CREATE TABLE official_package_copies (id TEXT)")
+
+        await _official_content_as_resources(conn)
+        # Idempotente: el arranque siguiente vuelve a pasar por aquí.
+        await _official_content_as_resources(conn)
+
+        skills = await conn.execute_fetchall("PRAGMA table_info(skills)")
+        sources = await conn.execute_fetchall(
+            "SELECT id, name, repository_url FROM official_sources"
+        )
+        tables = {
+            str(row[0])
+            for row in await conn.execute_fetchall(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+
+    assert {str(row[1]) for row in skills} >= {
+        "official_source_id",
+        "official_component_id",
+    }
+    assert [tuple(row) for row in sources] == [
+        ("pkg", "Superpowers", "https://github.com/obra/superpowers")
+    ]
+    assert not tables & {
+        "official_packages",
+        "official_package_versions",
+        "official_package_components",
+        "official_package_copies",
+    }

@@ -126,11 +126,17 @@ class AgentStorage(ResourceStorage):
                 ),
             )
         else:
+            # Ver skill_storage._upsert: upsert explícito para no perder las
+            # columnas que este INSERT no nombra (las de fuente oficial).
             await conn.execute(
-                "INSERT OR REPLACE INTO agents "
+                "INSERT INTO agents "
                 "(id, owner_id, name, scope, data, tokens_in, tokens_out, "
                 "is_active, deactivated_at, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT (id, owner_id) DO UPDATE SET name=excluded.name, "
+                "scope=excluded.scope, data=excluded.data, tokens_in=excluded.tokens_in, "
+                "tokens_out=excluded.tokens_out, is_active=excluded.is_active, "
+                "deactivated_at=excluded.deactivated_at, updated_at=excluded.updated_at",
                 (
                     agent_id,
                     owner_id,

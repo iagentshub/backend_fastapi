@@ -179,11 +179,19 @@ class SkillStorage(ResourceStorage):
                 ),
             )
         else:
+            # Upsert explícito, no INSERT OR REPLACE: reemplazar la fila entera
+            # borraría las columnas que este INSERT no nombra
+            # (official_source_id / official_component_id, que gestiona
+            # official_source_storage) cada vez que se guarda el recurso.
             await conn.execute(
-                "INSERT OR REPLACE INTO skills "
+                "INSERT INTO skills "
                 "(id, owner_id, name, category, scope, data, content, "
                 "is_active, deactivated_at, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT (id, owner_id) DO UPDATE SET name=excluded.name, "
+                "category=excluded.category, scope=excluded.scope, data=excluded.data, "
+                "content=excluded.content, is_active=excluded.is_active, "
+                "deactivated_at=excluded.deactivated_at, updated_at=excluded.updated_at",
                 (
                     skill_id,
                     owner_id,

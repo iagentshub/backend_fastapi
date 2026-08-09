@@ -34,7 +34,6 @@ from app.api.routes import (
     llm_orchestrations,
     logs,
     memory,
-    official_packages,
     prompts,
     resource_linking,
     resource_management,
@@ -93,24 +92,6 @@ async def _log_purge_loop() -> None:
             flog.error(f"[logs] Error en purga automática: {exc}")
 
 
-async def _official_packages_sync_loop() -> None:
-    """Comprueba fuentes cada día; las novedades quedan pendientes de revisión."""
-    from app.services.official_package_importer import OfficialPackageImporter
-
-    importer = OfficialPackageImporter()
-    while True:
-        await asyncio.sleep(24 * 3600)
-        try:
-            results = await importer.sync_all()
-            changed = sum(1 for item in results if item.get("changed"))
-            if changed:
-                flog.info(
-                    f"[official-packages] {changed} actualización(es) pendientes de revisión"
-                )
-        except Exception as exc:
-            flog.error(f"[official-packages] Error en sincronización automática: {exc}")
-
-
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     await init_db(_cfg.DB_FILE)
@@ -118,9 +99,6 @@ async def _lifespan(app: FastAPI):
     tasks = (
         asyncio.create_task(_gdpr_purge_loop(), name="gdpr-purge"),
         asyncio.create_task(_log_purge_loop(), name="log-purge"),
-        asyncio.create_task(
-            _official_packages_sync_loop(), name="official-packages-sync"
-        ),
         asyncio.create_task(
             workflow_run_maintenance_loop(), name="workflow-run-maintenance"
         ),
@@ -266,7 +244,6 @@ def create_app() -> FastAPI:
     app.include_router(prompts.router)
     app.include_router(tools.router)
     app.include_router(memory.router)
-    app.include_router(official_packages.router)
     app.include_router(settings.router)
     app.include_router(accounts.router)
     app.include_router(chats.router)

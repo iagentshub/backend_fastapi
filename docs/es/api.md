@@ -55,8 +55,6 @@ Todos los endpoints de admin requieren el rol `admin`.
 
 `/api/admin/explore` admite `type` repetido, `q`, `owner`, `limit` y `offset`. Cada elemento incluye el discriminador `resource_type`; la respuesta también devuelve `total` y contadores por tipo. Los tipos válidos son `user`, `group`, `agent`, `connection`, `knowledge` y `workflow`.
 
-El inventario incluye además los componentes de paquetes oficiales publicados (tipos `agent`, `skill`, `prompt`, `tool`, `knowledge` y `workflow`). No son filas de la BD de recursos, así que llegan marcados con `is_official: true`, id compuesto `paquete:componente`, `official_package_name`/`official_version` y sus `labels` de origen; el cliente los muestra en modo lectura (sin borrado, cambio de propietario ni grafo).
-
 El grafo devuelve `root_id`, `nodes` y `edges`. Incluye relaciones de propiedad, pertenencia a grupos, compartición, uso de conexiones/conocimiento y participación en orquestaciones.
 
 ### Usuarios
@@ -88,19 +86,22 @@ El grafo devuelve `root_id`, `nodes` y `edges`. Incluye relaciones de propiedad,
 | `GET` | `/api/admin/knowledge` | Listar todos los elementos de conocimiento; cada item incluye `owner_username` y `char_count` |
 | `DELETE` | `/api/admin/knowledge/{id}` | Eliminar un elemento de conocimiento |
 
-### Paquetes oficiales
+### Fuentes oficiales
 
 | Método | Endpoint | Descripción |
 |---|---|---|
-| `GET` | `/api/admin/official-packages` | Fuentes con todas sus versiones y componentes |
-| `POST` | `/api/admin/official-packages/import` | Importar un repositorio de GitHub (hace el primer `sync`) |
-| `POST` | `/api/admin/official-packages/{id}/sync` | Traer la versión actual; devuelve `changed`, `package` y `version` |
-| `POST` | `/api/admin/official-packages/{id}/versions/{version}/publish` | Publicar la versión con la selección de `component_ids` |
-| `DELETE` | `/api/admin/official-packages/{id}` | Eliminar la fuente y retirar sus enlaces |
+| `GET` | `/api/admin/official-sources` | Fuentes registradas y los objetos que cada una tiene en el hub |
+| `POST` | `/api/admin/official-sources/import` | Dar de alta un repositorio de GitHub y descargar su contenido |
+| `POST` | `/api/admin/official-sources/{id}/sync` | Sin cuerpo, devuelve lo que trae la fuente; con `component_ids`, aplica esa selección |
+| `PUT` | `/api/admin/official-sources/{id}` | Editar la fuente |
+| `DELETE` | `/api/admin/official-sources/{id}` | Eliminar la fuente y todos los objetos que trajo |
+| `POST` | `/api/admin/resources/{type}/{id}/official` | Marcar o desmarcar un recurso como oficial a mano |
 
-`publish` acepta `component_ids`: guarda qué componentes quedan publicados (con el cierre transitivo de sus dependencias) en `official_package_versions.published_components`. Los descartados **no** se borran de la versión, así que se pueden volver a marcar publicando de nuevo sin resincronizar el repositorio; mientras están fuera no aparecen en el catálogo, ni se exportan, ni se pueden copiar o enlazar.
+Lo que una fuente trae **no vive en tablas propias**: se materializa como recurso normal (agente, skill, prompt, herramienta, knowledge, orquestación) propiedad del admin que sincroniza, con la label `official`, su fila pública en `resource_social` y las columnas `official_source_id` / `official_component_id` para saber de dónde salió. Por eso aparece en Explorar como una fila más, se enlaza y se forkea por las rutas de siempre y se exporta como cualquier agente.
 
-Al retirar un componente —o al borrar la fuente entera— se eliminan los recursos que los usuarios tuvieran materializados **en modo enlace**, junto con su fila social y sus comparticiones; la respuesta devuelve cuántos en `retired_links`. Los forks (`mode=copy`) son recursos independientes y se conservan.
+`sync` con `component_ids` deja la fuente exactamente en esa selección: lo marcado se crea o se actualiza —con el cierre transitivo de dependencias— y lo que deja de estarlo se borra. Sin `component_ids` no cambia nada; solo devuelve `components` y `selected` para que el panel preseleccione lo que ya está.
+
+Marcar a mano usa la fuente interna `official_by_iagentshub`, que no tiene repositorio detrás.
 
 ### Estadísticas
 

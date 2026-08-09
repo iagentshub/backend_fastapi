@@ -1,13 +1,17 @@
-"""Modelos de dominio del catálogo oficial de paquetes open source."""
+"""Modelos de dominio de las fuentes oficiales.
+
+Lo que una fuente trae no es un tipo de objeto aparte: se materializa como
+recurso normal (agente, skill, prompt, tool, knowledge, workflow) marcado con
+``official_source_id``. Aquí solo viven la fuente y el componente detectado en
+el repositorio, que es material en tránsito entre GitHub y los storages de
+recurso — nunca se persiste tal cual.
+"""
 
 from __future__ import annotations
 
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Dict, List, Optional
 
-PACKAGE_STATUSES = frozenset(
-    {"draft", "pending_review", "published", "rejected", "superseded"}
-)
 COMPONENT_TYPES = frozenset(
     {
         "skill",
@@ -22,13 +26,21 @@ COMPONENT_TYPES = frozenset(
         "tool",
     }
 )
-EXPORT_TARGETS = frozenset({"hub", "codex", "claude", "cursor"})
+
+# Tipos que tienen un storage de recurso detrás. El resto se detectan para
+# poder informar de ellos, pero no se materializan.
+MATERIALIZABLE_TYPES = frozenset(
+    {"skill", "agent", "knowledge", "prompt", "workflow", "tool"}
+)
+
+# Fuente interna para lo que un admin marca como oficial a mano, sin que venga
+# de ningún repositorio.
+INTERNAL_SOURCE_ID = "official_by_iagentshub"
 
 
 @dataclass(kw_only=True)
 class PackageComponent:
-    package_id: str
-    version: str
+    source_id: str
     component_id: str
     component_type: str
     name: str
@@ -37,20 +49,17 @@ class PackageComponent:
     description: str = ""
     content: str = ""
     files: Dict[str, str] = field(default_factory=dict)
-    targets: List[str] = field(default_factory=list)
     labels: List[str] = field(default_factory=lambda: ["official"])
     dependencies: List[str] = field(default_factory=list)
 
     def as_dict(self, *, include_content: bool = False) -> Dict[str, Any]:
         result: Dict[str, Any] = {
-            "package_id": self.package_id,
-            "version": self.version,
+            "source_id": self.source_id,
             "component_id": self.component_id,
             "component_type": self.component_type,
             "name": self.name,
             "description": self.description,
             "source_path": self.source_path,
-            "targets": self.targets,
             "labels": self.labels,
             "dependencies": self.dependencies,
             "content_hash": self.content_hash,
@@ -62,33 +71,19 @@ class PackageComponent:
 
 
 @dataclass(kw_only=True)
-class PackageVersion:
-    package_id: str
-    version: str
-    commit_sha: str
-    status: str
-    manifest: Dict[str, Any] = field(default_factory=dict)
-    validation_errors: List[str] = field(default_factory=list)
-    created_at: str = ""
-    reviewed_at: Optional[str] = None
-    reviewed_by: Optional[str] = None
-    components: List[PackageComponent] = field(default_factory=list)
-
-
-@dataclass(kw_only=True)
-class OfficialPackage:
-    resource_type: ClassVar[str] = "official_package"
+class OfficialSource:
+    resource_type: ClassVar[str] = "official_source"
 
     id: str
     name: str
     repository_url: str
-    repository_owner: str
-    repository_name: str
+    repository_owner: str = ""
+    repository_name: str = ""
     description: str = ""
     tracking_mode: str = "release"
     tracking_ref: str = "main"
     license: str = ""
-    published_version: Optional[str] = None
+    last_version: Optional[str] = None
     latest_checked_at: Optional[str] = None
     last_sync_error: Optional[str] = None
     created_at: str = ""
@@ -106,10 +101,9 @@ class OfficialPackage:
             "tracking_mode": self.tracking_mode,
             "tracking_ref": self.tracking_ref,
             "license": self.license,
-            "published_version": self.published_version,
+            "last_version": self.last_version,
             "latest_checked_at": self.latest_checked_at,
             "last_sync_error": self.last_sync_error,
             "created_at": self.created_at,
             "updated_at": self.updated_at,
-            "is_official": bool(self.published_version),
         }

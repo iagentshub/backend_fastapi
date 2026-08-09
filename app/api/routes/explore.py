@@ -27,14 +27,12 @@ from app.storage.db import IS_PG, open_db
 from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
 from app.storage.knowledge import KnowledgeStorage
-from app.storage.official_package_storage import OfficialPackageStorage
 from app.storage.prompt_storage import PromptStorage
 from app.storage.skill_storage import SkillStorage
 from app.storage.tool_storage import ToolStorage
 from app.storage.workflows import WorkflowStorage
 
 router = APIRouter(tags=["explore"])
-_official_packages = OfficialPackageStorage()
 
 # Singletons de módulo, como en agents.py y connections.py. Construir un storage
 # dentro del handler no cuesta por el objeto, sino por lo que arrastra: el flag
@@ -159,42 +157,6 @@ async def explore(
         row["languages"] = language_codes_from_labels(row["labels"])
         rows.append(row)
     await _add_owner_usernames(rows)
-    official_rows = await _official_packages.list_published_components()
-    normalized_query = (q or "").strip().casefold()
-    selected_labels = {str(item) for item in (label or [])}
-    selected_languages = {
-        f"lang_{str(item).strip().lower()}" for item in (language or [])
-    }
-    official_count = 0
-    for row in official_rows:
-        row_labels = {str(item) for item in row.get("labels") or []}
-        if type and type != "all" and row["resource_type"] != type:
-            continue
-        if category and row["category"] != category:
-            continue
-        if (
-            normalized_query
-            and normalized_query
-            not in " ".join(
-                (
-                    str(row.get("name") or ""),
-                    str(row.get("description") or ""),
-                    str(row.get("owner_username") or ""),
-                    str(row.get("official_package_name") or ""),
-                )
-            ).casefold()
-        ):
-            continue
-        if selected_labels and not row_labels.intersection(selected_labels):
-            continue
-        if selected_languages and not row_labels.intersection(selected_languages):
-            continue
-        row["languages"] = language_codes_from_labels(list(row_labels))
-        rows.append(row)
-        official_count += 1
-    if response is not None and official_count:
-        community_total = int(response.headers.get(TOTAL_HEADER, "0"))
-        response.headers[TOTAL_HEADER] = str(community_total + official_count)
     return rows
 
 
@@ -204,31 +166,11 @@ async def explore_preview(
     resource_id: str,
     username: str = Depends(require_session),  # ver explore(): catálogo público
 ) -> Dict[str, Any]:
-    """Rich preview data for a single public resource."""
+    """Rich preview data for a single public resource.
 
-    if ":" in resource_id:
-        package_id, component_id = resource_id.split(":", 1)
-        package = await _official_packages.get_published(
-            package_id, include_content=True
-        )
-        if package:
-            component = next(
-                (
-                    item
-                    for item in package["version"].get("components", [])
-                    if item["component_id"] == component_id
-                ),
-                None,
-            )
-            if component:
-                return {
-                    **component,
-                    "is_official": True,
-                    "source": package["name"],
-                    "source_version": package["version"]["version"],
-                    "repository_url": package["repository_url"],
-                    "license": package.get("license", ""),
-                }
+    Lo oficial no necesita rama propia: es una fila de resource_social como
+    cualquier otra, marcada con la label ``official``.
+    """
 
     async with open_db() as conn:
         row = await conn.fetchone(
@@ -425,13 +367,6 @@ async def my_resources(
                 tuple(linked_ids) + (_PUBLIC_VAL,),
             )
         still_public = {r["resource_id"] for r in pub_rows}
-        official_candidates = {str(resource_id) for resource_id in linked_ids if ":" in str(resource_id)}
-        if official_candidates:
-            published_official_ids = {
-                str(item["resource_id"])
-                for item in await _official_packages.list_published_components()
-            }
-            still_public.update(official_candidates & published_official_ids)
         for row in rows:
             if row.get("linked_to_id"):
                 linked_owner = row.get("linked_to_user") or ""

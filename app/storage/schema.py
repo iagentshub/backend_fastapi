@@ -53,11 +53,16 @@ CREATE TABLE IF NOT EXISTS agents (
     tokens_out  INTEGER NOT NULL DEFAULT 0,
     is_active   @BOOL@ NOT NULL DEFAULT 1,
     deactivated_at TEXT,
+    -- Fuente oficial de la que salió el recurso, si salió de alguna. Ver
+    -- official_sources: es lo que permite filtrarlos y borrarlos en bloque.
+    official_source_id    TEXT,
+    official_component_id TEXT,
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL,
     PRIMARY KEY (id, owner_id)
 );
 CREATE INDEX IF NOT EXISTS idx_agents_owner ON agents(owner_id, scope, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_agents_official ON agents(official_source_id);
 CREATE TABLE IF NOT EXISTS skills (
     id          TEXT NOT NULL,
     owner_id    TEXT NOT NULL DEFAULT '__public__',
@@ -68,11 +73,14 @@ CREATE TABLE IF NOT EXISTS skills (
     content     TEXT NOT NULL DEFAULT '',
     is_active   @BOOL@ NOT NULL DEFAULT 1,
     deactivated_at TEXT,
+    official_source_id    TEXT,
+    official_component_id TEXT,
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL,
     PRIMARY KEY (id, owner_id)
 );
 CREATE INDEX IF NOT EXISTS idx_skills_owner ON skills(owner_id, scope, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_skills_official ON skills(official_source_id);
 CREATE TABLE IF NOT EXISTS prompts (
     id          TEXT NOT NULL,
     owner_id    TEXT NOT NULL DEFAULT '__public__',
@@ -83,11 +91,14 @@ CREATE TABLE IF NOT EXISTS prompts (
     content     TEXT NOT NULL DEFAULT '',
     is_active   @BOOL@ NOT NULL DEFAULT 1,
     deactivated_at TEXT,
+    official_source_id    TEXT,
+    official_component_id TEXT,
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL,
     PRIMARY KEY (id, owner_id)
 );
 CREATE INDEX IF NOT EXISTS idx_prompts_owner ON prompts(owner_id, scope, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_prompts_official ON prompts(official_source_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_prompts_alias_owner ON prompts(owner_id, alias);
 CREATE TABLE IF NOT EXISTS tools (
     id          TEXT NOT NULL,
@@ -103,11 +114,14 @@ CREATE TABLE IF NOT EXISTS tools (
     binary_uploaded_at TEXT,
     is_active   @BOOL@ NOT NULL DEFAULT 1,
     deactivated_at TEXT,
+    official_source_id    TEXT,
+    official_component_id TEXT,
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL,
     PRIMARY KEY (id, owner_id)
 );
 CREATE INDEX IF NOT EXISTS idx_tools_owner ON tools(owner_id, scope, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tools_official ON tools(official_source_id);
 CREATE TABLE IF NOT EXISTS memory_files (
     id          TEXT NOT NULL,
     owner_id    TEXT NOT NULL,
@@ -169,80 +183,34 @@ CREATE TABLE IF NOT EXISTS knowledge_items (
     labels     TEXT NOT NULL DEFAULT '["private"]',
     is_active  @BOOL@ NOT NULL DEFAULT 1,
     deactivated_at TEXT,
+    official_source_id    TEXT,
+    official_component_id TEXT,
     created_at TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_knowledge_owner
     ON knowledge_items(owner_id, type, created_at DESC);
-CREATE TABLE IF NOT EXISTS official_packages (
+CREATE INDEX IF NOT EXISTS idx_knowledge_official
+    ON knowledge_items(official_source_id);
+-- Fuentes del contenido oficial. Lo que traen no vive aquí: se materializa
+-- como recurso normal (agents, skills, …) marcado con official_source_id, de
+-- modo que "oficial" sea solo una etiqueta y no un tipo de objeto aparte.
+CREATE TABLE IF NOT EXISTS official_sources (
     id                  TEXT PRIMARY KEY,
     name                TEXT NOT NULL,
     description         TEXT NOT NULL DEFAULT '',
     repository_url      TEXT NOT NULL UNIQUE,
-    repository_owner    TEXT NOT NULL,
-    repository_name     TEXT NOT NULL,
+    repository_owner    TEXT NOT NULL DEFAULT '',
+    repository_name     TEXT NOT NULL DEFAULT '',
     tracking_mode       TEXT NOT NULL DEFAULT 'release',
     tracking_ref        TEXT NOT NULL DEFAULT 'main',
     license             TEXT NOT NULL DEFAULT '',
-    published_version   TEXT,
+    last_version        TEXT,
     latest_checked_at   TEXT,
     last_sync_error     TEXT,
     created_at          TEXT NOT NULL,
     updated_at          TEXT NOT NULL
 );
-CREATE TABLE IF NOT EXISTS official_package_versions (
-    package_id          TEXT NOT NULL REFERENCES official_packages(id) ON DELETE CASCADE,
-    version             TEXT NOT NULL,
-    commit_sha          TEXT NOT NULL,
-    status              TEXT NOT NULL,
-    manifest            TEXT NOT NULL DEFAULT '{}',
-    validation_errors   TEXT NOT NULL DEFAULT '[]',
-    -- Componentes elegidos por el admin al publicar. Lista vacía = todos.
-    -- Se guarda la selección en vez de borrar los componentes descartados
-    -- para poder volver a marcarlos sin resincronizar el repositorio.
-    published_components TEXT NOT NULL DEFAULT '[]',
-    created_at          TEXT NOT NULL,
-    reviewed_at         TEXT,
-    reviewed_by         TEXT,
-    PRIMARY KEY (package_id, version)
-);
-CREATE INDEX IF NOT EXISTS idx_official_versions_status
-    ON official_package_versions(status, created_at DESC);
-CREATE TABLE IF NOT EXISTS official_package_components (
-    package_id          TEXT NOT NULL,
-    version             TEXT NOT NULL,
-    component_id        TEXT NOT NULL,
-    component_type      TEXT NOT NULL,
-    name                TEXT NOT NULL,
-    description         TEXT NOT NULL DEFAULT '',
-    source_path         TEXT NOT NULL,
-    content             TEXT NOT NULL DEFAULT '',
-    files               TEXT NOT NULL DEFAULT '{}',
-    targets             TEXT NOT NULL DEFAULT '[]',
-    labels              TEXT NOT NULL DEFAULT '["official"]',
-    dependencies        TEXT NOT NULL DEFAULT '[]',
-    content_hash        TEXT NOT NULL,
-    PRIMARY KEY (package_id, version, component_id),
-    FOREIGN KEY (package_id, version)
-        REFERENCES official_package_versions(package_id, version) ON DELETE CASCADE
-);
-CREATE TABLE IF NOT EXISTS official_package_copies (
-    id                  TEXT PRIMARY KEY,
-    owner_id            TEXT NOT NULL,
-    package_id          TEXT NOT NULL,
-    source_version      TEXT NOT NULL,
-    component_id        TEXT NOT NULL,
-    resource_type       TEXT NOT NULL,
-    resource_id         TEXT,
-    name                TEXT NOT NULL,
-    content             TEXT NOT NULL DEFAULT '',
-    source_content_hash TEXT NOT NULL,
-    mode                TEXT NOT NULL DEFAULT 'copy',
-    created_at          TEXT NOT NULL,
-    updated_at          TEXT NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_official_copies_owner
-    ON official_package_copies(owner_id, package_id, created_at DESC);
 CREATE TABLE IF NOT EXISTS users (
     id                    TEXT PRIMARY KEY,
     username              TEXT UNIQUE NOT NULL,
@@ -426,12 +394,16 @@ CREATE TABLE IF NOT EXISTS agent_workflows (
     labels      TEXT NOT NULL DEFAULT '["private"]',
     is_active   @BOOL@ NOT NULL DEFAULT 1,
     deactivated_at TEXT,
+    official_source_id    TEXT,
+    official_component_id TEXT,
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL,
     PRIMARY KEY(id, owner_id)
 );
 CREATE INDEX IF NOT EXISTS idx_agent_workflows_owner
     ON agent_workflows(owner_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_agent_workflows_official
+    ON agent_workflows(official_source_id);
 CREATE TABLE IF NOT EXISTS workflow_runs (
     id              TEXT PRIMARY KEY,
     workflow_id     TEXT NOT NULL,
