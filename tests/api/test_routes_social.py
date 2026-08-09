@@ -243,6 +243,29 @@ def test_recursos_publicos_de_usuario(client):
     assert r_filtered.status_code == 200
     assert all(x["resource_type"] == "agent" for x in r_filtered.json())
 
+    # Compatibilidad con publicaciones anteriores a la migracion que cambio
+    # resource_social.owner de username a id interno.
+    import asyncio
+
+    from app.storage.db import open_db
+
+    async def _make_legacy_owner() -> None:
+        async with open_db() as conn:
+            await conn.execute(
+                "UPDATE resource_social SET owner=? WHERE resource_type=? AND resource_id=?",
+                (user, "agent", agent_id),
+            )
+            await conn.commit()
+
+    asyncio.run(_make_legacy_owner())
+    legacy = client.get(f"/api/users/{user}/resources")
+    assert any(item["resource_id"] == agent_id for item in legacy.json())
+
+    _login(client, "pubresviewer")
+    users = client.get("/api/users", params={"q": user}).json()
+    card = next(item for item in users if item["username"] == user)
+    assert card["public_resources_count"] == 1
+
 
 def test_explore_requiere_auth(client):
     r = client.get("/api/explore")

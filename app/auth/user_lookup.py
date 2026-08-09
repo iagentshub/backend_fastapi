@@ -15,12 +15,36 @@ from app.utils.validation import normalize_username
 
 _ALLOWED_USER_FIELDS = frozenset({"id", "email", "username"})
 
+# Las dos columnas grandes de la fila, y las únicas que estas funciones NO
+# traen. El avatar se guarda en base64 y `POST /api/auth/me/avatar` admite
+# hasta 10 MB de fichero, unos 13,3 MB por fila; `cv` llega a 20.000
+# caracteres. Estas funciones están en el camino crítico de toda petición
+# autenticada (`_resolve_principal`, `_get_user_auth_state`, `get_user_role`),
+# así que un `SELECT *` transportaba esos megabytes en cada una para
+# descartarlos acto seguido: el avatar solo lo necesita
+# `GET /api/users/{u}/avatar`, que lo pide aparte.
+#
+# `tests/auth/test_user_lookup_columnas.py` compara esta lista con las
+# columnas reales de la tabla: una columna nueva rompe ese test en vez de
+# desaparecer en silencio de todas las respuestas.
+_EXCLUIDAS = ("avatar", "cv")
+
+_USER_COLS = (
+    "id, username, email, password_hash, display_name, birth_date, gender, "
+    "country, phone, provider, provider_sub, role, is_active, is_verified, "
+    "verification_token, reset_token, reset_token_expires, preferences, "
+    "deletion_requested_at, deletion_token, stripe_customer_id, bio, "
+    "languages, is_email_public, github, password_changed_at, created_at"
+)
+
 
 async def _get_user_by(field: str, value: str) -> Optional[dict]:
     if field not in _ALLOWED_USER_FIELDS:
         raise ValueError(f"Campo no permitido para búsqueda de usuario: {field!r}")
     async with open_db() as conn:
-        row = await conn.fetchone(f"SELECT * FROM users WHERE {field} = ?", (value,))
+        row = await conn.fetchone(
+            f"SELECT {_USER_COLS} FROM users WHERE {field} = ?", (value,)
+        )
         return dict(row) if row else None
 
 
@@ -40,7 +64,7 @@ async def get_user_by_identity(identity: str) -> Optional[dict]:
     """Resolve an internal user id or a public username."""
     async with open_db() as conn:
         row = await conn.fetchone(
-            "SELECT * FROM users WHERE id = ? OR username = ?",
+            f"SELECT {_USER_COLS} FROM users WHERE id = ? OR username = ?",
             (identity, normalize_username(identity)),
         )
         return dict(row) if row else None
@@ -51,7 +75,7 @@ async def get_user_by_login(identifier: str) -> Optional[dict]:
     normalized = identifier.strip().lower()
     async with open_db() as conn:
         row = await conn.fetchone(
-            "SELECT * FROM users WHERE username = ? OR email = ?",
+            f"SELECT {_USER_COLS} FROM users WHERE username = ? OR email = ?",
             (normalized, normalized),
         )
         return dict(row) if row else None

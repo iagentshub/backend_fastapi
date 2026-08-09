@@ -32,6 +32,17 @@ router = APIRouter(prefix="/api/sharing", tags=["sharing"])
 _shares = GroupShareStorage()
 _groups = GroupStorage()
 
+# Singletons de módulo: construir un storage dentro de cada handler reejecutaba
+# su migración legacy (el flag era de instancia), y con ella un SELECT COUNT(*)
+# por petición. Mismo patrón que agents.py y connections.py.
+_agents_store = AgentStorage(_cfg.AGENTS_DIR)
+_skills_store = SkillStorage(_cfg.SKILLS_DIR)
+_prompts_store = PromptStorage()
+_tools_store = ToolStorage()
+_knowledge_store = KnowledgeStorage()
+_workflows_store = WorkflowStorage()
+_orch_store = LLMOrchestrationStorage()
+
 _VALID_TYPES = RESOURCE_TYPES
 
 
@@ -48,25 +59,25 @@ def _assert_valid_type(resource_type: str) -> None:
 async def _resource_owner(resource_type: str, resource_id: str) -> Optional[str]:
     """Resuelve el owner_id actual de un recurso, sea cual sea su tipo."""
     if resource_type == "agent":
-        item = await AgentStorage(_cfg.AGENTS_DIR).get(resource_id)
+        item = await _agents_store.get(resource_id)
         return item.get("owner_id") if item else None
     if resource_type == "skill":
-        item = await SkillStorage(_cfg.SKILLS_DIR).get_any(resource_id)
+        item = await _skills_store.get_any(resource_id)
         return item.get("owner_id") if item else None
     if resource_type == "knowledge":
-        item = await KnowledgeStorage().get(resource_id)
+        item = await _knowledge_store.get(resource_id)
         return item.get("owner_id") if item else None
     if resource_type == "workflow":
-        item = await WorkflowStorage().get_any(resource_id)
+        item = await _workflows_store.get_any(resource_id)
         return item.get("owner_id") if item else None
     if resource_type == "llm_orchestration":
-        item = await LLMOrchestrationStorage().get_any(resource_id)
+        item = await _orch_store.get_any(resource_id)
         return item.get("owner_id") if item else None
     if resource_type == "prompt":
-        item = await PromptStorage().get_any(resource_id)
+        item = await _prompts_store.get_any(resource_id)
         return item.get("owner_id") if item else None
     if resource_type == "tool":
-        item = await ToolStorage().get_any(resource_id)
+        item = await _tools_store.get_any(resource_id)
         return item.get("owner_id") if item else None
     # connection — ConnectionStorage.get() no incluye owner_id en el dict devuelto,
     # así que se resuelve con una consulta directa a la tabla.
@@ -133,13 +144,13 @@ async def _cascade_share_agent(
     Nunca comparte conexiones (credenciales) ni recursos ajenos al usuario que
     comparte. Devuelve la lista de IDs de recursos compartidos en cascada.
     """
-    agent = await AgentStorage(_cfg.AGENTS_DIR).get(agent_id)
+    agent = await _agents_store.get(agent_id)
     if not agent:
         return []
     cascaded: List[str] = []
-    skill_storage = SkillStorage(_cfg.SKILLS_DIR)
-    knowledge_storage = KnowledgeStorage()
-    prompt_storage = PromptStorage()
+    skill_storage = _skills_store
+    knowledge_storage = _knowledge_store
+    prompt_storage = _prompts_store
 
     # Identidades válidas del usuario que comparte (personal + group de equipo)
     _owner_ids = {shared_by, shared_by_group} - {""}
@@ -190,7 +201,7 @@ async def _cascade_share_workflow(
     shared_by_group: str,
 ) -> List[str]:
     """Comparte los agentes propios usados por una orquestación y sus dependencias."""
-    workflow = await WorkflowStorage().get_any(workflow_id)
+    workflow = await _workflows_store.get_any(workflow_id)
     if not workflow:
         return []
     allowed_owners = {
@@ -203,7 +214,7 @@ async def _cascade_share_workflow(
         agent_id = str(node.get("agent_id") or "")
         if not agent_id or agent_id in cascaded:
             continue
-        agent = await AgentStorage(_cfg.AGENTS_DIR).get(agent_id)
+        agent = await _agents_store.get(agent_id)
         if not agent or str(agent.get("owner_id") or "") not in allowed_owners:
             continue
         await _shares.share_with_group("agent", agent_id, group_id, shared_by)
@@ -222,7 +233,7 @@ async def _cascade_share_llm_orchestration(
     shared_by: str,
 ) -> List[str]:
     """Comparte las conexiones que hacen ejecutable la orquestación LLM."""
-    item = await LLMOrchestrationStorage().get_any(orchestration_id)
+    item = await _orch_store.get_any(orchestration_id)
     if not item:
         return []
     ids = {

@@ -12,6 +12,7 @@ from typing import Optional
 import bcrypt as _bcrypt
 from jose import JWTError, jwt
 
+import app.config.session as _session
 from app.config.data import SETTINGS_FILE
 from app.config.session import (
     JWT_ALGORITHM,
@@ -53,9 +54,11 @@ def _hash_token(token: str) -> str:
 
 
 def hash_password(plain: str) -> str:
-    return _bcrypt.hashpw(plain.encode("utf-8"), _bcrypt.gensalt(rounds=12)).decode(
-        "utf-8"
-    )
+    # BCRYPT_ROUNDS se lee del módulo, no por valor: la suite lo baja vía
+    # GAIA_BCRYPT_ROUNDS y el default sigue siendo 12 (ver config/session.py).
+    return _bcrypt.hashpw(
+        plain.encode("utf-8"), _bcrypt.gensalt(rounds=_session.BCRYPT_ROUNDS)
+    ).decode("utf-8")
 
 
 async def hash_password_async(plain: str) -> str:

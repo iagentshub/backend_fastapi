@@ -30,8 +30,12 @@ async def get_owned_groups(username: str) -> list:
         return [dict(r) for r in rows]
 
 
-async def schedule_user_deletion(username: str) -> str:
-    """Schedule account deletion 30 days from now. Returns cancellation token (raw)."""
+async def schedule_user_deletion(username: str, lang: str = "es") -> str:
+    """Schedule account deletion 30 days from now. Returns cancellation token (raw).
+
+    `lang` lo resuelve el handler con get_locale(): aquí ya no serviría, porque
+    el envío se encola en un ThreadPoolExecutor sin el ContextVar.
+    """
     token = secrets.token_urlsafe(32)
     deletion_at = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
     async with open_db() as conn:
@@ -42,7 +46,7 @@ async def schedule_user_deletion(username: str) -> str:
         await conn.commit()
     user = await get_user_by_identity(username)
     if user:
-        send_deletion_scheduled_email(user["email"], token, deletion_at)
+        send_deletion_scheduled_email(user["email"], token, deletion_at, lang=lang)
     flog.info(f"[gdpr] Borrado programado para {username} el {deletion_at}")
     return token
 

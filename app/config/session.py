@@ -13,6 +13,18 @@ JWT_UNSAFE_SECRETS: frozenset[str] = frozenset({
     "cambia_esto_en_produccion",
 })
 
+# Coste de bcrypt. 12 rondas ≈ 235 ms por hash: es el valor correcto en
+# producción —235 ms de CPU por login, y `hash_password_async` ya lo saca del
+# event loop— y por eso sigue siendo el default. Los tests lo bajan porque la
+# suite tiene 141 puntos de registro: tests/auth son 71 tests que tardan
+# 19,5 s, de los cuales 17,7 s se van esperando a bcrypt sin probar nada.
+#
+# El suelo de 4 y el techo de 16 son de bcrypt; el suelo importa además porque
+# una variable de entorno que baje las rondas en producción es un hash débil
+# con permiso. Bajar el parámetro no invalida ningún hash ya guardado: cada
+# hash lleva su coste dentro, así que solo afecta a los nuevos.
+BCRYPT_ROUNDS = max(4, min(int(os.getenv("GAIA_BCRYPT_ROUNDS", "12")), 16))
+
 LOGIN_WINDOW    = int(os.getenv("GAIA_LOGIN_WINDOW",    "300"))   # segundos
 LOGIN_MAX_FAILS = int(os.getenv("GAIA_LOGIN_MAX_FAILS", "5"))     # intentos fallidos
 

@@ -6,13 +6,14 @@ import json
 import logging
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.api.routes.auth import GroupContext, require_group_session
 from app.auth.auth import get_user_role
 from app.config.providers import PROVIDER_DEFAULT_MODELS
+from app.errors import APIError
 from app.models.agent import Agent
 from app.services.builder_progress import partial_progress
 from app.services.chat import stream_chat
@@ -72,9 +73,11 @@ async def builder_chat(
                 group_id, user, "connections", conn_id, "direct"
             )
         ):
-            raise HTTPException(
-                status_code=403,
-                detail="No tienes permiso para usar esta conexión directamente",
+            raise APIError(
+                403,
+                "forbidden",
+                "No tienes permiso para usar esta conexión directamente",
+                extra={"resource": "connection"},
             )
         if role == "admin":
             conn = await _conns.get(conn_id, None)
@@ -86,9 +89,11 @@ async def builder_chat(
     if conn and ollama_model:
         conn = {**conn, "model": ollama_model}
     if not conn:
-        raise HTTPException(
-            status_code=404,
-            detail="La conexión seleccionada no existe o no está disponible",
+        raise APIError(
+            404,
+            "not_found",
+            "La conexión seleccionada no existe o no está disponible",
+            extra={"resource": "connection"},
         )
 
     imported = build_from_skill_markdown(body.messages)

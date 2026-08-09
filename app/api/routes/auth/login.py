@@ -40,6 +40,7 @@ from app.config.session import (
     SECURE_COOKIES,
 )
 from app.errors import APIError
+from app.middleware.locale import get_locale
 from app.middleware.ratelimit import RateLimiter
 from app.services.email import send_reset_email, send_verification_email
 from app.storage.db import open_db
@@ -144,7 +145,9 @@ async def register(request: Request, response: Response) -> dict[str, Any]:
 
     if EMAIL_VERIFY_ENABLED and verify_token:
         base_url = _public_base_url(request)
-        send_verification_email(email, verify_token, base_url)
+        # El idioma se resuelve AQUÍ: get_locale() es un ContextVar y el
+        # envío se encola en un ThreadPoolExecutor donde ya no existe.
+        send_verification_email(email, verify_token, base_url, lang=get_locale())
         return {"ok": True, "email": email, "pending_verification": True}
 
     user = await get_user_by_username(username)
@@ -322,7 +325,7 @@ async def forgot_password(
     token = await create_password_reset_token(email)
     if token:
         base_url = _public_base_url(request)
-        send_reset_email(email, token, base_url)
+        send_reset_email(email, token, base_url, lang=get_locale())
     # Respuesta siempre igual para no revelar si el email existe
     return {"ok": True}
 

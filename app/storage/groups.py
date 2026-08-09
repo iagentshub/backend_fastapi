@@ -7,7 +7,7 @@ Solo los groups de equipo tienen filas en las tablas groups / group_members.
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from app.storage.db import IS_PG, open_db
 from app.utils import now_iso as _now
@@ -337,18 +337,14 @@ class GroupStorage:
         member = await self.get_member(group_id, username)
         return member is not None and member.get("role") in ("owner", "admin")
 
-    async def has_resource_permission(
-        self,
-        group_id: str,
-        username: str,
+    @staticmethod
+    def _resolve_permission(
+        member: Optional[Dict[str, Any]],
         section: str,
         resource_id: str,
         action: str,
     ) -> bool:
-        """Resolve granular member permissions; missing/empty config is allow-all."""
-        if group_id == username:
-            return True
-        member = await self.get_member(group_id, username)
+        """Missing/empty config is allow-all; sin fila de miembro, nada."""
         if not member:
             return False
         if member.get("role") in ("owner", "admin"):
@@ -362,6 +358,44 @@ class GroupStorage:
         if isinstance(item, dict) and action in item:
             return bool(item[action])
         return bool(config.get("default", True))
+
+    async def has_resource_permission(
+        self,
+        group_id: str,
+        username: str,
+        section: str,
+        resource_id: str,
+        action: str,
+    ) -> bool:
+        """Resolve granular member permissions; missing/empty config is allow-all."""
+        if group_id == username:
+            return True
+        member = await self.get_member(group_id, username)
+        return self._resolve_permission(member, section, resource_id, action)
+
+    async def permission_checker(
+        self, group_id: str, username: str
+    ) -> "Callable[[str, str, str], bool]":
+        """Predicado síncrono con **una sola** consulta a ``group_members``.
+
+        Filtrar N recursos con ``has_resource_permission`` costaba N consultas
+        que devolvían siempre la misma fila: el JSON de permisos del miembro es
+        uno solo, no uno por recurso. Se resuelve el miembro aquí y las N
+        comprobaciones pasan a ser en memoria.
+
+        Conserva los tres atajos del original —group personal, miembro
+        inexistente y rol owner/admin—, incluido el ``False`` cuando no hay fila
+        de miembro: convertirlo en ``True`` abriría los recursos del group a
+        quien ya no pertenece a él.
+        """
+        if group_id == username:
+            return lambda section, resource_id, action: True
+        member = await self.get_member(group_id, username)
+        if not member:
+            return lambda section, resource_id, action: False
+        return lambda section, resource_id, action: self._resolve_permission(
+            member, section, resource_id, action
+        )
 
     # ── Invitaciones ───────────────────────────────────────────────────────────
 

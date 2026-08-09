@@ -11,9 +11,10 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Response
 
 import app.config.data as _cfg
+from app.api.pagination import TOTAL_HEADER
 from app.api.routes.auth import require_auth, require_session
 from app.api.routes.social import _PUBLIC_VAL, _social_limiter
 from app.config.content_languages import (
@@ -32,6 +33,20 @@ from app.storage.tool_storage import ToolStorage
 from app.storage.workflows import WorkflowStorage
 
 router = APIRouter(tags=["explore"])
+
+# Singletons de módulo, como en agents.py y connections.py. Construir un storage
+# dentro del handler no cuesta por el objeto, sino por lo que arrastra: el flag
+# de migración era de instancia, así que cada uno recién creado reejecutaba
+# _ensure_migrated() —y su SELECT COUNT(*)— en la primera operación.
+# explore_preview llegaba a construir seis en una sola petición.
+_agents = AgentStorage(_cfg.AGENTS_DIR)
+_skills = SkillStorage(_cfg.SKILLS_DIR)
+_prompts = PromptStorage()
+_tools = ToolStorage()
+_knowledge = KnowledgeStorage()
+_workflows = WorkflowStorage()
+_shares = GroupShareStorage()
+_groups = GroupStorage()
 
 
 async def _add_owner_usernames(rows: List[Dict[str, Any]]) -> None:
@@ -59,6 +74,7 @@ async def explore(
     language: Optional[List[str]] = Query(None),
     limit: int = 40,
     offset: int = 0,
+    response: Response = None,  # type: ignore[assignment]
     # Abierto al invitado: solo devuelve filas is_public y el usuario únicamente
     # sirve para excluir lo propio. Es el catálogo público, y la superficie que
     # tiene sentido enseñar en el demo.
@@ -110,6 +126,14 @@ async def explore(
             )
             params.extend(f'%"{label_value}"%' for label_value in label)
         where = " AND ".join(conditions)
+        # El total va en cabecera (ver app/api/pagination.py). Aquí la página se
+        # recorta en SQL, así que len(rows) no sirve: hace falta su propio
+        # COUNT con las MISMAS condiciones, antes de añadir limit/offset.
+        if response is not None:
+            total = await conn.fetchval(
+                f"SELECT COUNT(*) FROM resource_social WHERE {where}", tuple(params)
+            )
+            response.headers[TOTAL_HEADER] = str(total or 0)
         params.extend([limit, offset])
         raw = await conn.fetchall(
             f"SELECT resource_type, resource_id, owner, name, description, category, "
@@ -170,21 +194,17 @@ async def explore_preview(
     await _add_owner_usernames([base])
 
     if resource_type == "agent":
-        agents = AgentStorage(_cfg.AGENTS_DIR)
-        agent = await agents.get(resource_id)
+        agent = await _agents.get(resource_id)
         if agent:
-            shares = GroupShareStorage()
-            groups = GroupStorage()
-            skills_storage = SkillStorage(_cfg.SKILLS_DIR)
             skill_names = []
             for sid in agent.get("skills", []):
-                sk = await skills_storage.get_any(sid)
+                sk = await _skills.get_any(sid)
                 if not sk:
                     continue
                 # No revelar nombres de skills privadas ajenas en la vista
                 # previa pública, aunque el agente que las usa sí sea público.
-                if sk.get("scope") != "public" and not await shares.is_accessible(
-                    groups,
+                if sk.get("scope") != "public" and not await _shares.is_accessible(
+                    _groups,
                     resource_type="skill",
                     resource_id=sid,
                     owner_id=sk.get("owner_id"),
@@ -192,14 +212,13 @@ async def explore_preview(
                 ):
                     continue
                 skill_names.append(sk.get("name", sid))
-            knowledge_storage = KnowledgeStorage()
             knowledge_titles = []
             for kid in agent.get("knowledge", []):
-                item = await knowledge_storage.get(kid)
+                item = await _knowledge.get(kid)
                 if not item:
                     continue
-                if not await shares.is_accessible(
-                    groups,
+                if not await _shares.is_accessible(
+                    _groups,
                     resource_type="knowledge",
                     resource_id=kid,
                     owner_id=item.get("owner_id"),
@@ -207,16 +226,15 @@ async def explore_preview(
                 ):
                     continue
                 knowledge_titles.append(item.get("title", kid))
-            prompts_storage = PromptStorage()
             prompt_names = []
             for pid in agent.get("prompts", []):
-                pr = await prompts_storage.get_any(pid)
+                pr = await _prompts.get_any(pid)
                 if not pr:
                     continue
                 # No revelar nombres de prompts privados ajenos en la vista
                 # previa pública, aunque el agente que los usa sí sea público.
-                if pr.get("scope") != "public" and not await shares.is_accessible(
-                    groups,
+                if pr.get("scope") != "public" and not await _shares.is_accessible(
+                    _groups,
                     resource_type="prompt",
                     resource_id=pid,
                     owner_id=pr.get("owner_id"),
@@ -224,16 +242,15 @@ async def explore_preview(
                 ):
                     continue
                 prompt_names.append(pr.get("name", pid))
-            tools_storage = ToolStorage()
             tool_names = []
             for tid in agent.get("tools", []):
-                tl = await tools_storage.get_any(tid)
+                tl = await _tools.get_any(tid)
                 if not tl:
                     continue
                 # No revelar nombres de tools privadas ajenas en la vista
                 # previa pública, aunque el agente que las usa sí sea público.
-                if tl.get("scope") != "public" and not await shares.is_accessible(
-                    groups,
+                if tl.get("scope") != "public" and not await _shares.is_accessible(
+                    _groups,
                     resource_type="tool",
                     resource_id=tid,
                     owner_id=tl.get("owner_id"),
@@ -251,24 +268,21 @@ async def explore_preview(
             base["agent_type"] = agent.get("agent_type", "")
 
     elif resource_type == "skill":
-        skills_storage = SkillStorage(_cfg.SKILLS_DIR)
-        sk = await skills_storage.get_any(resource_id)
+        sk = await _skills.get_any(resource_id)
         if sk:
             base["body"] = (sk.get("body") or "")[:3000]
             base["parameters"] = sk.get("parameters", [])
             base["icon"] = sk.get("icon", "")
 
     elif resource_type == "prompt":
-        prompts_storage = PromptStorage()
-        pr = await prompts_storage.get_any(resource_id)
+        pr = await _prompts.get_any(resource_id)
         if pr:
             base["content"] = (pr.get("content") or "")[:3000]
             base["alias"] = pr.get("alias", "")
             base["icon"] = pr.get("icon", "")
 
     elif resource_type == "tool":
-        tools_storage = ToolStorage()
-        tl = await tools_storage.get_any(resource_id)
+        tl = await _tools.get_any(resource_id)
         if tl:
             base["language"] = tl.get("language", "")
             base["binary_filename"] = tl.get("binary_filename")
@@ -278,8 +292,7 @@ async def explore_preview(
                 base["content"] = (tl.get("content") or "")[:3000]
 
     elif resource_type == "knowledge":
-        knowledge_storage = KnowledgeStorage()
-        item = await knowledge_storage.get(resource_id)
+        item = await _knowledge.get(resource_id)
         if item:
             base["content"] = (item.get("content") or "")[:2000]
             base["type"] = item.get("type", "")
@@ -287,13 +300,12 @@ async def explore_preview(
             base["char_count"] = item.get("char_count", 0)
 
     elif resource_type == "workflow":
-        workflow = await WorkflowStorage().get_any(resource_id)
+        workflow = await _workflows.get_any(resource_id)
         if workflow:
-            agents_storage = AgentStorage(_cfg.AGENTS_DIR)
             nodes = workflow.get("definition", {}).get("nodes", [])
             agent_names = []
             for node in nodes:
-                agent = await agents_storage.get(str(node.get("agent_id") or ""))
+                agent = await _agents.get(str(node.get("agent_id") or ""))
                 agent_names.append(
                     (agent.get("name") if agent else None)
                     or node.get("label")
@@ -376,8 +388,11 @@ async def user_resources(
         )
         if not target_id:
             raise APIError(404, "not_found", "Usuario no encontrado", extra={"resource": "user"})
-        conditions: List[str] = ["is_public = ?", "owner = ?"]
-        params: List[Any] = [_PUBLIC_VAL, target_id]
+        # Las publicaciones nuevas usan el id interno; las creadas antes de la
+        # migracion de identidad conservan el username en owner. El perfil
+        # publico debe mostrar ambas sin exigir republicar los recursos.
+        conditions: List[str] = ["is_public = ?", "owner IN (?, ?)"]
+        params: List[Any] = [_PUBLIC_VAL, target_id, target_username]
         if type and type != "all":
             conditions.append("resource_type = ?")
             params.append(type)
@@ -487,6 +502,7 @@ async def follow_status(
 async def get_feed(
     limit: int = 40,
     offset: int = 0,
+    response: Response = None,  # type: ignore[assignment]
     type: Optional[str] = None,
     username: str = Depends(require_auth),
 ) -> List[Dict[str, Any]]:
@@ -502,6 +518,11 @@ async def get_feed(
             conditions.append("resource_type = ?")
             params.append(type)
         where = " AND ".join(conditions)
+        if response is not None:
+            total = await conn.fetchval(
+                f"SELECT COUNT(*) FROM resource_social WHERE {where}", tuple(params)
+            )
+            response.headers[TOTAL_HEADER] = str(total or 0)
         params.extend([limit, offset])
         raw = await conn.fetchall(
             f"SELECT resource_type, resource_id, owner, name, description, category, "

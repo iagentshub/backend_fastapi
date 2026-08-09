@@ -48,5 +48,14 @@ ENV GAIA_RELOAD=false
 # nada mientras el proceso era root, porque podía crear /iAgents sin quejarse.
 ENV GAIA_DATA_DIR=/data
 
+# /api/health devuelve 503 cuando la BD no responde, pero sin HEALTHCHECK el
+# endpoint existía y nadie lo consultaba desde la infraestructura.
+#
+# start-period generoso a propósito: en un arranque limpio el backend migra el
+# esquema entero antes de responder, y con uno corto Docker lo reiniciaría en
+# bucle justo durante esa migración.
+HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
+  CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8765/api/health', timeout=4).status == 200 else 1)"
+
 ENTRYPOINT ["/app/docker-entrypoint.sh"]
 CMD ["python", "main.py"]

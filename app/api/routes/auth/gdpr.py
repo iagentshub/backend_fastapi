@@ -10,6 +10,7 @@ from app.api.routes.auth.dependencies import require_auth
 from app.auth.auth import get_user_by_id
 from app.auth.gdpr import cancel_user_deletion, get_owned_groups, schedule_user_deletion
 from app.errors import APIError
+from app.middleware.locale import get_locale
 from app.utils.net import json_body
 
 router = APIRouter()
@@ -38,7 +39,7 @@ async def request_account_deletion(
             "Transfiere o elimina tus grupos antes de borrar la cuenta",
             extra={"groups": owned},
         )
-    await schedule_user_deletion(username)
+    await schedule_user_deletion(username, lang=get_locale())
     return {"ok": True, "message": "Cuenta programada para eliminación en 30 días"}
 
 

@@ -6,8 +6,9 @@ import asyncio
 from typing import Any, Dict, List, Optional, Set
 
 import httpx
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Query, Request, Response
 
+from app.api.pagination import paginar
 from app.api.routes.auth import (
     GroupContext,
     require_auth,
@@ -423,6 +424,7 @@ async def list_connections(
     include_inactive: bool = False,
     limit: int = Query(0, ge=0, description="Máx. items. 0 = sin límite"),
     offset: int = Query(0, ge=0),
+    response: Response = None,  # type: ignore[assignment]
     ctx: GroupContext = Depends(require_group_session),
 ) -> List[Dict[str, Any]]:
     user, active_group_id = ctx.user, ctx.group_id
@@ -473,19 +475,18 @@ async def list_connections(
         # punto — si no, un usuario sin membresía "real" en el group
         # activo (p. ej. justo tras cambiar de group) pierde el acceso a
         # sus propias conexiones personales.
+        # Un solo SELECT sobre group_members para las dos listas: la fila del
+        # miembro es la misma para todas las conexiones.
+        permitido = await _groups.permission_checker(active_group_id, user)
         non_ollama = [
             connection for connection in non_ollama
             if connection.get("owner_id") == user
-            or await _groups.has_resource_permission(
-                active_group_id, user, "connections", connection["id"], "direct"
-            )
+            or permitido("connections", connection["id"], "direct")
         ]
         ollama_raw = [
             connection for connection in ollama_raw
             if connection.get("owner_id") == user
-            or await _groups.has_resource_permission(
-                active_group_id, user, "connections", connection["id"], "direct"
-            )
+            or permitido("connections", connection["id"], "direct")
         ]
 
     result: List[Dict[str, Any]] = [
@@ -495,10 +496,7 @@ async def list_connections(
     if ollama_raw:
         result.extend(await _ollama_conns_to_models(ollama_raw))
 
-    if offset:
-        result = result[offset:]
-    if limit:
-        result = result[:limit]
+    result = paginar(result, limit, offset, response)
     return result
 
 
@@ -520,6 +518,19 @@ async def save_connection(
             "Tipo de conexión no válido",
             extra={"field": "connection_type"},
         )
+
+    # SSRF: `url` es el destino al que el chat hace POST más tarde. Se valida
+    # aquí y también antes de cada stream, porque las conexiones que ya están
+    # en la BD no vuelven a pasar por el alta. Ollama queda fuera a propósito:
+    # usa `host` y un servidor en loopback es su caso de uso normal.
+    conn_url = str(payload.get("url") or "").strip()
+    if conn_url and (payload.get("type") or "").lower() != "ollama":
+        try:
+            assert_safe_url(conn_url)
+        except ValueError as exc:
+            raise APIError(
+                422, "unsafe_url", str(exc), extra={"field": "url"}
+            ) from exc
 
     # Las conexiones son siempre privadas — se pueden compartir con un group completo
     labels = [lbl for lbl in (payload.get("labels") or []) if lbl != "public"]

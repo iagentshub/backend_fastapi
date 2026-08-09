@@ -14,6 +14,7 @@ from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
+from app.api.pagination import paginar
 from app.api.routes.auth import (
     GroupContext,
     require_auth,
@@ -212,25 +213,52 @@ def _check_scope(scope: str) -> None:
         )
 
 
+# (scope, agent_id, locale) -> (mtime del fichero, overrides ya parseados).
+# `_apply_locale` se llama una vez por agente listado y hacía dos Path.exists()
+# síncronos por agente —más un read_text cuando el fichero estaba—, o sea I/O
+# bloqueante dentro de una corrutina: cada stat() detiene el event loop entero,
+# no solo esta petición. Y los overlays casi nunca existen, así que era trabajo
+# puro. Se cachea por mtime: un stat por overlay real en vez de dos por agente.
+_LOCALE_CACHE: "Dict[tuple[str, str, str], tuple[float, Dict[str, Any]]]" = {}
+
+
+def _locale_overrides(scope: str, agent_id: str, locale: str) -> Dict[str, Any]:
+    """Overlay de un locale concreto; {} si no existe o no es un objeto JSON."""
+    ruta = AGENTS_DIR / scope / agent_id / f"locale.{locale}.json"
+    try:
+        mtime = ruta.stat().st_mtime
+    except OSError:
+        return {}
+    clave = (scope, agent_id, locale)
+    guardado = _LOCALE_CACHE.get(clave)
+    if guardado is not None and guardado[0] == mtime:
+        return guardado[1]
+    try:
+        datos = json.loads(ruta.read_text(encoding="utf-8"))
+        if not isinstance(datos, dict):
+            raise TypeError("el fichero de locale no contiene un objeto JSON")
+    except (OSError, UnicodeError, json.JSONDecodeError, TypeError) as exc:
+        # Mismo trato que antes: se avisa y se sigue, no se propaga.
+        flog.warning(f"[agents] Locale omitido {ruta}: {exc}")
+        datos = {}
+    _LOCALE_CACHE[clave] = (mtime, datos)
+    return datos
+
+
 def _apply_locale(agent: Dict[str, Any], locale: str) -> Dict[str, Any]:
     """Overlay locale-specific fields from locale.<lang>.json if present."""
     if not agent:
         return agent
     scope = agent.get("scope", "public")
     agent_id = agent.get("id", "")
-    locale_path = AGENTS_DIR / scope / agent_id / f"locale.{locale}.json"
-    if not locale_path.exists() and locale != "es":
-        locale_path = AGENTS_DIR / scope / agent_id / "locale.es.json"
-    if locale_path.exists():
-        try:
-            overrides = json.loads(locale_path.read_text(encoding="utf-8"))
-            if not isinstance(overrides, dict):
-                raise TypeError("el fichero de locale no contiene un objeto JSON")
-            for field in _LOCALE_FIELDS:
-                if field in overrides:
-                    agent = {**agent, field: overrides[field]}
-        except (OSError, UnicodeError, json.JSONDecodeError, TypeError) as exc:
-            flog.warning(f"[agents] Locale omitido {locale_path}: {exc}")
+    overrides = _locale_overrides(scope, agent_id, locale)
+    # El fallback al español tiene semántica: si el idioma pedido no tiene
+    # overlay, se usa locale.es.json.
+    if not overrides and locale != "es":
+        overrides = _locale_overrides(scope, agent_id, "es")
+    for field in _LOCALE_FIELDS:
+        if field in overrides:
+            agent = {**agent, field: overrides[field]}
     return agent
 
 
@@ -243,6 +271,7 @@ async def list_agents(
     include_inactive: bool = False,
     limit: int = Query(0, ge=0, description="Máx. items. 0 = sin límite"),
     offset: int = Query(0, ge=0),
+    response: Response = None,  # type: ignore[assignment]
     ctx: GroupContext = Depends(require_group_session),
 ) -> List[Dict[str, Any]]:
     _check_scope(scope)
@@ -257,24 +286,20 @@ async def list_agents(
             items = [agent for agent in items if agent.get("is_active", True)]
         if label:
             items = [a for a in items if label in (a.get("labels") or [])]
-        if offset:
-            items = items[offset:]
-        if limit:
-            items = items[:limit]
+        items = paginar(items, limit, offset, response)
         result: List[Dict[str, Any]] = []
         for a in items:
             a = _apply_locale(a, locale)
             a["origin_type"] = compute_origin_type(a)
             result.append(a)
         return result
-    agents = await _agents.list(scope)
     role = await get_user_role(user)
     if group_id is not None:
         # Filtro por grupo: se aplica siempre, incluido admin
         if role != "admin" and not await _groups.can_access(group_id, user):
             raise APIError(403, "forbidden", "Sin acceso a este grupo")
         shared_ids = set(await _shares.get_group_shared_resource_ids(group_id, "agent"))
-        agents = [a for a in agents if a["id"] in shared_ids]
+        agents = await _agents.list_visible(scope, resource_ids=list(shared_ids))
         for a in agents:
             a["_shared"] = True
             a["_group_id"] = group_id
@@ -284,12 +309,6 @@ async def list_agents(
         # no filtrar aquí exponía agentes privados de otros usuarios sin marcar como ajenos)
         # En group de equipo (group_id != user), owner_id puede ser el UUID del group.
         group_id = ctx.group_id
-        own = [
-            a
-            for a in agents
-            if a.get("owner_id") == user or a.get("owner_id") == group_id
-        ]
-        own_ids = {a["id"] for a in own}
         user_groups = await _groups.list_for_user(user)
 
         # Paralelizar todas las queries de shares (una por grupo) en lugar de N+1 serial
@@ -310,6 +329,21 @@ async def list_agents(
                         shared_map[rid] = gid
         else:
             shared_map = {}
+
+        # Los tres orígenes de la vista se piden a la BD en una sola consulta,
+        # en vez de traer la tabla entera y descartar en Python lo que no es de
+        # este usuario.
+        agents = await _agents.list_visible(
+            scope,
+            owner_ids=[user, group_id] if group_id != user else [user],
+            resource_ids=list(shared_map),
+        )
+        own = [
+            a
+            for a in agents
+            if a.get("owner_id") == user or a.get("owner_id") == group_id
+        ]
+        own_ids = {a["id"] for a in own}
 
         # Paralelizar las consultas owner_is_active para agentes compartidos
         extra_candidates = [
@@ -340,17 +374,11 @@ async def list_agents(
         # Los compartidos ajenos nunca se muestran inactivos.
         agents = [a for a in agents if a.get("is_active", True)]
     if ctx.group_id != user and role != "admin":
-        agents = [
-            agent
-            for agent in agents
-            if await _groups.has_resource_permission(
-                ctx.group_id, user, "agents", agent["id"], "use"
-            )
-        ]
-    if offset:
-        agents = agents[offset:]
-    if limit:
-        agents = agents[:limit]
+        # Una consulta a group_members para los N agentes, no una por agente:
+        # la fila del miembro (y su JSON de permisos) es la misma para todos.
+        permitido = await _groups.permission_checker(ctx.group_id, user)
+        agents = [a for a in agents if permitido("agents", a["id"], "use")]
+    agents = paginar(agents, limit, offset, response)
     enriched: List[Dict[str, Any]] = []
     for a in agents:
         a = _apply_locale(a, locale)

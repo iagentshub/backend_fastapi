@@ -7,9 +7,11 @@ import os
 from contextlib import asynccontextmanager
 
 from fastapi import FastAPI
+from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.api.pagination import TOTAL_HEADER
 from app.api.routes import (
     accounts,
     agent_builder,
@@ -134,6 +136,9 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
+        # Sin esto el navegador no deja leer X-Total-Count en una petición
+        # cross-origin y el paginador recibe siempre un total vacío, sin error.
+        expose_headers=[TOTAL_HEADER],
     )
 
     @app.exception_handler(ValueError)
@@ -156,6 +161,28 @@ def create_app() -> FastAPI:
                 "detail": {
                     "code": "invalid_operation",
                     "message": "Operación no válida",
+                }
+            },
+        )
+
+    @app.exception_handler(RequestValidationError)
+    async def _validation_handler(request, exc: RequestValidationError):
+        # El tercer formato de error que nadie eligió: Pydantic responde
+        # {"detail": [{type, loc, msg, input}]}, una lista donde el resto de la
+        # API pone el objeto {code, message} que el cliente sabe traducir. Con
+        # la lista, el cliente Flutter cae a su fallback y el usuario ve
+        # "Error 422" sin decirle qué campo falla.
+        primero = (exc.errors() or [{}])[0]
+        # loc[0] es siempre el origen ("body", "query", "path"); el nombre del
+        # campo empieza en el segundo elemento.
+        campo = ".".join(str(p) for p in primero.get("loc", [])[1:])
+        return JSONResponse(
+            status_code=422,
+            content={
+                "detail": {
+                    "code": "invalid_field",
+                    "message": f"Campo inválido: {campo}" if campo else "Petición inválida",
+                    "field": campo,
                 }
             },
         )
@@ -215,9 +242,19 @@ def create_app() -> FastAPI:
             async with open_db() as conn:
                 await conn.fetchval("SELECT 1")
             db_ok = True
-        except Exception:
+        except Exception as exc:
             db_ok = False
-        status = "ok" if db_ok else "degraded"
-        return {"status": status, "db": db_ok, "version": os.environ.get("GAIA_VERSION", "dev")}
+            # El fallo no dejaba rastro: except pelado y ni una línea de log.
+            flog.error(f"[health] la BD no responde: {exc}")
+        cuerpo = {
+            "status": "ok" if db_ok else "degraded",
+            "db": db_ok,
+            "version": os.environ.get("GAIA_VERSION", "dev"),
+        }
+        # Un balanceador, el HEALTHCHECK de Docker o una sonda de Kubernetes
+        # leen el CÓDIGO, no el cuerpo: con un 200 el nodo seguía en el pool
+        # recibiendo tráfico que no podía atender. Sin BD este proceso no sirve
+        # para nada, así que que lo saquen.
+        return JSONResponse(cuerpo, status_code=200 if db_ok else 503)
 
     return app

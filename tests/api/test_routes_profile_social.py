@@ -40,7 +40,7 @@ def test_perfil_publico_devuelve_campos(client):
     data = r.json()
     assert data["username"] == "perfiluser"
     assert data["bio"] == "Bio pública"
-    assert "es" in data["languages"]
+    assert data["languages"] == ["es"]
     assert data["github"] == "https://github.com/perfilgh"
     assert "joined_at" in data
 

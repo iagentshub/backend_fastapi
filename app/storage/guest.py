@@ -57,8 +57,14 @@ def is_guest(user: str) -> bool:
 
 
 def get_session(guest_id: str) -> GuestSession:
-    """Devuelve la sesión en memoria del guest, creándola si no existe. Limpia las expiradas."""
-    from fastapi import HTTPException
+    """Devuelve la sesión en memoria del guest, creándola si no existe. Limpia las expiradas.
+
+    Ojo: `_sessions` es un dict de ESTE proceso y producción arranca varios
+    workers (ver el aviso de arranque en main.py). Sin sticky sessions en el
+    proxy, el mismo invitado puede caer en otro worker y encontrarse una sesión
+    vacía.
+    """
+    from app.errors import APIError
 
     now = time.time()
     # Limpiar siempre, no solo cuando hay demasiadas sesiones
@@ -67,8 +73,10 @@ def get_session(guest_id: str) -> GuestSession:
         del _sessions[k]
     if guest_id not in _sessions:
         if len(_sessions) >= MAX_SESSIONS:
-            raise HTTPException(
-                status_code=503, detail="Servidor saturado. Inténtalo más tarde."
+            raise APIError(
+                503,
+                "server_busy",
+                "Servidor saturado. Inténtalo más tarde.",
             )
         _sessions[guest_id] = GuestSession()
     return _sessions[guest_id]

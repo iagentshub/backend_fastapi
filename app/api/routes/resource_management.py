@@ -6,12 +6,12 @@ import asyncio
 import json
 from typing import Any, Dict, Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.api.routes.auth import GroupContext, require_group
-from app.config.data import AGENTS_DIR, DB_FILE
+from app.config.data import AGENTS_DIR, SKILLS_DIR
 from app.errors import APIError
 from app.services.workflow_run_executor import start_workflow_run
 from app.services.workflow_runner import run_workflow
@@ -28,7 +28,7 @@ from app.utils.origin import compute_origin_type
 
 router = APIRouter(prefix="/api", tags=["resource-management"])
 _agents = AgentStorage(AGENTS_DIR)
-_skills = SkillStorage(DB_FILE)
+_skills = SkillStorage(SKILLS_DIR)
 _versions = ResourceVersionStorage()
 _workflows = WorkflowStorage()
 _shares = GroupShareStorage()
@@ -50,7 +50,12 @@ class WorkflowRunBody(BaseModel):
 
 def _check_type(resource_type: str) -> Literal["agent", "skill"]:
     if resource_type not in ("agent", "skill"):
-        raise HTTPException(status_code=404, detail="Tipo de recurso no válido")
+        raise APIError(
+            404,
+            "invalid_resource_type",
+            "Tipo de recurso no válido",
+            extra={"type": resource_type},
+        )
     return resource_type  # type: ignore[return-value]
 
 
@@ -64,9 +69,13 @@ async def _owned_resource(
         else await _skills.get_any(resource_id)
     )
     if not resource:
-        raise HTTPException(status_code=404, detail="Recurso no encontrado")
+        raise APIError(
+            404, "not_found", "Recurso no encontrado", extra={"resource": kind}
+        )
     if resource.get("owner_id") != owner_id:
-        raise HTTPException(status_code=403, detail="Solo el propietario puede modificarlo")
+        raise APIError(
+            403, "forbidden", "Solo el propietario puede modificarlo"
+        )
     return resource
 
 
@@ -92,7 +101,9 @@ async def version_detail(
         _check_type(resource_type), resource_id, ctx.group_id, version
     )
     if not item:
-        raise HTTPException(status_code=404, detail="Versión no encontrada")
+        raise APIError(
+            404, "not_found", "Versión no encontrada", extra={"resource": "version"}
+        )
     return item
 
 
@@ -108,7 +119,9 @@ async def restore_version(
         _check_type(resource_type), resource_id, ctx.group_id, version
     )
     if not item:
-        raise HTTPException(status_code=404, detail="Versión no encontrada")
+        raise APIError(
+            404, "not_found", "Versión no encontrada", extra={"resource": "version"}
+        )
     snapshot = {**item["snapshot"], "id": resource_id}
     if resource_type == "agent":
         saved = await _agents.save(snapshot, "private", ctx.group_id)
@@ -192,7 +205,12 @@ async def get_workflow(
 ) -> Dict[str, Any]:
     item = await _accessible_workflow(workflow_id, ctx)
     if not item:
-        raise HTTPException(status_code=404, detail="Orquestación no encontrada")
+        raise APIError(
+            404,
+            "not_found",
+            "Orquestación no encontrada",
+            extra={"resource": "workflow"},
+        )
     item["origin_type"] = compute_origin_type(item)
     return item
 
@@ -206,9 +224,11 @@ async def save_workflow(
     if workflow_id:
         existing = await _workflows.get_any(workflow_id)
         if existing and existing["owner_id"] != ctx.group_id:
-            raise HTTPException(
-                status_code=403,
-                detail="Las orquestaciones compartidas son de solo lectura",
+            raise APIError(
+                403,
+                "forbidden",
+                "Las orquestaciones compartidas son de solo lectura",
+                extra={"resource": "workflow"},
             )
         if not existing:
             # Un id entrante solo es válido para editar una fila existente;
@@ -217,7 +237,9 @@ async def save_workflow(
     try:
         definition = validate_workflow(body.definition)
     except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        raise APIError(
+            422, "invalid_workflow", str(exc), extra={"field": "definition"}
+        ) from exc
     return await _workflows.save(
         ctx.group_id,
         {
@@ -236,7 +258,12 @@ async def delete_workflow(
     ctx: GroupContext = Depends(require_group),
 ) -> Dict[str, bool]:
     if not await _workflows.delete(workflow_id, ctx.group_id):
-        raise HTTPException(status_code=404, detail="Orquestación no encontrada")
+        raise APIError(
+            404,
+            "not_found",
+            "Orquestación no encontrada",
+            extra={"resource": "workflow"},
+        )
     return {"ok": True}
 
 
@@ -244,7 +271,12 @@ async def _set_workflow_active(
     workflow_id: str, active: bool, ctx: GroupContext
 ) -> Dict[str, Any]:
     if not await _workflows.set_active(workflow_id, ctx.group_id, active):
-        raise HTTPException(status_code=404, detail="Orquestación no encontrada")
+        raise APIError(
+            404,
+            "not_found",
+            "Orquestación no encontrada",
+            extra={"resource": "workflow"},
+        )
     estado = "activada" if active else "desactivada"
     flog.info(f"Orquestación {estado}: {workflow_id}", username=ctx.user)
     return {"ok": True, "is_active": active}
@@ -267,7 +299,12 @@ async def deactivate_workflow(
 async def _prepare_workflow_run(workflow_id: str, ctx: GroupContext):
     workflow = await _accessible_workflow(workflow_id, ctx)
     if not workflow:
-        raise HTTPException(status_code=404, detail="Orquestación no encontrada")
+        raise APIError(
+            404,
+            "not_found",
+            "Orquestación no encontrada",
+            extra={"resource": "workflow"},
+        )
     if not workflow.get("is_active", True):
         raise APIError(
             409, "resource_inactive", "Esta orquestación está desactivada",
@@ -276,9 +313,11 @@ async def _prepare_workflow_run(workflow_id: str, ctx: GroupContext):
     try:
         definition = validate_workflow(workflow["definition"])
     except ValueError as exc:
-        raise HTTPException(
-            status_code=422,
-            detail=f"La orquestación guardada ya no es válida: {exc}",
+        raise APIError(
+            422,
+            "invalid_workflow",
+            f"La orquestación guardada ya no es válida: {exc}",
+            extra={"resource": "workflow"},
         ) from exc
 
     async def resolve(agent_id: str):

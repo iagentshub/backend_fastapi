@@ -97,8 +97,13 @@ def test_agent_public_label_sets_is_public_1(client):
     assert "public" in row["labels"]
 
 
-def test_agent_private_label_sets_is_public_0(client):
-    """Test 3: labels=["private"] + PUT visibility → resource_social.is_public = 0."""
+def test_agent_private_label_rechaza_publicar(client):
+    """Test 3: labels=["private"] + PUT visibility → 409, no un "ok" vacío.
+
+    Antes se insertaba la fila con is_public=0 y se respondía {"ok": true}: el
+    usuario veía la confirmación y su agente no aparecía en el catálogo. La
+    label sigue siendo la fuente de verdad, pero ahora se dice.
+    """
     user = _login(client, "labels_t3")
     agent = _create_agent(client, "Private Label Agent", labels=["private"])
     agent_id = agent["id"]
@@ -107,12 +112,14 @@ def test_agent_private_label_sets_is_public_0(client):
         f"/api/agents/private/{agent_id}/visibility",
         json={"is_public": True, "category": "Data", "trial_missing_deps": "warn"},
     )
-    assert r.status_code == 200
+    assert r.status_code == 409
+    detail = r.json()["detail"]
+    assert detail["code"] == "resource_not_marked_public"
+    assert detail["missing_label"] == "public"
 
-    row = _get_social_row(agent_id, user)
-    assert row is not None, "Debe existir fila en resource_social"
-    assert row["is_public"] in (0, False), f"is_public debe ser 0, got {row['is_public']}"
-    assert "private" in row["labels"]
+    assert _get_social_row(agent_id, user) is None, (
+        "no debe quedar fila en resource_social de una publicación rechazada"
+    )
 
 
 def test_list_agents_filtered_by_label(client):

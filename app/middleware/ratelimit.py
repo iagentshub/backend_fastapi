@@ -15,6 +15,10 @@ from app.utils.net import client_ip as _client_ip
 # una lista a mano (la de conftest se había quedado corta en 4 de 13).
 INSTANCES: list["RateLimiter"] = []
 
+# Suelo del reparto entre workers: ningún límite puede quedar por debajo de dos
+# intentos por proceso. Uno solo convierte cualquier equivocación en un 429.
+_MIN_CALLS = 2
+
 
 class RateLimiter:
     """Dependencia FastAPI: limita N llamadas por ventana de tiempo por IP.
@@ -40,9 +44,19 @@ class RateLimiter:
         # multiplicado por WORKERS (con el default de 4: 5 intentos de login
         # se convertían en 20). Se reparte la cuota entre ellos.
         #
-        # ponytail: sigue siendo por proceso y se pierde al reiniciar. Estado
-        # compartido en Redis/BD solo si el reparto se queda corto — medir antes.
-        self._calls = max(1, calls // _WORKERS)
+        # El reparto se redondea hacia ARRIBA, no hacia abajo: con calls=5 y 4
+        # workers, `5 // 4 = 1` dejaba un solo intento por proceso, así que
+        # quien se equivocaba una vez de contraseña y reintentaba sobre la misma
+        # conexión keep-alive recibía un 429 con Retry-After: 300. Afectaba a
+        # login, registro, alta de invitado y recuperación de contraseña, los
+        # cuatro con límite 5. Pasarse un poco del límite declarado (8 en el
+        # cluster en vez de 5) es preferible a bloquear al usuario legítimo.
+        #
+        # ponytail: sigue siendo por proceso y se pierde al reiniciar. Si el
+        # límite tiene que ser EXACTO —para el login probablemente deba serlo—
+        # el contador tiene que salir del proceso (Redis/BD), que es otra
+        # conversación.
+        self._calls = max(_MIN_CALLS, math.ceil(calls / _WORKERS))
         self._window = window
         self._key_func = key_func
         self._data: OrderedDict[str, deque[float]] = OrderedDict()

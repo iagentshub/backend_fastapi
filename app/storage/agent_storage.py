@@ -201,6 +201,58 @@ class AgentStorage(ResourceStorage):
                 )
         return [self._row_to_dict(r) for r in rows]
 
+    async def list_visible(
+        self,
+        scope: str = "all",
+        *,
+        owner_ids: "Optional[List[str]]" = None,
+        resource_ids: "Optional[List[str]]" = None,
+    ) -> List[Dict[str, Any]]:
+        """Solo las filas que el llamador puede llegar a ver.
+
+        ``list("all")`` traía la tabla entera —todos los agentes de todos los
+        usuarios de la instancia— para que el router descartase en Python casi
+        todo lo leído. El coste de un listado crecía con el tamaño del hub y no
+        con lo que tiene quien pregunta.
+
+        ``owner_ids`` son los propietarios visibles (el usuario y su group
+        activo) y ``resource_ids`` los agentes ajenos compartidos con él vía
+        ``resource_group_shares``. Sin ninguna de las dos condiciones no hay
+        nada que devolver, y decirlo aquí evita un ``IN ()`` vacío.
+
+        El recorte por permisos de group, por label y por ``is_active`` sigue
+        en el router: son filtros que ocurren antes de paginar y moverlos a SQL
+        sin moverlos todos dejaría huecos en las páginas.
+        """
+        await self._ensure_migrated()
+
+        condiciones: List[str] = []
+        params: List[Any] = []
+        if owner_ids:
+            marcas = ",".join("?" for _ in owner_ids)
+            condiciones.append(f"owner_id IN ({marcas})")
+            params.extend(owner_ids)
+        if resource_ids:
+            marcas = ",".join("?" for _ in resource_ids)
+            condiciones.append(f"id IN ({marcas})")
+            params.extend(resource_ids)
+        if not condiciones:
+            return []
+
+        sql = (
+            "SELECT id, owner_id, name, scope, data, tokens_in, tokens_out, "
+            "is_active, deactivated_at, created_at, updated_at FROM agents "
+            f"WHERE ({' OR '.join(condiciones)})"
+        )
+        if scope in ("public", "private"):
+            sql += " AND scope=?"
+            params.append(scope)
+        sql += " ORDER BY created_at ASC"
+
+        async with open_db() as conn:
+            rows = await conn.fetchall(sql, tuple(params))
+        return [self._row_to_dict(r) for r in rows]
+
     async def get(
         self, agent_id: str, scope: Optional[str] = None, owner_id: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:

@@ -30,7 +30,7 @@ from app.config.providers import (
     PROVIDER_BASE_URLS,
     PROVIDER_DEFAULT_MODELS,
 )
-from app.config.security import PRIVATE_HOST_PREFIXES
+from app.config.security import PRIVATE_HOST_PREFIXES, assert_safe_url
 from app.utils import flog
 
 _NVIDIA_DEEPSEEK_V4_MODELS = {
@@ -379,6 +379,49 @@ def _do_ollama_call(
     return full_reply, tok_in, tok_out
 
 
+class UnsafeProviderURL(ValueError):
+    """La URL configurada en la conexión apunta a la red interna."""
+
+
+def _assert_provider_url(url: str) -> None:
+    """SSRF: la URL de un proveedor la escribe el usuario y apunta fuera.
+
+    Ollama es la excepción deliberada (``_validate_ollama_host``): un servidor
+    en ``localhost`` es su caso de uso normal. El resto de proveedores son
+    servicios remotos, así que una URL hacia la red interna del despliegue solo
+    puede ser un intento de alcanzarla a través del backend.
+    """
+    try:
+        assert_safe_url(url)
+    except ValueError as exc:
+        raise UnsafeProviderURL(
+            f"La URL de la conexión no está permitida: {exc}"
+        ) from exc
+
+
+# Claves donde los proveedores ponen el mensaje pensado para enseñar al usuario
+# ("modelo no encontrado", "cuota agotada"). Lo que no encaje en esta forma es
+# cuerpo ajeno —y con una URL apuntando dentro, contenido de la red interna—,
+# así que no se reenvía.
+def _detalle_publico(body: str) -> str:
+    """Extrae el mensaje de negocio del proveedor; nunca el cuerpo crudo."""
+    try:
+        parsed = json.loads(body)
+    except (json.JSONDecodeError, TypeError):
+        return "sin detalle utilizable en la respuesta."
+    if not isinstance(parsed, dict):
+        return "sin detalle utilizable en la respuesta."
+    error = parsed.get("error") or {}
+    detail = (
+        parsed.get("detail")
+        or parsed.get("message")
+        or (error.get("message") if isinstance(error, dict) else error)
+    )
+    if not isinstance(detail, str) or not detail.strip():
+        return "sin detalle utilizable en la respuesta."
+    return detail.strip()[:500]
+
+
 def _validate_ollama_host(host: str) -> None:
     """Rechaza hosts que apunten a rangos privados o de metadata de cloud (SSRF)."""
     parsed = urlparse(host)
@@ -560,6 +603,7 @@ async def stream_chat(
                 conn_type,
                 str(conn.get("url") or ""),
             )
+            _assert_provider_url(url)
             msgs: List[Dict[str, Any]] = []
             if system:
                 msgs.append({"role": "system", "content": system})
@@ -604,6 +648,7 @@ async def stream_chat(
             ).strip()
             if not url.endswith("/messages"):
                 url = url.rstrip("/") + "/messages"
+            _assert_provider_url(url)
             payload = {
                 "model": model,
                 "messages": history,
@@ -659,21 +704,27 @@ async def stream_chat(
             {"type": "done", "reply": reply, "tokens": {"in": tok_in, "out": tok_out}}
         )
 
+    except UnsafeProviderURL as exc:
+        # La URL la escribió el propio usuario en su conexión: decírselo no
+        # filtra nada y es la única forma de que sepa qué arreglar.
+        flog.warning(
+            f"[chat] URL de proveedor bloqueada ({conn_type}): {exc}",
+            username=user_id or "-",
+        )
+        yield _sse(
+            {
+                "type": "error",
+                "code": "unsafe_url",
+                "message": str(exc),
+            }
+        )
     except urllib.error.HTTPError as exc:
         body = exc.read().decode("utf-8", errors="replace")
-        detail = body[:500]
-        try:
-            parsed = json.loads(body)
-        except json.JSONDecodeError:
-            parsed = {}
-        if isinstance(parsed, dict):
-            error = parsed.get("error") or {}
-            detail = (
-                parsed.get("detail")
-                or parsed.get("message")
-                or (error.get("message") if isinstance(error, dict) else error)
-                or detail
-            )
+        flog.error(
+            f"[chat] {conn_type} respondió HTTP {exc.code}: {body[:500]}",
+            username=user_id or "-",
+        )
+        detail = _detalle_publico(body)
         if exc.code == 404 and conn_type in OPENAI_COMPAT_URLS:
             detail = (
                 f"No se encontró el endpoint de chat o el modelo '{model}'. "
@@ -683,10 +734,35 @@ async def stream_chat(
         yield _sse(
             {
                 "type": "error",
+                "code": "provider_http_error",
                 "message": f"El proveedor respondió HTTP {exc.code}: {detail}",
             }
         )
     except urllib.error.URLError as exc:
-        yield _sse({"type": "error", "message": f"Error de conexión: {exc}"})
+        # `exc` lleva el host y el motivo del fallo de red: al log, no al
+        # navegador.
+        flog.error(
+            f"[chat] Fallo de red hacia {conn_type}: {exc}", username=user_id or "-"
+        )
+        yield _sse(
+            {
+                "type": "error",
+                "code": "provider_unreachable",
+                "message": "No se pudo contactar con el proveedor.",
+            }
+        )
     except Exception as exc:
-        yield _sse({"type": "error", "message": str(exc)})
+        # str(exc) puede llevar rutas, hosts internos o trozos de SQL. El resto
+        # de la API ya se protege así en app.py:131-175; el SSE se saltaba esa
+        # red porque la respuesta ya había empezado a emitirse.
+        flog.error(
+            f"[chat] Error no controlado: {type(exc).__name__}: {exc}",
+            username=user_id or "-",
+        )
+        yield _sse(
+            {
+                "type": "error",
+                "code": "internal_error",
+                "message": "Error interno al hablar con el proveedor.",
+            }
+        )

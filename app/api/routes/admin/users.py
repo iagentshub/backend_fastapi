@@ -108,6 +108,10 @@ async def admin_patch_user(
         email = user.get("email") if user else None
         if email:
             base_url = _public_base_url(request)
+            # A propósito SIN get_locale(): este correo lo dispara un admin, y
+            # el idioma que toca es el del destinatario, no el de quien pulsa el
+            # botón. La fila de `users` no guarda hoy un idioma de interfaz, así
+            # que se queda en el default hasta que exista ese campo.
             send_account_status_email(email, bool(updates["is_active"]), base_url)
     return {"ok": True}
 

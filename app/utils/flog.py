@@ -15,21 +15,28 @@ from pathlib import Path
 _OK = 25
 logging.addLevelName(_OK, "OK")
 
-_LOG_SCHEMA = """
-CREATE TABLE IF NOT EXISTS app_logs (
-    id       INTEGER PRIMARY KEY AUTOINCREMENT,
-    ts       REAL    NOT NULL,
-    date     TEXT    NOT NULL,
-    time     TEXT    NOT NULL,
-    ip       TEXT    NOT NULL DEFAULT '-',
-    username TEXT    NOT NULL DEFAULT '-',
-    level    TEXT    NOT NULL,
-    source   TEXT    NOT NULL DEFAULT 'BE',
-    summary  TEXT    NOT NULL
-);
-CREATE INDEX IF NOT EXISTS idx_al_ts   ON app_logs(ts DESC);
-CREATE INDEX IF NOT EXISTS idx_al_date ON app_logs(date);
-"""
+def _log_schema() -> str:
+    """El DDL de ``app_logs``, extraído del esquema real. Aquí no vive una copia.
+
+    Había una segunda definición de la tabla en este módulo, con dos índices
+    frente a los seis de ``schema.py``. No rompía nada —los ``CREATE INDEX IF
+    NOT EXISTS`` del esquema principal se ejecutan después y completan lo que
+    falta—, pero era la copia de flog la que creaba la tabla en un arranque
+    limpio (el handler se construye al importar, antes de ``init_db``), y los
+    cuatro índices que le faltaban son exactamente los que el visor de logs usa
+    para filtrar por nivel, usuario, IP y fuente.
+
+    flog sigue creando la tabla él mismo, porque sigue arrancando antes que
+    ``init_db``; lo que ya no hace es tener su propia idea de cómo es.
+    """
+    from app.storage.schema import SCHEMA_SQLITE
+
+    trozos = [
+        sentencia.strip() + ";"
+        for sentencia in SCHEMA_SQLITE.split(";")
+        if "app_logs" in sentencia
+    ]
+    return "\n".join(trozos)
 
 
 class _StdoutFmt(logging.Formatter):
@@ -67,7 +74,7 @@ class _DBHandler(logging.Handler):
         try:
             conn = sqlite3.connect(self._db, check_same_thread=False)
             conn.execute("PRAGMA journal_mode=WAL")
-            conn.executescript(_LOG_SCHEMA)
+            conn.executescript(_log_schema())
             conn.close()
         except Exception:
             # Sin tabla de logs el proceso arranca igual: el handler de stdout
@@ -141,14 +148,27 @@ class _DBHandler(logging.Handler):
 
 
 def log_db_path() -> Path | None:
-    """Devuelve la ruta a hub.db; None si GAIA_DATA_DIR no está definida.
+    """Ruta de la BD de logs: la MISMA que usa el resto del backend.
 
-    Alias mantenido por compatibilidad. La BD de logs ya es la BD principal.
+    Resolvía ``GAIA_DATA_DIR`` por su cuenta y devolvía ``None`` si no estaba
+    definida, mientras ``app/config/data.py`` sí tiene un valor por defecto para
+    la misma variable. El resultado eran dos formas de resolver la misma ruta en
+    el mismo proceso: sin ``GAIA_DATA_DIR`` el backend arrancaba y funcionaba con
+    normalidad, pero el panel ``/api/admin/logs`` salía siempre vacío y ningún
+    mensaje de error lo explicaba.
+
+    El import es diferido a propósito: ``flog`` se construye al importarse
+    (``_L = _build()``) y lo importa medio backend, así que traer
+    ``app.config.data`` al nivel superior lo metería en el grafo de imports de
+    todo el mundo — y ``tests/test_ciclos_de_import.py`` vigila justo eso.
     """
-    data = os.environ.get("GAIA_DATA_DIR", "").strip()
-    if not data:
+    try:
+        from app.config.data import DB_FILE
+    except Exception:
+        # Si la configuración aún no se puede importar, el handler de stdout
+        # sigue funcionando: quedarse sin logs en BD es mejor que no arrancar.
         return None
-    return Path(data) / "hub.db"
+    return DB_FILE
 
 
 def _build() -> logging.Logger:

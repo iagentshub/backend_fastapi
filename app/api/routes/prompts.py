@@ -4,8 +4,9 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Query, Request, Response
 
+from app.api.pagination import paginar
 from app.api.routes.auth import GroupContext, require_group, require_group_session
 from app.auth.auth import get_user_role
 from app.errors import APIError
@@ -53,6 +54,7 @@ async def list_prompts(
     include_inactive: bool = False,
     limit: int = Query(0, ge=0, description="Máx. items. 0 = sin límite"),
     offset: int = Query(0, ge=0),
+    response: Response = None,  # type: ignore[assignment]
     ctx: GroupContext = Depends(require_group_session),
 ) -> List[Dict[str, Any]]:
     user = ctx.user
@@ -66,10 +68,7 @@ async def list_prompts(
             items = [pr for pr in items if pr.get("is_active", True)]
         for pr in items:
             _mark_origin(pr, user, ctx.group_id)
-        if offset:
-            items = items[offset:]
-        if limit:
-            items = items[:limit]
+        items = paginar(items, limit, offset, response)
         return items
     items = await _storage.list(scope)
     role = await get_user_role(user)
@@ -112,10 +111,7 @@ async def list_prompts(
                 items.append(pr)
     if not include_inactive:
         items = [pr for pr in items if pr.get("is_active", True)]
-    if offset:
-        items = items[offset:]
-    if limit:
-        items = items[:limit]
+    items = paginar(items, limit, offset, response)
     for pr in items:
         _mark_origin(pr, user, ctx.group_id)
     return items

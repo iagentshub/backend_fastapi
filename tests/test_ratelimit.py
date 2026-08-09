@@ -93,12 +93,24 @@ def test_con_un_worker_el_limite_no_cambia(monkeypatch):
     assert rl.RateLimiter(calls=5, window=60)._calls == 5
 
 
-def test_nunca_baja_de_una_llamada(monkeypatch):
-    """Con más workers que llamadas la división daría 0 y cerraría el endpoint."""
+def test_nunca_baja_de_dos_llamadas(monkeypatch):
+    """Con un solo intento por worker, equivocarse una vez ya devuelve 429."""
     import app.middleware.ratelimit as rl
 
     monkeypatch.setattr(rl, "_WORKERS", 8)
-    assert rl.RateLimiter(calls=5, window=60)._calls == 1
+    assert rl.RateLimiter(calls=5, window=60)._calls == rl._MIN_CALLS == 2
+
+
+def test_el_reparto_redondea_hacia_arriba(monkeypatch):
+    """5 // 4 = 1 dejaba un único intento de login por proceso: ceil deja 2.
+
+    Pasarse del límite declarado (8 en el cluster en vez de 5) es preferible a
+    bloquear a quien solo se equivocó una vez de contraseña.
+    """
+    import app.middleware.ratelimit as rl
+
+    monkeypatch.setattr(rl, "_WORKERS", 4)
+    assert rl.RateLimiter(calls=5, window=60)._calls == 2
 
 
 def test_los_tests_corren_con_un_solo_worker():

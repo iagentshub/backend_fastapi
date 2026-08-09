@@ -22,6 +22,13 @@ from pathlib import Path
 os.environ["GAIA_DATA_DIR"] = tempfile.mkdtemp(prefix="gaia_test_collection_")
 os.environ["DATABASE_URL"] = ""
 
+# bcrypt con las 12 rondas de producción cuesta ~235 ms por hash, y la suite
+# tiene 141 puntos de registro de usuario: tests/auth se pasaba el 91% de su
+# tiempo (17,7 s de 19,5 s) esperando a bcrypt sin probar nada. 4 es el mínimo
+# que admite bcrypt. En producción el default sigue siendo 12 — ver el suelo y
+# el techo en app/config/session.py.
+os.environ["GAIA_BCRYPT_ROUNDS"] = "4"
+
 import pytest
 from fastapi.testclient import TestClient
 

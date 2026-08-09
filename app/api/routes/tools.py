@@ -20,6 +20,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, File, Query, Request, Response, UploadFile
 
+from app.api.pagination import paginar
 from app.api.routes.auth import GroupContext, require_group
 from app.auth.auth import get_user_role
 from app.errors import APIError
@@ -87,6 +88,7 @@ async def list_tools(
     include_inactive: bool = False,
     limit: int = Query(0, ge=0, description="Máx. items. 0 = sin límite"),
     offset: int = Query(0, ge=0),
+    response: Response = None,  # type: ignore[assignment]
     ctx: GroupContext = Depends(require_group),
 ) -> List[Dict[str, Any]]:
     user = ctx.user
@@ -130,10 +132,7 @@ async def list_tools(
                 items.append(tl)
     if not include_inactive:
         items = [tl for tl in items if tl.get("is_active", True)]
-    if offset:
-        items = items[offset:]
-    if limit:
-        items = items[:limit]
+    items = paginar(items, limit, offset, response)
     for tl in items:
         _mark_origin(tl, user, ctx.group_id)
         # Defensivo: list() ya usa include_content=False (sin binary_b64 en

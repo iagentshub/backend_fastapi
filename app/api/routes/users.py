@@ -7,8 +7,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Response
 
+from app.api.pagination import TOTAL_HEADER
 from app.api.routes.auth import require_auth
 from app.auth.auth import get_user_by_username
 from app.errors import APIError
@@ -65,16 +66,31 @@ async def search_users(
     q: str | None = None,
     limit: int = 20,
     offset: int = 0,
+    response: Response = None,  # type: ignore[assignment]
     username: str = Depends(require_auth),
 ) -> list[dict[str, Any]]:
     limit = min(limit, 50)
     async with open_db() as conn:
+        # El total va en cabecera (ver app/api/pagination.py). La página se
+        # recorta en SQL, así que hace falta su propio COUNT con el mismo WHERE.
+        if response is not None:
+            if q:
+                total = await conn.fetchval(
+                    "SELECT COUNT(*) FROM users u "
+                    "WHERE u.id != ? AND LOWER(u.username) LIKE LOWER(?)",
+                    (username, f"%{q}%"),
+                )
+            else:
+                total = await conn.fetchval(
+                    "SELECT COUNT(*) FROM users u WHERE u.id != ?", (username,)
+                )
+            response.headers[TOTAL_HEADER] = str(total or 0)
         if q:
             pattern = f"%{q}%"
             rows = await conn.fetchall(
                 "SELECT u.username, u.avatar, "
                 "(SELECT COUNT(*) FROM user_follows WHERE following = u.id) AS followers_count, "
-                "(SELECT COUNT(*) FROM resource_social WHERE owner = u.username AND is_public = 1) AS public_resources_count "
+                "(SELECT COUNT(*) FROM resource_social WHERE owner IN (u.id, u.username) AND is_public = 1) AS public_resources_count "
                 "FROM users u "
                 "WHERE u.id != ? AND LOWER(u.username) LIKE LOWER(?) "
                 "ORDER BY u.username LIMIT ? OFFSET ?",
@@ -84,7 +100,7 @@ async def search_users(
             rows = await conn.fetchall(
                 "SELECT u.username, u.avatar, "
                 "(SELECT COUNT(*) FROM user_follows WHERE following = u.id) AS followers_count, "
-                "(SELECT COUNT(*) FROM resource_social WHERE owner = u.username AND is_public = 1) AS public_resources_count "
+                "(SELECT COUNT(*) FROM resource_social WHERE owner IN (u.id, u.username) AND is_public = 1) AS public_resources_count "
                 "FROM users u "
                 "WHERE u.id != ? "
                 "ORDER BY u.username LIMIT ? OFFSET ?",

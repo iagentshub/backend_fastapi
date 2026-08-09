@@ -49,11 +49,24 @@ async def _assert_public(resource_type: str, source_id: str) -> None:
         raise APIError(403, "forbidden", "No tienes acceso a este recurso")
 
 
-_inherit_skills_store = SkillStorage(_cfg.SKILLS_DIR)
-_inherit_knowledge_store = KnowledgeStorage()
-_inherit_memory_store = MemoryStorage(_cfg.MEMORY_DIR)
-_inherit_prompts_store = PromptStorage()
-_inherit_tools_store = ToolStorage()
+# Singletons de módulo: construir un storage dentro de cada handler reejecutaba
+# su migración legacy (el flag era de instancia), y con ella un SELECT COUNT(*)
+# por petición. Mismo patrón que agents.py y connections.py.
+_agents_store = AgentStorage(_cfg.AGENTS_DIR)
+_skills_store = SkillStorage(_cfg.SKILLS_DIR)
+_prompts_store = PromptStorage()
+_tools_store = ToolStorage()
+_knowledge_store = KnowledgeStorage()
+_workflows_store = WorkflowStorage()
+_memory_store = MemoryStorage(_cfg.MEMORY_DIR)
+
+# Los storages que usa _inherit_resource_ids son estos mismos: eran una segunda
+# tanda de instancias con la misma configuración.
+_inherit_skills_store = _skills_store
+_inherit_knowledge_store = _knowledge_store
+_inherit_memory_store = _memory_store
+_inherit_prompts_store = _prompts_store
+_inherit_tools_store = _tools_store
 
 
 async def _inherit_resource_ids(
@@ -161,7 +174,7 @@ async def _inherit_workflow_agents(
 ) -> List[Dict[str, Any]]:
     """Al enlazar una orquestación, clona (o referencia) los agentes que usa,
     igual que _inherit_resource_ids hace con skills/knowledge de un agente."""
-    agents_storage = AgentStorage(_cfg.AGENTS_DIR)
+    agents_storage = _agents_store
     id_map: Dict[str, str] = {}
     new_nodes: List[Dict[str, Any]] = []
     for node in nodes:
@@ -214,7 +227,7 @@ async def _inherit_workflow_agents(
 async def _publish_skill_cascade(
     skill_id: str, username: str, owner_ids: set[str]
 ) -> None:
-    skill_storage = SkillStorage(_cfg.SKILLS_DIR)
+    skill_storage = _skills_store
     skill = await skill_storage.get_any(skill_id)
     if not skill or skill.get("owner_id") not in owner_ids:
         return
@@ -251,7 +264,7 @@ async def _publish_skill_cascade(
 async def _publish_tool_cascade(
     tool_id: str, username: str, owner_ids: set[str]
 ) -> None:
-    tool_storage = ToolStorage()
+    tool_storage = _tools_store
     tool = await tool_storage.get_any(tool_id)
     if not tool or tool.get("owner_id") not in owner_ids:
         return
@@ -288,7 +301,7 @@ async def _publish_tool_cascade(
 async def _publish_prompt_cascade(
     prompt_id: str, username: str, owner_ids: set[str]
 ) -> None:
-    prompt_storage = PromptStorage()
+    prompt_storage = _prompts_store
     prompt = await prompt_storage.get_any(prompt_id)
     if not prompt or prompt.get("owner_id") not in owner_ids:
         return
@@ -342,7 +355,7 @@ async def _cascade_publish_workflow(
     """Al publicar una orquestación, publica en cascada los agentes propios que usa
     (y, para cada uno, sus skills/conocimiento — ver _cascade_publish_agent)."""
     owner_ids = {str(workflow.get("owner_id") or ""), username, group_id} - {""}
-    agents_storage = AgentStorage(_cfg.AGENTS_DIR)
+    agents_storage = _agents_store
     seen: set[str] = set()
     for node in workflow.get("definition", {}).get("nodes", []):
         agent_id = str(node.get("agent_id") or "")
@@ -379,7 +392,7 @@ async def _cascade_publish_workflow(
                 "Other",
                 "warn",
                 json.dumps(agent.get("tags") or []),
-                1,
+                _PUBLIC_VAL,
                 json.dumps(labels),
             )
             await conn.commit()
@@ -410,6 +423,30 @@ def _check_category(cat: str) -> None:
             "invalid_field",
             f"Categoría inválida. Opciones: {CATEGORIES}",
             extra={"field": "category"},
+        )
+
+
+def _assert_publicable(resource_labels: List[str], resource_type: str) -> None:
+    """La label ``public`` manda: publicar sin ella no puede responder ``ok``.
+
+    Las cinco rutas de visibilidad calculaban ``is_public`` a partir de las
+    labels del recurso, no del ``is_public`` del cuerpo, así que un recurso sin
+    la label se insertaba en ``resource_social`` con ``is_public = 0`` y el
+    endpoint devolvía ``{"ok": true}``. Como un agente nace con
+    ``labels: ["private"]``, ese era el camino por defecto: el usuario pulsaba
+    «publicar», veía la confirmación, y su agente no aparecía en el catálogo ni
+    había nada que se lo explicara.
+
+    Se mantiene la label como fuente de verdad —cambiar eso invertiría la
+    decisión de diseño y afectaría a ``resource_labels``— pero se deja de
+    responder afirmativamente a una petición que no se ha atendido.
+    """
+    if "public" not in (resource_labels or []):
+        raise APIError(
+            409,
+            "resource_not_marked_public",
+            "Marca el recurso como público antes de publicarlo en el catálogo.",
+            extra={"resource": resource_type, "missing_label": "public"},
         )
 
 
@@ -531,18 +568,18 @@ async def set_agent_visibility(
             "trial_missing_deps debe ser 'warn' o 'silent'",
             extra={"field": "trial_missing_deps"},
         )
-    agents = AgentStorage(_cfg.AGENTS_DIR)
+    agents = _agents_store
     agent = await agents.get(agent_id, scope)
     if not agent:
         raise APIError(
             404, "not_found", "Agente no encontrado", extra={"resource": "agent"}
         )
     resource_labels = agent.get("labels") or ["private"]
-    is_public_val = 1 if "public" in resource_labels else 0
 
     async with open_db() as conn:
         if body.is_public:
             await _assert_not_linked_copy(conn, "agent", agent_id, username)
+            _assert_publicable(resource_labels, "agent")
             await _upsert_social(
                 conn,
                 "agent",
@@ -553,7 +590,7 @@ async def set_agent_visibility(
                 body.category,
                 body.trial_missing_deps,
                 json.dumps(agent.get("tags") or []),
-                is_public_val,
+                _PUBLIC_VAL,
                 json.dumps(resource_labels),
             )
         else:
@@ -574,18 +611,18 @@ async def set_skill_visibility(
     username: str = Depends(require_auth),
 ) -> Dict[str, Any]:
     _check_category(body.category)
-    skills = SkillStorage(_cfg.SKILLS_DIR)
+    skills = _skills_store
     skill = await skills.get(scope, skill_id)
     if not skill:
         raise APIError(
             404, "not_found", "Skill no encontrada", extra={"resource": "skill"}
         )
     resource_labels = skill.get("labels") or ["private"]
-    is_public_val = 1 if "public" in resource_labels else 0
 
     async with open_db() as conn:
         if body.is_public:
             await _assert_not_linked_copy(conn, "skill", skill_id, username)
+            _assert_publicable(resource_labels, "skill")
             await _upsert_social(
                 conn,
                 "skill",
@@ -596,7 +633,7 @@ async def set_skill_visibility(
                 body.category,
                 "warn",
                 "[]",
-                is_public_val,
+                _PUBLIC_VAL,
                 json.dumps(resource_labels),
             )
         else:
@@ -617,18 +654,18 @@ async def set_prompt_visibility(
     username: str = Depends(require_auth),
 ) -> Dict[str, Any]:
     _check_category(body.category)
-    prompts = PromptStorage()
+    prompts = _prompts_store
     prompt = await prompts.get(scope, prompt_id)
     if not prompt:
         raise APIError(
             404, "not_found", "Prompt no encontrado", extra={"resource": "prompt"}
         )
     resource_labels = prompt.get("labels") or ["private"]
-    is_public_val = 1 if "public" in resource_labels else 0
 
     async with open_db() as conn:
         if body.is_public:
             await _assert_not_linked_copy(conn, "prompt", prompt_id, username)
+            _assert_publicable(resource_labels, "prompt")
             await _upsert_social(
                 conn,
                 "prompt",
@@ -639,7 +676,7 @@ async def set_prompt_visibility(
                 body.category,
                 "warn",
                 "[]",
-                is_public_val,
+                _PUBLIC_VAL,
                 json.dumps(resource_labels),
             )
         else:
@@ -660,18 +697,18 @@ async def set_tool_visibility(
     username: str = Depends(require_auth),
 ) -> Dict[str, Any]:
     _check_category(body.category)
-    tools = ToolStorage()
+    tools = _tools_store
     tool = await tools.get(scope, tool_id)
     if not tool:
         raise APIError(
             404, "not_found", "Tool no encontrada", extra={"resource": "tool"}
         )
     resource_labels = tool.get("labels") or ["private"]
-    is_public_val = 1 if "public" in resource_labels else 0
 
     async with open_db() as conn:
         if body.is_public:
             await _assert_not_linked_copy(conn, "tool", tool_id, username)
+            _assert_publicable(resource_labels, "tool")
             await _upsert_social(
                 conn,
                 "tool",
@@ -682,7 +719,7 @@ async def set_tool_visibility(
                 body.category,
                 "warn",
                 "[]",
-                is_public_val,
+                _PUBLIC_VAL,
                 json.dumps(resource_labels),
             )
         else:
@@ -702,7 +739,7 @@ async def set_workflow_visibility(
     ctx: GroupContext = Depends(require_group),
 ) -> Dict[str, Any]:
     _check_category(body.category)
-    workflows = WorkflowStorage()
+    workflows = _workflows_store
     workflow = await workflows.get(workflow_id, ctx.group_id)
     if not workflow:
         raise APIError(
@@ -712,11 +749,11 @@ async def set_workflow_visibility(
             extra={"resource": "workflow"},
         )
     resource_labels = workflow.get("labels") or ["private"]
-    is_public_val = 1 if "public" in resource_labels else 0
 
     async with open_db() as conn:
         if body.is_public:
             await _assert_not_linked_copy(conn, "workflow", workflow_id, ctx.user)
+            _assert_publicable(resource_labels, "workflow")
             await _upsert_social(
                 conn,
                 "workflow",
@@ -727,7 +764,7 @@ async def set_workflow_visibility(
                 body.category,
                 "warn",
                 "[]",
-                is_public_val,
+                _PUBLIC_VAL,
                 json.dumps(resource_labels),
             )
         else:
@@ -738,7 +775,7 @@ async def set_workflow_visibility(
             )
         await conn.commit()
 
-    if body.is_public and is_public_val:
+    if body.is_public:
         await _cascade_publish_workflow(workflow, ctx.user, ctx.group_id)
 
     return {"ok": True}

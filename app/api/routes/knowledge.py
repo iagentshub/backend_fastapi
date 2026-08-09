@@ -7,8 +7,9 @@ import json
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, File, Form, Query, Request, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Query, Request, Response, UploadFile
 
+from app.api.pagination import paginar
 from app.api.routes.auth import GroupContext, require_group, require_group_session
 from app.auth.auth import get_user_role
 from app.config.data import AGENTS_DIR
@@ -101,6 +102,7 @@ async def list_items(
     include_inactive: bool = False,
     limit: int = Query(0, ge=0, description="Máx. items. 0 = sin límite"),
     offset: int = Query(0, ge=0),
+    response: Response = None,  # type: ignore[assignment]
     ctx: GroupContext = Depends(require_group_session),
 ) -> List[Dict[str, Any]]:
     user = ctx.user
@@ -108,10 +110,7 @@ async def list_items(
     if is_guest(user):
         items = get_session(user).knowledge
         filtered = [i for i in items if not type or i["type"] == type]
-        if offset:
-            filtered = filtered[offset:]
-        if limit:
-            filtered = filtered[:limit]
+        filtered = paginar(filtered, limit, offset, response)
         return filtered
     role = await get_user_role(user)
     if requested_group_id is not None:
@@ -173,10 +172,7 @@ async def list_items(
         ]
     if not include_inactive:
         items = [i for i in items if i.get("is_active", True)]
-    if offset:
-        items = items[offset:]
-    if limit:
-        items = items[:limit]
+    items = paginar(items, limit, offset, response)
     return items
 
 
