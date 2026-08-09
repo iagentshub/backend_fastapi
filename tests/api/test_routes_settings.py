@@ -453,6 +453,8 @@ def test_get_platform_public_oauth_toggles_default_true(client):
     r = client.get("/api/settings/platform/public")
     assert r.status_code == 200
     data = r.json()
+    assert data["service"] == "iagentshub"
+    assert data["api_version"] == 1
     assert data["oauth_google_enabled"] is True
     assert data["oauth_apple_enabled"] is True
     assert data["oauth_microsoft_enabled"] is True

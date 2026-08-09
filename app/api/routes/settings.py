@@ -395,6 +395,12 @@ async def get_platform_config_public() -> dict:
 
     cfg = _read_platform_cfg()
     return {
+        # Contrato mínimo para que los clientes distingan un backend iAgents
+        # real de un proxy, portal cautivo u otro servidor que responda 200 en
+        # esta ruta. Es aditivo para mantener compatibilidad con clientes
+        # anteriores.
+        "service": "iagentshub",
+        "api_version": 1,
         "billing_enabled": cfg.get("billing_enabled", False),
         "guest_enabled": cfg.get("guest_enabled", True),
         "registration": cfg.get("registration", "open"),
