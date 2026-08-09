@@ -29,6 +29,9 @@ from app.models.llm_orchestration import (
     orchestration_id_from_connection,
 )
 from app.storage.db import open_db
+from app.storage.official_package_storage import OfficialPackageStorage
+
+_official_packages = OfficialPackageStorage()
 
 _ADMIN_EXPLORE_TYPES = (
     "user",
@@ -42,6 +45,13 @@ _ADMIN_EXPLORE_TYPES = (
     "prompt",
     "tool",
     "memory",
+)
+
+# Tipos que un paquete oficial puede aportar al inventario. El resto de tipos
+# de _ADMIN_EXPLORE_TYPES (usuarios, grupos, conexiones, memoria) no existen
+# como componente publicable.
+_OFFICIAL_EXPLORE_TYPES = frozenset(
+    {"agent", "skill", "prompt", "tool", "knowledge", "workflow"}
 )
 
 
@@ -103,6 +113,44 @@ async def _admin_inventory() -> dict[str, list[dict[str, Any]]]:
     }
 
 
+async def _official_inventory() -> dict[str, list[dict[str, Any]]]:
+    """Componentes de paquetes oficiales publicados, con forma de recurso.
+
+    No son filas de la BD de recursos —viven en official_package_components
+    hasta que alguien los enlaza o copia—, pero el panel debe verlos igual que
+    Explorar: con su id compuesto "paquete:componente", su propietario (el
+    owner del repositorio) y sus labels de origen (`official`). Se marcan con
+    ``is_official`` para que el cliente los pinte en modo lectura: no admiten
+    borrado, cambio de propietario ni grafo de relaciones.
+    """
+    inventory: dict[str, list[dict[str, Any]]] = {}
+    for component in await _official_packages.list_published_components():
+        resource_type = str(component.get("resource_type") or "")
+        if resource_type not in _OFFICIAL_EXPLORE_TYPES:
+            continue
+        item: dict[str, Any] = {
+            "id": component["resource_id"],
+            "name": component["name"],
+            "description": component.get("description", ""),
+            "category": component.get("category", ""),
+            "labels": list(component.get("labels") or []),
+            "owner_id": "",
+            "owner_username": component.get("owner_username", ""),
+            "updated_at": component.get("updated_at", ""),
+            "is_official": True,
+            "official_package_id": component.get("official_package_id", ""),
+            "official_package_name": component.get("official_package_name", ""),
+            "official_version": component.get("official_version", ""),
+        }
+        if resource_type == "knowledge":
+            # admin_list_knowledge expone el nombre en "title" (ver
+            # _explore_search_text): las filas oficiales cumplen el mismo
+            # contrato para que búsqueda y card no necesiten un caso especial.
+            item["title"] = item["name"]
+        inventory.setdefault(resource_type, []).append(item)
+    return inventory
+
+
 @admin_router.get("/explore")
 async def admin_explore(
     resource_types: list[str] | None = Query(None, alias="type"),
@@ -123,7 +171,11 @@ async def admin_explore(
             extra={"field": "type"},
         )
 
+    # El catálogo oficial se mezcla aquí y no en _admin_inventory() porque el
+    # grafo de relaciones solo entiende recursos reales de la BD.
     inventory = await _admin_inventory()
+    for resource_type, official_items in (await _official_inventory()).items():
+        inventory[resource_type] = [*inventory[resource_type], *official_items]
     query = (q or "").strip().lower()
     owner_filter = (owner or "").strip().lower()
     counts = {resource_type: len(values) for resource_type, values in inventory.items()}

@@ -34,6 +34,26 @@ def test_admin_explore_unifies_and_filters_resource_types(admin_client):
     }
 
 
+def test_admin_explore_incluye_componentes_oficiales_publicados(admin_client):
+    """El catálogo oficial también es inventario, aunque no sea recurso de BD."""
+    from tests.api.test_routes_official_packages import _seed_published
+
+    _seed_published()
+
+    response = admin_client.get("/api/admin/explore?type=skill")
+
+    assert response.status_code == 200
+    payload = response.json()
+    official = next(
+        item for item in payload["items"] if item.get("is_official") is True
+    )
+    assert official["name"] == "Brainstorming"
+    assert official["resource_type"] == "skill"
+    assert official["official_package_name"] == "Superpowers"
+    assert "official" in official["labels"]
+    assert payload["counts"]["skill"] >= 1
+
+
 def test_admin_explore_rejects_unknown_type(admin_client):
     response = admin_client.get("/api/admin/explore?type=folder")
 

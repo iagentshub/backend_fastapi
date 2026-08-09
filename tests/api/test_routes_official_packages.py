@@ -288,6 +288,75 @@ def test_explore_individualiza_oficiales_con_labels_y_dependencias(admin_client)
     }
 
 
+def test_admin_elige_componentes_al_publicar_y_conserva_dependencias(admin_client):
+    async def seed() -> str:
+        storage = OfficialPackageStorage()
+        package = await storage.save_package(
+            {
+                "name": "Selective Pack",
+                "repository_url": "https://github.com/example/selective-pack",
+                "repository_owner": "example",
+                "repository_name": "selective-pack",
+            }
+        )
+        components = [
+            PackageComponent(
+                package_id=package["id"],
+                version="v1",
+                component_id="base-skill",
+                component_type="skill",
+                name="Base Skill",
+                source_path="skills/base/SKILL.md",
+                content="# Base",
+                content_hash="base",
+            ),
+            PackageComponent(
+                package_id=package["id"],
+                version="v1",
+                component_id="selected-agent",
+                component_type="agent",
+                name="Selected Agent",
+                source_path="agents/selected.md",
+                content="# Agent",
+                content_hash="agent",
+                dependencies=["base-skill"],
+            ),
+            PackageComponent(
+                package_id=package["id"],
+                version="v1",
+                component_id="unused-knowledge",
+                component_type="knowledge",
+                name="Unused Knowledge",
+                source_path="knowledge/unused.md",
+                content="# Unused",
+                content_hash="unused",
+            ),
+        ]
+        await storage.save_version(package["id"], "v1", "sha", {}, components, [])
+        return str(package["id"])
+
+    package_id = asyncio.run(seed())
+    published = admin_client.post(
+        f"/api/admin/official-packages/{package_id}/versions/v1/publish",
+        json={"component_ids": ["selected-agent"]},
+    )
+    assert published.status_code == 200
+
+    package = admin_client.get(f"/api/official-packages/{package_id}")
+    component_ids = {
+        item["component_id"] for item in package.json()["version"]["components"]
+    }
+    assert component_ids == {"selected-agent", "base-skill"}
+
+    explore = admin_client.get("/api/explore")
+    official_ids = {
+        item["official_component_id"]
+        for item in explore.json()
+        if item.get("official_package_id") == package_id
+    }
+    assert official_ids == {"selected-agent", "base-skill"}
+
+
 def test_solo_admin_puede_revisar(client):
     response = client.get("/api/admin/official-packages")
     assert response.status_code == 401
@@ -297,13 +366,90 @@ def test_admin_elimina_fuente_y_su_historial(admin_client):
     package_id = _seed_published()
     deleted = admin_client.delete(f"/api/admin/official-packages/{package_id}")
     assert deleted.status_code == 200
-    assert deleted.json() == {"ok": True}
+    assert deleted.json() == {"ok": True, "retired_links": 0}
 
     storage = OfficialPackageStorage()
     assert asyncio.run(storage.get_package(package_id)) is None
     assert asyncio.run(storage.list_versions(package_id)) == []
     missing = admin_client.delete(f"/api/admin/official-packages/{package_id}")
     assert missing.status_code == 404
+
+
+def test_eliminar_fuente_retira_explore_y_rompe_links_pero_conserva_forks(
+    admin_client,
+):
+    package_id = _seed_published()
+    linked = admin_client.post(
+        f"/api/official-packages/{package_id}/link",
+        json={"component_ids": ["brainstorming"]},
+    )
+    copied = admin_client.post(
+        f"/api/official-packages/{package_id}/copy",
+        json={"component_ids": ["brainstorming"]},
+    )
+    assert linked.status_code == copied.status_code == 200
+    link_id = linked.json()["links"][0]["resource_id"]
+    fork_id = copied.json()["copies"][0]["resource_id"]
+
+    before = admin_client.get("/api/explore")
+    assert any(
+        item.get("official_package_id") == package_id for item in before.json()
+    )
+
+    deleted = admin_client.delete(f"/api/admin/official-packages/{package_id}")
+    assert deleted.status_code == 200
+    assert deleted.json() == {"ok": True, "retired_links": 1}
+
+    after = admin_client.get("/api/explore")
+    assert not any(
+        item.get("official_package_id") == package_id for item in after.json()
+    )
+    assert admin_client.get(f"/api/skills/private/{link_id}").status_code == 404
+    fork = admin_client.get(f"/api/skills/private/{fork_id}")
+    assert fork.status_code == 200
+    assert "fork" in fork.json()["labels"]
+
+
+def test_publicar_sin_un_componente_retira_solo_sus_enlaces(admin_client):
+    package_id = _seed_published()
+    linked = admin_client.post(
+        f"/api/official-packages/{package_id}/link",
+        json={"component_ids": ["brainstorming"]},
+    )
+    link_id = linked.json()["links"][0]["resource_id"]
+
+    async def seed_v2() -> None:
+        storage = OfficialPackageStorage()
+        replacement = PackageComponent(
+            package_id=package_id,
+            version="v2",
+            component_id="replacement",
+            component_type="knowledge",
+            name="Replacement",
+            source_path="knowledge/replacement.md",
+            content="# Replacement",
+            content_hash="replacement-v2",
+        )
+        await storage.save_version(
+            package_id, "v2", "sha-v2", {}, [replacement], []
+        )
+
+    asyncio.run(seed_v2())
+    published = admin_client.post(
+        f"/api/admin/official-packages/{package_id}/versions/v2/publish",
+        json={"component_ids": ["replacement"]},
+    )
+    assert published.status_code == 200
+    assert published.json()["retired_links"] == 1
+    assert admin_client.get(f"/api/skills/private/{link_id}").status_code == 404
+
+    explore = admin_client.get("/api/explore")
+    package_components = {
+        item["official_component_id"]
+        for item in explore.json()
+        if item.get("official_package_id") == package_id
+    }
+    assert package_components == {"replacement"}
 
 
 def test_admin_edita_fuente_oficial_sin_cambiar_su_id(admin_client):

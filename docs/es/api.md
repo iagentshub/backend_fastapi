@@ -55,6 +55,8 @@ Todos los endpoints de admin requieren el rol `admin`.
 
 `/api/admin/explore` admite `type` repetido, `q`, `owner`, `limit` y `offset`. Cada elemento incluye el discriminador `resource_type`; la respuesta también devuelve `total` y contadores por tipo. Los tipos válidos son `user`, `group`, `agent`, `connection`, `knowledge` y `workflow`.
 
+El inventario incluye además los componentes de paquetes oficiales publicados (tipos `agent`, `skill`, `prompt`, `tool`, `knowledge` y `workflow`). No son filas de la BD de recursos, así que llegan marcados con `is_official: true`, id compuesto `paquete:componente`, `official_package_name`/`official_version` y sus `labels` de origen; el cliente los muestra en modo lectura (sin borrado, cambio de propietario ni grafo).
+
 El grafo devuelve `root_id`, `nodes` y `edges`. Incluye relaciones de propiedad, pertenencia a grupos, compartición, uso de conexiones/conocimiento y participación en orquestaciones.
 
 ### Usuarios

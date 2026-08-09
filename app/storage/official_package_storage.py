@@ -347,6 +347,7 @@ class OfficialPackageStorage:
                         "official_version": published["version"]["version"],
                         "official_license": package.get("license", ""),
                         "official_repository_url": package["repository_url"],
+                        "updated_at": package.get("updated_at", ""),
                         "hub_installable": hub_installable,
                         "dependencies": dependencies,
                         "direct_dependency_ids": direct_dependency_ids,
@@ -389,6 +390,25 @@ class OfficialPackageStorage:
         result = await self.get_version(package_id, version)
         assert result is not None
         return result
+
+    async def retain_version_components(
+        self, package_id: str, version: str, component_ids: Iterable[str]
+    ) -> None:
+        """Conserva solo la selección revisada antes de publicar una versión."""
+        selected = {str(component_id) for component_id in component_ids}
+        current = await self.get_version(package_id, version)
+        if not current:
+            raise KeyError("version_not_found")
+        async with open_db() as conn:
+            async with conn.transaction():
+                for component in current.get("components") or []:
+                    component_id = str(component["component_id"])
+                    if component_id not in selected:
+                        await conn.execute(
+                            "DELETE FROM official_package_components "
+                            "WHERE package_id=? AND version=? AND component_id=?",
+                            (package_id, version, component_id),
+                        )
 
     async def save_copy(self, data: Dict[str, Any]) -> Dict[str, Any]:
         copy_id = generate_id()
@@ -441,6 +461,20 @@ class OfficialPackageStorage:
                 "ORDER BY created_at DESC",
                 (owner_id, mode),
             )
+        return [dict(row) for row in rows]
+
+    async def list_package_copies(
+        self, package_id: str, *, mode: Optional[str] = None
+    ) -> List[Dict[str, Any]]:
+        """Lista instalaciones de una fuente para poder retirar sus enlaces."""
+        query = "SELECT * FROM official_package_copies WHERE package_id=?"
+        params: list[Any] = [package_id]
+        if mode is not None:
+            query += " AND mode=?"
+            params.append(mode)
+        query += " ORDER BY created_at DESC"
+        async with open_db() as conn:
+            rows = await conn.fetchall(query, params)
         return [dict(row) for row in rows]
 
     @staticmethod

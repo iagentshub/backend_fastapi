@@ -55,6 +55,8 @@ All admin endpoints require the `admin` role.
 
 `/api/admin/explore` accepts repeated `type`, `q`, `owner`, `limit`, and `offset` parameters. Every item includes the `resource_type` discriminator; the response also returns `total` and per-type counts. Valid types are `user`, `group`, `agent`, `connection`, `knowledge`, and `workflow`.
 
+The inventory also lists the components of published official packages (types `agent`, `skill`, `prompt`, `tool`, `knowledge`, and `workflow`). They are not rows of the resource database, so they arrive flagged with `is_official: true`, a composite `package:component` id, `official_package_name`/`official_version`, and their origin `labels`; the client renders them read-only (no delete, owner change, or graph).
+
 The graph response contains `root_id`, `nodes`, and `edges`, covering ownership, group membership, sharing, connection/knowledge usage, and orchestration participation.
 
 ### Users

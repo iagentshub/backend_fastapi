@@ -104,6 +104,13 @@ def _selected_components(
     return [item for item in components if str(item["component_id"]) in selected]
 
 
+def select_package_components(
+    components: List[Dict[str, Any]], component_ids: Optional[Iterable[str]]
+) -> List[Dict[str, Any]]:
+    """Selección pública con cierre transitivo de dependencias."""
+    return _selected_components(components, component_ids)
+
+
 def _existing_copy_payload(copy: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "id": copy["id"],
@@ -531,6 +538,60 @@ class OfficialPackageCopier:
                 }
             )
         return result
+
+    async def retire_links(
+        self,
+        package_id: str,
+        component_ids: Optional[Iterable[str]] = None,
+    ) -> int:
+        """Rompe todos los enlaces simbólicos al retirar una fuente oficial.
+
+        Los forks (`mode=copy`) son recursos independientes y se conservan.
+        Los enlaces materializados se eliminan de los catálogos personales,
+        del perfil social y de cualquier grupo con el que se hubieran compartido.
+        """
+        links = await self.storage.list_package_copies(package_id, mode="link")
+        selected = (
+            {str(component_id) for component_id in component_ids}
+            if component_ids is not None
+            else None
+        )
+        if selected is not None:
+            links = [
+                link for link in links if str(link.get("component_id")) in selected
+            ]
+        retired = 0
+        for link in links:
+            resource_id = str(link.get("resource_id") or "")
+            resource_type = str(link.get("resource_type") or "")
+            owner_id = str(link.get("owner_id") or "")
+            if resource_id and owner_id:
+                if resource_type == "agent":
+                    await self.agents.delete(resource_id, owner_id=owner_id)
+                elif resource_type == "skill":
+                    await self.skills.delete("private", resource_id, owner_id)
+                elif resource_type == "knowledge":
+                    await self.knowledge.delete(resource_id, owner_id)
+                elif resource_type == "prompt":
+                    await self.prompts.delete("private", resource_id, owner_id)
+                elif resource_type == "tool":
+                    await self.tools.delete("private", resource_id, owner_id)
+                elif resource_type == "workflow":
+                    await self.workflows.delete(resource_id, owner_id)
+                async with open_db() as conn:
+                    await conn.execute(
+                        "DELETE FROM resource_social "
+                        "WHERE resource_type=? AND resource_id=?",
+                        (resource_type, resource_id),
+                    )
+                    await conn.execute(
+                        "DELETE FROM resource_group_shares "
+                        "WHERE resource_type=? AND resource_id=?",
+                        (resource_type, resource_id),
+                    )
+                    await conn.commit()
+            retired += 1
+        return retired
 
     async def _is_modified(self, copy: Dict[str, Any], owner_id: str) -> bool:
         resource_id = copy.get("resource_id")
