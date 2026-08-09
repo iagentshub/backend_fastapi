@@ -6,6 +6,7 @@ from typing import Any, Dict, Optional
 
 import stripe
 from fastapi import APIRouter, Depends, HTTPException, Request
+from pydantic import BaseModel, Field
 
 from app.api.routes.auth import require_auth
 from app.auth.auth import get_user_by_id, get_user_by_username
@@ -27,7 +28,6 @@ from app.services.billing_link import (
 from app.services.billing_pricing import InvalidPlanError, compute_total_cents
 from app.storage.billing import BillingStorage
 from app.utils.net import client_ip as _client_ip
-from app.utils.net import json_body
 
 stripe.api_key = STRIPE_SECRET_KEY
 stripe.api_version = STRIPE_API_VERSION
@@ -42,6 +42,25 @@ _SELF_HOSTED_PRICE_IDS = {
     "month": STRIPE_PRICE_SELFHOSTED_MONTHLY,
     "year": STRIPE_PRICE_SELFHOSTED_ANNUAL,
 }
+
+
+class PlanBody(BaseModel):
+    tier: str = Field(default="", max_length=32)
+    seats: int = Field(default=0, ge=0, le=10_000)
+    interval: str = Field(default="", max_length=16)
+    self_hosted: bool = False
+
+
+class ConfirmBody(BaseModel):
+    subscription_id: str = Field(default="", max_length=255)
+
+
+class ChangeSeatsBody(BaseModel):
+    seats: int = Field(default=0, ge=0, le=10_000)
+
+
+class CancelBody(BaseModel):
+    immediate: bool = False
 
 
 def _safe_get(obj: Any, key: str, default: Any = None) -> Any:
@@ -95,27 +114,19 @@ def _license_error(exc: ValueError) -> HTTPException:
     return APIError(status, "invalid_license_operation", code)
 
 
-def _parse_body_plan(body: Dict[str, Any]) -> tuple[str, int, str, bool]:
-    tier = str(body.get("tier") or "")
-    interval = str(body.get("interval") or "")
-    self_hosted = bool(body.get("self_hosted", False))
-    try:
-        seats = int(body.get("seats", 0))
-    except (TypeError, ValueError):
-        raise APIError(400, "invalid_field", "Valor inválido: seats", extra={"field": "seats"})
-    return tier, seats, interval, self_hosted
+def _parse_body_plan(body: PlanBody) -> tuple[str, int, str, bool]:
+    return body.tier, body.seats, body.interval, body.self_hosted
 
 
 @router.post("/quote")
 async def quote(
-    request: Request,
+    body: PlanBody,
     _rl: None = Depends(_quote_limiter),
 ) -> Dict[str, Any]:
     # Sin auth a propósito: solo calcula un precio a partir de datos públicos y
     # la página de precios lo consulta antes de que exista sesión. Lo que sí
     # faltaba es el límite: era el único POST de billing que cualquiera podía
     # llamar sin freno.
-    body = await json_body(request)
     tier, seats, interval, self_hosted = _parse_body_plan(body)
     try:
         return compute_total_cents(tier, seats, interval, self_hosted)
@@ -125,11 +136,10 @@ async def quote(
 
 @router.post("/subscribe")
 async def subscribe(
-    request: Request,
+    body: PlanBody,
     user: str = Depends(require_auth),
     _rl: None = Depends(_subscribe_limiter),
 ) -> Dict[str, Any]:
-    body = await json_body(request)
     tier, seats, interval, self_hosted = _parse_body_plan(body)
     try:
         totals = compute_total_cents(tier, seats, interval, self_hosted)
@@ -137,7 +147,9 @@ async def subscribe(
         raise APIError(400, "invalid_field", str(exc), extra={"field": "plan"})
 
     if await _billing.get_active_by_username(user):
-        raise APIError(409, "subscription_already_active", "Ya tienes una suscripción activa")
+        raise APIError(
+            409, "subscription_already_active", "Ya tienes una suscripción activa"
+        )
 
     customer_id = await get_stripe_customer_id(user)
     try:
@@ -165,7 +177,9 @@ async def subscribe(
             sh_price_id = _SELF_HOSTED_PRICE_IDS.get(interval)
             if not sh_price_id:
                 raise APIError(
-                    400, "self_hosted_addon_not_configured", "Add-on self-hosted no configurado"
+                    400,
+                    "self_hosted_addon_not_configured",
+                    "Add-on self-hosted no configurado",
                 )
             items.append({"price": sh_price_id, "quantity": 1})
 
@@ -225,9 +239,10 @@ def _extract_period_end(subscription: Any) -> Optional[str]:
 
 
 @router.post("/confirm")
-async def confirm(request: Request, user: str = Depends(require_auth)) -> Dict[str, Any]:
-    body = await json_body(request)
-    subscription_id = str(body.get("subscription_id") or "")
+async def confirm(
+    body: ConfirmBody, user: str = Depends(require_auth)
+) -> Dict[str, Any]:
+    subscription_id = body.subscription_id
     if not subscription_id:
         raise APIError(
             400,
@@ -247,7 +262,12 @@ async def confirm(request: Request, user: str = Depends(require_auth)) -> Dict[s
 
     row = await _billing.get_by_stripe_subscription_id(subscription_id)
     if not row:
-        raise APIError(404, "not_found", "Suscripción no encontrada", extra={"resource": "subscription"})
+        raise APIError(
+            404,
+            "not_found",
+            "Suscripción no encontrada",
+            extra={"resource": "subscription"},
+        )
 
     saved = await _billing.upsert(
         username=user,
@@ -260,7 +280,9 @@ async def confirm(request: Request, user: str = Depends(require_auth)) -> Dict[s
         amount_cents=row["amount_cents"],
         status=subscription.status,
         current_period_end=_extract_period_end(subscription),
-        cancel_at_period_end=bool(_safe_get(subscription, "cancel_at_period_end", False)),
+        cancel_at_period_end=bool(
+            _safe_get(subscription, "cancel_at_period_end", False)
+        ),
     )
     await _billing.ensure_owner_license(saved)
     updated = await _billing.get_by_stripe_subscription_id(subscription_id)
@@ -286,7 +308,9 @@ async def assign_license(
 ) -> Dict[str, Any]:
     row = await _billing.get_active_by_username(user)
     if not row:
-        raise APIError(404, "no_active_subscription", "No tienes una suscripción activa")
+        raise APIError(
+            404, "no_active_subscription", "No tienes una suscripción activa"
+        )
     if row["tier"] != "business":
         raise APIError(
             400,
@@ -296,7 +320,9 @@ async def assign_license(
         )
     target = await get_user_by_username(username)
     if not target:
-        raise APIError(404, "not_found", "Usuario no encontrado", extra={"resource": "user"})
+        raise APIError(
+            404, "not_found", "Usuario no encontrado", extra={"resource": "user"}
+        )
     try:
         await _billing.assign_license(
             subscription_id=row["id"], target_username=target["id"], assigned_by=user
@@ -312,7 +338,9 @@ async def revoke_license(
 ) -> Dict[str, Any]:
     row = await _billing.get_active_by_username(user)
     if not row:
-        raise APIError(404, "no_active_subscription", "No tienes una suscripción activa")
+        raise APIError(
+            404, "no_active_subscription", "No tienes una suscripción activa"
+        )
     if row["tier"] != "business":
         raise APIError(
             400,
@@ -322,26 +350,34 @@ async def revoke_license(
         )
     target = await get_user_by_username(username)
     if not target:
-        raise APIError(404, "not_found", "Usuario no encontrado", extra={"resource": "user"})
+        raise APIError(
+            404, "not_found", "Usuario no encontrado", extra={"resource": "user"}
+        )
     target_id = target["id"]
     if target_id == user:
-        raise APIError(400, "cannot_revoke_own_license", "No puedes quitar tu propia licencia")
-    if not await _billing.revoke_license(subscription_id=row["id"], target_username=target_id):
-        raise APIError(404, "not_found", "Licencia no encontrada", extra={"resource": "license"})
+        raise APIError(
+            400, "cannot_revoke_own_license", "No puedes quitar tu propia licencia"
+        )
+    if not await _billing.revoke_license(
+        subscription_id=row["id"], target_username=target_id
+    ):
+        raise APIError(
+            404, "not_found", "Licencia no encontrada", extra={"resource": "license"}
+        )
     return await _billing.license_summary_for_owner(user)
 
 
 @router.post("/change-seats")
-async def change_seats(request: Request, user: str = Depends(require_auth)) -> Dict[str, Any]:
-    body = await json_body(request)
-    try:
-        seats = int(body.get("seats", 0))
-    except (TypeError, ValueError):
-        raise APIError(400, "invalid_field", "Valor inválido: seats", extra={"field": "seats"})
+async def change_seats(
+    body: ChangeSeatsBody, user: str = Depends(require_auth)
+) -> Dict[str, Any]:
+    seats = body.seats
 
     row = await _billing.get_active_by_username(user)
     if not row:
-        raise APIError(404, "no_active_subscription", "No tienes una suscripción activa")
+        raise APIError(
+            404, "no_active_subscription", "No tienes una suscripción activa"
+        )
     if row["tier"] != "business":
         raise APIError(
             400,
@@ -360,7 +396,9 @@ async def change_seats(request: Request, user: str = Depends(require_auth)) -> D
         )
 
     try:
-        totals = compute_total_cents("business", seats, row["interval"], bool(row["self_hosted"]))
+        totals = compute_total_cents(
+            "business", seats, row["interval"], bool(row["self_hosted"])
+        )
     except InvalidPlanError as exc:
         raise APIError(400, "invalid_field", str(exc), extra={"field": "plan"})
 
@@ -398,19 +436,22 @@ async def change_seats(request: Request, user: str = Depends(require_auth)) -> D
 
 
 @router.post("/cancel")
-async def cancel(request: Request, user: str = Depends(require_auth)) -> Dict[str, Any]:
-    body = await json_body(request)
-    immediate = bool(body.get("immediate", False))
+async def cancel(body: CancelBody, user: str = Depends(require_auth)) -> Dict[str, Any]:
+    immediate = body.immediate
 
     row = await _billing.get_active_by_username(user)
     if not row:
-        raise APIError(404, "no_active_subscription", "No tienes una suscripción activa")
+        raise APIError(
+            404, "no_active_subscription", "No tienes una suscripción activa"
+        )
 
     try:
         if immediate:
             stripe.Subscription.delete(row["stripe_subscription_id"])
         else:
-            stripe.Subscription.modify(row["stripe_subscription_id"], cancel_at_period_end=True)
+            stripe.Subscription.modify(
+                row["stripe_subscription_id"], cancel_at_period_end=True
+            )
     except stripe.error.StripeError as exc:
         raise APIError(502, "upstream_error", str(exc))
 
@@ -443,16 +484,22 @@ async def reactivate(user: str = Depends(require_auth)) -> Dict[str, Any]:
         )
     if not row["cancel_at_period_end"]:
         raise APIError(
-            400, "no_pending_cancellation", "La suscripción no tiene cancelación pendiente"
+            400,
+            "no_pending_cancellation",
+            "La suscripción no tiene cancelación pendiente",
         )
 
     try:
-        stripe.Subscription.modify(row["stripe_subscription_id"], cancel_at_period_end=False)
+        stripe.Subscription.modify(
+            row["stripe_subscription_id"], cancel_at_period_end=False
+        )
     except stripe.error.StripeError as exc:
         raise APIError(502, "upstream_error", str(exc))
 
     await _billing.set_cancel_at_period_end(row["stripe_subscription_id"], False)
-    updated = await _billing.get_by_stripe_subscription_id(row["stripe_subscription_id"])
+    updated = await _billing.get_by_stripe_subscription_id(
+        row["stripe_subscription_id"]
+    )
     return _row_to_state(updated)  # type: ignore[arg-type]
 
 
@@ -493,7 +540,9 @@ async def webhook(request: Request) -> Dict[str, Any]:
     payload = await request.body()
     sig_header = request.headers.get("stripe-signature", "")
     try:
-        event = stripe.Webhook.construct_event(payload, sig_header, STRIPE_WEBHOOK_SECRET)
+        event = stripe.Webhook.construct_event(
+            payload, sig_header, STRIPE_WEBHOOK_SECRET
+        )
     except (ValueError, stripe.error.SignatureVerificationError):
         raise APIError(400, "invalid_webhook_signature", "Firma inválida")
 
@@ -515,7 +564,9 @@ async def _handle_subscription_event(sub: Dict[str, Any], event_type: str) -> No
     user_id = _safe_get(metadata, "user_id")
     if not user_id:
         legacy_username = _safe_get(metadata, "username")
-        legacy_user = await get_user_by_username(legacy_username) if legacy_username else None
+        legacy_user = (
+            await get_user_by_username(legacy_username) if legacy_username else None
+        )
         user_id = legacy_user["id"] if legacy_user else None
     if not user_id:
         user_id = await get_username_by_stripe_customer_id(sub["customer"])
@@ -533,7 +584,9 @@ async def _handle_subscription_event(sub: Dict[str, Any], event_type: str) -> No
     existing = await _billing.get_by_stripe_subscription_id(sub["id"])
     amount_cents = existing["amount_cents"] if existing else 0
 
-    status = "canceled" if event_type == "customer.subscription.deleted" else sub["status"]
+    status = (
+        "canceled" if event_type == "customer.subscription.deleted" else sub["status"]
+    )
 
     saved = await _billing.upsert(
         username=user_id,

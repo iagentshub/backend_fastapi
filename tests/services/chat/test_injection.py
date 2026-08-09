@@ -31,7 +31,7 @@ async def test_attached_knowledge_injected_into_system():
         sent_payloads.append(json.loads(req.data.decode()))
         return _sse_done_response()
 
-    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+    with patch("app.services.chat.safe_urlopen", side_effect=fake_urlopen):
         [
             e
             async for e in stream_chat(
@@ -51,7 +51,7 @@ async def test_no_attached_knowledge_does_not_break_stream_chat():
     agent = _make_agent("openai")
     conn = _make_conn("openai")
 
-    with patch("urllib.request.urlopen", return_value=_sse_done_response()):
+    with patch("app.services.chat.safe_urlopen", return_value=_sse_done_response()):
         events = [
             e
             async for e in stream_chat(
@@ -103,7 +103,7 @@ async def test_tool_python_script_injected_into_system():
         sent_payloads.append(json.loads(req.data.decode()))
         return _sse_done_response()
 
-    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+    with patch("app.services.chat.safe_urlopen", side_effect=fake_urlopen):
         [
             e
             async for e in stream_chat(
@@ -142,7 +142,7 @@ async def test_tool_shell_script_from_private_scope_injected():
         sent_payloads.append(json.loads(req.data.decode()))
         return _sse_done_response()
 
-    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+    with patch("app.services.chat.safe_urlopen", side_effect=fake_urlopen):
         [
             e
             async for e in stream_chat(
@@ -182,7 +182,7 @@ async def test_tool_cpp_injects_metadata_not_binary():
         sent_payloads.append(json.loads(req.data.decode()))
         return _sse_done_response()
 
-    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+    with patch("app.services.chat.safe_urlopen", side_effect=fake_urlopen):
         [
             e
             async for e in stream_chat(
@@ -212,7 +212,7 @@ async def test_tool_unknown_id_skipped_silently():
         sent_payloads.append(json.loads(req.data.decode()))
         return _sse_done_response()
 
-    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+    with patch("app.services.chat.safe_urlopen", side_effect=fake_urlopen):
         [
             e
             async for e in stream_chat(
@@ -235,7 +235,7 @@ async def test_no_tool_storage_is_backward_compatible():
     agent["tools"] = ["tool-1"]
     conn = _make_conn("openai")
 
-    with patch("urllib.request.urlopen", return_value=_sse_done_response()):
+    with patch("app.services.chat.safe_urlopen", return_value=_sse_done_response()):
         events = [
             e
             async for e in stream_chat(

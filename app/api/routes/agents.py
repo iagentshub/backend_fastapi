@@ -3,21 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-import io
-import json
-import re
-import zipfile
-from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, Query, Request, Response
-from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from fastapi import APIRouter, Depends, Query, Response
 
 from app.api.pagination import paginar
 from app.api.routes.auth import (
     GroupContext,
-    require_auth,
     require_group,
     require_group_session,
 )
@@ -27,19 +19,17 @@ from app.config.session import RATE_CHAT_CALLS, RATE_CHAT_WINDOW
 from app.errors import APIError
 from app.middleware.locale import get_locale
 from app.middleware.ratelimit import RateLimiter
-from app.models.agent import Agent
 from app.models.llm_orchestration import orchestration_id_from_connection
-from app.services.chat import stream_chat
-from app.services.llm_routing import stream_orchestrated_chat
+from app.models.request_bodies import AgentPayload
+from app.services.agent_access import agent_access
+from app.services.agent_presentation import apply_agent_locale
+from app.services.agent_presentation import validate_agent_scope as _check_scope
 from app.storage.agent_storage import AgentStorage
 from app.storage.chat import ChatStorage
 from app.storage.connection_storage import ConnectionStorage
-from app.storage.db import IS_PG, PH, open_db
 from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
 from app.storage.guest import (
-    GuestKnowledgeAdapter,
-    GuestMemoryAdapter,
     get_session,
     is_guest,
 )
@@ -51,7 +41,6 @@ from app.storage.skill_storage import SkillStorage
 from app.storage.tool_storage import ToolStorage
 from app.utils import flog
 from app.utils.generators import generate_id
-from app.utils.net import json_body
 from app.utils.origin import compute_origin_type
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
@@ -68,10 +57,6 @@ _chat = ChatStorage()
 _knowledge = KnowledgeStorage()
 _versions = ResourceVersionStorage()
 _chat_limiter = RateLimiter(calls=RATE_CHAT_CALLS, window=RATE_CHAT_WINDOW)
-
-
-class _AgentPreferenceBody(BaseModel):
-    connection_id: Optional[str] = None
 
 
 async def _validate_resource_refs(
@@ -163,103 +148,15 @@ async def _assert_can_read_agent(
     agent: Dict[str, Any],
     ctx: GroupContext,
 ) -> None:
-    """Lanza 403 si el usuario no tiene derecho de lectura sobre el agente.
-
-    Acceso permitido cuando se cumple al menos una condición:
-    - El agente es público (scope == "public")
-    - owner_id coincide con el usuario o con su group activo
-    - El usuario tiene rol "admin"
-    - El agente está compartido con algún group al que pertenece el usuario
-    """
-    if agent.get("scope") == "public":
-        return
-    user = ctx.user
-    group_id = ctx.group_id
-    owner_id = agent.get("owner_id")
-    if owner_id in (user, group_id):
-        return
-    if await get_user_role(user) == "admin":
-        return
-    # Comprobar shares activos con los groups del usuario
-    user_groups = await _groups.list_for_user(user)
-    if user_groups:
-        group_ids = [g["id"] for g in user_groups]
-        results = await asyncio.gather(
-            *[_shares.get_group_shared_resource_ids(gid, "agent") for gid in group_ids]
-        )
-        for shared_ids in results:
-            if agent_id in shared_ids:
-                return
-    raise APIError(403, "forbidden", "No tienes acceso a este agente")
+    await agent_access.assert_can_read(agent_id, agent, ctx)
 
 
 async def _conn_owner(user: str) -> str | None:
     return None if await get_user_role(user) == "admin" else user
 
 
-_VALID_SCOPES = {"public", "private", "all"}
-_LOCALE_FIELDS = ("name", "description", "system_prompt")
-
-
-def _name_slug(name: str) -> str:
-    slug = re.sub(r"[^a-z0-9_-]", "-", name.lower().strip())
-    return re.sub(r"-{2,}", "-", slug).strip("-") or "agent"
-
-
-def _check_scope(scope: str) -> None:
-    if scope not in _VALID_SCOPES:
-        raise APIError(
-            400, "invalid_field", "Scope no válido", extra={"field": "scope"}
-        )
-
-
-# (scope, agent_id, locale) -> (mtime del fichero, overrides ya parseados).
-# `_apply_locale` se llama una vez por agente listado y hacía dos Path.exists()
-# síncronos por agente —más un read_text cuando el fichero estaba—, o sea I/O
-# bloqueante dentro de una corrutina: cada stat() detiene el event loop entero,
-# no solo esta petición. Y los overlays casi nunca existen, así que era trabajo
-# puro. Se cachea por mtime: un stat por overlay real en vez de dos por agente.
-_LOCALE_CACHE: "Dict[tuple[str, str, str], tuple[float, Dict[str, Any]]]" = {}
-
-
-def _locale_overrides(scope: str, agent_id: str, locale: str) -> Dict[str, Any]:
-    """Overlay de un locale concreto; {} si no existe o no es un objeto JSON."""
-    ruta = AGENTS_DIR / scope / agent_id / f"locale.{locale}.json"
-    try:
-        mtime = ruta.stat().st_mtime
-    except OSError:
-        return {}
-    clave = (scope, agent_id, locale)
-    guardado = _LOCALE_CACHE.get(clave)
-    if guardado is not None and guardado[0] == mtime:
-        return guardado[1]
-    try:
-        datos = json.loads(ruta.read_text(encoding="utf-8"))
-        if not isinstance(datos, dict):
-            raise TypeError("el fichero de locale no contiene un objeto JSON")
-    except (OSError, UnicodeError, json.JSONDecodeError, TypeError) as exc:
-        # Mismo trato que antes: se avisa y se sigue, no se propaga.
-        flog.warning(f"[agents] Locale omitido {ruta}: {exc}")
-        datos = {}
-    _LOCALE_CACHE[clave] = (mtime, datos)
-    return datos
-
-
 def _apply_locale(agent: Dict[str, Any], locale: str) -> Dict[str, Any]:
-    """Overlay locale-specific fields from locale.<lang>.json if present."""
-    if not agent:
-        return agent
-    scope = agent.get("scope", "public")
-    agent_id = agent.get("id", "")
-    overrides = _locale_overrides(scope, agent_id, locale)
-    # El fallback al español tiene semántica: si el idioma pedido no tiene
-    # overlay, se usa locale.es.json.
-    if not overrides and locale != "es":
-        overrides = _locale_overrides(scope, agent_id, "es")
-    for field in _LOCALE_FIELDS:
-        if field in overrides:
-            agent = {**agent, field: overrides[field]}
-    return agent
+    return apply_agent_locale(agent, locale, AGENTS_DIR)
 
 
 @router.get("")
@@ -389,19 +286,21 @@ async def list_agents(
 
 @router.post("")
 async def save_agent(
-    request: Request, ctx: GroupContext = Depends(require_group_session)
+    body: AgentPayload, ctx: GroupContext = Depends(require_group_session)
 ) -> Dict[str, Any]:
     user, group_id = ctx.user, ctx.group_id
-    payload = await json_body(request)
+    payload = body.payload()
     connection_id = str(payload.get("connection_id") or "").strip()
     if (
         connection_id
         and orchestration_id_from_connection(connection_id)
         and not is_guest(ctx.user)
     ):
-        from app.api.routes.connections import _get_conn_any
+        from app.services.connection_access import connection_access
 
-        if not await _get_conn_any(connection_id, ctx.user, ctx.group_id):
+        if not await connection_access.get_accessible(
+            connection_id, ctx.user, ctx.group_id
+        ):
             raise APIError(
                 422,
                 "invalid_field",
@@ -566,485 +465,3 @@ async def deactivate_agent(
     agent_id: str, ctx: GroupContext = Depends(require_group)
 ) -> Dict[str, Any]:
     return await _set_agent_active(agent_id, False, ctx)
-
-
-@router.get("/{agent_id}/preferences")
-async def get_agent_preferences(
-    agent_id: str,
-    user: str = Depends(require_auth),
-) -> Dict[str, Any]:
-    """Return the saved connection preference for this user/agent pair."""
-    async with open_db() as conn:
-        row = await conn.fetchone(
-            f"SELECT connection_id FROM user_agent_preferences "
-            f"WHERE username={PH} AND agent_id={PH}",
-            (user, agent_id),
-        )
-    return {"connection_id": row["connection_id"] if row else None}
-
-
-@router.put("/{agent_id}/preferences")
-async def put_agent_preferences(
-    agent_id: str,
-    body: _AgentPreferenceBody,
-    user: str = Depends(require_auth),
-) -> Dict[str, Any]:
-    """Upsert a connection preference for this user/agent pair."""
-    now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
-    async with open_db() as conn:
-        if IS_PG:
-            await conn.execute(
-                f"INSERT INTO user_agent_preferences "
-                f"(username, agent_id, connection_id, updated_at) "
-                f"VALUES ({PH}, {PH}, {PH}, {PH}) "
-                f"ON CONFLICT (username, agent_id) DO UPDATE SET "
-                f"connection_id=EXCLUDED.connection_id, "
-                f"updated_at=EXCLUDED.updated_at",
-                (user, agent_id, body.connection_id, now_str),
-            )
-        else:
-            await conn.execute(
-                f"INSERT OR REPLACE INTO user_agent_preferences "
-                f"(username, agent_id, connection_id, updated_at) "
-                f"VALUES ({PH}, {PH}, {PH}, {PH})",
-                (user, agent_id, body.connection_id, now_str),
-            )
-        await conn.commit()
-    return {"ok": True}
-
-
-@router.get("/{agent_id}/export/{fmt}")
-async def export_agent(
-    agent_id: str, fmt: str, ctx: GroupContext = Depends(require_group_session)
-) -> Response:
-    """fmt: openai | claude | github | mcp"""
-    user = ctx.user
-    if is_guest(user):
-        s = get_session(user)
-        a = next(
-            (ag for ag in s.agents if ag.get("id") == agent_id), None
-        ) or await _agents.get(agent_id, scope="public")
-        memory_store = GuestMemoryAdapter(s)
-        knowledge_store: Any = GuestKnowledgeAdapter(s)
-    else:
-        a = await _agents.get(agent_id)
-        memory_store = _memory
-        knowledge_store = _knowledge
-    if not a:
-        raise APIError(
-            404, "not_found", "Agente no encontrado", extra={"resource": "agent"}
-        )
-    if not is_guest(user):
-        await _assert_can_read_agent(agent_id, a, ctx)
-    a = _apply_locale(a, get_locale())
-
-    # Resolve skills
-    resolved_skills: List[Dict[str, Any]] = []
-    for sid in a.get("skills") or []:
-        for scope in ("public", "private"):
-            sk = await _skills.get(scope, sid)
-            if sk:
-                resolved_skills.append(sk)
-                break
-
-    # Resolve knowledge items
-    resolved_knowledge: List[Dict[str, Any]] = []
-    for kid in a.get("knowledge") or []:
-        try:
-            item = await knowledge_store.get(kid)
-            if item:
-                resolved_knowledge.append(item)
-        except Exception as exc:
-            flog.warning(
-                f"[agents] Knowledge {kid} omitido del export {agent_id}: {exc}"
-            )
-
-    # Resolve memory
-    mem_file = a.get("memory_file") or f"{agent_id}.md"
-    if is_guest(user):
-        mem_content = (await memory_store.get(mem_file) or "").strip()
-    else:
-        mem_content = (await memory_store.get(mem_file, owner_id=user) or "").strip()
-
-    # OpenAI: inject skills as text into system_prompt.
-    if fmt == "openai":
-        skills_text = "".join(
-            f"\n\n## Skill: {sk.get('name', '')}\n{sk.get('content', '')}"
-            for sk in resolved_skills
-        )
-        if skills_text:
-            a = {
-                **a,
-                "system_prompt": (
-                    str(a.get("system_prompt") or "").strip() + skills_text
-                ).strip(),
-            }
-
-    # MCP: pass resolved skills for tool generation.
-    if fmt == "mcp":
-        a = {**a, "_resolved_skills": resolved_skills}
-
-    agent_obj = Agent.from_dict(a)
-    try:
-        content, media, filename = agent_obj.export(fmt)
-    except NotImplementedError:
-        raise APIError(
-            400,
-            "export_format_unsupported",
-            f"Formato '{fmt}' no soportado para tipo '{agent_obj.agent_type}'",
-            extra={"format": fmt, "agent_type": agent_obj.agent_type},
-        )
-
-    slug = _name_slug(agent_obj.name)
-
-    def _skill_md(sk: Dict[str, Any]) -> str:
-        sk_name = sk.get("name", "")
-        sk_desc = str(sk.get("description") or "")[:200]
-        return f"---\nname: {sk_name}\ndescription: {sk_desc}\n---\n\n{sk.get('content', '')}"
-
-    def _knowledge_md(item: Dict[str, Any]) -> str:
-        title = item.get("title") or "item"
-        source = item.get("source") or ""
-        ktype = item.get("type") or "text"
-        body = item.get("content") or ""
-        header = f"# {title}\n\n"
-        if source:
-            header += f"> Source: {source}  \n> Type: {ktype}\n\n"
-        return header + body
-
-    def _add_knowledge(zf: zipfile.ZipFile, prefix: str = "knowledge/") -> None:
-        for item in resolved_knowledge:
-            kslug = _name_slug(item.get("title") or "item")
-            zf.writestr(f"{prefix}{kslug}.md", _knowledge_md(item))
-
-    if fmt == "claude":
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr(f".claude/agents/{slug}.md", content)
-            for sk in resolved_skills:
-                sk_slug = _name_slug(sk.get("name", ""))
-                skill_md = _skill_md(sk)
-                zf.writestr(f".claude/skills/{sk_slug}/SKILL.md", skill_md)
-            if mem_content:
-                zf.writestr(".claude/CLAUDE.md", mem_content)
-            _add_knowledge(zf, prefix=".claude/knowledge/")
-        return Response(
-            content=buf.getvalue(),
-            media_type="application/zip",
-            headers={
-                "Content-Disposition": f'attachment; filename="{slug}-claude.zip"'
-            },
-        )
-
-    if fmt == "github":
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr(f".github/agents/{slug}.md", content)
-            for sk in resolved_skills:
-                sk_slug = _name_slug(sk.get("name", ""))
-                skill_md = _skill_md(sk)
-                zf.writestr(f".github/skills/{sk_slug}/SKILL.md", skill_md)
-            if mem_content:
-                zf.writestr(".github/COPILOT_INSTRUCTIONS.md", mem_content)
-            _add_knowledge(zf, prefix=".github/knowledge/")
-        return Response(
-            content=buf.getvalue(),
-            media_type="application/zip",
-            headers={
-                "Content-Disposition": f'attachment; filename="{slug}-copilot.zip"'
-            },
-        )
-
-    if fmt == "openai":
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr("agent.json", content)
-            if mem_content:
-                zf.writestr("memory.md", mem_content)
-            _add_knowledge(zf)
-        return Response(
-            content=buf.getvalue(),
-            media_type="application/zip",
-            headers={
-                "Content-Disposition": f'attachment; filename="{slug}-openai.zip"'
-            },
-        )
-
-    if fmt == "mcp":
-        buf = io.BytesIO()
-        with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr(f"{slug}-server.py", content)
-            if mem_content:
-                zf.writestr("memory.md", mem_content)
-            _add_knowledge(zf)
-        return Response(
-            content=buf.getvalue(),
-            media_type="application/zip",
-            headers={"Content-Disposition": f'attachment; filename="{slug}-mcp.zip"'},
-        )
-
-    return Response(
-        content=content.encode("utf-8"),
-        media_type=media,
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
-    )
-
-
-@router.post("/{agent_id}/chat")
-async def chat(
-    agent_id: str,
-    request: Request,
-    ctx: GroupContext = Depends(require_group_session),
-    _rl: None = Depends(_chat_limiter),
-) -> StreamingResponse:
-    user, group_id = ctx.user, ctx.group_id
-    if is_guest(user):
-        s = get_session(user)
-        a = next(
-            (a for a in s.agents if a.get("id") == agent_id), None
-        ) or await _agents.get(agent_id, scope="public")
-    else:
-        a = await _agents.get(agent_id)
-    if not a:
-        raise APIError(
-            404, "not_found", "Agente no encontrado", extra={"resource": "agent"}
-        )
-    if not a.get("is_active", True):
-        raise APIError(
-            409,
-            "resource_inactive",
-            "Este agente está desactivado",
-            extra={"resource": "agent"},
-        )
-    role = await get_user_role(user)
-    if not is_guest(user):
-        await _assert_can_read_agent(agent_id, a, ctx)
-    a = _apply_locale(a, get_locale())
-
-    body = await json_body(request)
-    history: List[Dict[str, Any]] = body.get("messages") or []
-    conversation_id: str = str(body.get("conversation_id") or "").strip()
-
-    # Knowledge adjuntado puntualmente desde el chat (selección "@" del
-    # usuario): se resuelve y autoriza aquí (no dentro de stream_chat) porque
-    # requiere consultar permisos de grupo, ajenos al servicio de chat.
-    attached_knowledge: List[Dict[str, Any]] = []
-    if not is_guest(user):
-        requested_ids = [
-            str(kid) for kid in (body.get("attached_knowledge_ids") or []) if kid
-        ][:5]
-        for kid in requested_ids:
-            item = await _knowledge.get(kid, owner_id=user)
-            if not item and group_id != user:
-                if await _groups.has_resource_permission(
-                    group_id, user, "knowledge", kid, "view"
-                ):
-                    item = await _knowledge.get(kid, owner_id=None)
-            if item and item.get("is_active", True):
-                attached_knowledge.append(item)
-
-    # Toda selección es un connection_id. Las orquestaciones se resuelven como
-    # conexiones virtuales para que el agente no conozca tipos de destino.
-    raw_conn_id = a.get("connection_id") or ""
-
-    # Preferencia por usuario/agente: también debe aplicarse al propietario.
-    # La extensión usa esto para cambiar de modelo sin modificar el agente ni
-    # la conexión predeterminada para los demás usuarios.
-    if not is_guest(user):
-        async with open_db() as _pref_conn:
-            _pref_row = await _pref_conn.fetchone(
-                f"SELECT connection_id FROM user_agent_preferences "
-                f"WHERE username={PH} AND agent_id={PH}",
-                (user, agent_id),
-            )
-        if _pref_row and _pref_row["connection_id"]:
-            raw_conn_id = _pref_row["connection_id"]
-
-    if "::" in raw_conn_id:
-        base_conn_id, ollama_model = raw_conn_id.split("::", 1)
-    else:
-        base_conn_id, ollama_model = raw_conn_id, None
-
-    if (
-        not is_guest(user)
-        and group_id != user
-        and role != "admin"
-        and base_conn_id
-        and not orchestration_id_from_connection(base_conn_id)
-        and not await _groups.has_resource_permission(
-            group_id, user, "connections", base_conn_id, "via_agent"
-        )
-    ):
-        raise APIError(
-            403,
-            "forbidden",
-            "No tienes permiso para usar esta conexión mediante agentes",
-        )
-
-    if not is_guest(user) and group_id != user and role != "admin":
-        for operation_connection_id in a.get("op_connections") or []:
-            operation_connection_id = str(operation_connection_id).split("::", 1)[0]
-            if operation_connection_id and not await _groups.has_resource_permission(
-                group_id,
-                user,
-                "connections",
-                operation_connection_id,
-                "via_agent",
-            ):
-                raise APIError(
-                    403,
-                    "forbidden",
-                    (
-                        "No tienes permiso para usar una de las conexiones "
-                        "operativas del agente"
-                    ),
-                )
-
-    if is_guest(user):
-        s = get_session(user)
-        conn = next((c for c in s.connections if c.get("id") == base_conn_id), None)
-        memory_store = GuestMemoryAdapter(s)
-        knowledge_store = GuestKnowledgeAdapter(s)
-    else:
-        conn = None
-        if base_conn_id:
-            if role == "admin" and not orchestration_id_from_connection(base_conn_id):
-                conn = await _conns.get(base_conn_id, None)
-            else:
-                from app.api.routes.connections import _get_conn_any
-
-                conn = await _get_conn_any(base_conn_id, user, group_id)
-        memory_store = _memory
-        knowledge_store = _knowledge
-
-    if conn and ollama_model:
-        conn = {**conn, "model": ollama_model}
-
-    if not conn:
-        raise APIError(
-            422, "agent_no_connection", "El agente no tiene conexión configurada"
-        )
-
-    orchestration = conn.get("_llm_orchestration")
-    orchestration_connections = conn.get("_connections") or {}
-    if orchestration and group_id != user and role != "admin":
-        for target_id in orchestration_connections:
-            if not await _groups.has_resource_permission(
-                group_id, user, "connections", target_id, "via_agent"
-            ):
-                raise APIError(
-                    403,
-                    "forbidden",
-                    "No tienes permiso para usar una conexión de la orquestación",
-                )
-
-    from starlette.background import BackgroundTask
-
-    done_event: List[dict] = []
-
-    history_user_id = None if is_guest(user) else user
-
-    async def _gen():
-        streamer = (
-            stream_chat(
-                a,
-                conn,
-                history,
-                _skills,
-                memory_store,
-                knowledge_store,
-                _chat,
-                history_user_id,
-                conversation_id or None,
-                prompt_storage=None if is_guest(user) else _prompts,
-                tool_storage=None if is_guest(user) else _tools,
-                attached_knowledge=attached_knowledge,
-            )
-            if orchestration is None
-            else stream_orchestrated_chat(
-                a,
-                orchestration,
-                orchestration_connections,
-                history,
-                _skills,
-                memory_store,
-                knowledge_store,
-                _chat,
-                history_user_id,
-                conversation_id or None,
-                prompt_storage=_prompts,
-                tool_storage=_tools,
-                attached_knowledge=attached_knowledge,
-            )
-        )
-        async for chunk in streamer:
-            yield chunk
-            if chunk.startswith("data: "):
-                try:
-                    ev = json.loads(chunk[6:].strip())
-                    if ev.get("type") == "done" or (
-                        ev.get("type") == "error" and ev.get("usage_by_connection")
-                    ):
-                        done_event.append(ev)
-                except (json.JSONDecodeError, AttributeError) as exc:
-                    flog.warning(f"[agents] Evento SSE inválido para {agent_id}: {exc}")
-
-    async def _on_done():
-        if not done_event:
-            return
-        ev = done_event[0]
-        usage_by_connection = ev.get("usage_by_connection") or {}
-        if usage_by_connection:
-            tok_in = sum(
-                int(value.get("in") or 0) for value in usage_by_connection.values()
-            )
-            tok_out = sum(
-                int(value.get("out") or 0) for value in usage_by_connection.values()
-            )
-        else:
-            tokens = ev.get("tokens") or {}
-            tok_in = int(tokens.get("in") or 0)
-            tok_out = int(tokens.get("out") or 0)
-        if not is_guest(user):
-            if usage_by_connection:
-                for usage_connection_id, usage in usage_by_connection.items():
-                    usage_in = int(usage.get("in") or 0)
-                    usage_out = int(usage.get("out") or 0)
-                    if usage_in or usage_out:
-                        await _conns.add_tokens(
-                            usage_connection_id, usage_in, usage_out
-                        )
-            elif base_conn_id and (tok_in or tok_out):
-                await _conns.add_tokens(base_conn_id, tok_in, tok_out)
-            if (tok_in or tok_out) and a.get("scope", "private") == "private":
-                await _agents.add_tokens(
-                    agent_id, tok_in, tok_out, owner_id=a.get("owner_id")
-                )
-            if ev.get("type") != "done":
-                return
-            if conversation_id:
-                reply = ev.get("reply", "")
-                user_msg = next(
-                    (m for m in reversed(history) if m.get("role") == "user"), None
-                )
-                if user_msg:
-                    await _chat.add_message(
-                        conversation_id, "user", str(user_msg.get("content") or "")
-                    )
-                if reply:
-                    await _chat.add_message(
-                        conversation_id,
-                        "assistant",
-                        reply,
-                        tokens_in=tok_in,
-                        tokens_out=tok_out,
-                    )
-                    title = str(user_msg.get("content") or "")[:80] if user_msg else ""
-                    await _chat.touch_conversation(conversation_id, title)
-
-    return StreamingResponse(
-        _gen(),
-        media_type="text/event-stream",
-        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
-        background=BackgroundTask(_on_done),
-    )

@@ -11,8 +11,9 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import tempfile
 import time
-from typing import Any, Dict, List
+from typing import Any, Callable, Dict, List
 
 from app.utils import flog
 
@@ -88,20 +89,42 @@ _probe: Dict[str, Any] = {
 # para que /stress/status, /stress/probe y el abort funcionen sea cual sea el
 # worker que atienda la petición.
 _STRESS_PERSIST_KEYS = (
-    "status", "run_id", "started_at", "finished_at", "result",
-    "ticks", "errors", "requested_users", "effective_users", "abort_requested",
+    "status",
+    "run_id",
+    "started_at",
+    "finished_at",
+    "result",
+    "ticks",
+    "errors",
+    "requested_users",
+    "effective_users",
+    "abort_requested",
     "updated_at",
 )
 _PROBE_PERSIST_KEYS = (
-    "status", "run_id", "steps", "ticks", "current_users", "verdict",
-    "abort_requested", "error", "updated_at",
+    "status",
+    "run_id",
+    "steps",
+    "ticks",
+    "current_users",
+    "verdict",
+    "abort_requested",
+    "error",
+    "updated_at",
 )
 # El test runner funcional (pytest, _run más abajo) tenía el mismo problema de
 # fondo que stress/probe pero nunca recibió este mismo arreglo — ver _run,
 # _persist_run_state y los endpoints /status, /run, /history, /stream.
 _RUN_PERSIST_KEYS = (
-    "status", "run_id", "target", "started_at", "finished_at",
-    "summary", "failed_ids", "abort_requested", "updated_at",
+    "status",
+    "run_id",
+    "target",
+    "started_at",
+    "finished_at",
+    "summary",
+    "failed_ids",
+    "abort_requested",
+    "updated_at",
 )
 
 # Si "status" lleva más de esto sin heartbeat (ver _persist_*_state), el
@@ -113,7 +136,7 @@ _RUN_PERSIST_KEYS = (
 _STALE_SECONDS = 10
 
 
-def _read_centinel_state() -> dict:
+def _read_centinel_state_unlocked() -> dict:
     from app.config.data import CENTINEL_STATE_FILE
 
     try:
@@ -127,57 +150,125 @@ def _read_centinel_state() -> dict:
     return {}
 
 
-def _write_centinel_state(data: dict) -> None:
+def _write_centinel_state_unlocked(data: dict) -> None:
     from app.config.data import CENTINEL_STATE_FILE
 
+    CENTINEL_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    fd, tmp_name = tempfile.mkstemp(
+        prefix=f".{CENTINEL_STATE_FILE.name}.",
+        suffix=".tmp",
+        dir=CENTINEL_STATE_FILE.parent,
+    )
     try:
-        CENTINEL_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
-        tmp = CENTINEL_STATE_FILE.with_suffix(".tmp")
-        tmp.write_text(json.dumps(data), encoding="utf-8")
-        tmp.replace(CENTINEL_STATE_FILE)
+        with os.fdopen(fd, "w", encoding="utf-8") as tmp:
+            json.dump(data, tmp)
+            tmp.flush()
+            os.fsync(tmp.fileno())
+        os.replace(tmp_name, CENTINEL_STATE_FILE)
+    finally:
+        try:
+            os.unlink(tmp_name)
+        except FileNotFoundError:
+            pass
+
+
+def _with_state_lock(action: Callable[[], Any]) -> Any:
+    """Ejecuta lectura-modificación-escritura bajo un lock entre procesos."""
+    import fcntl
+
+    from app.config.data import CENTINEL_STATE_FILE
+
+    CENTINEL_STATE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    lock_path = CENTINEL_STATE_FILE.with_suffix(".lock")
+    with lock_path.open("a+") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            return action()
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def _read_centinel_state() -> dict:
+    try:
+        return _with_state_lock(_read_centinel_state_unlocked)
+    except Exception as exc:
+        flog.warning(f"[centinel] no se pudo leer estado compartido: {exc}")
+        return {}
+
+
+def _write_centinel_state(data: dict) -> None:
+    try:
+        _with_state_lock(lambda: _write_centinel_state_unlocked(data))
     except Exception as exc:
         flog.warning(f"[centinel] no se pudo persistir estado compartido: {exc}")
 
 
+def _update_centinel_state(mutator: Callable[[dict], None]) -> dict:
+    """Actualiza una sección sin perder escrituras concurrentes de otro worker."""
+    result: dict = {}
+
+    def update() -> None:
+        nonlocal result
+        result = _read_centinel_state_unlocked()
+        mutator(result)
+        _write_centinel_state_unlocked(result)
+
+    try:
+        _with_state_lock(update)
+    except Exception as exc:
+        flog.warning(f"[centinel] no se pudo actualizar estado compartido: {exc}")
+    return result
+
+
 def _persist_stress_state() -> None:
     _stress["updated_at"] = time.time()
-    data = _read_centinel_state()
-    data["stress"] = {k: _stress.get(k) for k in _STRESS_PERSIST_KEYS}
-    _write_centinel_state(data)
+    snapshot = {k: _stress.get(k) for k in _STRESS_PERSIST_KEYS}
+    _update_centinel_state(lambda data: data.__setitem__("stress", snapshot))
 
 
 def _persist_probe_state() -> None:
     _probe["updated_at"] = time.time()
-    data = _read_centinel_state()
-    data["probe"] = {k: _probe.get(k) for k in _PROBE_PERSIST_KEYS}
-    _write_centinel_state(data)
+    snapshot = {k: _probe.get(k) for k in _PROBE_PERSIST_KEYS}
+    _update_centinel_state(lambda data: data.__setitem__("probe", snapshot))
 
 
 def _persist_run_state() -> None:
     _run["updated_at"] = time.time()
-    data = _read_centinel_state()
-    data["run"] = {k: _run.get(k) for k in _RUN_PERSIST_KEYS}
-    _write_centinel_state(data)
+    snapshot = {k: _run.get(k) for k in _RUN_PERSIST_KEYS}
+    _update_centinel_state(lambda data: data.__setitem__("run", snapshot))
 
 
-def _persist_run_events() -> None:
+_last_event_flush = 0.0
+
+
+def _persist_run_events(*, force: bool = False) -> None:
     """Espeja _run["events"] y _run["raw_lines"] en disco para que
     /stream/{run_id} pueda reenviarlos en vivo aunque la conexión SSE caiga
     en un worker distinto al que ejecuta el run (ver _sse_generator, rama
     "remota"), y para poder inspeccionar la salida cruda de un run desde
     fuera de la app (p.ej. `docker exec` + leer centinel_state.json) cuando
     el resumen estructurado no basta para diagnosticar un fallo."""
-    data = _read_centinel_state()
-    data["run_events"] = list(_run["events"])
-    data["run_raw_lines"] = list(_run["raw_lines"])
-    _write_centinel_state(data)
+    global _last_event_flush
+    now = time.monotonic()
+    if not force and now - _last_event_flush < 1.0:
+        return
+    events = list(_run["events"])
+    raw_lines = list(_run["raw_lines"])
+
+    def update(data: dict) -> None:
+        data["run_events"] = events
+        data["run_raw_lines"] = raw_lines
+
+    _update_centinel_state(update)
+    _last_event_flush = now
 
 
 def _reset_run_events() -> None:
-    data = _read_centinel_state()
-    data["run_events"] = []
-    data["run_raw_lines"] = []
-    _write_centinel_state(data)
+    def update(data: dict) -> None:
+        data["run_events"] = []
+        data["run_raw_lines"] = []
+
+    _update_centinel_state(update)
 
 
 def _prune_history(history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
@@ -190,12 +281,14 @@ def _prune_history(history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     cutoff = time.time() - retention_days * 86400
     return [h for h in history if (h.get("finished_at") or 0) >= cutoff]
 
+
 def _persist_run_history(entry: Dict[str, Any]) -> None:
-    data = _read_centinel_state()
-    history = data.get("run_history") or []
-    history.insert(0, entry)
-    data["run_history"] = _prune_history(history)
-    _write_centinel_state(data)
+    def update(data: dict) -> None:
+        history = data.get("run_history") or []
+        history.insert(0, entry)
+        data["run_history"] = _prune_history(history)
+
+    _update_centinel_state(update)
 
 
 def _heal_if_stale(data: dict, section: str) -> dict:
@@ -210,10 +303,11 @@ def _heal_if_stale(data: dict, section: str) -> dict:
     if (time.time() - updated_at) <= _STALE_SECONDS:
         return data
     part["status"] = "error"
-    part["error"] = "Prueba interrumpida: el proceso que la ejecutaba se reinició o cayó a mitad de la ejecución."
+    part["error"] = (
+        "Prueba interrumpida: el proceso que la ejecutaba se reinició o cayó a mitad de la ejecución."
+    )
     part["finished_at"] = time.time()
-    data[section] = part
-    _write_centinel_state(data)
+    _update_centinel_state(lambda current: current.__setitem__(section, part))
     flog.warning(
         f"[centinel] {section} huérfano detectado (sin heartbeat > {_STALE_SECONDS}s) — marcado como error"
     )

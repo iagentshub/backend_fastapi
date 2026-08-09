@@ -364,6 +364,11 @@ CREATE INDEX IF NOT EXISTS idx_al_level    ON app_logs(level);
 CREATE INDEX IF NOT EXISTS idx_al_username ON app_logs(username);
 CREATE INDEX IF NOT EXISTS idx_al_ip       ON app_logs(ip);
 CREATE INDEX IF NOT EXISTS idx_al_source   ON app_logs(source);
+CREATE TABLE IF NOT EXISTS rate_limit_windows (
+    limiter_key TEXT PRIMARY KEY,
+    window_start @FLOAT@ NOT NULL,
+    request_count INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS user_agent_preferences (
     username      TEXT NOT NULL,
     agent_id      TEXT NOT NULL,

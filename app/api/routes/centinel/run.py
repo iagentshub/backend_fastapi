@@ -34,7 +34,7 @@ from app.api.routes.centinel._state import (
     _reset_run_events,
     _run,
     _subscribers,
-    _write_centinel_state,
+    _update_centinel_state,
 )
 from app.errors import APIError
 from app.utils import flog
@@ -101,7 +101,9 @@ async def start_run(
     target = body.target.strip()
     # Seguridad: target solo dentro de tests/
     if not target.startswith("tests") or ".." in target or target.startswith("/"):
-        raise APIError(422, "invalid_field", "Target no válido", extra={"field": "target"})
+        raise APIError(
+            422, "invalid_field", "Target no válido", extra={"field": "target"}
+        )
 
     # Re-run solo los fallidos — prefiere la memoria local (mismo worker que
     # acaba de terminar el run anterior) y cae a lo persistido si este worker
@@ -137,9 +139,7 @@ async def start_run(
 async def abort_run(_: str = Depends(require_admin)) -> dict:
     _guard()
     persisted = _heal_if_stale(_read_centinel_state(), "run").get("run", {})
-    is_local = _run["status"] == "running" and _run["run_id"] == persisted.get(
-        "run_id"
-    )
+    is_local = _run["status"] == "running" and _run["run_id"] == persisted.get("run_id")
     if not is_local and persisted.get("status") != "running":
         raise APIError(409, "no_run_in_progress", "No hay run en curso")
 
@@ -155,9 +155,7 @@ async def abort_run(_: str = Depends(require_admin)) -> dict:
         # El run corre en otro worker: señalizar vía archivo compartido — su
         # _execute_run tiene un ticker que revisa "abort_requested" cada ~1s.
         persisted["abort_requested"] = True
-        data = _read_centinel_state()
-        data["run"] = persisted
-        _write_centinel_state(data)
+        _update_centinel_state(lambda data: data.__setitem__("run", persisted))
 
     flog.warning("[centinel] run abortado")
     return {"ok": True}
@@ -177,10 +175,12 @@ async def get_history(_: str = Depends(require_admin)) -> list:
 async def delete_history_entry(run_id: str, _: str = Depends(require_admin)) -> dict:
     _guard()
     _history[:] = [h for h in _history if h.get("run_id") != run_id]
-    data = _read_centinel_state()
-    history = data.get("run_history") or []
-    data["run_history"] = [h for h in history if h.get("run_id") != run_id]
-    _write_centinel_state(data)
+
+    def update(data: dict) -> None:
+        history = data.get("run_history") or []
+        data["run_history"] = [h for h in history if h.get("run_id") != run_id]
+
+    _update_centinel_state(update)
     return {"ok": True}
 
 
@@ -445,7 +445,13 @@ async def _execute_run(run_id: str, target: str) -> None:
         flog.error(f"[centinel] error en run {run_id[:8]}: {exc}")
         _run["status"] = "error"
         _run["finished_at"] = time.time()
-        await _broadcast({"type": "error", "message": str(exc)})
+        await _broadcast(
+            {
+                "type": "error",
+                "code": "internal_error",
+                "message": "Error interno al ejecutar las pruebas.",
+            }
+        )
         _persist_run_state()
 
     finally:

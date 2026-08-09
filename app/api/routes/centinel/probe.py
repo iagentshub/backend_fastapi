@@ -10,7 +10,7 @@ import time
 from typing import List, Optional
 
 from fastapi import Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.api.routes.auth import require_admin
 from app.api.routes.centinel._router import router
@@ -20,7 +20,7 @@ from app.api.routes.centinel._state import (
     _persist_probe_state,
     _probe,
     _read_centinel_state,
-    _write_centinel_state,
+    _update_centinel_state,
 )
 from app.api.routes.centinel.stress import (
     _WORKER_THREAD_STACK_BYTES,
@@ -33,13 +33,13 @@ from app.utils import flog
 
 class ProbeRequest(BaseModel):
     path: str = "/api/auth/me"
-    start_users: int = 10
-    step: int = 50
-    duration: int = 30  # segundos por paso
+    start_users: int = Field(10, ge=1, le=10_000)
+    step: int = Field(50, ge=1, le=10_000)
+    duration: int = Field(30, ge=1, le=3_600)  # segundos por paso
 
-    error_threshold: float = 0.0  # % errores tolerados (0.0 = cero errores)
-    max_concurrency: int = 0  # 0 = sin límite
-    timeout: float = 10.0
+    error_threshold: float = Field(0.0, ge=0, le=100)
+    max_concurrency: int = Field(0, ge=0, le=10_000)  # 0 = sin límite
+    timeout: float = Field(10.0, gt=0, le=120)
     token: Optional[str] = None
 
 
@@ -96,9 +96,7 @@ async def probe_abort(_: str = Depends(require_admin)) -> dict:
         # El probe corre en otro worker: señalizar vía archivo compartido,
         # su ticker de paso lo detecta en el próximo tick (~1s).
         persisted["abort_requested"] = True
-        data = _read_centinel_state()
-        data["probe"] = persisted
-        _write_centinel_state(data)
+        _update_centinel_state(lambda data: data.__setitem__("probe", persisted))
         return {"status": "running"}
 
     return {"status": persisted.get("status", "idle")}
@@ -165,9 +163,8 @@ async def _run_probe_step(
             # Abort disparado desde OTRO worker: se revisa vía archivo
             # compartido en cada tick (igual que en el stress test normal).
             other_worker_state = _read_centinel_state().get("probe", {})
-            if (
-                other_worker_state.get("run_id") == run_id
-                and other_worker_state.get("abort_requested")
+            if other_worker_state.get("run_id") == run_id and other_worker_state.get(
+                "abort_requested"
             ):
                 _probe["status"] = "aborted"
                 stop_event.set()

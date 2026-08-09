@@ -12,7 +12,7 @@ from app.connections.iagentshub import IAgentsHubProvider, _login
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def _mock_urlopen_response(data: dict, status: int = 200):
-    """Simula la respuesta de urllib.request.urlopen."""
+    """Simula la respuesta de app.connections.iagentshub.safe_urlopen."""
     mock = MagicMock()
     mock.read.return_value = json.dumps(data).encode()
     mock.status = status
@@ -41,11 +41,9 @@ def test_login_raises_when_no_token_in_cookie():
     mock_resp.__enter__ = lambda s: s
     mock_resp.__exit__ = MagicMock(return_value=False)
     mock_resp.read.return_value = b""
+    mock_resp.headers.get_all.return_value = []
 
-    mock_opener = MagicMock()
-    mock_opener.open.return_value = mock_resp
-
-    with patch("urllib.request.build_opener", return_value=mock_opener):
+    with patch("app.connections.iagentshub.safe_urlopen", return_value=mock_resp):
         with pytest.raises(ValueError, match="token de sesión"):
             _login("https://hub.example.com", "alice", "secret")
 
@@ -87,7 +85,7 @@ def test_test_success():
     me_resp = _mock_urlopen_response({"username": "alice"})
 
     with patch("app.connections.iagentshub._login", return_value="tok-abc"):
-        with patch("urllib.request.urlopen", return_value=me_resp):
+        with patch("app.connections.iagentshub.safe_urlopen", return_value=me_resp):
             result = IAgentsHubProvider.test(
                 {"url": "https://hub.example.com", "username": "alice", "api_key": "pw"}
             )
@@ -101,7 +99,7 @@ def test_test_success_no_username_in_response():
     me_resp = _mock_urlopen_response({})
 
     with patch("app.connections.iagentshub._login", return_value="tok-abc"):
-        with patch("urllib.request.urlopen", return_value=me_resp):
+        with patch("app.connections.iagentshub.safe_urlopen", return_value=me_resp):
             result = IAgentsHubProvider.test(
                 {"url": "https://hub.example.com", "username": "bob", "api_key": "pw"}
             )

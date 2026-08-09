@@ -6,13 +6,14 @@ import asyncio
 import json
 from typing import Any, Dict, Literal
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.api.routes.auth import GroupContext, require_group
 from app.config.data import AGENTS_DIR, SKILLS_DIR
 from app.errors import APIError
+from app.services.workflow_errors import WorkflowPublicError, workflow_error_event
 from app.services.workflow_run_executor import start_workflow_run
 from app.services.workflow_runner import run_workflow
 from app.services.workflow_validator import validate_workflow
@@ -73,9 +74,7 @@ async def _owned_resource(
             404, "not_found", "Recurso no encontrado", extra={"resource": kind}
         )
     if resource.get("owner_id") != owner_id:
-        raise APIError(
-            403, "forbidden", "Solo el propietario puede modificarlo"
-        )
+        raise APIError(403, "forbidden", "Solo el propietario puede modificarlo")
     return resource
 
 
@@ -149,23 +148,15 @@ async def list_workflows(
         own.extend(await _workflows.list(owner_id))
     own_keys = {(item["id"], item["owner_id"]) for item in own}
 
-    shared_map: dict[str, list[str]] = {}
-    for group in await _group_storage.list_for_user(ctx.user):
-        group_id = str(group["id"])
-        for resource_id in await _shares.get_group_shared_resource_ids(
-            group_id, "workflow"
-        ):
-            shared_map.setdefault(resource_id, []).append(group_id)
+    shared_map = await _shares.get_user_shared_resource_groups(ctx.user, "workflow")
 
     for item in own:
         if item["id"] in shared_map:
             item["_group_ids"] = shared_map[item["id"]]
 
     shared: list[Dict[str, Any]] = []
-    for item in await _workflows.list_by_ids(list(shared_map)):
+    for item in await _workflows.list_by_ids_with_active_owner(list(shared_map)):
         if (item["id"], item["owner_id"]) in own_keys:
-            continue
-        if not await _group_storage.owner_is_active(item["owner_id"]):
             continue
         item["_shared"] = True
         item["_group_ids"] = shared_map[item["id"]]
@@ -307,7 +298,9 @@ async def _prepare_workflow_run(workflow_id: str, ctx: GroupContext):
         )
     if not workflow.get("is_active", True):
         raise APIError(
-            409, "resource_inactive", "Esta orquestación está desactivada",
+            409,
+            "resource_inactive",
+            "Esta orquestación está desactivada",
             extra={"resource": "workflow"},
         )
     try:
@@ -334,11 +327,15 @@ async def _prepare_workflow_run(workflow_id: str, ctx: GroupContext):
                     shared_agent = True
                     break
             if not shared_agent:
-                raise RuntimeError(f"El agente {agent_id} no está disponible para tu grupo")
+                raise RuntimeError(
+                    f"El agente {agent_id} no está disponible para tu grupo"
+                )
         connection_id = str(agent.get("connection_id") or "")
         if not connection_id:
-            raise RuntimeError(f"El agente {agent.get('name')} no tiene conexión")
-        from app.api.routes.connections import _get_conn_any
+            raise WorkflowPublicError(
+                "invalid_field", f"El agente {agent.get('name')} no tiene conexión"
+            )
+        from app.services.connection_access import connection_access
 
         if (
             ctx.group_id != ctx.user
@@ -350,12 +347,18 @@ async def _prepare_workflow_run(workflow_id: str, ctx: GroupContext):
                 "via_agent",
             )
         ):
-            raise RuntimeError(
-                f"No tienes permiso para usar la conexión del agente {agent.get('name')}"
+            raise WorkflowPublicError(
+                "forbidden",
+                f"No tienes permiso para usar la conexión del agente {agent.get('name')}",
             )
-        connection = await _get_conn_any(connection_id, ctx.user, ctx.group_id)
+        connection = await connection_access.get_accessible(
+            connection_id, ctx.user, ctx.group_id
+        )
         if not connection:
-            raise RuntimeError(f"La conexión del agente {agent.get('name')} no está disponible")
+            raise WorkflowPublicError(
+                "upstream_error",
+                f"La conexión del agente {agent.get('name')} no está disponible",
+            )
         if connection.get("_llm_orchestration") and ctx.group_id != ctx.user:
             for target_id in connection.get("_connections") or {}:
                 if not await _group_storage.has_resource_permission(
@@ -365,9 +368,10 @@ async def _prepare_workflow_run(workflow_id: str, ctx: GroupContext):
                     target_id,
                     "via_agent",
                 ):
-                    raise RuntimeError(
+                    raise WorkflowPublicError(
+                        "forbidden",
                         "No tienes permiso para usar una conexión de la "
-                        "orquestación LLM"
+                        "orquestación LLM",
                     )
         return agent, connection
 
@@ -390,7 +394,8 @@ async def run_saved_workflow(
                     continue
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
         except Exception as exc:
-            yield f"data: {json.dumps({'type': 'error', 'message': str(exc)}, ensure_ascii=False)}\n\n"
+            event = workflow_error_event(exc, context="workflow")
+            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 
     return StreamingResponse(
         events(),
@@ -439,7 +444,6 @@ async def list_workflow_runs(
     ctx: GroupContext = Depends(require_group),
 ) -> list[Dict[str, Any]]:
     await _workflow_runs.fail_stale()
-    await _workflow_runs.purge()
     return await _workflow_runs.list_for_user(ctx.user, limit=limit)
 
 
@@ -450,7 +454,12 @@ async def workflow_run_detail(
 ) -> Dict[str, Any]:
     run = await _workflow_runs.get_for_user(run_id, ctx.user)
     if not run:
-        raise HTTPException(status_code=404, detail="Ejecución no encontrada")
+        raise APIError(
+            404,
+            "not_found",
+            "Ejecución no encontrada",
+            extra={"resource": "workflow_run"},
+        )
     return run
 
 
@@ -462,7 +471,12 @@ async def stream_workflow_run_events(
 ) -> StreamingResponse:
     run = await _workflow_runs.get_for_user(run_id, ctx.user)
     if not run:
-        raise HTTPException(status_code=404, detail="Ejecución no encontrada")
+        raise APIError(
+            404,
+            "not_found",
+            "Ejecución no encontrada",
+            extra={"resource": "workflow_run"},
+        )
 
     async def persisted_events():
         cursor = max(0, after)
@@ -475,7 +489,10 @@ async def stream_workflow_run_events(
             current = await _workflow_runs.get_for_user(run_id, ctx.user)
             if not current:
                 return
-            if current["status"] in TERMINAL_STATUSES and cursor >= current["last_sequence"]:
+            if (
+                current["status"] in TERMINAL_STATUSES
+                and cursor >= current["last_sequence"]
+            ):
                 return
             if not events:
                 idle_ticks += 1
@@ -500,7 +517,12 @@ async def cancel_workflow_run(
 ) -> Dict[str, Any]:
     run = await _workflow_runs.get_for_user(run_id, ctx.user)
     if not run:
-        raise HTTPException(status_code=404, detail="Ejecución no encontrada")
+        raise APIError(
+            404,
+            "not_found",
+            "Ejecución no encontrada",
+            extra={"resource": "workflow_run"},
+        )
     if run["status"] in ("completed", "failed"):
         raise APIError(409, "workflow_run_not_active", "La ejecución ya ha terminado")
     if run["status"] != "cancelled":

@@ -6,6 +6,7 @@ import os
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request, Response
+from pydantic import BaseModel, Field
 
 from app.api.routes.auth.dependencies import (
     _groups,
@@ -28,6 +29,7 @@ from app.auth.passwords import create_token
 from app.config.content_languages import CONTENT_LANGUAGE_SET
 from app.config.session import (
     EMAIL_VERIFY_ENABLED,
+    JWT_MAX_AGE_SECONDS,
     RATE_FORGOT_CALLS,
     RATE_FORGOT_WINDOW,
     RATE_GUEST_CALLS,
@@ -46,10 +48,47 @@ from app.services.email import send_reset_email, send_verification_email
 from app.storage.db import open_db
 from app.utils import flog
 from app.utils.net import client_ip as _client_ip
-from app.utils.net import json_body
 from app.utils.validation import is_valid_email, is_valid_username, normalize_username
 
 router = APIRouter()
+
+
+class RegisterBody(BaseModel):
+    username: str | None = Field(default=None, max_length=32)
+    email: str | None = Field(default=None, max_length=254)
+    password: str | None = Field(default=None, max_length=128)
+    birth_date: str | None = None
+    gender: str | None = None
+    country: str | None = None
+    phone: str | None = None
+
+
+class LoginBody(BaseModel):
+    identifier: str | None = Field(default=None, max_length=254)
+    email: str | None = Field(default=None, max_length=254)
+    password: str | None = Field(default=None, max_length=128)
+
+
+class EmailBody(BaseModel):
+    email: str | None = Field(default=None, max_length=254)
+
+
+class ResetPasswordBody(BaseModel):
+    token: str | None = Field(default=None, max_length=512)
+    password: str | None = Field(default=None, max_length=128)
+
+
+class ChangePasswordBody(BaseModel):
+    current_password: str | None = Field(default=None, max_length=128)
+    new_password: str | None = Field(default=None, max_length=128)
+
+
+class ProfileBody(BaseModel):
+    bio: str | None = Field(default=None, max_length=500)
+    languages: list[str] = Field(default_factory=list, max_length=50)
+    is_email_public: bool = False
+    github: str | None = Field(default=None, max_length=100)
+    cv: str | None = Field(default=None, max_length=20_000)
 
 
 def _public_base_url(request: Request) -> str:
@@ -66,21 +105,39 @@ def _public_base_url(request: Request) -> str:
 
 
 _register_limiter = RateLimiter(
-    calls=REGISTER_MAX, window=REGISTER_WINDOW, key_func=_client_ip
+    calls=REGISTER_MAX,
+    window=REGISTER_WINDOW,
+    key_func=_client_ip,
+    shared=True,
+    name="auth-register",
 )
 _forgot_limiter = RateLimiter(
-    calls=RATE_FORGOT_CALLS, window=RATE_FORGOT_WINDOW, key_func=_client_ip
+    calls=RATE_FORGOT_CALLS,
+    window=RATE_FORGOT_WINDOW,
+    key_func=_client_ip,
+    shared=True,
+    name="auth-forgot",
 )
 _reset_limiter = RateLimiter(
-    calls=RATE_RESET_CALLS, window=RATE_RESET_WINDOW, key_func=_client_ip
+    calls=RATE_RESET_CALLS,
+    window=RATE_RESET_WINDOW,
+    key_func=_client_ip,
+    shared=True,
+    name="auth-reset",
 )
 _guest_limiter = RateLimiter(
-    calls=RATE_GUEST_CALLS, window=RATE_GUEST_WINDOW, key_func=_client_ip
+    calls=RATE_GUEST_CALLS,
+    window=RATE_GUEST_WINDOW,
+    key_func=_client_ip,
+    shared=True,
+    name="auth-guest",
 )
 
 
 @router.post("/register")
-async def register(request: Request, response: Response) -> dict[str, Any]:
+async def register(
+    body: RegisterBody, request: Request, response: Response
+) -> dict[str, Any]:
     if REGISTRATION_MODE == "closed":
         raise APIError(403, "registration_disabled", "El registro está desactivado.")
     if REGISTRATION_MODE == "invite":
@@ -90,14 +147,13 @@ async def register(request: Request, response: Response) -> dict[str, Any]:
             "El registro requiere invitación de un administrador.",
         )
     await _register_limiter(request)
-    body = await json_body(request)
-    username = normalize_username(str(body.get("username") or ""))
-    email = str(body.get("email") or "").strip().lower()
-    password = str(body.get("password") or "")
-    birth_date = str(body.get("birth_date") or "").strip() or None
-    gender = str(body.get("gender") or "").strip() or None
-    country = str(body.get("country") or "").strip() or None
-    phone = str(body.get("phone") or "").strip() or None
+    username = normalize_username(body.username or "")
+    email = (body.email or "").strip().lower()
+    password = body.password or ""
+    birth_date = (body.birth_date or "").strip() or None
+    gender = (body.gender or "").strip() or None
+    country = (body.country or "").strip() or None
+    phone = (body.phone or "").strip() or None
 
     if not is_valid_username(username):
         raise APIError(
@@ -141,7 +197,9 @@ async def register(request: Request, response: Response) -> dict[str, Any]:
         )
     except ValueError as exc:
         resource = "username" if "usuario" in str(exc).lower() else "email"
-        raise APIError(409, "already_exists", str(exc), extra={"resource": resource}) from exc
+        raise APIError(
+            409, "already_exists", str(exc), extra={"resource": resource}
+        ) from exc
 
     if EMAIL_VERIFY_ENABLED and verify_token:
         base_url = _public_base_url(request)
@@ -160,44 +218,44 @@ async def register(request: Request, response: Response) -> dict[str, Any]:
         httponly=True,
         samesite="lax",
         secure=SECURE_COOKIES,
-        max_age=43200,
+        max_age=JWT_MAX_AGE_SECONDS,
     )
     return {"ok": True, "email": email, "pending_verification": False}
 
 
 @router.post("/login")
 async def login(
+    body: LoginBody,
     request: Request,
     response: Response,
     _rl: None = Depends(_login_limiter),
 ) -> dict[str, Any]:
-    body = await json_body(request)
-    identifier = str(body.get("identifier") or body.get("email") or "").strip().lower()
-    password = str(body.get("password") or "")
+    identifier = (body.identifier or body.email or "").strip().lower()
+    password = body.password or ""
 
     # Extraer IP real del cliente
     _ip = _client_ip(request)
 
     if not identifier or not password:
-        flog.warning(
-            f"[login] FAIL identificador={identifier or '(vacío)'} razón=campos_vacíos", ip=_ip
+        flog.warning("[login] FAIL razón=campos_vacíos", ip=_ip)
+        raise APIError(
+            400, "missing_credentials", "Usuario o email y contraseña requeridos"
         )
-        raise APIError(400, "missing_credentials", "Usuario o email y contraseña requeridos")
 
     from app.auth.auth import get_user_by_login
 
     user = await get_user_by_login(identifier)
     if not user or not user.get("password_hash"):
-        flog.warning(f"[login] FAIL identificador={identifier} razón=usuario_no_encontrado", ip=_ip)
+        flog.warning("[login] FAIL razón=usuario_no_encontrado", ip=_ip)
         raise APIError(401, "invalid_credentials", "Credenciales incorrectas")
     if not await verify_password_async(password, user["password_hash"]):
-        flog.warning(f"[login] FAIL identificador={identifier} razón=contraseña_incorrecta", ip=_ip)
+        flog.warning("[login] FAIL razón=contraseña_incorrecta", ip=_ip)
         raise APIError(401, "invalid_credentials", "Credenciales incorrectas")
     if not user.get("is_active", 1):
-        flog.warning(f"[login] FAIL identificador={identifier} razón=cuenta_desactivada", ip=_ip)
+        flog.warning("[login] FAIL razón=cuenta_desactivada", ip=_ip)
         raise APIError(403, "account_disabled", "Cuenta desactivada")
     if EMAIL_VERIFY_ENABLED and not user.get("is_verified", 1):
-        flog.warning(f"[login] FAIL identificador={identifier} razón=pendiente_verificación", ip=_ip)
+        flog.warning("[login] FAIL razón=pendiente_verificación", ip=_ip)
         raise APIError(
             403,
             "email_not_verified",
@@ -206,7 +264,7 @@ async def login(
 
     token = create_token(user["id"])
     flog.ok(
-        f"[login] OK identificador={identifier} usuario={user['username']}",
+        f"[login] OK usuario={user['username']}",
         ip=_ip,
         username=user["username"],
     )
@@ -216,7 +274,7 @@ async def login(
         httponly=True,
         samesite="lax",
         secure=SECURE_COOKIES,
-        max_age=43200,
+        max_age=JWT_MAX_AGE_SECONDS,
     )
     return {"ok": True, "username": user["username"]}
 
@@ -226,11 +284,15 @@ async def verify_email(token: str, response: Response) -> dict[str, Any]:
     username = await verify_email_token(token)
     if not username:
         raise APIError(
-            400, "invalid_verification_link", "Enlace de verificación inválido o expirado"
+            400,
+            "invalid_verification_link",
+            "Enlace de verificación inválido o expirado",
         )
     user = await get_user_by_username(username)
     if not user:
-        raise APIError(404, "not_found", "Usuario no encontrado", extra={"resource": "user"})
+        raise APIError(
+            404, "not_found", "Usuario no encontrado", extra={"resource": "user"}
+        )
     auth_token = create_token(user["id"])
     response.set_cookie(
         "ga_token",
@@ -238,7 +300,7 @@ async def verify_email(token: str, response: Response) -> dict[str, Any]:
         httponly=True,
         samesite="lax",
         secure=SECURE_COOKIES,
-        max_age=43200,
+        max_age=JWT_MAX_AGE_SECONDS,
     )
     return {"ok": True, "username": username}
 
@@ -258,7 +320,7 @@ async def guest_login(
         httponly=True,
         samesite="lax",
         secure=SECURE_COOKIES,
-        max_age=43200,
+        max_age=JWT_MAX_AGE_SECONDS,
     )
     return {"ok": True, "username": guest_id}
 
@@ -315,11 +377,11 @@ async def me(
 
 @router.post("/forgot-password")
 async def forgot_password(
+    body: EmailBody,
     request: Request,
     _rl: None = Depends(_forgot_limiter),
 ) -> dict[str, Any]:
-    body = await json_body(request)
-    email = str(body.get("email") or "").strip().lower()
+    email = (body.email or "").strip().lower()
     if not email or not is_valid_email(email):
         raise APIError(400, "invalid_field", "Email inválido", extra={"field": "email"})
     token = await create_password_reset_token(email)
@@ -332,14 +394,15 @@ async def forgot_password(
 
 @router.post("/reset-password")
 async def reset_password(
-    request: Request,
+    body: ResetPasswordBody,
     _rl: None = Depends(_reset_limiter),
 ) -> dict[str, Any]:
-    body = await json_body(request)
-    token = str(body.get("token") or "").strip()
-    new_password = str(body.get("password") or "").strip()
+    token = (body.token or "").strip()
+    new_password = (body.password or "").strip()
     if not token or not new_password:
-        raise APIError(400, "token_and_password_required", "Token y contraseña requeridos")
+        raise APIError(
+            400, "token_and_password_required", "Token y contraseña requeridos"
+        )
     if len(new_password) < 8:
         raise APIError(
             400, "password_too_short", "La contraseña debe tener al menos 8 caracteres"
@@ -351,21 +414,28 @@ async def reset_password(
 
 @router.post("/change-password")
 async def change_password(
-    request: Request, username: str = Depends(require_auth)
+    body: ChangePasswordBody, username: str = Depends(require_auth)
 ) -> dict[str, Any]:
-    body = await json_body(request)
-    current = str(body.get("current_password") or "")
-    new_pw = str(body.get("new_password") or "").strip()
+    current = body.current_password or ""
+    new_pw = (body.new_password or "").strip()
     if not current or not new_pw:
         raise APIError(400, "all_fields_required", "Completa todos los campos")
     if len(new_pw) < 8:  # N4: mínimo coherente con el registro (8 caracteres)
-        raise APIError(400, "password_too_short", "La nueva contraseña debe tener al menos 8 caracteres")
+        raise APIError(
+            400,
+            "password_too_short",
+            "La nueva contraseña debe tener al menos 8 caracteres",
+        )
 
     user = await get_user_by_id(username)
     if not user:
-        raise APIError(404, "not_found", "Usuario no encontrado", extra={"resource": "user"})
+        raise APIError(
+            404, "not_found", "Usuario no encontrado", extra={"resource": "user"}
+        )
     if not await verify_password_async(current, user.get("password_hash", "")):
-        raise APIError(401, "current_password_incorrect", "Contraseña actual incorrecta")
+        raise APIError(
+            401, "current_password_incorrect", "Contraseña actual incorrecta"
+        )
     # ALTO-8 (.admin_pass) vive ahora dentro de set_own_password: era el único
     # de los tres caminos que cambian contraseña que lo limpiaba, y encima
     # dependía de GAIA_DATA_DIR —sin esa variable no borraba nada— y borraba el
@@ -385,25 +455,26 @@ _ALLOWED_AVATAR_EXT = {".jpg", ".jpeg", ".png", ".webp"}
 
 @router.put("/me/profile")
 async def update_profile(
-    request: Request,
+    body: ProfileBody,
     username: str = Depends(require_auth),
 ) -> dict[str, Any]:
     import json
 
-    body = await json_body(request)
-    bio = str(body.get("bio") or "").strip()[:500] or None
-    raw_langs = body.get("languages") or []
+    bio = (body.bio or "").strip() or None
+    raw_langs = body.languages
     languages = json.dumps([lang for lang in raw_langs if lang in _ALLOWED_LANGUAGES])
-    is_email_public = 1 if body.get("is_email_public") is True else 0
+    is_email_public = 1 if body.is_email_public else 0
     # N3: solo permitir URLs https:// para el campo github (bloquear javascript: y otros)
-    _github_raw = str(body.get("github") or "").strip()[:100]
+    _github_raw = (body.github or "").strip()
     if _github_raw and not _github_raw.startswith("https://"):
         raise APIError(
-            422, "invalid_field", "El campo github debe ser una URL https://",
+            422,
+            "invalid_field",
+            "El campo github debe ser una URL https://",
             extra={"field": "github"},
         )
     github = _github_raw or None
-    cv = str(body.get("cv") or "").strip()[:20000] or None
+    cv = (body.cv or "").strip() or None
 
     async with open_db() as conn:
         await conn.execute(
@@ -447,6 +518,14 @@ async def upload_avatar(
         data = await file.read()
         if len(data) > _MAX_AVATAR_BYTES:
             raise APIError(400, "avatar_too_large", "El avatar no puede superar 10 MB.")
+        from app.utils.images import detect_avatar_mime
+
+        if detect_avatar_mime(data) is None:
+            raise APIError(
+                400,
+                "avatar_format_not_allowed",
+                "El contenido no es una imagen JPG, PNG o WebP válida.",
+            )
 
         encoded = base64.b64encode(data).decode("ascii")
         async with open_db() as conn:

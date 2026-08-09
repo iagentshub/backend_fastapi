@@ -22,12 +22,12 @@ def test_test_missing_api_key():
 
 def test_test_success():
     mock_resp = _mock_response({"id": "msg_123", "type": "message"})
-    with patch("urllib.request.urlopen", return_value=mock_resp):
+    with patch("app.connections.anthropic.safe_urlopen", return_value=mock_resp):
         result = AnthropicProvider.test({"api_key": "sk-ant-fake"})
     assert result.ok is True
 
 
 def test_test_connection_error():
-    with patch("urllib.request.urlopen", side_effect=Exception("timeout")):
+    with patch("app.connections.anthropic.safe_urlopen", side_effect=Exception("timeout")):
         result = AnthropicProvider.test({"api_key": "sk-ant-fake"})
     assert result.ok is False

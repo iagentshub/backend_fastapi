@@ -142,11 +142,11 @@ def test_download_connects_to_the_validated_ip():
     connection = MagicMock()
     connection.getresponse.return_value = response
     with (
-        patch("app.storage.knowledge.resolve_safe_host", return_value="93.184.216.34"),
-        patch("app.storage.knowledge._PinnedHTTPConnection", return_value=connection) as cls,
+        patch("app.utils.safe_http.resolve_safe_host", return_value="93.184.216.34"),
+        patch("app.utils.safe_http._PinnedHTTPConnection", return_value=connection) as cls,
     ):
         body, _content_type = _download_safe_url("http://example.com/data")
-    cls.assert_called_once_with("example.com", "93.184.216.34", 80)
+    cls.assert_called_once_with("example.com", "93.184.216.34", 80, 20)
     assert body == b"seguro"
 
 
@@ -158,8 +158,8 @@ def test_download_revalidates_redirect_target():
     connection = MagicMock()
     connection.getresponse.return_value = response
     with (
-        patch("app.storage.knowledge.resolve_safe_host", return_value="93.184.216.34"),
-        patch("app.storage.knowledge._PinnedHTTPConnection", return_value=connection),
+        patch("app.utils.safe_http.resolve_safe_host", return_value="93.184.216.34"),
+        patch("app.utils.safe_http._PinnedHTTPConnection", return_value=connection),
     ):
         with pytest.raises(ValueError, match="privada"):
             _download_safe_url("http://example.com/redirect")

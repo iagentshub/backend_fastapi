@@ -32,6 +32,7 @@ from app.config.providers import (
 )
 from app.config.security import PRIVATE_HOST_PREFIXES, assert_safe_url
 from app.utils import flog
+from app.utils.safe_http import safe_urlopen
 
 _NVIDIA_DEEPSEEK_V4_MODELS = {
     "deepseek-ai/deepseek-v4-pro",
@@ -118,11 +119,14 @@ class _MemoryStorage(Protocol):
 
 
 class _ChatStorage(Protocol):
-    async def list_conversations(
-        self, user_id: str, agent_id: str, limit: int = 50
-    ) -> List[Dict[str, Any]]: ...
-    async def get_messages(
-        self, conversation_id: str, user_id: str, limit: int = 200
+    async def list_memory_messages(
+        self,
+        user_id: str,
+        agent_id: str,
+        exclude_conversation_id: str | None = None,
+        *,
+        limit: int = 200,
+        chars_per_message: int = 2_000,
     ) -> List[Dict[str, Any]]: ...
 
 
@@ -176,6 +180,7 @@ def _estimate_tokens(text: str) -> int:
 
 
 _HISTORY_TOKEN_BUDGET = 20_000
+_CONTEXT_TOKEN_BUDGET = 60_000
 
 
 def _truncate_history(
@@ -185,12 +190,12 @@ def _truncate_history(
 ) -> list:
     """
     Descarta los mensajes más antiguos hasta que el total estimado de tokens
-    (system + history) quepa en max_context. Siempre conserva al menos
-    los 2 últimos mensajes para no romper el turno actual.
+    (system + history) quepa en max_context. Conserva primero los mensajes
+    más recientes; el llamador reserva espacio para el turno actual.
     """
     budget = max_context - system_tokens
     if budget <= 0:
-        return history[-2:]  # extremo: solo el último turno
+        return []
 
     total = sum(_estimate_tokens(str(m.get("content", ""))) for m in history)
     if total <= budget:
@@ -198,9 +203,13 @@ def _truncate_history(
 
     # Eliminar desde el principio hasta que quepa
     trimmed = list(history)
-    while len(trimmed) > 2 and total > budget:
+    while len(trimmed) > 1 and total > budget:
         removed = trimmed.pop(0)
         total -= _estimate_tokens(str(removed.get("content", "")))
+    if trimmed and total > budget:
+        newest = dict(trimmed[-1])
+        newest["content"] = str(newest.get("content", ""))[: max(0, budget * 4)]
+        trimmed = [newest]
     return trimmed
 
 
@@ -216,7 +225,7 @@ def _do_openai_stream(
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     full_reply = ""
     tok_in = tok_out = 0
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with safe_urlopen(req, timeout=timeout) as resp:
         for raw in resp:
             line = raw.decode("utf-8", errors="replace").strip()
             if not line.startswith("data: "):
@@ -303,7 +312,7 @@ def _do_claude_stream(
     req = urllib.request.Request(url, data=data, headers=headers, method="POST")
     full_reply = ""
     tok_in = tok_out = 0
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    with safe_urlopen(req, timeout=timeout) as resp:
         for raw in resp:
             line = raw.decode("utf-8", errors="replace").strip()
             if not line.startswith("data: "):
@@ -476,16 +485,42 @@ async def stream_chat(
     max_tokens = agent.max_tokens
     timeout = agent.timeout
 
+    output_reserve = min(max(int(max_tokens or 4_096), 1_024), 16_000)
+    current_turn_tokens = (
+        _estimate_tokens(str(history[-1].get("content", ""))) if history else 0
+    )
+    system_budget = max(0, _CONTEXT_TOKEN_BUDGET - output_reserve - current_turn_tokens)
+    context_parts: list[str] = []
+    context_tokens = 0
+    truncated_sources: list[str] = []
+
+    def add_context(source: str, content: str) -> None:
+        nonlocal context_tokens
+        if not content:
+            return
+        available = system_budget - context_tokens
+        tokens = _estimate_tokens(content)
+        if available <= 0:
+            truncated_sources.append(source)
+            return
+        if tokens > available:
+            content = content[: available * 4]
+            tokens = _estimate_tokens(content)
+            truncated_sources.append(source)
+        context_parts.append(content)
+        context_tokens += tokens
+
     # System prompt + skills
-    system = agent.system_prompt
+    add_context("system_prompt", agent.system_prompt)
     for sid in agent.skills:
         if skill_storage is None:
             break
         for scope in ("public", "private"):
             sk = await skill_storage.get(scope, sid)
             if sk:
-                system += (
-                    f"\n\n## Skill: {sk.get('name', sid)}\n{sk.get('content', '')}"
+                add_context(
+                    "skill",
+                    (f"\n\n## Skill: {sk.get('name', sid)}\n{sk.get('content', '')}"),
                 )
                 break
 
@@ -501,21 +536,27 @@ async def stream_chat(
                 language = str(t.get("language") or "")
                 name = t.get("name", tid)
                 if language == "cpp":
-                    system += (
-                        f"\n\n## Tool: {name} (binario C++)\n"
-                        f"{t.get('description', '') or 'Sin descripción.'}\n"
-                        "Es un binario precompilado: no hay código fuente en texto "
-                        "para mostrar en el chat. Indica al usuario que puede "
-                        "descargarlo desde la tarjeta de esta tool en Conocimiento."
+                    add_context(
+                        "tool",
+                        (
+                            f"\n\n## Tool: {name} (binario C++)\n"
+                            f"{t.get('description', '') or 'Sin descripción.'}\n"
+                            "Es un binario precompilado: no hay código fuente en texto "
+                            "para mostrar en el chat. Indica al usuario que puede "
+                            "descargarlo desde la tarjeta de esta tool en Conocimiento."
+                        ),
                     )
                 else:
-                    system += (
-                        f"\n\n## Tool: {name} ({language})\n"
-                        "No se ejecuta en el servidor: comparte este código con el "
-                        "usuario, tal cual, para que lo ejecute en su propia "
-                        "máquina. No digas que lo ejecutaste tú ni inventes su "
-                        "resultado.\n\n"
-                        f"```{language}\n{t.get('content', '')}\n```"
+                    add_context(
+                        "tool",
+                        (
+                            f"\n\n## Tool: {name} ({language})\n"
+                            "No se ejecuta en el servidor: comparte este código con el "
+                            "usuario, tal cual, para que lo ejecute en su propia "
+                            "máquina. No digas que lo ejecutaste tú ni inventes su "
+                            "resultado.\n\n"
+                            f"```{language}\n{t.get('content', '')}\n```"
+                        ),
                     )
                 break
 
@@ -524,8 +565,11 @@ async def stream_chat(
         for kid in agent.knowledge:
             item = await knowledge_storage.get(kid)
             if item and item.get("content"):
-                system += (
-                    f"\n\n## Conocimiento: {item.get('title', kid)}\n{item['content']}"
+                add_context(
+                    "knowledge",
+                    (
+                        f"\n\n## Conocimiento: {item.get('title', kid)}\n{item['content']}"
+                    ),
                 )
 
     # Knowledge adjuntado puntualmente a este mensaje desde el chat (vía "@" en
@@ -535,8 +579,11 @@ async def stream_chat(
         for item in attached_knowledge:
             content = item.get("content")
             if content:
-                system += (
-                    f"\n\n## Conocimiento adjunto: {item.get('title', item.get('id', ''))}\n{content}"
+                add_context(
+                    "attached_knowledge",
+                    (
+                        f"\n\n## Conocimiento adjunto: {item.get('title', item.get('id', ''))}\n{content}"
+                    ),
                 )
 
     # Memory injection
@@ -544,7 +591,7 @@ async def stream_chat(
         mem_file = agent.memory_file or f"{agent.id}.md"
         mem_content = await memory_storage.get(mem_file)
         if mem_content and mem_content.strip():
-            system += f"\n\n## Memoria del agente\n{mem_content}"
+            add_context("agent_memory", f"\n\n## Memoria del agente\n{mem_content}")
 
     # Prompt injection — "@alias" en el último mensaje del usuario referencia
     # ocultamente cualquier prompt accesible del usuario (propio o público),
@@ -564,38 +611,58 @@ async def stream_chat(
         for alias in mentions:
             p = await prompt_storage.find_by_alias(alias, owner_id=user_id)
             if p:
-                system += f"\n\n## Prompt: {p.get('name', alias)}\n{p.get('content', '')}"
+                add_context(
+                    "prompt",
+                    f"\n\n## Prompt: {p.get('name', alias)}\n{p.get('content', '')}",
+                )
 
     # Recuerdo de conversaciones anteriores del mismo usuario con este agente
     if agent.use_memory and chat_storage is not None and user_id:
         try:
-            convs = await chat_storage.list_conversations(user_id, agent.id)
+            memory_messages = await chat_storage.list_memory_messages(
+                user_id,
+                agent.id,
+                conversation_id,
+                limit=200,
+                chars_per_message=2_000,
+            )
         except Exception:
-            convs = []
+            memory_messages = []
         past_lines: List[str] = []
         past_tokens = 0
-        for c in convs:
-            if c.get("id") == conversation_id:
-                continue
-            try:
-                msgs = await chat_storage.get_messages(c["id"], user_id)
-            except Exception:
-                continue
-            for m in msgs:
-                label = "Usuario" if m.get("role") == "user" else "Agente"
-                line = f"**{label}:** {m.get('content', '')}"
-                past_tokens += _estimate_tokens(line)
-                if past_tokens > _HISTORY_TOKEN_BUDGET:
-                    break
-                past_lines.append(line)
+        for message in memory_messages:
+            label = "Usuario" if message.get("role") == "user" else "Agente"
+            line = f"**{label}:** {message.get('content', '')}"
+            past_tokens += _estimate_tokens(line)
             if past_tokens > _HISTORY_TOKEN_BUDGET:
                 break
+            past_lines.append(line)
         if past_lines:
-            system += "\n\n## Conversaciones anteriores\n" + "\n\n".join(past_lines)
+            add_context(
+                "conversation_memory",
+                "\n\n## Conversaciones anteriores\n" + "\n\n".join(past_lines),
+            )
 
     # Truncar history si el contexto es demasiado largo
+    system = "".join(context_parts)
     _sys_tokens = _estimate_tokens(system)
-    history = _truncate_history(list(history), _sys_tokens)
+    original_history = list(history)
+    history = _truncate_history(
+        original_history,
+        _sys_tokens,
+        max_context=_CONTEXT_TOKEN_BUDGET - output_reserve,
+    )
+    history_truncated = history != original_history
+
+    if truncated_sources or history_truncated:
+        yield _sse(
+            {
+                "type": "context_warning",
+                "code": "context_truncated",
+                "message": "Parte del contexto se recortó para respetar el límite del modelo.",
+                "sources": sorted(set(truncated_sources)),
+            }
+        )
 
     try:
         if conn_type in OPENAI_COMPAT_URLS:

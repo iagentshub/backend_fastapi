@@ -8,6 +8,8 @@ import urllib.request
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Dict, List, Optional
 
+from app.utils.safe_http import safe_urlopen
+
 
 @dataclass
 class FieldDef:
@@ -56,7 +58,7 @@ class BaseProvider:
                 f"{base_url}/models",
                 headers={"Authorization": f"Bearer {api_key}"},
             )
-            with urllib.request.urlopen(req, timeout=10) as r:
+            with safe_urlopen(req, timeout=10) as r:
                 data = json.loads(r.read())
             count = len(data.get("data") or [])
             return TestResult(True, f"OK — {count} modelos disponibles")

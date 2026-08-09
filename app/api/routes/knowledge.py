@@ -7,13 +7,14 @@ import json
 from datetime import datetime, timezone
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, File, Form, Query, Request, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Form, Query, Response, UploadFile
 
 from app.api.pagination import paginar
 from app.api.routes.auth import GroupContext, require_group, require_group_session
 from app.auth.auth import get_user_role
 from app.config.data import AGENTS_DIR
 from app.errors import APIError
+from app.models.request_bodies import KnowledgeTextBody, KnowledgeUrlBody
 from app.storage.agent_storage import AgentStorage
 from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
@@ -26,7 +27,6 @@ from app.storage.knowledge import (
 from app.storage.skill_storage import SKILL_ASSIGNABLE_LABELS
 from app.utils import flog
 from app.utils.generators import generate_id
-from app.utils.net import json_body
 
 router = APIRouter(prefix="/api/knowledge", tags=["knowledge"])
 
@@ -118,9 +118,7 @@ async def list_items(
         if role != "admin" and not await _groups.can_access(requested_group_id, user):
             raise APIError(403, "forbidden", "Sin acceso a este grupo")
         shared_ids = set(
-            await _shares.get_group_shared_resource_ids(
-                requested_group_id, "knowledge"
-            )
+            await _shares.get_group_shared_resource_ids(requested_group_id, "knowledge")
         )
         items: List[Dict[str, Any]] = []
         for kid in shared_ids:
@@ -144,9 +142,7 @@ async def list_items(
         shared_map: Dict[str, str] = {}  # resource_id -> group_id
         for group in user_groups:
             gid = group["id"]
-            for rid in await _shares.get_group_shared_resource_ids(
-                gid, "knowledge"
-            ):
+            for rid in await _shares.get_group_shared_resource_ids(gid, "knowledge"):
                 if rid not in shared_map:
                     shared_map[rid] = gid
         extra: List[Dict[str, Any]] = []
@@ -165,7 +161,8 @@ async def list_items(
     permission_group_id = requested_group_id or ctx.group_id
     if permission_group_id != user and role != "admin":
         items = [
-            item for item in items
+            item
+            for item in items
             if await _groups.has_resource_permission(
                 permission_group_id, user, "knowledge", item["id"], "view"
             )
@@ -178,19 +175,23 @@ async def list_items(
 
 @router.post("/text")
 async def add_text(
-    request: Request,
+    body: KnowledgeTextBody,
     ctx: GroupContext = Depends(require_group_session),
 ) -> Dict[str, Any]:
     user, group_id = ctx.user, ctx.group_id
-    body = await json_body(request)
+    body = body.payload()
     title = str(body.get("title") or "").strip()
     content = str(body.get("content") or "").strip()
     source = str(body.get("source") or title).strip()
     labels = _content_labels(body)
     if not title:
-        raise APIError(422, "invalid_field", "Título requerido", extra={"field": "title"})
+        raise APIError(
+            422, "invalid_field", "Título requerido", extra={"field": "title"}
+        )
     if not content:
-        raise APIError(422, "invalid_field", "Contenido requerido", extra={"field": "content"})
+        raise APIError(
+            422, "invalid_field", "Contenido requerido", extra={"field": "content"}
+        )
     if is_guest(user):
         item = _guest_item(
             type="text", title=title, source=source, content=content, labels=labels
@@ -210,11 +211,11 @@ async def add_text(
 
 @router.post("/url")
 async def add_url(
-    request: Request,
+    body: KnowledgeUrlBody,
     ctx: GroupContext = Depends(require_group_session),
 ) -> Dict[str, Any]:
     user, group_id = ctx.user, ctx.group_id
-    body = await json_body(request)
+    body = body.payload()
     url = str(body.get("url") or "").strip()
     title = str(body.get("title") or "").strip() or url
     labels = _content_labels(body)
@@ -276,7 +277,9 @@ async def upload_document(
     content_bytes = await file.read()
     if len(content_bytes) > 10 * 1024 * 1024:
         raise APIError(
-            413, "file_too_large", "El fichero supera el límite de 10 MB",
+            413,
+            "file_too_large",
+            "El fichero supera el límite de 10 MB",
             extra={"max_mb": 10},
         )
     try:
@@ -291,7 +294,9 @@ async def upload_document(
         raise APIError(422, "document_extraction_failed", str(exc)) from exc
     if not content.strip():
         raise APIError(
-            422, "document_text_extraction_failed", "No se pudo extraer texto del documento"
+            422,
+            "document_text_extraction_failed",
+            "No se pudo extraer texto del documento",
         )
     if is_guest(user):
         item = _guest_item(
@@ -325,11 +330,15 @@ async def delete_item(
         before = len(s.knowledge)
         s.knowledge = [i for i in s.knowledge if i["id"] != item_id]
         if len(s.knowledge) == before:
-            raise APIError(404, "not_found", "Item no encontrado", extra={"resource": "item"})
+            raise APIError(
+                404, "not_found", "Item no encontrado", extra={"resource": "item"}
+            )
         return {"ok": True}
     owner = await _owner(user, group_id)
     if not await _storage.delete(item_id, owner):
-        raise APIError(404, "not_found", "Item no encontrado", extra={"resource": "item"})
+        raise APIError(
+            404, "not_found", "Item no encontrado", extra={"resource": "item"}
+        )
     return {"ok": True}
 
 
@@ -343,7 +352,9 @@ async def _set_knowledge_active(
         )
     owner = await _owner(user, group_id)
     if not await _storage.set_active(item_id, owner, active):
-        raise APIError(404, "not_found", "Item no encontrado", extra={"resource": "item"})
+        raise APIError(
+            404, "not_found", "Item no encontrado", extra={"resource": "item"}
+        )
     estado = "activado" if active else "desactivado"
     flog.info(f"Conocimiento {estado}: {item_id}", username=user)
     return {"ok": True, "is_active": active}

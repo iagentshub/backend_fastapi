@@ -9,9 +9,7 @@ def test_agent_save_creates_version_and_restores(admin_client):
     updated = {**created, "system_prompt": "Segunda versión"}
     assert admin_client.post("/api/agents", json=updated).status_code == 200
 
-    history = admin_client.get(
-        f"/api/resources/agent/{created['id']}/versions"
-    )
+    history = admin_client.get(f"/api/resources/agent/{created['id']}/versions")
     assert history.status_code == 200
     assert [item["version"] for item in history.json()] == [2, 1]
 
@@ -80,6 +78,25 @@ def test_workflow_run_exposes_sse_heartbeat_headers(admin_client, monkeypatch):
     assert '"type": "workflow_done"' in response.text
 
 
+def test_workflow_sse_hides_unexpected_exception_details(admin_client, monkeypatch):
+    workflow = _workflow_for_run(admin_client, "Flujo con fallo interno")
+
+    async def failing_workflow(_definition, _input, _resolve):
+        if False:
+            yield {}
+        raise RuntimeError("secreto SQL /srv/private.db")
+
+    monkeypatch.setattr(
+        "app.api.routes.resource_management.run_workflow", failing_workflow
+    )
+    response = admin_client.post(
+        f"/api/workflows/{workflow['id']}/run", json={"input": "prueba"}
+    )
+    assert response.status_code == 200
+    assert '"code": "internal_error"' in response.text
+    assert "secreto SQL" not in response.text
+
+
 def test_persisted_workflow_run_replays_after_start_response(admin_client, monkeypatch):
     workflow = _workflow_for_run(admin_client)
 
@@ -128,13 +145,24 @@ def test_persisted_workflow_run_is_cancelled_on_server(admin_client, monkeypatch
     ).json()
     _wait_run(admin_client, started["id"], "running")
 
-    cancelling = admin_client.post(
-        f"/api/workflow-runs/{started['id']}/cancel"
-    )
+    cancelling = admin_client.post(f"/api/workflow-runs/{started['id']}/cancel")
     assert cancelling.status_code == 200
     assert cancelling.json()["status"] in {"cancelling", "cancelled"}
     cancelled = _wait_run(admin_client, started["id"], "cancelled")
     assert cancelled["finished_at"] is not None
+
+
+def test_missing_workflow_run_endpoints_return_structured_404(admin_client):
+    for method, path in (
+        ("get", "/api/workflow-runs/missing"),
+        ("get", "/api/workflow-runs/missing/events"),
+        ("post", "/api/workflow-runs/missing/cancel"),
+    ):
+        response = getattr(admin_client, method)(path)
+        assert response.status_code == 404
+        detail = response.json()["detail"]
+        assert detail["code"] == "not_found"
+        assert detail["resource"] == "workflow_run"
 
 
 def test_workflow_persists_canvas_positions_and_loops(admin_client):
@@ -180,6 +208,8 @@ def test_workflow_persists_canvas_positions_and_loops(admin_client):
     listed = admin_client.get("/api/workflows").json()
     restored = next(item for item in listed if item["id"] == response.json()["id"])
     assert restored["definition"] == saved
+
+
 def _workflow_for_run(client, name="Flujo persistente"):
     agent = client.post(
         "/api/agents",

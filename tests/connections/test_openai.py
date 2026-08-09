@@ -24,7 +24,7 @@ def test_test_missing_api_key():
 
 def test_test_success():
     mock_resp = _mock_response({"data": [{"id": "gpt-4o"}, {"id": "gpt-3.5"}]})
-    with patch("urllib.request.urlopen", return_value=mock_resp):
+    with patch("app.connections.base.safe_urlopen", return_value=mock_resp):
         result = OpenAIProvider.test({"api_key": "sk-fake"})
     assert result.ok is True
     assert "2" in result.message
@@ -37,13 +37,13 @@ def test_test_auth_error():
         hdrs=None, fp=None,  # type: ignore
     )
     http_err.read = lambda: b'{"error": {"message": "Invalid API key"}}'
-    with patch("urllib.request.urlopen", side_effect=http_err):
+    with patch("app.connections.base.safe_urlopen", side_effect=http_err):
         result = OpenAIProvider.test({"api_key": "sk-bad"})
     assert result.ok is False
 
 
 def test_test_connection_error():
-    with patch("urllib.request.urlopen", side_effect=Exception("timeout")):
+    with patch("app.connections.base.safe_urlopen", side_effect=Exception("timeout")):
         result = OpenAIProvider.test({"api_key": "sk-fake"})
     assert result.ok is False
     assert "timeout" in result.detail

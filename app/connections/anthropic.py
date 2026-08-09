@@ -13,6 +13,7 @@ from app.config.providers import (
     PROVIDER_BASE_URLS,
     PROVIDER_DEFAULT_MODELS,
 )
+from app.utils.safe_http import safe_urlopen
 
 from .base import BaseProvider, FieldDef, TestResult, register
 
@@ -26,7 +27,9 @@ class AnthropicProvider(BaseProvider):
     icon = ""
     fields = [
         FieldDef("api_key", "API Key", "password", "sk-ant-...", required=True),
-        FieldDef("model", "Modelo por defecto", "text", PROVIDER_DEFAULT_MODELS["claude"]),
+        FieldDef(
+            "model", "Modelo por defecto", "text", PROVIDER_DEFAULT_MODELS["claude"]
+        ),
         FieldDef("url", "URL", "text", default=f"{_BASE_URL}/messages"),
     ]
 
@@ -60,7 +63,7 @@ class AnthropicProvider(BaseProvider):
                 },
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=15) as r:
+            with safe_urlopen(req, timeout=15) as r:
                 json.loads(r.read())
             return TestResult(True, "OK — API key válida")
         except urllib.error.HTTPError as e:

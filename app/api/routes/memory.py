@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends
 
 from app.api.routes.auth import require_session
 from app.config.data import MEMORY_DIR
 from app.errors import APIError
+from app.models.request_bodies import MemoryBody
 from app.storage.guest import get_session, is_guest
 from app.storage.memory_storage import MemoryStorage
-from app.utils.net import json_body
 
 router = APIRouter(prefix="/api/memory", tags=["memory"])
 
@@ -37,14 +37,18 @@ async def get_memory(
         content = get_session(user).memory.get(filename)
         if content is None:
             raise APIError(
-                404, "not_found", "Archivo de memoria no encontrado",
+                404,
+                "not_found",
+                "Archivo de memoria no encontrado",
                 extra={"resource": "memory_file"},
             )
         return {"filename": filename, "content": content}
     content = await _storage.get(filename, owner_id=user)
     if content is None:
         raise APIError(
-            404, "not_found", "Archivo de memoria no encontrado",
+            404,
+            "not_found",
+            "Archivo de memoria no encontrado",
             extra={"resource": "memory_file"},
         )
     return {"filename": filename, "content": content}
@@ -52,9 +56,9 @@ async def get_memory(
 
 @router.post("/{filename}")
 async def save_memory(
-    filename: str, request: Request, user: str = Depends(require_session)
+    filename: str, body: MemoryBody, user: str = Depends(require_session)
 ) -> Dict[str, Any]:
-    body = await json_body(request)
+    body = body.payload()
     content = str(body.get("content") or "")
     if is_guest(user):
         get_session(user).memory[filename] = content
@@ -69,15 +73,18 @@ async def delete_memory(
     if is_guest(user):
         s = get_session(user)
         if filename not in s.memory:
-            raise APIError(
-                404, "not_found", "Archivo de memoria no encontrado",
+            raise APIError( 404,
+                "not_found",
+                "Archivo de memoria no encontrado",
                 extra={"resource": "memory_file"},
             )
         del s.memory[filename]
         return {"ok": True}
     if not await _storage.delete(filename, owner_id=user):
         raise APIError(
-            404, "not_found", "Archivo de memoria no encontrado",
+            404,
+            "not_found",
+            "Archivo de memoria no encontrado",
             extra={"resource": "memory_file"},
         )
     return {"ok": True}

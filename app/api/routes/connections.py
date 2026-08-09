@@ -3,15 +3,13 @@
 from __future__ import annotations
 
 import asyncio
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Optional
 
-import httpx
-from fastapi import APIRouter, Depends, Query, Request, Response
+from fastapi import APIRouter, Depends, Query, Response
 
 from app.api.pagination import paginar
 from app.api.routes.auth import (
     GroupContext,
-    require_auth,
     require_group,
     require_group_session,
 )
@@ -24,13 +22,13 @@ from app.config.session import (
     RATE_TESTALL_CALLS,
     RATE_TESTALL_WINDOW,
 )
-from app.connections import all_providers, get_provider
+from app.connections import get_provider
 from app.errors import APIError
 from app.middleware.ratelimit import RateLimiter
-from app.models.llm_orchestration import (
-    orchestration_connection_id,
-    orchestration_id_from_connection,
+from app.models.request_bodies import (
+    ConnectionPayload,
 )
+from app.services.connection_access import connection_access
 from app.storage.agent_storage import AgentStorage
 from app.storage.connection_storage import ConnectionStorage
 from app.storage.db import IS_PG, open_db
@@ -42,22 +40,7 @@ from app.storage.llm_orchestrations import LLMOrchestrationStorage
 from app.storage.skill_storage import SkillStorage
 from app.utils import flog
 from app.utils.generators import generate_id
-from app.utils.net import json_body
 from app.utils.origin import compute_origin_type
-
-
-def _safe_name(name: str, taken: Set[str], hub_label: str) -> str:
-    """Devuelve name si está libre, si no añade sufijo (hub_label)."""
-    if name not in taken:
-        return name
-    candidate = f"{name} ({hub_label})"
-    if candidate not in taken:
-        return candidate
-    i = 2
-    while f"{candidate} {i}" in taken:
-        i += 1
-    return f"{candidate} {i}"
-
 
 router = APIRouter(prefix="/api/connections", tags=["connections"])
 
@@ -86,44 +69,7 @@ async def _list_accessible(user: str, group_id: str) -> List[Dict[str, Any]]:
     En group personal (group_id == user) devuelve solo las propias.
     En group de equipo incluye también las personales marcadas con _personal_key=True.
     """
-    group_conns = await _storage.list(group_id)
-    for c in group_conns:
-        c["owner_id"] = group_id
-    if group_id == user:
-        return group_conns
-    personal_conns = await _storage.list(user)
-    seen = {c["id"] for c in group_conns}
-    for c in personal_conns:
-        if c["id"] not in seen:
-            c["owner_id"] = user
-            c["_personal_key"] = True
-            group_conns.append(c)
-    return group_conns
-
-
-def _orchestration_connection(
-    item: Dict[str, Any], *, shared: bool = False, personal: bool = False
-) -> Dict[str, Any]:
-    """Vista de solo lectura de una orquestación como conexión seleccionable."""
-    result: Dict[str, Any] = {
-        "id": orchestration_connection_id(str(item["id"])),
-        "name": str(item.get("name") or item["id"]),
-        "description": str(item.get("description") or ""),
-        "type": "llm_orchestration",
-        "category": "llm",
-        "model": "balanced" if item.get("mode") == "balanced" else "stack",
-        "owner_id": item.get("owner_id"),
-        "is_active": bool(item.get("is_active", True)),
-        "is_virtual": True,
-        "read_only": True,
-        "created_at": item.get("created_at"),
-        "updated_at": item.get("updated_at"),
-    }
-    if shared:
-        result["_shared"] = True
-    if personal:
-        result["_personal_key"] = True
-    return result
+    return await connection_access.list_accessible(user, group_id, include_shared=False)
 
 
 async def _list_orchestration_connections(
@@ -139,7 +85,7 @@ async def _list_orchestration_connections(
                     continue
                 seen.add(item["id"])
                 items.append(
-                    _orchestration_connection(
+                    connection_access.virtual_connection(
                         item, personal=owner_id == user and group_id != user
                     )
                 )
@@ -152,55 +98,10 @@ async def _list_orchestration_connections(
         item = await _llm_orchestration_storage.get_any(item_id)
         if item and await _groups.owner_is_active(str(item.get("owner_id") or "")):
             seen.add(item_id)
-            items.append(_orchestration_connection(item, shared=True))
+            items.append(
+                connection_access.virtual_connection(item, shared=True, personal=False)
+            )
     return items
-
-
-async def _get_orchestration_connection(
-    connection_id: str, user: str, group_id: str
-) -> Dict[str, Any] | None:
-    orchestration_id = orchestration_id_from_connection(connection_id)
-    if not orchestration_id:
-        return None
-    item = await _llm_orchestration_storage.get_any(orchestration_id)
-    if not item or not item.get("is_active", True):
-        return None
-    role = await get_user_role(user)
-    shared_ids = await _shares.get_group_shared_resource_ids(
-        group_id, "llm_orchestration"
-    )
-    if (
-        role != "admin"
-        and item.get("owner_id") not in {user, group_id}
-        and orchestration_id not in shared_ids
-    ):
-        return None
-    target_ids = {
-        str(candidate.get("connection_id") or "")
-        for candidate in item.get("candidates") or []
-    }
-    router_id = str(item.get("router_connection_id") or "")
-    if router_id:
-        target_ids.add(router_id)
-    resolved: Dict[str, Dict[str, Any]] = {}
-    for target_id in target_ids - {""}:
-        if orchestration_id_from_connection(target_id):
-            continue
-        target = (
-            await _storage.get(target_id, None)
-            if role == "admin"
-            else await _get_conn_any(target_id, user, group_id)
-        )
-        if target:
-            resolved[target_id] = target
-    result = _orchestration_connection(
-        item,
-        shared=orchestration_id in shared_ids,
-        personal=item.get("owner_id") == user and group_id != user,
-    )
-    result["_llm_orchestration"] = item
-    result["_connections"] = resolved
-    return result
 
 
 async def _get_conn_any(
@@ -215,29 +116,7 @@ async def _get_conn_any(
     tener que volver a consultar — sin esto, un check de permiso posterior
     aplicado indiscriminadamente bloquea al propio dueño de su conexión
     personal en cuanto el group activo no es el suyo."""
-    if orchestration_id_from_connection(conn_id):
-        return await _get_orchestration_connection(conn_id, user, group_id)
-    conn = await _storage.get(conn_id, group_id)
-    if conn is not None:
-        conn["owner_id"] = group_id
-        return conn
-    if group_id != user:
-        conn = await _storage.get(conn_id, user)
-        if conn is not None:
-            conn["owner_id"] = user
-            conn["_personal_key"] = True
-            return conn
-    granted_ids = await _shares.get_group_shared_resource_ids(
-        group_id, "connection"
-    )
-    if conn_id in granted_ids:
-        owner_id_row = await _storage.get_owner_id(conn_id)
-        if owner_id_row and await _groups.owner_is_active(owner_id_row):
-            conn = await _storage.get(conn_id, None)
-            if conn is not None:
-                conn["owner_id"] = owner_id_row
-                conn["_shared"] = True
-    return conn
+    return await connection_access.get_accessible(conn_id, user, group_id)
 
 
 async def _resolve_connections(
@@ -247,23 +126,9 @@ async def _resolve_connections(
     (incluye admin: la visibilidad global de admin se sirve vía /api/admin/*,
     devolver aquí todas las conexiones del sistema exponía las de otros
     usuarios sin marcarlas como ajenas)"""
-    if is_guest(user):
-        return list(get_session(user).connections)
-    raw = await _list_accessible(user, group_id)
-    if include_shared:
-        shared_ids = set(
-            await _shares.get_group_shared_resource_ids(group_id, "connection")
-        )
-        own_ids = {i["id"] for i in raw}
-        for rid in shared_ids - own_ids:
-            owner_id_row = await _storage.get_owner_id(rid)
-            if not owner_id_row or not await _groups.owner_is_active(owner_id_row):
-                continue
-            c = await _storage.get(rid)
-            if c:
-                c["_shared"] = True
-                raw.append(c)
-    return raw
+    return await connection_access.list_accessible(
+        user, group_id, include_shared=include_shared
+    )
 
 
 def _fetch_ollama_models(host: str, api_key: str = "") -> List[str]:
@@ -350,74 +215,6 @@ async def list_connections_raw(
     return [{k: v for k, v in c.items() if k != "api_key"} for c in raw]
 
 
-@router.get("/providers")
-async def list_providers(_: str = Depends(require_auth)) -> List[Dict[str, Any]]:
-    return all_providers()
-
-
-@router.post("/ollama-models")
-async def ollama_models(
-    request: Request,
-    _: str = Depends(require_auth),
-) -> Dict[str, Any]:
-    """Devuelve los modelos instalados en una instancia Ollama."""
-    from app.connections.ollama import OllamaProvider
-
-    body = await json_body(request)
-    host = (body.get("host") or "http://localhost:11434").strip().rstrip("/")
-    api_key = str(body.get("api_key") or "").strip()
-    try:
-        assert_safe_url(host)
-        data = await asyncio.to_thread(OllamaProvider._fetch_tags, host, api_key)
-        models = [m["name"] for m in (data.get("models") or []) if m.get("name")]
-        return {"models": models}
-    except Exception as exc:
-        return {"models": [], "error": str(exc)}
-
-
-@router.post("/test-all")
-async def test_all_connections(
-    request: Request,
-    ctx: GroupContext = Depends(require_group),
-    _rl: None = Depends(_test_all_limiter),
-) -> List[Dict[str, Any]]:
-    user, group_id = ctx.user, ctx.group_id
-    body = (
-        await json_body(request)
-        if request.headers.get("content-type", "").startswith("application/json")
-        else {}
-    )
-    ids = body.get("ids") or None
-    conns = await _resolve_connections(user, group_id, include_shared=False)
-    if ids:
-        conns = [c for c in conns if c.get("id") in ids]
-
-    async def _test_one(conn: Dict[str, Any]) -> Dict[str, Any]:
-        import time as _time
-
-        provider = get_provider(conn.get("type") or "")
-        if not provider:
-            return {
-                "id": conn["id"],
-                "ok": False,
-                "message": "Sin proveedor de test",
-                "detail": "",
-                "latency_ms": None,
-            }
-        t0 = _time.perf_counter()
-        result = await asyncio.to_thread(provider.test, conn)
-        latency_ms = round((_time.perf_counter() - t0) * 1000)
-        return {
-            "id": conn["id"],
-            "ok": result.ok,
-            "message": result.message,
-            "detail": result.detail,
-            "latency_ms": latency_ms,
-        }
-
-    return list(await asyncio.gather(*[_test_one(c) for c in conns]))
-
-
 @router.get("")
 async def list_connections(
     requested_group_id: Optional[str] = Query(None, alias="group_id"),
@@ -435,7 +232,9 @@ async def list_connections(
             raise APIError(403, "forbidden", "Sin acceso a este grupo")
         # Devuelve solo las conexiones compartidas con este grupo específico
         shared_ids = set(
-            await _shares.get_group_shared_resource_ids(requested_group_id, "connection")
+            await _shares.get_group_shared_resource_ids(
+                requested_group_id, "connection"
+            )
         )
         raw: List[Dict[str, Any]] = []
         for rid in shared_ids:
@@ -455,9 +254,7 @@ async def list_connections(
     else:
         raw = await _resolve_connections(user, active_group_id)
         if not is_guest(user):
-            raw.extend(
-                await _list_orchestration_connections(user, active_group_id)
-            )
+            raw.extend(await _list_orchestration_connections(user, active_group_id))
 
     if not include_inactive:
         raw = [c for c in raw if c.get("is_active", True)]
@@ -468,7 +265,11 @@ async def list_connections(
 
     non_ollama = [c for c in raw if c.get("type") != "ollama"]
     ollama_raw = [c for c in raw if c.get("type") == "ollama"]
-    if active_group_id != user and not is_guest(user) and await get_user_role(user) != "admin":
+    if (
+        active_group_id != user
+        and not is_guest(user)
+        and await get_user_role(user) != "admin"
+    ):
         # Las conexiones personales del usuario (incluidas aquí por
         # _list_accessible como cortesía al estar en un group de equipo)
         # no deben pasar por el permiso de RECURSO DE EQUIPO: son suyas,
@@ -479,12 +280,14 @@ async def list_connections(
         # miembro es la misma para todas las conexiones.
         permitido = await _groups.permission_checker(active_group_id, user)
         non_ollama = [
-            connection for connection in non_ollama
+            connection
+            for connection in non_ollama
             if connection.get("owner_id") == user
             or permitido("connections", connection["id"], "direct")
         ]
         ollama_raw = [
-            connection for connection in ollama_raw
+            connection
+            for connection in ollama_raw
             if connection.get("owner_id") == user
             or permitido("connections", connection["id"], "direct")
         ]
@@ -502,10 +305,10 @@ async def list_connections(
 
 @router.post("")
 async def save_connection(
-    request: Request, ctx: GroupContext = Depends(require_group_session)
+    body: ConnectionPayload, ctx: GroupContext = Depends(require_group_session)
 ) -> Dict[str, Any]:
     user, group_id = ctx.user, ctx.group_id
-    payload = await json_body(request)
+    payload = body.payload()
     # Las conexiones nuevas siempre pertenecen al usuario. Compartirlas con un
     # group es una acción posterior y opcional, igual que para el resto de
     # recursos privados. Se descarta `scope` por compatibilidad con clientes
@@ -528,9 +331,7 @@ async def save_connection(
         try:
             assert_safe_url(conn_url)
         except ValueError as exc:
-            raise APIError(
-                422, "unsafe_url", str(exc), extra={"field": "url"}
-            ) from exc
+            raise APIError(422, "unsafe_url", str(exc), extra={"field": "url"}) from exc
 
     # Las conexiones son siempre privadas — se pueden compartir con un group completo
     labels = [lbl for lbl in (payload.get("labels") or []) if lbl != "public"]
@@ -648,7 +449,9 @@ async def get_connection(
         else:
             conn = await _get_conn_any(conn_id, user, group_id)
     if not conn:
-        raise APIError(404, "not_found", "Conexión no encontrada", extra={"resource": "connection"})
+        raise APIError(
+            404, "not_found", "Conexión no encontrada", extra={"resource": "connection"}
+        )
     if (
         group_id != user
         and not is_guest(user)
@@ -673,14 +476,21 @@ async def delete_connection(
         before = len(s.connections)
         s.connections = [c for c in s.connections if c.get("id") != conn_id]
         if len(s.connections) == before:
-            raise APIError(404, "not_found", "Conexión no encontrada", extra={"resource": "connection"})
+            raise APIError(
+                404,
+                "not_found",
+                "Conexión no encontrada",
+                extra={"resource": "connection"},
+            )
         return {"ok": True}
     owner_id = await _owner(user, group_id)
     deleted = await _storage.delete(conn_id, owner_id)
     if not deleted and group_id != user:
         deleted = await _storage.delete(conn_id, user)
     if not deleted:
-        raise APIError(404, "not_found", "Conexión no encontrada", extra={"resource": "connection"})
+        raise APIError(
+            404, "not_found", "Conexión no encontrada", extra={"resource": "connection"}
+        )
     flog.info(f"Conexión borrada: {conn_id}", username=user)
     return {"ok": True}
 
@@ -698,7 +508,9 @@ async def _set_connection_active(
     if not ok and group_id != user:
         ok = await _storage.set_active(conn_id, user, active)
     if not ok:
-        raise APIError(404, "not_found", "Conexión no encontrada", extra={"resource": "connection"})
+        raise APIError(
+            404, "not_found", "Conexión no encontrada", extra={"resource": "connection"}
+        )
     estado = "activada" if active else "desactivada"
     flog.info(f"Conexión {estado}: {conn_id}", username=user)
     return {"ok": True, "is_active": active}
@@ -716,336 +528,3 @@ async def deactivate_connection(
     conn_id: str, ctx: GroupContext = Depends(require_group)
 ) -> Dict[str, Any]:
     return await _set_connection_active(conn_id, False, ctx)
-
-
-async def _run_hub_sync(conn_id: str, conn: Dict[str, Any], owner: str) -> Dict[str, Any]:
-    """Lógica de sincronización con un hub remoto, reutilizable tanto desde la
-    ruta `/{conn_id}/hub-sync` (conexión tipo iagentshub) como desde
-    `accounts.sync_account` (cuenta de proveedor tipo iagentshub)."""
-    url = (conn.get("url") or "").rstrip("/")
-    username = conn.get("username") or ""
-    password = conn.get("api_key") or ""
-    hub_label = conn.get("name") or "Hub"
-
-    # C1: validar URL contra SSRF antes de hacer cualquier petición HTTP
-    from app.config.security import assert_safe_url as _assert_safe_hub_url
-    try:
-        _assert_safe_hub_url(url)
-    except ValueError as _ssrf_err:
-        raise APIError(400, "unsafe_url", str(_ssrf_err))
-
-    from app.connections.iagentshub import _login
-
-    try:
-        token = _login(url, username, password)
-    except Exception as e:
-        raise APIError(
-            502, "hub_auth_error", f"Error de autenticación: {e}", extra={"reason": str(e)}
-        )
-
-    headers = {"Cookie": f"ga_token={token}"}
-    result: Dict[str, Any] = {
-        "agents": 0,
-        "skills": 0,
-        "knowledge": 0,
-        "connections": 0,
-        "updated": 0,
-        "errors": [],
-    }
-
-    async def _get(path: str) -> Any:
-        r = await client.get(f"{url}{path}", headers=headers)
-        r.raise_for_status()
-        return r.json()
-
-    async with httpx.AsyncClient(timeout=30) as client:
-        # ── 1. Conexiones (solo estructura, sin credenciales) ──────────────
-        try:
-            remote_conns = await _get("/api/connections")
-
-            local_conns = await _storage.list(owner)
-            local_conn_names: Set[str] = {c["name"] for c in local_conns}
-            by_src = {
-                c.get("_hub_source"): c for c in local_conns if c.get("_hub_source")
-            }
-            conns_created = 0
-            conns_updated = 0
-            for rc in remote_conns:
-                src_key = f"{conn_id}:{rc.get('id', '')}"
-                data: Dict[str, Any] = {
-                    "type": rc.get("type", ""),
-                    "model": rc.get("model") or "",
-                    "url": rc.get("url") or "",
-                    "host": rc.get("host") or "",
-                    "_imported": True,
-                    "_hub_source": src_key,
-                }
-                if src_key in by_src:
-                    data["id"] = by_src[src_key]["id"]
-                    data["name"] = by_src[src_key]["name"]
-                    await _storage.save(data, owner_id=owner)
-                    conns_updated += 1
-                else:
-                    name = _safe_name(
-                        rc.get("name", "Conexión"), local_conn_names, hub_label
-                    )
-                    data["name"] = name
-                    local_conn_names.add(name)
-                    await _storage.save(data, owner_id=owner)
-                    conns_created += 1
-            result["connections"] += conns_created
-            result["updated"] += conns_updated
-        except Exception as e:
-            result["errors"].append(f"conexiones: {e}")
-
-        # ── 2. Agentes ────────────────────────────────────────────────────
-        try:
-            summaries = await _get("/api/agents?scope=private")
-            local_agents = await _agent_storage.list("private")
-            local_a_names: Set[str] = {a["name"] for a in local_agents}
-            by_src = {
-                a.get("_hub_source"): a for a in local_agents if a.get("_hub_source")
-            }
-
-            for summary in summaries:
-                ra_id = summary.get("id", "")
-                src_key = f"{conn_id}:{ra_id}"
-                try:
-                    ra = await _get(f"/api/agents/{ra_id}")
-                except Exception:
-                    continue
-
-                data = {
-                    k: v
-                    for k, v in ra.items()
-                    if k
-                    not in (
-                        "id",
-                        "owner_id",
-                        "created_at",
-                        "updated_at",
-                        "tokens_in",
-                        "tokens_out",
-                    )
-                }
-                data["_hub_source"] = src_key
-                data["_hub_conn_id"] = conn_id
-
-                if src_key in by_src:
-                    data["id"] = by_src[src_key]["id"]
-                    await _agent_storage.save(data, "private", owner_id=owner)
-                    result["updated"] += 1
-                else:
-                    name = _safe_name(
-                        ra.get("name", "Agente"), local_a_names, hub_label
-                    )
-                    data["name"] = name
-                    local_a_names.add(name)
-                    await _agent_storage.save(data, "private", owner_id=owner)
-                    result["agents"] += 1
-        except Exception as e:
-            result["errors"].append(f"agentes: {e}")
-
-        # ── 3. Skills ────────────────────────────────────────────────────
-        try:
-            remote_skills = await _get("/api/skills?scope=private")
-            local_skills = await _skill_storage.list("private")
-            local_s_names: Set[str] = {s["name"] for s in local_skills}
-            by_src = {
-                s.get("_hub_source"): s for s in local_skills if s.get("_hub_source")
-            }
-
-            for rs in remote_skills:
-                rs_id = rs.get("id", "")
-                src_key = f"{conn_id}:{rs_id}"
-                data = {
-                    k: v
-                    for k, v in rs.items()
-                    if k not in ("id", "owner_id", "created_at", "updated_at")
-                }
-                data["_hub_source"] = src_key
-                data["_hub_conn_id"] = conn_id
-
-                if src_key in by_src:
-                    data["id"] = by_src[src_key]["id"]
-                    await _skill_storage.save("private", data, owner_id=owner)
-                    result["updated"] += 1
-                else:
-                    name = _safe_name(rs.get("name", "Skill"), local_s_names, hub_label)
-                    data["name"] = name
-                    local_s_names.add(name)
-                    await _skill_storage.save("private", data, owner_id=owner)
-                    result["skills"] += 1
-        except Exception as e:
-            result["errors"].append(f"skills: {e}")
-
-        # ── 4. Conocimiento ───────────────────────────────────────────────
-        try:
-            remote_know = await _get("/api/knowledge")
-
-            local_know = await _know_storage.list(owner)
-            local_k_titles: Set[str] = {k["title"] for k in local_know}
-            synced_srcs = {
-                k.get("source", "")
-                for k in local_know
-                if k.get("source", "").startswith(f"hub:{conn_id}:")
-            }
-            know_created = 0
-            know_updated = 0
-            for rk in remote_know:
-                rk_id = rk.get("id", "")
-                src_tag = f"hub:{conn_id}:{rk_id}"
-                if src_tag in synced_srcs:
-                    know_updated += 1
-                    continue
-                title = _safe_name(rk.get("title", ""), local_k_titles, hub_label)
-                local_k_titles.add(title)
-                try:
-                    await _know_storage.save(
-                        type=rk.get("type", "url"),
-                        title=title,
-                        source=src_tag,
-                        content=rk.get("content", ""),
-                        owner_id=owner,
-                    )
-                    know_created += 1
-                except Exception as exc:
-                    result["errors"].append(f"conocimiento {rk_id}: {exc}")
-            result["knowledge"] += know_created
-            result["updated"] += know_updated
-        except Exception as e:
-            result["errors"].append(f"conocimiento: {e}")
-
-    result["ok"] = not result["errors"]
-    return result
-
-
-@router.post("/{conn_id}/hub-sync")
-async def hub_sync(
-    conn_id: str,
-    ctx: GroupContext = Depends(require_group),
-    _rl: None = Depends(_hub_sync_limiter),  # N2: prevenir amplificación HTTP
-) -> Dict[str, Any]:
-    """Sincroniza agentes, skills, conocimiento y conexiones desde un hub remoto."""
-    user, group_id = ctx.user, ctx.group_id
-    role = await get_user_role(user)
-    if role == "admin":
-        conn = await _storage.get(conn_id, None)
-    else:
-        conn = await _get_conn_any(conn_id, user, group_id)
-    if not conn:
-        raise APIError(404, "not_found", "Conexión no encontrada", extra={"resource": "connection"})
-    if conn.get("type") != "iagentshub":
-        raise APIError(
-            400,
-            "hub_sync_invalid_type",
-            "Solo disponible para conexiones de tipo iAgents Hub",
-        )
-    return await _run_hub_sync(conn_id, conn, group_id)
-
-
-@router.post("/{conn_id}/import-models")
-async def import_models(
-    conn_id: str,
-    ctx: GroupContext = Depends(require_group),
-) -> Dict[str, Any]:
-    """Descubre modelos de la conexión-credencial y crea una conexión por modelo."""
-    user, group_id = ctx.user, ctx.group_id
-    role = await get_user_role(user)
-    if role == "admin":
-        conn = await _storage.get(conn_id, None)
-    else:
-        conn = await _get_conn_any(conn_id, user, group_id)
-    if not conn:
-        raise APIError(404, "not_found", "Conexión no encontrada", extra={"resource": "connection"})
-
-    conn_type = conn.get("type", "")
-
-    from app.api.routes.accounts import _fetch_models
-
-    _PROVIDER_TYPE_TO_ACCOUNT: Dict[str, str] = {
-        "claude": "anthropic",
-        "gemini": "google",
-        "openai": "openai",
-        "ollama": "ollama",
-        "nvidia": "nvidia",
-        "qwen": "qwen",
-        "grok": "grok",
-    }
-    account_key = _PROVIDER_TYPE_TO_ACCOUNT.get(conn_type)
-    if not account_key:
-        raise APIError(
-            400,
-            "import_models_unsupported",
-            f"Import de modelos no soportado para '{conn_type}'",
-            extra={"type": conn_type},
-        )
-
-    api_key = conn.get("api_key", "")
-    host = conn.get("host", "") or conn.get("url", "")
-    models = await _fetch_models(account_key, api_key, host)
-    if not models:
-        raise APIError(
-            502, "no_models_found", "No se encontraron modelos en este proveedor"
-        )
-
-    owner_id = await _owner(user, group_id)
-    owner = conn.get("owner_id") or (owner_id or group_id)
-
-    existing = await _storage.list(owner)
-    existing_by_model = {
-        c["model"]: c
-        for c in existing
-        if c.get("type") == conn_type and c.get("_source_conn") == conn_id
-    }
-    created = 0
-    updated = 0
-    for model_id in models:
-        data: Dict[str, Any] = {
-            "name": f"{conn.get('name', conn_type)} / {model_id}",
-            "type": conn_type,
-            "api_key": api_key,
-            "model": model_id,
-            "_imported": True,
-            "_source_conn": conn_id,
-        }
-        if conn.get("host"):
-            data["host"] = conn["host"]
-        if conn.get("url"):
-            data["url"] = conn["url"]
-        if model_id in existing_by_model:
-            data["id"] = existing_by_model[model_id]["id"]
-            updated += 1
-        else:
-            created += 1
-        await _storage.save(data, owner_id=owner)
-    return {"ok": True, "created": created, "updated": updated, "models": models}
-
-
-@router.post("/{conn_id}/test")
-async def test_connection(
-    conn_id: str,
-    ctx: GroupContext = Depends(require_group_session),
-    _rl: None = Depends(_test_limiter),
-) -> Dict[str, Any]:
-    user, group_id = ctx.user, ctx.group_id
-    if is_guest(user):
-        conn = next(
-            (c for c in get_session(user).connections if c.get("id") == conn_id), None
-        )
-    else:
-        role = await get_user_role(user)
-        if role == "admin":
-            conn = await _storage.get(conn_id, None)
-        else:
-            conn = await _get_conn_any(conn_id, user, group_id)
-    if not conn:
-        raise APIError(404, "not_found", "Conexión no encontrada", extra={"resource": "connection"})
-    provider = get_provider(conn.get("type") or "")
-    if not provider:
-        return {
-            "ok": False,
-            "message": f"Tipo '{conn.get('type')}' sin proveedor de test",
-        }
-    result = await asyncio.to_thread(provider.test, conn)
-    return {"ok": result.ok, "message": result.message, "detail": result.detail}

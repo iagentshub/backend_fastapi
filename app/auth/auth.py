@@ -70,7 +70,7 @@ async def register_user(username: str, password: str, email: str = "") -> None:
                 "VALUES (?, ?, ?, ?, ?, ?, ?)",
                 (generate_id(32), username, email, password_hash, "standard", 1, now),
             )
-    flog.ok(f"Nuevo usuario: {email}")
+    flog.ok(f"Nuevo usuario: {username}", username=username)
 
 
 async def register_user_email(
@@ -129,7 +129,7 @@ async def register_user_email(
                     now,
                 ),
             )
-    flog.ok(f"Nuevo usuario: {email}")
+    flog.ok(f"Nuevo usuario: {username}", username=username)
     return username, token
 
 

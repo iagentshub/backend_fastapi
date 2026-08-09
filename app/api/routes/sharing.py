@@ -4,6 +4,7 @@ No mueve ni copia el recurso: solo concede acceso de uso a TODO el group
 destino (el dueño no cambia). Pensado sobre todo para conexiones (credenciales),
 donde duplicar el secreto sería un riesgo de seguridad.
 """
+
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
@@ -14,6 +15,7 @@ import app.config.data as _cfg
 from app.api.routes.auth import GroupContext, require_group
 from app.auth.auth import get_user_role
 from app.errors import APIError
+from app.models.request_bodies import GroupShareBody
 from app.models.resource_types import RESOURCE_TYPES
 from app.storage.agent_storage import AgentStorage
 from app.storage.db import open_db
@@ -25,7 +27,6 @@ from app.storage.prompt_storage import PromptStorage
 from app.storage.skill_storage import SkillStorage
 from app.storage.tool_storage import ToolStorage
 from app.storage.workflows import WorkflowStorage
-from app.utils.net import json_body
 
 router = APIRouter(prefix="/api/sharing", tags=["sharing"])
 
@@ -88,14 +89,18 @@ async def _resource_owner(resource_type: str, resource_id: str) -> Optional[str]
     return row[0] if row else None
 
 
-async def _assert_can_share_resource(resource_type: str, resource_id: str, ctx: GroupContext) -> None:
+async def _assert_can_share_resource(
+    resource_type: str, resource_id: str, ctx: GroupContext
+) -> None:
     """Solo el dueño directo del recurso, quien administra el group dueño, o un admin puede compartirlo."""
     role = await get_user_role(ctx.user)
     if role == "admin":
         return  # los admins pueden compartir cualquier recurso
     owner = await _resource_owner(resource_type, resource_id)
     if owner is None:
-        raise APIError(404, "not_found", "Recurso no encontrado", extra={"resource": "resource"})
+        raise APIError(
+            404, "not_found", "Recurso no encontrado", extra={"resource": "resource"}
+        )
     if owner == ctx.user:
         return
     if await _groups.can_manage(owner, ctx.user):
@@ -104,6 +109,7 @@ async def _assert_can_share_resource(resource_type: str, resource_id: str, ctx: 
 
 
 # ── Endpoints ──────────────────────────────────────────────────────────────────
+
 
 @router.get("/{resource_type}/{resource_id}/groups")
 async def list_resource_groups(
@@ -120,7 +126,12 @@ async def list_resource_groups(
     if role != "admin":
         owner = await _resource_owner(resource_type, resource_id)
         if owner is None:
-            raise APIError(404, "not_found", "Recurso no encontrado", extra={"resource": "resource"})
+            raise APIError(
+                404,
+                "not_found",
+                "Recurso no encontrado",
+                extra={"resource": "resource"},
+            )
         if owner != ctx.user and not await _groups.can_manage(owner, ctx.user):
             raise APIError(403, "forbidden", "No tienes permisos sobre este recurso")
     async with open_db() as conn:
@@ -155,7 +166,7 @@ async def _cascade_share_agent(
     # Identidades válidas del usuario que comparte (personal + group de equipo)
     _owner_ids = {shared_by, shared_by_group} - {""}
 
-    for skill_id in (agent.get("skills") or []):
+    for skill_id in agent.get("skills") or []:
         skill = await skill_storage.get_any(skill_id)
         if not skill:
             continue
@@ -168,7 +179,7 @@ async def _cascade_share_agent(
         await _shares.share_with_group("skill", skill_id, group_id, shared_by)
         cascaded.append(skill_id)
 
-    for know_id in (agent.get("knowledge") or []):
+    for know_id in agent.get("knowledge") or []:
         item = await knowledge_storage.get(know_id)
         if not item:
             continue
@@ -178,7 +189,7 @@ async def _cascade_share_agent(
         await _shares.share_with_group("knowledge", know_id, group_id, shared_by)
         cascaded.append(know_id)
 
-    for prompt_id in (agent.get("prompts") or []):
+    for prompt_id in agent.get("prompts") or []:
         prompt = await prompt_storage.get_any(prompt_id)
         if not prompt:
             continue
@@ -220,9 +231,7 @@ async def _cascade_share_workflow(
         await _shares.share_with_group("agent", agent_id, group_id, shared_by)
         cascaded.append(agent_id)
         cascaded.extend(
-            await _cascade_share_agent(
-                agent_id, group_id, shared_by, shared_by_group
-            )
+            await _cascade_share_agent(agent_id, group_id, shared_by, shared_by_group)
         )
     return cascaded
 
@@ -248,9 +257,7 @@ async def _cascade_share_llm_orchestration(
         owner = await _resource_owner("connection", connection_id)
         if owner != item.get("owner_id"):
             continue
-        await _shares.share_with_group(
-            "connection", connection_id, group_id, shared_by
-        )
+        await _shares.share_with_group("connection", connection_id, group_id, shared_by)
         cascaded.append(connection_id)
     return cascaded
 
@@ -259,7 +266,7 @@ async def _cascade_share_llm_orchestration(
 async def share_resource_with_group(
     resource_type: str,
     resource_id: str,
-    request: Request,
+    body: GroupShareBody | None = None,
     ctx: GroupContext = Depends(require_group),
 ) -> Dict[str, Any]:
     """Concede acceso de uso al grupo indicado.
@@ -269,11 +276,8 @@ async def share_resource_with_group(
     su naturaleza privada y solo quedan accesibles dentro del grupo destino.
     """
     _assert_valid_type(resource_type)
-    try:
-        body = await json_body(request)
-    except Exception:
-        body = {}
-    group_id = str(body.get("group_id") or "").strip()
+    payload = body.payload() if body else {}
+    group_id = str(payload.get("group_id") or "").strip()
     if not group_id:
         # Inferir del group activo si es un group de equipo (no personal)
         if ctx.group_id and ctx.group_id != ctx.user:
@@ -289,7 +293,9 @@ async def share_resource_with_group(
     # Cascade para agentes: compartir también skills y knowledge
     cascaded: List[str] = []
     if resource_type == "agent":
-        cascaded = await _cascade_share_agent(resource_id, group_id, ctx.user, ctx.group_id)
+        cascaded = await _cascade_share_agent(
+            resource_id, group_id, ctx.user, ctx.group_id
+        )
     elif resource_type == "workflow":
         cascaded = await _cascade_share_workflow(
             resource_id, group_id, ctx.user, ctx.group_id
@@ -307,6 +313,7 @@ async def unshare_resource_from_group(
     resource_type: str,
     resource_id: str,
     request: Request,
+    body: GroupShareBody | None = None,
     ctx: GroupContext = Depends(require_group),
 ) -> Dict[str, Any]:
     """Elimina el acceso de un grupo al recurso.
@@ -317,11 +324,8 @@ async def unshare_resource_from_group(
     # Query param tiene prioridad; si no viene, leer del body
     group_id = request.query_params.get("group_id", "").strip()
     if not group_id:
-        try:
-            body = await json_body(request)
-            group_id = str(body.get("group_id") or "").strip()
-        except Exception:
-            group_id = ""
+        payload = body.payload() if body else {}
+        group_id = str(payload.get("group_id") or "").strip()
     if not group_id:
         # Inferir del group activo si es un group de equipo (no personal)
         if ctx.group_id and ctx.group_id != ctx.user:
@@ -333,8 +337,13 @@ async def unshare_resource_from_group(
     if role != "admin":
         owner = await _resource_owner(resource_type, resource_id)
         if owner is None:
-            raise APIError(404, "not_found", "Recurso no encontrado", extra={"resource": "resource"})
-        is_resource_owner = (owner == ctx.user)
+            raise APIError(
+                404,
+                "not_found",
+                "Recurso no encontrado",
+                extra={"resource": "resource"},
+            )
+        is_resource_owner = owner == ctx.user
         is_group_owner = await _groups.can_manage(group_id, ctx.user)
         if not is_resource_owner and not is_group_owner:
             raise APIError(

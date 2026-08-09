@@ -18,18 +18,18 @@ import base64
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, File, Query, Request, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Query, Response, UploadFile
 
 from app.api.pagination import paginar
 from app.api.routes.auth import GroupContext, require_group
 from app.auth.auth import get_user_role
 from app.errors import APIError
+from app.models.request_bodies import CatalogResourcePayload
 from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
 from app.storage.skill_storage import SKILL_ASSIGNABLE_LABELS
 from app.storage.tool_storage import TOOL_LANGUAGES, ToolStorage
 from app.utils import flog
-from app.utils.net import json_body
 from app.utils.origin import compute_origin_type
 
 router = APIRouter(prefix="/api/tools", tags=["tools"])
@@ -59,7 +59,9 @@ def _mark_origin(tl: Dict[str, Any], user: str, group_id: str) -> None:
         tl["origin_type"] = compute_origin_type(tl)
 
 
-async def _assert_read_access(tool_id: str, tl: Dict[str, Any], ctx: GroupContext) -> None:
+async def _assert_read_access(
+    tool_id: str, tl: Dict[str, Any], ctx: GroupContext
+) -> None:
     """Lanza 403 si el usuario no puede leer una tool privada (mismo patrón
     que get_skill/get_prompt): propietario, group activo, admin, o compartida
     con alguno de los grupos del usuario."""
@@ -150,7 +152,9 @@ async def get_tool(
     _check_scope(scope)
     tl = await _storage.get(scope, tool_id)
     if not tl:
-        raise APIError(404, "not_found", "Tool no encontrada", extra={"resource": "tool"})
+        raise APIError(
+            404, "not_found", "Tool no encontrada", extra={"resource": "tool"}
+        )
 
     if scope == "private":
         await _assert_read_access(tool_id, tl, ctx)
@@ -162,11 +166,13 @@ async def get_tool(
 
 @router.post("/{scope}")
 async def save_tool(
-    scope: str, request: Request, ctx: GroupContext = Depends(require_group)
+    scope: str,
+    body: CatalogResourcePayload,
+    ctx: GroupContext = Depends(require_group),
 ) -> Dict[str, Any]:
     user, group_id = ctx.user, ctx.group_id
     _check_scope(scope)
-    payload = await json_body(request)
+    payload = body.payload()
     raw_labels = payload.get("labels")
     if raw_labels is not None:
         if not isinstance(raw_labels, list):
@@ -278,9 +284,7 @@ async def delete_tool(
             )
     except ValueError as e:
         raise APIError(403, "public_tool_readonly", str(e)) from e
-    flog.info(
-        f"Tool borrada: {tool_id} {(tl or {}).get('name', '')!r}", username=user
-    )
+    flog.info(f"Tool borrada: {tool_id} {(tl or {}).get('name', '')!r}", username=user)
     return {"ok": True}
 
 
@@ -290,13 +294,17 @@ async def _set_tool_active(
     user, group_id = ctx.user, ctx.group_id
     tl = await _storage.get_any(tool_id)
     if not tl:
-        raise APIError(404, "not_found", "Tool no encontrada", extra={"resource": "tool"})
+        raise APIError(
+            404, "not_found", "Tool no encontrada", extra={"resource": "tool"}
+        )
     role = await get_user_role(user)
     if role != "admin" and tl.get("owner_id") not in (group_id, None):
         raise APIError(403, "forbidden", "Solo el propietario puede cambiar el estado")
     owner = None if role == "admin" else group_id
     if not await _storage.set_active(tool_id, owner, active):
-        raise APIError(404, "not_found", "Tool no encontrada", extra={"resource": "tool"})
+        raise APIError(
+            404, "not_found", "Tool no encontrada", extra={"resource": "tool"}
+        )
     estado = "activada" if active else "desactivada"
     flog.info(f"Tool {estado}: {tool_id} {tl.get('name', '')!r}", username=user)
     return {"ok": True, "is_active": active}
@@ -332,7 +340,9 @@ async def upload_tool_binary(
     _check_scope(scope)
     tl = await _storage.get(scope, tool_id)
     if not tl:
-        raise APIError(404, "not_found", "Tool no encontrada", extra={"resource": "tool"})
+        raise APIError(
+            404, "not_found", "Tool no encontrada", extra={"resource": "tool"}
+        )
     role = await get_user_role(user)
     owner_id = tl.get("owner_id")
     if role != "admin" and owner_id not in (user, group_id):
@@ -360,7 +370,9 @@ async def upload_tool_binary(
     save_owner = owner_id if role == "admin" else group_id
     ok = await _storage.save_binary(tool_id, save_owner, encoded, filename, len(data))
     if not ok:
-        raise APIError(404, "not_found", "Tool no encontrada", extra={"resource": "tool"})
+        raise APIError(
+            404, "not_found", "Tool no encontrada", extra={"resource": "tool"}
+        )
     flog.info(
         f"Binario subido a tool {tool_id}: {filename} ({len(data)} bytes)",
         username=user,
@@ -375,7 +387,9 @@ async def download_tool_binary(
     _check_scope(scope)
     tl = await _storage.get(scope, tool_id)
     if not tl:
-        raise APIError(404, "not_found", "Tool no encontrada", extra={"resource": "tool"})
+        raise APIError(
+            404, "not_found", "Tool no encontrada", extra={"resource": "tool"}
+        )
     if scope == "private":
         await _assert_read_access(tool_id, tl, ctx)
 

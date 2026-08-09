@@ -4,14 +4,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends
 
 from app.api.routes.auth.dependencies import require_auth
 from app.auth.auth import get_user_by_id
 from app.auth.gdpr import cancel_user_deletion, get_owned_groups, schedule_user_deletion
 from app.errors import APIError
 from app.middleware.locale import get_locale
-from app.utils.net import json_body
+from app.models.request_bodies import TokenBody
 
 router = APIRouter()
 
@@ -20,7 +20,9 @@ router = APIRouter()
 async def get_deletion_status(username: str = Depends(require_auth)) -> dict[str, Any]:
     user = await get_user_by_id(username)
     if not user:
-        raise APIError(404, "not_found", "Usuario no encontrado", extra={"resource": "user"})
+        raise APIError(
+            404, "not_found", "Usuario no encontrado", extra={"resource": "user"}
+        )
     return {
         "scheduled": user.get("deletion_requested_at") is not None,
         "deletion_date": user.get("deletion_requested_at"),
@@ -44,8 +46,8 @@ async def request_account_deletion(
 
 
 @router.post("/me/cancel-deletion")
-async def cancel_account_deletion(request: Request) -> dict[str, Any]:
-    body = await json_body(request)
+async def cancel_account_deletion(body: TokenBody) -> dict[str, Any]:
+    body = body.payload()
     token = str(body.get("token", "")).strip()
     if not token or not await cancel_user_deletion(token):
         raise APIError(400, "invalid_deletion_token", "Token inválido o expirado")

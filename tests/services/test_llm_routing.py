@@ -157,7 +157,9 @@ async def test_stack_does_not_fail_over_when_provider_raises_after_token(monkeyp
     ]
     assert called == ["first"]
     assert '"token": "partial"' in "".join(frames)
-    assert '"message": "stream interrupted"' in "".join(frames)
+    joined = "".join(frames)
+    assert '"code": "internal_error"' in joined
+    assert "stream interrupted" not in joined
 
 
 @pytest.mark.asyncio

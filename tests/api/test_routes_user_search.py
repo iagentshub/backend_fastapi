@@ -1,4 +1,5 @@
 """Tests for GET /api/users (user search endpoint)."""
+
 from __future__ import annotations
 
 
@@ -6,6 +7,7 @@ def _login(client, username: str, password: str = "pass1234") -> str:
     import asyncio
 
     from app.auth.auth import create_token, register_user
+
     asyncio.run(register_user(username, password, email=f"{username}@example.com"))
     client.cookies.set("ga_token", create_token(username))
     return username
@@ -15,6 +17,7 @@ def _register(username: str, password: str = "pass1234") -> None:
     import asyncio
 
     from app.auth.auth import register_user
+
     asyncio.run(register_user(username, password, email=f"{username}@example.com"))
 
 
@@ -73,3 +76,9 @@ def test_search_users_no_match_returns_empty_list(client):
     r = client.get("/api/users?q=zzz_nonexistent_xyz_99")
     assert r.status_code == 200
     assert r.json() == []
+
+
+def test_search_users_rejects_negative_pagination(client):
+    _login(client, "pagevalidator")
+    assert client.get("/api/users?limit=-1").status_code == 422
+    assert client.get("/api/users?offset=-1").status_code == 422

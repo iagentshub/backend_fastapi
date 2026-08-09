@@ -82,9 +82,9 @@ async def builder_chat(
         if role == "admin":
             conn = await _conns.get(conn_id, None)
         else:
-            from app.api.routes.connections import _get_conn_any
+            from app.services.connection_access import connection_access
 
-            conn = await _get_conn_any(conn_id, user, group_id)
+            conn = await connection_access.get_accessible(conn_id, user, group_id)
 
     if conn and ollama_model:
         conn = {**conn, "model": ollama_model}

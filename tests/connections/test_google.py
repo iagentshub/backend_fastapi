@@ -22,13 +22,13 @@ def test_test_missing_api_key():
 
 def test_test_success():
     mock_resp = _mock_response({"models": [{"name": "gemini-2.0-flash"}, {"name": "gemini-1.5"}]})
-    with patch("urllib.request.urlopen", return_value=mock_resp):
+    with patch("app.connections.google.safe_urlopen", return_value=mock_resp):
         result = GoogleProvider.test({"api_key": "AIza-fake"})
     assert result.ok is True
     assert "2" in result.message
 
 
 def test_test_connection_error():
-    with patch("urllib.request.urlopen", side_effect=Exception("timeout")):
+    with patch("app.connections.google.safe_urlopen", side_effect=Exception("timeout")):
         result = GoogleProvider.test({"api_key": "AIza-fake"})
     assert result.ok is False

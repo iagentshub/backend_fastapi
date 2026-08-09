@@ -1,22 +1,20 @@
 """iAgents Hub provider — conecta con otra instancia de iAgents Hub."""
+
 from __future__ import annotations
 
-import http.cookiejar
 import json
 import urllib.error
 import urllib.request
+from http.cookies import SimpleCookie
 from typing import Any, Dict
 
-from app.config.security import assert_safe_url
+from app.utils.safe_http import safe_urlopen
 
 from .base import BaseProvider, FieldDef, TestResult, register
 
 
 def _login(url: str, username: str, password: str) -> str:
     """Autentica contra el hub remoto y devuelve el ga_token. Lanza excepción si falla."""
-    assert_safe_url(url)  # C2: prevenir SSRF a redes privadas
-    jar = http.cookiejar.CookieJar()
-    opener = urllib.request.build_opener(urllib.request.HTTPCookieProcessor(jar))
     payload = json.dumps({"username": username, "password": password}).encode()
     req = urllib.request.Request(
         f"{url}/api/auth/login",
@@ -24,9 +22,13 @@ def _login(url: str, username: str, password: str) -> str:
         headers={"content-type": "application/json"},
         method="POST",
     )
-    with opener.open(req, timeout=10) as r:
+    with safe_urlopen(req, timeout=10) as r:
         r.read()
-    token = next((c.value for c in jar if c.name == "ga_token"), None)
+        raw_cookies = r.headers.get_all("Set-Cookie") or []
+    cookies = SimpleCookie()
+    for raw_cookie in raw_cookies:
+        cookies.load(raw_cookie)
+    token = cookies["ga_token"].value if "ga_token" in cookies else None
     if not token:
         raise ValueError("Login correcto pero no se recibió token de sesión")
     return token
@@ -38,7 +40,9 @@ class IAgentsHubProvider(BaseProvider):
     label = "iAgents Hub"
     icon = ""
     fields = [
-        FieldDef("url", "URL del hub", "text", "https://hub.example.com", required=True),
+        FieldDef(
+            "url", "URL del hub", "text", "https://hub.example.com", required=True
+        ),
         FieldDef("username", "Usuario", "text", "", required=True),
         FieldDef("api_key", "Contraseña", "password", "", required=True),
     ]
@@ -63,7 +67,7 @@ class IAgentsHubProvider(BaseProvider):
                 f"{url}/api/auth/me",
                 headers={"Cookie": f"ga_token={token}"},
             )
-            with urllib.request.urlopen(req, timeout=10) as r:
+            with safe_urlopen(req, timeout=10) as r:
                 data = json.loads(r.read())
             display = data.get("username") or username
             return TestResult(True, f"OK — conectado como {display}")

@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
+
+import pytest
 
 from app.api.routes.centinel import _shared, _state
 
@@ -73,3 +75,89 @@ def test_read_centinel_state_invalid_json_returns_empty_and_warns(tmp_path):
 
     assert state == {}
     assert "estado compartido ilegible" in warning.call_args.args[0]
+
+
+def test_centinel_request_models_reject_invalid_ranges():
+    from pydantic import ValidationError
+
+    from app.api.routes.centinel.probe import ProbeRequest
+    from app.api.routes.centinel.stress import StressRequest
+
+    with pytest.raises(ValidationError):
+        StressRequest(users=-1, duration=0, timeout=-3)
+    with pytest.raises(ValidationError):
+        ProbeRequest(start_users=0, step=0, duration=0)
+
+
+def test_run_event_persistence_is_batched_and_terminal_is_forced(monkeypatch):
+    writes = []
+    monkeypatch.setattr(_state, "_last_event_flush", 0.0)
+    monkeypatch.setattr(
+        _state, "_update_centinel_state", lambda update: writes.append(update)
+    )
+    _state._persist_run_events()
+    _state._persist_run_events()
+    assert len(writes) == 1
+    _state._persist_run_events(force=True)
+    assert len(writes) == 2
+
+
+def test_run_internal_error_does_not_leak_exception_text():
+    from app.api.routes.centinel import run
+
+    broadcast = AsyncMock()
+    with (
+        patch.object(
+            run.asyncio,
+            "create_subprocess_exec",
+            new=AsyncMock(side_effect=RuntimeError("secret=/private/token")),
+        ),
+        patch.object(run, "_broadcast", new=broadcast),
+        patch.object(run, "_persist_run_state"),
+        patch.object(run.flog, "error"),
+    ):
+        asyncio.run(run._execute_run("run-id", "tests/unit"))
+
+    event = broadcast.await_args.args[0]
+    assert event == {
+        "type": "error",
+        "code": "internal_error",
+        "message": "Error interno al ejecutar las pruebas.",
+    }
+    assert "secret" not in repr(event)
+
+
+def test_stress_internal_error_does_not_leak_exception_text():
+    from app.api.routes.centinel import stress
+
+    events = []
+
+    class BrokenExecutor:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def __enter__(self):
+            raise RuntimeError("secret=/private/token")
+
+        def __exit__(self, *args):
+            return False
+
+    with (
+        patch("concurrent.futures.ThreadPoolExecutor", BrokenExecutor),
+        patch.object(stress, "_stress_broadcast_sync", side_effect=events.append),
+        patch.object(stress, "_persist_stress_state"),
+        patch.object(stress.flog, "error"),
+    ):
+        asyncio.run(
+            stress._execute_stress(
+                "stress-id", stress.StressRequest(users=1, duration=1)
+            )
+        )
+
+    event = events[-1]
+    assert event == {
+        "type": "stress_error",
+        "code": "internal_error",
+        "message": "Error interno durante la prueba de carga.",
+    }
+    assert "secret" not in repr(event)

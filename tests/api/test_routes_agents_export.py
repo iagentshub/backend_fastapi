@@ -1,4 +1,5 @@
 """Tests for agent export endpoint: /api/agents/{id}/export/{fmt}."""
+
 from __future__ import annotations
 
 import io
@@ -48,6 +49,7 @@ def _zip_read(content: bytes, path: str) -> str:
 
 # ── OpenAI export ─────────────────────────────────────────────────────────────
 
+
 def test_openai_export_is_zip(admin_client):
     agent = _create_agent(admin_client, {"agent_type": "openai"})
     r = admin_client.get(f"/api/agents/{agent['id']}/export/openai")
@@ -57,7 +59,9 @@ def test_openai_export_is_zip(admin_client):
 
 
 def test_openai_export_basic(admin_client):
-    agent = _create_agent(admin_client, {"agent_type": "openai", "tool_choice": "required"})
+    agent = _create_agent(
+        admin_client, {"agent_type": "openai", "tool_choice": "required"}
+    )
     r = admin_client.get(f"/api/agents/{agent['id']}/export/openai")
     assert r.status_code == 200
     payload = json.loads(_zip_read(r.content, "agent.json"))
@@ -77,7 +81,9 @@ def test_openai_export_default_tool_choice(admin_client):
 
 def test_openai_export_injects_skills(admin_client):
     skill = _create_skill(admin_client)
-    agent = _create_agent(admin_client, {"agent_type": "openai", "skills": [skill["id"]]})
+    agent = _create_agent(
+        admin_client, {"agent_type": "openai", "skills": [skill["id"]]}
+    )
     r = admin_client.get(f"/api/agents/{agent['id']}/export/openai")
     assert r.status_code == 200
     instructions = json.loads(_zip_read(r.content, "agent.json"))["instructions"]
@@ -86,6 +92,7 @@ def test_openai_export_injects_skills(admin_client):
 
 
 # ── Claude export ─────────────────────────────────────────────────────────────
+
 
 def test_claude_export_is_zip(admin_client):
     agent = _create_agent(admin_client)
@@ -103,7 +110,9 @@ def test_claude_export_zip_structure(admin_client):
     hidden_agent_files = [n for n in names if n.startswith(".claude/agents/")]
     assert len(hidden_agent_files) == 1
     assert hidden_agent_files[0].endswith(".md")
-    assert not any(n.startswith("agents/") for n in names), "No debe haber directorio raíz agents/"
+    assert not any(n.startswith("agents/") for n in names), (
+        "No debe haber directorio raíz agents/"
+    )
 
 
 def test_claude_export_agent_frontmatter(admin_client):
@@ -125,8 +134,12 @@ def test_claude_export_skills_as_skill_files(admin_client):
     # Solo la ruta .claude/skills/ — no debe haber directorio raíz skills/
     hidden_skill_files = [n for n in names if n.startswith(".claude/skills/")]
     assert len(hidden_skill_files) == 1, "Skill must appear as a .claude/skills/ file"
-    assert hidden_skill_files[0].endswith("SKILL.md"), "Skill file must be named SKILL.md"
-    assert not any(n.startswith("skills/") for n in names), "No debe haber directorio raíz skills/"
+    assert hidden_skill_files[0].endswith("SKILL.md"), (
+        "Skill file must be named SKILL.md"
+    )
+    assert not any(n.startswith("skills/") for n in names), (
+        "No debe haber directorio raíz skills/"
+    )
     # Skill content must NOT be injected into the agent body
     agent_md = next(n for n in names if n.startswith(".claude/agents/"))
     agent_body = _zip_read(r.content, agent_md)
@@ -134,6 +147,7 @@ def test_claude_export_skills_as_skill_files(admin_client):
 
 
 # ── GitHub Copilot export ─────────────────────────────────────────────────────
+
 
 def test_github_export_is_zip(admin_client):
     agent = _create_agent(admin_client)
@@ -143,7 +157,9 @@ def test_github_export_is_zip(admin_client):
 
 
 def test_github_export_agent_file(admin_client):
-    agent = _create_agent(admin_client, {"agent_type": "github", "copilot_topic": "productivity"})
+    agent = _create_agent(
+        admin_client, {"agent_type": "github", "copilot_topic": "productivity"}
+    )
     r = admin_client.get(f"/api/agents/{agent['id']}/export/github")
     names = _zip_names(r.content)
     # Solo la ruta .github/agents/ — no debe haber directorio raíz agents/
@@ -152,7 +168,9 @@ def test_github_export_agent_file(admin_client):
     content = _zip_read(r.content, hidden_agent_files[0])
     assert "name: My Agent" in content
     assert "topic: productivity" in content
-    assert not any(n.startswith("agents/") for n in names), "No debe haber directorio raíz agents/"
+    assert not any(n.startswith("agents/") for n in names), (
+        "No debe haber directorio raíz agents/"
+    )
 
 
 def test_github_export_skills_as_separate_files(admin_client):
@@ -163,12 +181,16 @@ def test_github_export_skills_as_separate_files(admin_client):
 
     # Solo la ruta .github/skills/ — no debe haber directorio raíz skills/
     hidden_skill_files = [n for n in names if n.startswith(".github/skills/")]
-    assert len(hidden_skill_files) == 1, "Each skill must be a .github/skills/{slug}/SKILL.md"
+    assert len(hidden_skill_files) == 1, (
+        "Each skill must be a .github/skills/{slug}/SKILL.md"
+    )
     assert hidden_skill_files[0].endswith("SKILL.md")
     hidden_content = _zip_read(r.content, hidden_skill_files[0])
     assert "GitHub Ops" in hidden_content
     assert "gh pr list" in hidden_content
-    assert not any(n.startswith("skills/") for n in names), "No debe haber directorio raíz skills/"
+    assert not any(n.startswith("skills/") for n in names), (
+        "No debe haber directorio raíz skills/"
+    )
 
 
 def test_github_export_skills_not_in_agent_body(admin_client):
@@ -192,6 +214,7 @@ def test_github_export_no_skills(admin_client):
 
 
 # ── MCP export ────────────────────────────────────────────────────────────────
+
 
 def _mcp_server_path(content: bytes) -> str:
     names = _zip_names(content)
@@ -221,12 +244,14 @@ def test_mcp_export_fastmcp_boilerplate(admin_client):
 
 
 def test_mcp_export_one_tool_per_skill(admin_client):
-    skill1 = admin_client.post("/api/skills/private", json={
-        "name": "GitHub Ops", "description": "GitHub ops", "content": "..."
-    }).json()
-    skill2 = admin_client.post("/api/skills/private", json={
-        "name": "Slack Messaging", "description": "Slack ops", "content": "..."
-    }).json()
+    skill1 = admin_client.post(
+        "/api/skills/private",
+        json={"name": "GitHub Ops", "description": "GitHub ops", "content": "..."},
+    ).json()
+    skill2 = admin_client.post(
+        "/api/skills/private",
+        json={"name": "Slack Messaging", "description": "Slack ops", "content": "..."},
+    ).json()
     agent = _create_agent(admin_client, {"skills": [skill1["id"], skill2["id"]]})
     r = admin_client.get(f"/api/agents/{agent['id']}/export/mcp")
     code = _zip_read(r.content, _mcp_server_path(r.content))
@@ -253,6 +278,7 @@ def test_mcp_export_skill_description_as_docstring(admin_client):
 
 
 # ── Knowledge export (all formats) ───────────────────────────────────────────
+
 
 def _create_knowledge(client, title="Doc de prueba", content="Contenido de prueba."):
     r = client.post("/api/knowledge/text", json={"title": title, "content": content})
@@ -285,7 +311,9 @@ def test_github_export_includes_knowledge(admin_client):
 
 def test_github_export_includes_memory(admin_client):
     agent = _create_agent(admin_client)
-    admin_client.post(f"/api/memory/{agent['id']}.md", json={"content": "Memoria de prueba"})
+    admin_client.post(
+        f"/api/memory/{agent['id']}.md", json={"content": "Memoria de prueba"}
+    )
     r = admin_client.get(f"/api/agents/{agent['id']}/export/github")
     names = _zip_names(r.content)
     assert ".github/COPILOT_INSTRUCTIONS.md" in names
@@ -293,7 +321,9 @@ def test_github_export_includes_memory(admin_client):
 
 def test_openai_export_includes_knowledge(admin_client):
     doc = _create_knowledge(admin_client)
-    agent = _create_agent(admin_client, {"agent_type": "openai", "knowledge": [doc["id"]]})
+    agent = _create_agent(
+        admin_client, {"agent_type": "openai", "knowledge": [doc["id"]]}
+    )
     r = admin_client.get(f"/api/agents/{agent['id']}/export/openai")
     names = _zip_names(r.content)
     knowledge_files = [n for n in names if n.startswith("knowledge/")]
@@ -324,10 +354,10 @@ def test_export_omits_unreadable_knowledge_and_warns(admin_client):
 
     with (
         patch(
-            "app.api.routes.agents._knowledge.get",
+            "app.api.routes.agent_exports._knowledge.get",
             new=AsyncMock(side_effect=RuntimeError("lectura fallida")),
         ),
-        patch("app.api.routes.agents.flog.warning") as warning,
+        patch("app.api.routes.agent_exports.flog.warning") as warning,
     ):
         response = admin_client.get(f"/api/agents/{agent['id']}/export/claude")
 
@@ -337,6 +367,7 @@ def test_export_omits_unreadable_knowledge_and_warns(admin_client):
 
 
 # ── Unknown format ────────────────────────────────────────────────────────────
+
 
 def test_export_unknown_format(admin_client):
     agent = _create_agent(admin_client)

@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Depends, Query, Response
 
 from app.api.pagination import TOTAL_HEADER
 from app.api.routes.auth import require_auth
@@ -23,7 +23,8 @@ async def _get_social_fields(username: str) -> dict[str, Any]:
 
     async with open_db() as conn:
         row = await conn.fetchone(
-            "SELECT id, avatar, bio, languages, email, is_email_public, github, cv, created_at "
+            "SELECT id, CASE WHEN avatar IS NULL OR avatar = '' THEN 0 ELSE 1 END, "
+            "bio, languages, email, is_email_public, github, cv, created_at "
             "FROM users WHERE username = ?",
             (username,),
         )
@@ -64,12 +65,11 @@ async def _get_social_fields(username: str) -> dict[str, Any]:
 @router.get("")
 async def search_users(
     q: str | None = None,
-    limit: int = 20,
-    offset: int = 0,
+    limit: int = Query(20, ge=1, le=50),
+    offset: int = Query(0, ge=0),
     response: Response = None,  # type: ignore[assignment]
     username: str = Depends(require_auth),
 ) -> list[dict[str, Any]]:
-    limit = min(limit, 50)
     async with open_db() as conn:
         # El total va en cabecera (ver app/api/pagination.py). La página se
         # recorta en SQL, así que hace falta su propio COUNT con el mismo WHERE.
@@ -88,7 +88,7 @@ async def search_users(
         if q:
             pattern = f"%{q}%"
             rows = await conn.fetchall(
-                "SELECT u.username, u.avatar, "
+                "SELECT u.username, CASE WHEN u.avatar IS NULL OR u.avatar = '' THEN 0 ELSE 1 END, "
                 "(SELECT COUNT(*) FROM user_follows WHERE following = u.id) AS followers_count, "
                 "(SELECT COUNT(*) FROM resource_social WHERE owner IN (u.id, u.username) AND is_public = 1) AS public_resources_count "
                 "FROM users u "
@@ -98,7 +98,7 @@ async def search_users(
             )
         else:
             rows = await conn.fetchall(
-                "SELECT u.username, u.avatar, "
+                "SELECT u.username, CASE WHEN u.avatar IS NULL OR u.avatar = '' THEN 0 ELSE 1 END, "
                 "(SELECT COUNT(*) FROM user_follows WHERE following = u.id) AS followers_count, "
                 "(SELECT COUNT(*) FROM resource_social WHERE owner IN (u.id, u.username) AND is_public = 1) AS public_resources_count "
                 "FROM users u "
@@ -137,8 +137,11 @@ async def get_avatar(username: str, _: str = Depends(require_auth)):
     except (binascii.Error, TypeError):
         return Response(status_code=204)
 
-    # Canvas always exports PNG; detect jpeg by magic bytes as fallback
-    mime = "image/jpeg" if data[:2] == b"\xff\xd8" else "image/png"
+    from app.utils.images import detect_avatar_mime
+
+    mime = detect_avatar_mime(data)
+    if mime is None:
+        return Response(status_code=204)
     return Response(content=data, media_type=mime)
 
 
@@ -149,6 +152,8 @@ async def get_public_profile(
 ) -> dict[str, Any]:
     user = await get_user_by_username(username)
     if not user:
-        raise APIError(404, "not_found", "Usuario no encontrado", extra={"resource": "user"})
+        raise APIError(
+            404, "not_found", "Usuario no encontrado", extra={"resource": "user"}
+        )
     fields = await _get_social_fields(username)
     return {"username": username, **fields}

@@ -1,15 +1,16 @@
 """Rutas de historial de conversaciones."""
+
 from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, Depends, Query, Request
+from fastapi import APIRouter, Depends, Query
 
 from app.api.routes.auth import require_session
 from app.errors import APIError
+from app.models.request_bodies import ConversationBody
 from app.storage.chat import ChatStorage
 from app.storage.guest import is_guest
-from app.utils.net import json_body
 
 router = APIRouter(prefix="/api/chats", tags=["chats"])
 _chat = ChatStorage()
@@ -36,11 +37,13 @@ async def list_conversations(
 
 @router.post("/{agent_id}")
 async def new_conversation(
-    agent_id: str, request: Request, user: str = Depends(require_session)
+    agent_id: str, body: ConversationBody, user: str = Depends(require_session)
 ) -> Dict[str, Any]:
     if is_guest(user):
-        raise APIError(403, "forbidden", "Los invitados no pueden guardar conversaciones")
-    body = await json_body(request)
+        raise APIError(
+            403, "forbidden", "Los invitados no pueden guardar conversaciones"
+        )
+    body = body.payload()
     title = str(body.get("title") or "")
     return await _chat.new_conversation(user, agent_id, title)
 
@@ -53,7 +56,12 @@ async def get_messages(
         return []
     conv = await _chat.get_conversation(conv_id, user)
     if not conv:
-        raise APIError(404, "not_found", "Conversación no encontrada", extra={"resource": "conversation"})
+        raise APIError(
+            404,
+            "not_found",
+            "Conversación no encontrada",
+            extra={"resource": "conversation"},
+        )
     return await _chat.get_messages(conv_id, user)
 
 
@@ -62,7 +70,14 @@ async def delete_conversation(
     agent_id: str, conv_id: str, user: str = Depends(require_session)
 ) -> Dict[str, Any]:
     if is_guest(user):
-        raise APIError(403, "forbidden", "Los invitados no pueden borrar conversaciones")
+        raise APIError(
+            403, "forbidden", "Los invitados no pueden borrar conversaciones"
+        )
     if not await _chat.delete_conversation(conv_id, user):
-        raise APIError(404, "not_found", "Conversación no encontrada", extra={"resource": "conversation"})
+        raise APIError(
+            404,
+            "not_found",
+            "Conversación no encontrada",
+            extra={"resource": "conversation"},
+        )
     return {"ok": True}

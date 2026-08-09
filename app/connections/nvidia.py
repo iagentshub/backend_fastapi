@@ -1,4 +1,5 @@
 """NVIDIA NIM provider — fields + test."""
+
 from __future__ import annotations
 
 import json
@@ -7,6 +8,7 @@ import urllib.request
 from typing import Any, Dict, Optional
 
 from app.config.providers import PROVIDER_BASE_URLS, PROVIDER_DEFAULT_MODELS
+from app.utils.safe_http import safe_urlopen
 
 from .base import BaseProvider, FieldDef, TestResult, register
 
@@ -21,7 +23,9 @@ class NvidiaProvider(BaseProvider):
     icon = ""
     fields = [
         FieldDef("api_key", "API Key", "password", "nvapi-...", required=True),
-        FieldDef("model", "Modelo por defecto", "text", PROVIDER_DEFAULT_MODELS["nvidia"]),
+        FieldDef(
+            "model", "Modelo por defecto", "text", PROVIDER_DEFAULT_MODELS["nvidia"]
+        ),
         FieldDef("url", "URL", "text", default=f"{_BASE_URL}/chat/completions"),
     ]
 
@@ -60,11 +64,13 @@ class NvidiaProvider(BaseProvider):
     def _probe_auth(cls, api_key: str) -> TestResult:
         """Comprueba la credencial con una generación mínima y un modelo ligero."""
         try:
-            payload = json.dumps({
-                "model": _TEST_MODEL,
-                "messages": [{"role": "user", "content": "hi"}],
-                "max_tokens": 1,
-            }).encode()
+            payload = json.dumps(
+                {
+                    "model": _TEST_MODEL,
+                    "messages": [{"role": "user", "content": "hi"}],
+                    "max_tokens": 1,
+                }
+            ).encode()
             req = urllib.request.Request(
                 f"{_BASE_URL}/chat/completions",
                 data=payload,
@@ -74,16 +80,22 @@ class NvidiaProvider(BaseProvider):
                 },
                 method="POST",
             )
-            with urllib.request.urlopen(req, timeout=20) as r:
+            with safe_urlopen(req, timeout=20) as r:
                 r.read()
             return TestResult(True, "OK")
         except urllib.error.HTTPError as e:
             body = e.read().decode("utf-8", errors="replace")
             try:
-                msg = json.loads(body).get("detail") or json.loads(body).get("message") or body[:200]
+                msg = (
+                    json.loads(body).get("detail")
+                    or json.loads(body).get("message")
+                    or body[:200]
+                )
             except Exception:
                 msg = body[:200]
-            return TestResult(False, f"HTTP {e.code}", msg)  # nvidia usa "detail", no "error.message"
+            return TestResult(
+                False, f"HTTP {e.code}", msg
+            )  # nvidia usa "detail", no "error.message"
         except Exception as e:
             return TestResult(False, "Error de conexión", str(e))
 
@@ -99,7 +111,7 @@ class NvidiaProvider(BaseProvider):
                 f"{_BASE_URL}/models",
                 headers={"Authorization": f"Bearer {api_key}"},
             )
-            with urllib.request.urlopen(req, timeout=10) as r:
+            with safe_urlopen(req, timeout=10) as r:
                 data = json.loads(r.read())
             ids = {m.get("id") for m in (data.get("data") or [])}
             return model in ids

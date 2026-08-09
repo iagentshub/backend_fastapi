@@ -38,7 +38,11 @@ _tokens = _TokenStorage()
 # propia instancia, un atacante triplicaría su cupo repartiendo intentos
 # entre /login, /tokens y /vscode/exchange.
 _login_limiter = RateLimiter(
-    calls=LOGIN_MAX_FAILS, window=LOGIN_WINDOW, key_func=_client_ip
+    calls=LOGIN_MAX_FAILS,
+    window=LOGIN_WINDOW,
+    key_func=_client_ip,
+    shared=True,
+    name="auth-login",
 )
 
 # ── Caché de estado de autenticación para require_auth ────────────────────────
@@ -47,8 +51,8 @@ _login_limiter = RateLimiter(
 # el rendimiento en producción.
 # A2: también cachea password_changed_at para invalidar tokens emitidos antes
 #     de un cambio de contraseña, sin una consulta a BD por request.
-_ACTIVE_CACHE_TTL = 60       # segundos
-_ACTIVE_CACHE_MAX = 5_000    # entradas máximas antes de eviction
+_ACTIVE_CACHE_TTL = 60  # segundos
+_ACTIVE_CACHE_MAX = 5_000  # entradas máximas antes de eviction
 # {username: (is_active, password_changed_at, role, expires_at)}
 # El rol viaja en la misma entrada: sale de la fila de usuario que ya leemos,
 # así que require_role() no cuesta una consulta extra por request.

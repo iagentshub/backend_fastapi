@@ -4,12 +4,13 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, Query, Request, Response
+from fastapi import APIRouter, Depends, Query, Response
 
 from app.api.pagination import paginar
 from app.api.routes.auth import GroupContext, require_group, require_group_session
 from app.auth.auth import get_user_role
 from app.errors import APIError
+from app.models.request_bodies import CatalogResourcePayload
 from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
 from app.storage.guest import get_session, is_guest
@@ -18,7 +19,6 @@ from app.storage.resource_versions import ResourceVersionStorage
 from app.storage.skill_storage import SKILL_ASSIGNABLE_LABELS
 from app.utils import flog
 from app.utils.generators import generate_id
-from app.utils.net import json_body
 from app.utils.origin import compute_origin_type
 
 router = APIRouter(prefix="/api/prompts", tags=["prompts"])
@@ -164,11 +164,13 @@ async def get_prompt(
 
 @router.post("/{scope}")
 async def save_prompt(
-    scope: str, request: Request, ctx: GroupContext = Depends(require_group_session)
+    scope: str,
+    body: CatalogResourcePayload,
+    ctx: GroupContext = Depends(require_group_session),
 ) -> Dict[str, Any]:
     user, group_id = ctx.user, ctx.group_id
     _check_scope(scope)
-    payload = await json_body(request)
+    payload = body.payload()
     raw_labels = payload.get("labels")
     if raw_labels is not None:
         if not isinstance(raw_labels, list):
@@ -305,9 +307,7 @@ async def delete_prompt(
             "Los prompts públicos de sistema son de solo lectura",
         )
     if pr and role != "admin" and pr.get("owner_id") != group_id:
-        raise APIError(
-            403, "forbidden", "No tienes permiso para eliminar este prompt"
-        )
+        raise APIError(403, "forbidden", "No tienes permiso para eliminar este prompt")
     try:
         delete_owner = (
             pr.get("owner_id")

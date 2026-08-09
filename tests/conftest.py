@@ -121,17 +121,23 @@ def patch_data_dir(tmp_data_dir, tmp_path, monkeypatch):
     from app.storage.memory_storage import MemoryStorage
 
     isolated_memory = MemoryStorage(memory_dir)
+    import app.api.routes.agent_chat as agent_chat_routes
+    import app.api.routes.agent_exports as agent_export_routes
     import app.api.routes.agents as agents_routes
     import app.api.routes.memory as memory_routes
 
     monkeypatch.setattr(memory_routes, "_storage", isolated_memory)
     monkeypatch.setattr(agents_routes, "_memory", isolated_memory)
+    monkeypatch.setattr(agent_chat_routes, "_memory", isolated_memory)
+    monkeypatch.setattr(agent_export_routes, "_memory", isolated_memory)
 
     # Patch el binding local de AGENTS_DIR en agents.py — se importa a nivel
     # de módulo con "from app.config.data import AGENTS_DIR", por lo que
     # parchear solo cfg.AGENTS_DIR no es suficiente para que _apply_locale
     # encuentre los archivos de locale del test.
     monkeypatch.setattr(agents_routes, "AGENTS_DIR", tmp_data_dir / "agents")
+    monkeypatch.setattr(agent_chat_routes, "AGENTS_DIR", tmp_data_dir / "agents")
+    monkeypatch.setattr(agent_export_routes, "AGENTS_DIR", tmp_data_dir / "agents")
 
     # Forzar REGISTRATION_MODE="open" en los tests para que client.post("/api/auth/register")
     # funcione independientemente del entorno de producción (GAIA_REGISTRATION=closed/invite).

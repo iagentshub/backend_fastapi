@@ -5,12 +5,18 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import Depends, Request
+from fastapi import Depends
 
 from app.api.routes.admin._router import admin_router
 from app.api.routes.auth import require_admin
 from app.config.data import AGENTS_DIR as _AGENTS_DIR
 from app.errors import APIError
+from app.models.request_bodies import (
+    ResourceOwnerBody,
+    ResourcePayload,
+    StatusBody,
+    VerificationBody,
+)
 from app.storage.agent_storage import AgentStorage as _AgentStorage
 from app.storage.db import open_db
 from app.storage.groups import GroupStorage as _GroupStorage
@@ -18,12 +24,16 @@ from app.storage.llm_orchestrations import (
     LLMOrchestrationStorage as _LLMOrchestrationStorage,
 )
 from app.storage.workflows import WorkflowStorage as _WorkflowStorage
-from app.utils.net import json_body
 
 _groups = _GroupStorage()
 _agents = _AgentStorage(_AGENTS_DIR)
 _workflows = _WorkflowStorage()
 _llm_orchestrations = _LLMOrchestrationStorage()
+
+
+async def _username_map(conn: Any) -> dict[str, str]:
+    rows = await conn.fetchall("SELECT id, username FROM users")
+    return {str(row[0]): str(row[1]) for row in rows}
 
 
 @admin_router.get("/connections")
@@ -37,8 +47,7 @@ async def admin_list_connections(
             "SELECT id, owner_id, name, data, tokens_in, tokens_out, created_at "
             "FROM connections ORDER BY created_at DESC"
         )
-        user_rows = await conn.fetchall("SELECT id, username FROM users")
-    username_map = {r[0]: r[1] for r in user_rows}
+        username_map = await _username_map(conn)
     result = []
     for row in rows:
         d = (
@@ -90,11 +99,10 @@ async def admin_delete_connection(
 async def admin_list_agents(_: str = Depends(require_admin)) -> list[dict[str, Any]]:
     agents = await _agents.list(scope="all")
     async with open_db() as conn:
-        user_rows = await conn.fetchall("SELECT id, username FROM users")
+        username_map = await _username_map(conn)
         conn_rows = await conn.fetchall(
             "SELECT id, owner_id, tokens_in, tokens_out FROM connections"
         )
-    username_map = {r[0]: r[1] for r in user_rows}
     conn_data = {
         r[0]: {"owner_id": r[1], "tokens_in": r[2], "tokens_out": r[3]}
         for r in conn_rows
@@ -118,7 +126,7 @@ async def admin_list_agents(_: str = Depends(require_admin)) -> list[dict[str, A
 @admin_router.put("/agents/{agent_id}")
 async def admin_update_agent(
     agent_id: str,
-    request: Request,
+    body: ResourcePayload,
     _: str = Depends(require_admin),
 ) -> dict[str, Any]:
     agent = await _agents.get(agent_id, scope="private")
@@ -126,7 +134,7 @@ async def admin_update_agent(
         raise APIError(
             404, "not_found", "Agente no encontrado", extra={"resource": "agent"}
         )
-    payload = await json_body(request)
+    payload = body.payload()
     protected = {"id", "owner_id", "created_at", "scope"}
     updated = {**agent, **{k: v for k, v in payload.items() if k not in protected}}
     new_name = str(updated.get("name") or "").strip()
@@ -162,8 +170,7 @@ async def admin_list_skills(_: str = Depends(require_admin)) -> list[dict[str, A
     from app.storage.skill_storage import SkillStorage
 
     async with open_db() as conn:
-        user_rows = await conn.fetchall("SELECT id, username FROM users")
-    username_map = {r[0]: r[1] for r in user_rows}
+        username_map = await _username_map(conn)
     items = await SkillStorage(SKILLS_DIR).list("all")
     for item in items:
         item["owner_username"] = username_map.get(
@@ -195,8 +202,7 @@ async def admin_list_prompts(_: str = Depends(require_admin)) -> list[dict[str, 
     from app.storage.prompt_storage import PromptStorage
 
     async with open_db() as conn:
-        user_rows = await conn.fetchall("SELECT id, username FROM users")
-    username_map = {r[0]: r[1] for r in user_rows}
+        username_map = await _username_map(conn)
     items = await PromptStorage().list("all")
     for item in items:
         item["owner_username"] = username_map.get(
@@ -227,8 +233,7 @@ async def admin_list_tools(_: str = Depends(require_admin)) -> list[dict[str, An
     from app.storage.tool_storage import ToolStorage
 
     async with open_db() as conn:
-        user_rows = await conn.fetchall("SELECT id, username FROM users")
-    username_map = {r[0]: r[1] for r in user_rows}
+        username_map = await _username_map(conn)
     items = await ToolStorage().list("all")
     for item in items:
         item["owner_username"] = username_map.get(
@@ -264,8 +269,7 @@ async def admin_list_memory(_: str = Depends(require_admin)) -> list[dict[str, A
     globalmente) pueda listar/enlazar/borrar cada uno sin ambigüedad, el
     "id" que se expone aquí es "{owner_id}::{filename}"."""
     async with open_db() as conn:
-        user_rows = await conn.fetchall("SELECT id, username FROM users")
-        username_map = {r[0]: r[1] for r in user_rows}
+        username_map = await _username_map(conn)
         rows = await conn.fetchall(
             "SELECT id, owner_id, content, updated_at FROM memory_files "
             "ORDER BY updated_at DESC"
@@ -307,8 +311,7 @@ async def admin_list_knowledge(_: str = Depends(require_admin)) -> list[dict[str
     from app.storage.knowledge import KnowledgeStorage
 
     async with open_db() as conn:
-        user_rows = await conn.fetchall("SELECT id, username FROM users")
-    username_map = {r[0]: r[1] for r in user_rows}
+        username_map = await _username_map(conn)
     items = await KnowledgeStorage().list(owner_id=None)
     for item in items:
         item["owner_username"] = username_map.get(
@@ -335,8 +338,7 @@ async def admin_delete_knowledge(
 async def admin_list_workflows(_: str = Depends(require_admin)) -> list[dict[str, Any]]:
     items = await _workflows.list_all()
     async with open_db() as conn:
-        user_rows = await conn.fetchall("SELECT id, username FROM users")
-    username_map = {r[0]: r[1] for r in user_rows}
+        username_map = await _username_map(conn)
     for item in items:
         item["owner_username"] = username_map.get(
             item.get("owner_id", ""), item.get("owner_id", "")
@@ -366,8 +368,7 @@ async def admin_list_llm_orchestrations(
 ) -> list[dict[str, Any]]:
     items = await _llm_orchestrations.list_all()
     async with open_db() as conn:
-        user_rows = await conn.fetchall("SELECT id, username FROM users")
-    username_map = {row[0]: row[1] for row in user_rows}
+        username_map = await _username_map(conn)
     for item in items:
         item["owner_username"] = username_map.get(
             item.get("owner_id", ""), item.get("owner_id", "")
@@ -475,9 +476,9 @@ async def admin_delete_group(
 
 @admin_router.post("/groups/{group_id}/status")
 async def admin_set_group_status(
-    group_id: str, request: Request, _: str = Depends(require_admin)
+    group_id: str, body: StatusBody, _: str = Depends(require_admin)
 ) -> dict[str, Any]:
-    body = await json_body(request)
+    body = body.payload()
     status = str(body.get("status") or "").strip()
     if status not in ("active", "disabled"):
         raise APIError(
@@ -498,7 +499,7 @@ async def admin_set_group_status(
 async def admin_verify_resource(
     resource_type: str,
     resource_id: str,
-    request: Request,
+    body: VerificationBody,
     _: str = Depends(require_admin),
 ) -> dict[str, Any]:
     _valid_types = ("agent", "skill", "knowledge", "prompt", "tool")
@@ -509,7 +510,7 @@ async def admin_verify_resource(
             f"resource_type debe ser uno de {_valid_types}",
             extra={"field": "resource_type"},
         )
-    body = await json_body(request)
+    body = body.payload()
     verified_val = bool(body.get("verified", False))
     db_val = 1 if verified_val else 0
 
@@ -537,7 +538,7 @@ async def admin_verify_resource(
 async def admin_set_resource_owner(
     resource_type: str,
     resource_id: str,
-    request: Request,
+    body: ResourceOwnerBody,
     _: str = Depends(require_admin),
 ) -> dict[str, Any]:
     """Reasigna el propietario de un recurso a otro usuario existente."""
@@ -558,7 +559,7 @@ async def admin_set_resource_owner(
             f"resource_type debe ser uno de {list(table_map)}",
             extra={"field": "resource_type"},
         )
-    body = await json_body(request)
+    body = body.payload()
     new_owner = str(body.get("username") or body.get("owner_id") or "").strip().lower()
     if not new_owner:
         raise APIError(

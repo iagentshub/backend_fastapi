@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import Callable
 from typing import Any
 
+from app.services.workflow_errors import workflow_error_event
 from app.services.workflow_runner import run_workflow
 from app.storage.workflow_runs import WorkflowRunStorage
 from app.utils import flog
@@ -92,11 +93,10 @@ async def _drive(
         )
         raise
     except Exception as exc:
-        message = str(exc) or exc.__class__.__name__
+        event = workflow_error_event(exc, context="workflow-run")
+        message = str(event["message"])
         try:
-            await _storage.append_event(
-                run_id, {"type": "error", "message": message}
-            )
+            await _storage.append_event(run_id, event)
             await _storage.set_status(run_id, "failed", error=message)
         except Exception as persist_exc:
             flog.error(

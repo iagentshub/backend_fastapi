@@ -120,9 +120,9 @@ def _send_smtp(to: str, subject: str, html: str) -> None:
                 server.login(SMTP_USER, SMTP_PASS)
             server.sendmail(msg["From"], [to], msg.as_string())
             server.quit()
-            flog.ok(f"[email] Enviado a {to}: {subject}")
+            flog.ok("[email] Mensaje enviado")
         except Exception as exc:
-            flog.warning(f"[email] Error al enviar a {to}: {exc}")
+            flog.warning(f"[email] Error SMTP: {type(exc).__name__}")
 
     _SMTP_EXECUTOR.submit(_send)
 
@@ -203,7 +203,7 @@ def send_account_status_email(
 ) -> None:
     if not _smtp_available():
         status = "reactivada" if is_active else "suspendida"
-        flog.info(f"[email] SMTP no configurado; cuenta {status}: {email}")
+        flog.info(f"[email] SMTP no configurado; cambio de cuenta={status}")
         return
     t = _textos("reactivada" if is_active else "suspendida", lang)
     html = _build_email_html(

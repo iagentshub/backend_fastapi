@@ -4,9 +4,10 @@ No mueve ni copia el recurso: solo registra que ese group puede usarlo. El
 dueño (owner_id) no cambia — sirve sobre todo para conexiones (credenciales),
 donde duplicar el secreto sería un riesgo de seguridad.
 """
+
 from __future__ import annotations
 
-from typing import TYPE_CHECKING, List, Optional
+from typing import TYPE_CHECKING, Dict, List, Optional
 
 from app.storage.db import IS_PG, open_db
 from app.utils import now_iso as _now
@@ -69,6 +70,24 @@ class GroupShareStorage:
                 (group_id, resource_type),
             )
             return [r[0] for r in rows]
+
+    async def get_user_shared_resource_groups(
+        self, username: str, resource_type: str
+    ) -> Dict[str, List[str]]:
+        """Mapa recurso→grupos accesibles en una única consulta por usuario."""
+        async with open_db() as conn:
+            rows = await conn.fetchall(
+                "SELECT s.resource_id, s.group_id "
+                "FROM resource_group_shares s "
+                "JOIN group_members m ON m.group_id = s.group_id "
+                "JOIN groups g ON g.id = s.group_id "
+                "WHERE m.username = ? AND s.resource_type = ? AND g.is_active = 1",
+                (username, resource_type),
+            )
+        result: Dict[str, List[str]] = {}
+        for resource_id, group_id in rows:
+            result.setdefault(str(resource_id), []).append(str(group_id))
+        return result
 
     async def is_accessible(
         self,

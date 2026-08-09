@@ -3,6 +3,7 @@
 Cubre: hub-sync, import-models, sesiones guest, ownership personal, test-all con
 filtro de ids, expansión Ollama, y ramas de error no cubiertas en otros tests.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -46,6 +47,7 @@ def _create_conn(client, payload: dict) -> dict:
 
 # ── 1. Tipo inválido → 422 ────────────────────────────────────────────────────
 
+
 def test_save_connection_invalid_type_returns_422(client):
     _setup_user(client, "invtype_u1")
     r = client.post(
@@ -57,11 +59,13 @@ def test_save_connection_invalid_type_returns_422(client):
 
 # ── 2. Las conexiones nuevas siempre son personales ──────────────────────────
 
+
 def test_save_connection_in_team_group_is_still_personal(client):
     username = _setup_user(client, "personal_u1")
     group = client.post("/api/groups", json={"name": "Equipo personal"}).json()
 
     from app.auth.auth import create_token, get_user_by_username
+
     client.cookies.set("ga_token", create_token(username, group_id=group["id"]))
     r = client.post("/api/connections", json={**_CONN_OPENAI, "scope": "group"})
     assert r.status_code == 200
@@ -78,9 +82,7 @@ def test_edit_legacy_group_connection_preserves_owner_and_id(client):
     from app.auth.auth import create_token
     from app.storage.connection_storage import ConnectionStorage
 
-    legacy = asyncio.run(
-        ConnectionStorage().save(_CONN_OPENAI, owner_id=group["id"])
-    )
+    legacy = asyncio.run(ConnectionStorage().save(_CONN_OPENAI, owner_id=group["id"]))
     client.cookies.set("ga_token", create_token(username, group_id=group["id"]))
 
     r = client.post(
@@ -95,6 +97,7 @@ def test_edit_legacy_group_connection_preserves_owner_and_id(client):
 
 
 # ── 3. Sesión guest — save / get / delete / test ─────────────────────────────
+
 
 def test_guest_save_connection(client):
     """Un id fabricado por el cliente se ignora: el servidor genera el id."""
@@ -156,6 +159,7 @@ def test_guest_test_connection(client):
 
 # ── 4. test-all con filtro de IDs ─────────────────────────────────────────────
 
+
 def test_test_all_with_ids_filter(admin_client):
     """ids=[...] en test-all filtra qué conexiones se testean."""
     c1 = _create_conn(admin_client, _CONN_OPENAI)
@@ -169,9 +173,7 @@ def test_test_all_with_ids_filter(admin_client):
     mock_result.detail = ""
 
     with patch("app.connections.openai.OpenAIProvider.test", return_value=mock_result):
-        r = admin_client.post(
-            "/api/connections/test-all", json={"ids": [c1["id"]]}
-        )
+        r = admin_client.post("/api/connections/test-all", json={"ids": [c1["id"]]})
 
     assert r.status_code == 200
     returned_ids = [item["id"] for item in r.json()]
@@ -180,6 +182,7 @@ def test_test_all_with_ids_filter(admin_client):
 
 
 # ── 5. import_models ──────────────────────────────────────────────────────────
+
 
 def test_import_models_not_found(admin_client):
     r = admin_client.post("/api/connections/doesnotexist123/import-models")
@@ -196,7 +199,7 @@ def test_import_models_unsupported_type_returns_400(admin_client):
 def test_import_models_no_models_returns_502(admin_client):
     created = _create_conn(admin_client, _CONN_OPENAI)
     with patch(
-        "app.api.routes.accounts._fetch_models",
+        "app.api.routes.connection_sync.fetch_provider_models",
         new_callable=AsyncMock,
         return_value=[],
     ):
@@ -208,7 +211,7 @@ def test_import_models_creates_connections(admin_client):
     created = _create_conn(admin_client, _CONN_OPENAI)
     models = ["gpt-4o", "gpt-4-turbo"]
     with patch(
-        "app.api.routes.accounts._fetch_models",
+        "app.api.routes.connection_sync.fetch_provider_models",
         new_callable=AsyncMock,
         return_value=models,
     ):
@@ -225,7 +228,7 @@ def test_import_models_updates_on_second_call(admin_client):
     created = _create_conn(admin_client, _CONN_OPENAI)
     conn_id = created["id"]
     with patch(
-        "app.api.routes.accounts._fetch_models",
+        "app.api.routes.connection_sync.fetch_provider_models",
         new_callable=AsyncMock,
         return_value=["gpt-4o"],
     ):
@@ -238,6 +241,7 @@ def test_import_models_updates_on_second_call(admin_client):
 
 
 # ── 6. hub_sync ───────────────────────────────────────────────────────────────
+
 
 def test_hub_sync_connection_not_found(admin_client):
     r = admin_client.post("/api/connections/ghost-hub-id/hub-sync")
@@ -264,17 +268,11 @@ def test_hub_sync_success_empty_hub(admin_client):
     """Hub vacío (listas vacías) devuelve ok=True y errors=[]."""
     created = _create_conn(admin_client, _CONN_IAGENTSHUB)
 
-    mock_response = MagicMock()
-    mock_response.raise_for_status = MagicMock()
-    mock_response.json = MagicMock(return_value=[])
+    mock_get = AsyncMock(return_value=[])
 
-    mock_http = AsyncMock()
-    mock_http.__aenter__ = AsyncMock(return_value=mock_http)
-    mock_http.__aexit__ = AsyncMock(return_value=False)
-    mock_http.get = AsyncMock(return_value=mock_response)
-
-    with patch("app.connections.iagentshub._login", return_value="fake-token"), patch(
-        "httpx.AsyncClient", return_value=mock_http
+    with (
+        patch("app.connections.iagentshub._login", return_value="fake-token"),
+        patch("app.services.hub_sync._get_remote_json", new=mock_get),
     ):
         r = admin_client.post(f"/api/connections/{created['id']}/hub-sync")
 
@@ -289,35 +287,20 @@ def test_hub_sync_success_empty_hub(admin_client):
 def test_hub_sync_reports_each_knowledge_save_failure(admin_client):
     created = _create_conn(admin_client, _CONN_IAGENTSHUB)
 
-    empty_response = MagicMock()
-    empty_response.raise_for_status = MagicMock()
-    empty_response.json = MagicMock(return_value=[])
-    knowledge_response = MagicMock()
-    knowledge_response.raise_for_status = MagicMock()
-    knowledge_response.json = MagicMock(
-        return_value=[{"id": "doc-fallido", "title": "Documento"}]
-    )
-
-    mock_http = AsyncMock()
-    mock_http.__aenter__ = AsyncMock(return_value=mock_http)
-    mock_http.__aexit__ = AsyncMock(return_value=False)
-    mock_http.get = AsyncMock(
-        side_effect=lambda url, **kwargs: (
-            knowledge_response if url.endswith("/api/knowledge") else empty_response
-        )
-    )
+    async def mock_get(base_url, path, headers):
+        if path == "/api/knowledge":
+            return [{"id": "doc-fallido", "title": "Documento"}]
+        return []
 
     with (
         patch("app.connections.iagentshub._login", return_value="fake-token"),
-        patch("httpx.AsyncClient", return_value=mock_http),
+        patch("app.services.hub_sync._get_remote_json", side_effect=mock_get),
         patch(
-            "app.api.routes.connections._know_storage.save",
+            "app.services.hub_sync._know_storage.save",
             new=AsyncMock(side_effect=RuntimeError("escritura fallida")),
         ),
     ):
-        response = admin_client.post(
-            f"/api/connections/{created['id']}/hub-sync"
-        )
+        response = admin_client.post(f"/api/connections/{created['id']}/hub-sync")
 
     assert response.status_code == 200
     data = response.json()
@@ -326,6 +309,7 @@ def test_hub_sync_reports_each_knowledge_save_failure(admin_client):
 
 
 # ── 7. Expansión Ollama en list_connections ───────────────────────────────────
+
 
 def test_list_connections_expands_ollama_base(client):
     """Conexión Ollama sin modelo genera entradas por modelo descubierto."""

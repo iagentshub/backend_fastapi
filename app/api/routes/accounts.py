@@ -5,19 +5,19 @@ from __future__ import annotations
 import asyncio
 from typing import Any, Dict, List
 
-import httpx
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends
 
 from app.api.routes.auth import require_auth
 from app.config.data import AGENTS_DIR, SKILLS_DIR
 from app.errors import APIError
 from app.middleware.ratelimit import RateLimiter
+from app.models.request_bodies import AccountBody, AccountSyncBody, DeviceCodeBody
+from app.services.provider_models import fetch_provider_models as _fetch_models
 from app.storage.accounts import AccountStorage, _mask
 from app.storage.agent_storage import AgentStorage
 from app.storage.connection_storage import ConnectionStorage
 from app.storage.skill_storage import SkillStorage
 from app.utils import now_iso as _now
-from app.utils.net import json_body
 
 router = APIRouter(prefix="/api/accounts", tags=["accounts"])
 
@@ -38,7 +38,15 @@ async def _owner(user: str) -> str:
 _agent_storage = AgentStorage(AGENTS_DIR)
 _skill_storage = SkillStorage(SKILLS_DIR)
 
-_PROVIDERS = ["anthropic", "openai", "github", "ollama", "nvidia", "google", "iagentshub"]
+_PROVIDERS = [
+    "anthropic",
+    "openai",
+    "github",
+    "ollama",
+    "nvidia",
+    "google",
+    "iagentshub",
+]
 _PROVIDER_LABELS = {
     "anthropic": "Anthropic",
     "openai": "OpenAI",
@@ -61,95 +69,8 @@ _PROVIDER_TYPE_IDS: dict[str, str] = {
 # iAgents Hub no encaja en el modelo "api_key -> lista de modelos -> una
 # Connection por modelo": es una cuenta con url+usuario+contraseña cuyo
 # "sync" trae agentes/skills/conocimiento/conexiones de otra instancia
-# (reutiliza `_run_hub_sync` de connections.py), no una lista de LLMs.
+# (reutiliza el servicio `run_hub_sync`), no una lista de LLMs.
 _HUB_PROVIDER = "iagentshub"
-
-
-async def _fetch_models(provider: str, api_key: str, host: str = "") -> List[str]:
-    """Llama al proveedor y devuelve lista de model IDs."""
-    try:
-        if provider == "anthropic":
-            async with httpx.AsyncClient(timeout=10) as client:
-                r = await client.get(
-                    "https://api.anthropic.com/v1/models",
-                    headers={"x-api-key": api_key, "anthropic-version": "2023-06-01"},
-                )
-            r.raise_for_status()
-            data = r.json()
-            return [m["id"] for m in data.get("data", [])]
-
-        if provider == "openai":
-            async with httpx.AsyncClient(timeout=10) as client:
-                r = await client.get(
-                    "https://api.openai.com/v1/models",
-                    headers={"Authorization": f"Bearer {api_key}"},
-                )
-            r.raise_for_status()
-            data = r.json()
-            return sorted(m["id"] for m in data.get("data", []))
-
-        if provider == "github":
-            async with httpx.AsyncClient(timeout=10) as client:
-                r = await client.get(
-                    "https://models.inference.ai.azure.com/models",
-                    headers={"Authorization": f"Bearer {api_key}"},
-                )
-            r.raise_for_status()
-            data = r.json()
-            items = data if isinstance(data, list) else data.get("data", [])
-            return [
-                m.get("id") or m.get("name", "")
-                for m in items
-                if m.get("id") or m.get("name")
-            ]
-
-        if provider == "ollama":
-            base = (host or "http://localhost:11434").rstrip("/")
-            from app.config.security import assert_safe_url as _assu
-            _assu(base)  # C3: prevenir SSRF via hosts almacenados en cuentas
-            headers = {"Authorization": f"Bearer {api_key}"} if api_key else {}
-            async with httpx.AsyncClient(timeout=10) as client:
-                r = await client.get(f"{base}/api/tags", headers=headers)
-            r.raise_for_status()
-            data = r.json()
-            return [m["name"] for m in data.get("models", [])]
-
-        if provider == "nvidia":
-            async with httpx.AsyncClient(timeout=10) as client:
-                r = await client.get(
-                    "https://integrate.api.nvidia.com/v1/models",
-                    headers={"Authorization": f"Bearer {api_key}"},
-                )
-            r.raise_for_status()
-            data = r.json()
-            return [m["id"] for m in data.get("data", [])]
-
-        if provider == "google":
-            async with httpx.AsyncClient(timeout=10) as client:
-                r = await client.get(
-                    "https://generativelanguage.googleapis.com/v1beta/models",
-                    params={"key": api_key},
-                )
-            r.raise_for_status()
-            data = r.json()
-            return [m["name"].split("/")[-1] for m in data.get("models", [])]
-
-    except httpx.HTTPStatusError as exc:
-        raise APIError(
-            exc.response.status_code, "upstream_error", str(exc)
-        ) from exc
-    except httpx.ConnectError:
-        label = _PROVIDER_LABELS.get(provider, provider)
-        raise APIError(
-            502,
-            "upstream_error",
-            f"No se puede conectar con {label}. Comprueba que el servicio está activo y la URL es correcta.",
-            extra={"provider": provider},
-        ) from None
-    except Exception as exc:
-        raise APIError(502, "upstream_error", str(exc)) from exc
-
-    return []
 
 
 async def _test_hub_login(url: str, username: str, password: str) -> Dict[str, Any]:
@@ -173,10 +94,10 @@ async def _sync_hub_account(
 ) -> Dict[str, Any]:
     """Sincroniza una cuenta de proveedor `iagentshub`: crea/actualiza una
     Connection-espejo tipo `iagentshub` (misma que usaría el usuario desde
-    Connections) y reutiliza `_run_hub_sync` para traer agentes/skills/
+    Connections) y reutiliza `run_hub_sync` para traer agentes/skills/
     conocimiento/conexiones — nada que ver con la selección de modelos que
     usan el resto de proveedores."""
-    from app.api.routes.connections import _run_hub_sync
+    from app.services.hub_sync import run_hub_sync
 
     label = account.get("name") or _PROVIDER_LABELS[_HUB_PROVIDER]
     existing_conns = await _conn_storage.list(owner)
@@ -201,7 +122,7 @@ async def _sync_hub_account(
     saved_conn = await _conn_storage.save(conn_data, owner_id=owner)
     conn_data["id"] = saved_conn["id"]
 
-    hub_result = await _run_hub_sync(conn_data["id"], conn_data, owner)
+    hub_result = await run_hub_sync(conn_data["id"], conn_data, owner)
 
     account["id"] = account_id
     account["last_synced_at"] = _now()
@@ -231,10 +152,10 @@ async def list_accounts(user: str = Depends(require_auth)) -> List[Dict[str, Any
 
 @router.post("")
 async def link_account(
-    request: Request, user: str = Depends(require_auth)
+    body: AccountBody, user: str = Depends(require_auth)
 ) -> Dict[str, Any]:
     """Vincula una cuenta nueva. No hay límite de una por `provider`."""
-    body = await json_body(request)
+    body = body.payload()
     provider = str(body.get("provider") or "").strip()
     if provider not in _PROVIDERS:
         raise APIError(
@@ -257,7 +178,9 @@ async def link_account(
                 extra={"field": "url"},
             )
     elif not api_key and provider != "ollama":
-        raise APIError(422, "invalid_field", "api_key requerida", extra={"field": "api_key"})
+        raise APIError(
+            422, "invalid_field", "api_key requerida", extra={"field": "api_key"}
+        )
     data: Dict[str, Any] = {"provider": provider, "api_key": api_key}
     if host:
         data["host"] = host
@@ -272,10 +195,10 @@ async def link_account(
 
 @router.post("/test")
 async def test_new_account(
-    request: Request, _: str = Depends(require_auth)
+    body: AccountBody, _: str = Depends(require_auth)
 ) -> Dict[str, Any]:
     """Prueba credenciales nuevas, antes de vincular la cuenta."""
-    body = await json_body(request)
+    body = body.payload()
     provider = str(body.get("provider") or "").strip()
     if provider not in _PROVIDERS:
         raise APIError(
@@ -310,7 +233,7 @@ async def github_device_code(
 
 @router.post("/github/device-token")
 async def github_device_token(
-    request: Request,
+    body: DeviceCodeBody,
     _: str = Depends(require_auth),
     _rl: None = Depends(_device_flow_limiter),
 ) -> Dict[str, Any]:
@@ -318,24 +241,29 @@ async def github_device_token(
     `/github/device-code`; devuelve el access_token en cuanto esté listo."""
     from app.auth.github_oauth import poll_device_token
 
-    body = await json_body(request)
+    body = body.payload()
     device_code = str(body.get("device_code") or "").strip()
     if not device_code:
         raise APIError(
-            422, "invalid_field", "device_code requerido", extra={"field": "device_code"}
+            422,
+            "invalid_field",
+            "device_code requerido",
+            extra={"field": "device_code"},
         )
     return await poll_device_token(device_code)
 
 
 @router.put("/{account_id}")
 async def update_account(
-    account_id: str, request: Request, user: str = Depends(require_auth)
+    account_id: str, body: AccountBody, user: str = Depends(require_auth)
 ) -> Dict[str, Any]:
     owner = await _owner(user)
     existing = await _storage.get(account_id, owner)
     if not existing:
-        raise APIError(404, "not_found", "Cuenta no vinculada", extra={"resource": "account"})
-    body = await json_body(request)
+        raise APIError(
+            404, "not_found", "Cuenta no vinculada", extra={"resource": "account"}
+        )
+    body = body.payload()
     api_key = str(body.get("api_key") or "").strip()
     host = str(body.get("host") or "").strip()
     url = str(body.get("url") or "").strip()
@@ -362,7 +290,9 @@ async def unlink_account(
 ) -> Dict[str, Any]:
     owner = await _owner(user)
     if not await _storage.delete(account_id, owner):
-        raise APIError(404, "not_found", "Cuenta no vinculada", extra={"resource": "account"})
+        raise APIError(
+            404, "not_found", "Cuenta no vinculada", extra={"resource": "account"}
+        )
     # Desvincular borra también las conexiones que esa cuenta había
     # sincronizado — dejarlas huérfanas (sin cuenta que las gestione, pero
     # con credenciales vigentes) es más confuso que útil.
@@ -376,32 +306,39 @@ async def unlink_account(
 
 @router.post("/{account_id}/test")
 async def test_account(
-    account_id: str, request: Request, user: str = Depends(require_auth)
+    account_id: str,
+    body: AccountBody | None = None,
+    user: str = Depends(require_auth),
 ) -> Dict[str, Any]:
     """Previsualiza modelos de una cuenta ya vinculada, usando sus
     credenciales guardadas (o las que se manden explícitamente en el body,
     para probar un cambio de api_key/host antes de guardarlo)."""
     account = await _storage.get(account_id, await _owner(user))
     if not account:
-        raise APIError(404, "not_found", "Cuenta no vinculada", extra={"resource": "account"})
-    try:
-        body = await json_body(request)
-    except Exception:
-        body = {}
+        raise APIError(
+            404, "not_found", "Cuenta no vinculada", extra={"resource": "account"}
+        )
+    payload = body.payload() if body else {}
     if account["provider"] == _HUB_PROVIDER:
-        url = str(body.get("url") or "").strip() or account.get("url", "")
-        username = str(body.get("username") or "").strip() or account.get("username", "")
-        api_key = str(body.get("api_key") or "").strip() or account.get("api_key", "")
+        url = str(payload.get("url") or "").strip() or account.get("url", "")
+        username = str(payload.get("username") or "").strip() or account.get(
+            "username", ""
+        )
+        api_key = str(payload.get("api_key") or "").strip() or account.get(
+            "api_key", ""
+        )
         return await _test_hub_login(url, username, api_key)
-    api_key = str(body.get("api_key") or "").strip() or account.get("api_key", "")
-    host = str(body.get("host") or "").strip() or account.get("host", "")
+    api_key = str(payload.get("api_key") or "").strip() or account.get("api_key", "")
+    host = str(payload.get("host") or "").strip() or account.get("host", "")
     models = await _fetch_models(account["provider"], api_key, host)
     return {"ok": True, "models": models, "models_count": len(models)}
 
 
 @router.post("/{account_id}/sync")
 async def sync_account(
-    account_id: str, request: Request, user: str = Depends(require_auth)
+    account_id: str,
+    body: AccountSyncBody | None = None,
+    user: str = Depends(require_auth),
 ) -> Dict[str, Any]:
     """Sincroniza modelos de la cuenta.
 
@@ -417,17 +354,16 @@ async def sync_account(
     owner = await _owner(user)
     account = await _storage.get(account_id, owner)
     if not account:
-        raise APIError(404, "not_found", "Cuenta no vinculada", extra={"resource": "account"})
+        raise APIError(
+            404, "not_found", "Cuenta no vinculada", extra={"resource": "account"}
+        )
 
     provider = account["provider"]
     if provider == _HUB_PROVIDER:
         return await _sync_hub_account(account_id, account, owner)
 
-    try:
-        body = await json_body(request)
-    except Exception:
-        body = {}
-    selected = body.get("models") if isinstance(body, dict) else None
+    payload = body.payload() if body else {}
+    selected = payload.get("models")
     if not isinstance(selected, list):
         selected = None
 

@@ -200,6 +200,7 @@ async def stream_orchestrated_chat(
             yield _sse(
                 {
                     "type": "error",
+                    "code": "upstream_error",
                     "message": "No se pudo decidir qué conexión LLM debía ejecutar la tarea.",
                     "routing": {
                         "orchestration_id": orchestration.get("id"),
@@ -264,6 +265,7 @@ async def stream_orchestrated_chat(
         attempted.append(connection_id)
         emitted = False
         terminal_error: str | None = None
+        terminal_error_code = "upstream_error"
         completed = False
         try:
             async for frame in stream_chat(
@@ -286,6 +288,7 @@ async def stream_orchestrated_chat(
                     yield frame
                 elif event and event.get("type") == "error":
                     terminal_error = str(event.get("message") or "Error del proveedor")
+                    terminal_error_code = str(event.get("code") or "upstream_error")
                     if emitted:
                         yield frame
                         return
@@ -311,9 +314,20 @@ async def stream_orchestrated_chat(
                 elif not event:
                     yield frame
         except Exception as exc:
-            terminal_error = str(exc) or type(exc).__name__
+            terminal_error = "Error interno al ejecutar la conexión LLM."
+            terminal_error_code = "internal_error"
+            flog.error(
+                f"[llm-routing] Excepción no controlada: {type(exc).__name__}: {exc}",
+                exc_info=True,
+            )
             if emitted:
-                yield _sse({"type": "error", "message": terminal_error})
+                yield _sse(
+                    {
+                        "type": "error",
+                        "code": terminal_error_code,
+                        "message": terminal_error,
+                    }
+                )
                 return
         if completed:
             return
@@ -324,6 +338,7 @@ async def stream_orchestrated_chat(
     yield _sse(
         {
             "type": "error",
+            "code": "upstream_error",
             "message": "No hay ninguna conexión LLM disponible en la orquestación.",
             "attempted_connection_ids": attempted,
         }

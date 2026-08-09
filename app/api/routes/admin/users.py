@@ -19,13 +19,13 @@ from app.auth.auth import (
     hash_password_async,
     list_users,
 )
-from app.config.session import SECURE_COOKIES
+from app.config.session import JWT_MAX_AGE_SECONDS, SECURE_COOKIES
 from app.errors import APIError
+from app.models.request_bodies import AdminUserCreateBody, AdminUserPatchBody
 from app.services.email import send_account_status_email
 from app.storage.db import open_db
 from app.utils import flog
 from app.utils.generators import generate_id
-from app.utils.net import json_body
 from app.utils.validation import is_valid_email, is_valid_username, normalize_username
 
 
@@ -71,6 +71,7 @@ async def admin_list_users(
 async def admin_patch_user(
     username: str,
     request: Request,
+    body: AdminUserPatchBody,
     admin: str = Depends(require_admin),
 ) -> dict[str, Any]:
     target = await get_user_by_username(username)
@@ -78,7 +79,7 @@ async def admin_patch_user(
         raise APIError(
             400, "cannot_modify_own_account", "No puedes modificar tu propia cuenta"
         )
-    body = await json_body(request)
+    body = body.payload()
     updates: dict[str, Any] = {}
     if "is_active" in body:
         updates["is_active"] = 1 if body["is_active"] else 0
@@ -118,7 +119,7 @@ async def admin_patch_user(
 
 @admin_router.post("/users")
 async def admin_create_user(
-    request: Request,
+    body: AdminUserCreateBody,
     _: str = Depends(require_admin),
 ) -> dict[str, Any]:
     """Crea un usuario directamente desde el panel de admin.
@@ -128,7 +129,7 @@ async def admin_create_user(
     from datetime import datetime
     from datetime import timezone as _tz
 
-    body = await json_body(request)
+    body = body.payload()
     username = normalize_username(str(body.get("username") or ""))
     email = str(body.get("email") or "").strip().lower()
     password = str(body.get("password") or "").strip()
@@ -260,7 +261,7 @@ async def admin_impersonate(
         httponly=True,
         samesite="lax",
         secure=SECURE_COOKIES,
-        max_age=43200,
+        max_age=JWT_MAX_AGE_SECONDS,
     )
 
     flog.ok(f"[admin] Token de impersonación creado exitosamente para {username!r}")

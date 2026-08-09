@@ -1,4 +1,5 @@
 """Tests fase 1 — perfil social: PUT /me/profile, POST /me/avatar, GET /users/{username}."""
+
 from __future__ import annotations
 
 import io
@@ -8,6 +9,7 @@ def _register_and_login(client, username="socialuser", password="pass1234"):
     import asyncio
 
     from app.auth.auth import create_token, register_user
+
     asyncio.run(register_user(username, password, email=f"{username}@example.com"))
     client.cookies.set("ga_token", create_token(username))
     return username
@@ -15,13 +17,16 @@ def _register_and_login(client, username="socialuser", password="pass1234"):
 
 def test_actualizar_perfil_campos_basicos(client):
     _register_and_login(client)
-    r = client.put("/api/auth/me/profile", json={
-        "bio": "Desarrollador de agentes IA",
-        "languages": ["es", "en"],
-        "is_email_public": True,
-        "github": "https://github.com/myghuser",
-        "cv": "# Mi CV\n\nExperiencia en Python.",
-    })
+    r = client.put(
+        "/api/auth/me/profile",
+        json={
+            "bio": "Desarrollador de agentes IA",
+            "languages": ["es", "en"],
+            "is_email_public": True,
+            "github": "https://github.com/myghuser",
+            "cv": "# Mi CV\n\nExperiencia en Python.",
+        },
+    )
     assert r.status_code == 200
     assert r.json()["ok"] is True
     profile = client.get("/api/users/socialuser").json()
@@ -30,11 +35,14 @@ def test_actualizar_perfil_campos_basicos(client):
 
 def test_perfil_publico_devuelve_campos(client):
     _register_and_login(client, "perfiluser")
-    client.put("/api/auth/me/profile", json={
-        "bio": "Bio pública",
-        "languages": ["es"],
-        "github": "https://github.com/perfilgh",
-    })
+    client.put(
+        "/api/auth/me/profile",
+        json={
+            "bio": "Bio pública",
+            "languages": ["es"],
+            "github": "https://github.com/perfilgh",
+        },
+    )
     r = client.get("/api/users/perfiluser")
     assert r.status_code == 200
     data = r.json()
@@ -49,6 +57,7 @@ def test_perfil_publico_requiere_auth(client):
     import asyncio
 
     from app.auth.auth import register_user
+
     asyncio.run(register_user("targetuser", "pass1234", email="target@example.com"))
     r = client.get("/api/users/targetuser")
     assert r.status_code == 401
@@ -92,7 +101,9 @@ def test_github_url_invalida_rechazada(client):
 
 def test_idiomas_invalidos_filtrados(client):
     _register_and_login(client, "languser")
-    client.put("/api/auth/me/profile", json={"languages": ["es", "xx", "klingon", "en"]})
+    client.put(
+        "/api/auth/me/profile", json={"languages": ["es", "xx", "klingon", "en"]}
+    )
     r = client.get("/api/users/languser")
     assert r.status_code == 200
     langs = r.json()["languages"]
@@ -134,6 +145,7 @@ def test_avatar_sin_fichero_devuelve_204(client):
     import asyncio
 
     from app.auth.auth import register_user
+
     asyncio.run(register_user("noavataruser", "pass1234", email="noavatar@example.com"))
     _register_and_login(client, "viewer2")
     r = client.get("/api/users/noavataruser/avatar")
@@ -142,7 +154,7 @@ def test_avatar_sin_fichero_devuelve_204(client):
 
 def test_avatar_10mb_aceptado(client):
     _register_and_login(client, "avatarbig")
-    data = b"x" * (9 * 1024 * 1024)  # 9 MB, bajo el límite de 10 MB
+    data = b"\xff\xd8\xff" + b"x" * (9 * 1024 * 1024 - 3)
     r = client.post(
         "/api/auth/me/avatar",
         files={"avatar": ("big.jpg", io.BytesIO(data), "image/jpeg")},
@@ -150,9 +162,34 @@ def test_avatar_10mb_aceptado(client):
     assert r.status_code == 200
 
 
+def test_avatar_rechaza_extension_valida_con_contenido_arbitrario(client):
+    _register_and_login(client, "avatarspoof")
+    r = client.post(
+        "/api/auth/me/avatar",
+        files={"avatar": ("fake.png", io.BytesIO(b"no es una imagen"), "image/png")},
+    )
+    assert r.status_code == 400
+    assert r.json()["detail"]["code"] == "avatar_format_not_allowed"
+
+
+def test_avatar_webp_se_sirve_con_mime_correcto(client):
+    _register_and_login(client, "avatarwebp")
+    webp = b"RIFF\x04\x00\x00\x00WEBPVP8 "
+    uploaded = client.post(
+        "/api/auth/me/avatar",
+        files={"avatar": ("avatar.webp", io.BytesIO(webp), "image/webp")},
+    )
+    assert uploaded.status_code == 200
+    served = client.get("/api/users/avatarwebp/avatar")
+    assert served.status_code == 200
+    assert served.headers["content-type"] == "image/webp"
+
+
 def test_avatar_mayor_10mb_rechazado_400_no_413(client):
     _register_and_login(client, "avatartoobig")
-    data = b"x" * (10 * 1024 * 1024 + 1024)  # >10 MB, bajo el override de 11 MB del middleware
+    data = b"x" * (
+        10 * 1024 * 1024 + 1024
+    )  # >10 MB, bajo el override de 11 MB del middleware
     r = client.post(
         "/api/auth/me/avatar",
         files={"avatar": ("toobig.jpg", io.BytesIO(data), "image/jpeg")},

@@ -6,6 +6,7 @@ import os
 JWT_SECRET_ENV   = "GAIA_AGENTS_SECRET"
 JWT_ALGORITHM    = "HS256"
 JWT_EXPIRE_HOURS = int(os.getenv("GAIA_JWT_EXPIRE_HOURS", "12"))
+JWT_MAX_AGE_SECONDS = JWT_EXPIRE_HOURS * 60 * 60
 
 JWT_UNSAFE_SECRETS: frozenset[str] = frozenset({
     "",

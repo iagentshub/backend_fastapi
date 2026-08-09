@@ -1,4 +1,5 @@
 """Chat history storage — SQLite/PostgreSQL conversations and messages."""
+
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
@@ -158,3 +159,26 @@ class ChatStorage:
                 (conv_id, conv_id, user_id, limit),
             )
             return [dict(r) for r in rows]
+
+    async def list_memory_messages(
+        self,
+        user_id: str,
+        agent_id: str,
+        exclude_conversation_id: str | None = None,
+        *,
+        limit: int = 200,
+        chars_per_message: int = 2_000,
+    ) -> List[Dict[str, Any]]:
+        """Recuerdos recientes en una consulta, con filas y texto acotados en SQL."""
+        excluded = exclude_conversation_id or ""
+        async with open_db() as conn:
+            rows = await conn.fetchall(
+                "SELECT id, role, content, created_at FROM ("
+                "  SELECT m.id, m.role, SUBSTR(m.content, 1, ?) AS content, m.created_at "
+                "  FROM messages m JOIN conversations c ON c.id = m.conversation_id "
+                "  WHERE c.user_id = ? AND c.agent_id = ? AND c.id != ? "
+                "  ORDER BY m.created_at DESC, m.id DESC LIMIT ?"
+                ") recent ORDER BY created_at ASC, id ASC",
+                (chars_per_message, user_id, agent_id, excluded, limit),
+            )
+            return [dict(row) for row in rows]

@@ -72,16 +72,14 @@ async def explore(
     tag: Optional[str] = None,
     label: Optional[List[str]] = Query(None),
     language: Optional[List[str]] = Query(None),
-    limit: int = 40,
-    offset: int = 0,
+    limit: int = Query(40, ge=1, le=100),
+    offset: int = Query(0, ge=0),
     response: Response = None,  # type: ignore[assignment]
     # Abierto al invitado: solo devuelve filas is_public y el usuario únicamente
     # sirve para excluir lo propio. Es el catálogo público, y la superficie que
     # tiene sentido enseñar en el demo.
     username: str = Depends(require_session),
 ) -> List[Dict[str, Any]]:
-    limit = min(limit, 100)
-
     async with open_db() as conn:
         conditions: List[str] = ["is_public = ?", "owner != ?"]
         params: List[Any] = [_PUBLIC_VAL, username]
@@ -500,14 +498,12 @@ async def follow_status(
 
 @router.get("/api/feed")
 async def get_feed(
-    limit: int = 40,
-    offset: int = 0,
+    limit: int = Query(40, ge=1, le=100),
+    offset: int = Query(0, ge=0),
     response: Response = None,  # type: ignore[assignment]
     type: Optional[str] = None,
     username: str = Depends(require_auth),
 ) -> List[Dict[str, Any]]:
-    limit = min(limit, 100)
-
     async with open_db() as conn:
         conditions: List[str] = [
             "owner IN (SELECT following FROM user_follows WHERE follower = ?)",

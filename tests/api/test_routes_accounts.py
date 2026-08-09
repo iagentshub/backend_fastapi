@@ -4,6 +4,7 @@ Varias cuentas pueden compartir `provider` (cada una con su propio `id`) —
 las rutas de mutación/lectura de una cuenta concreta van por id, no por
 provider.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -15,6 +16,7 @@ import httpx
 def _setup_user(client, username="accuser"):
     """Registra un usuario y autentica el client."""
     from app.auth.auth import create_token, register_user
+
     asyncio.run(register_user(username, "pass1234", email=f"{username}@example.com"))
     token = create_token(username)
     client.cookies.set("ga_token", token)
@@ -35,6 +37,7 @@ def _mock_openai_models(*model_ids):
 
 # ── GET /api/accounts ────────────────────────────────────────────────────────
 
+
 def test_list_accounts_empty(client):
     """Sin cuentas vinculadas devuelve una lista vacía."""
     _setup_user(client, "acclist1")
@@ -52,7 +55,9 @@ def test_list_accounts_requires_auth(client):
 def test_list_accounts_shows_linked_after_create(client):
     """Tras crear una cuenta, aparece en la lista sin api_key en claro."""
     _setup_user(client, "acclist2")
-    r_create = client.post("/api/accounts", json={"provider": "openai", "api_key": "sk-test-openai-123456"})
+    r_create = client.post(
+        "/api/accounts", json={"provider": "openai", "api_key": "sk-test-openai-123456"}
+    )
     assert r_create.status_code == 200
 
     r = client.get("/api/accounts")
@@ -69,8 +74,12 @@ def test_list_accounts_shows_linked_after_create(client):
 def test_list_accounts_allows_several_same_provider(client):
     """Dos cuentas OpenAI distintas conviven con ids propios."""
     _setup_user(client, "acclist3")
-    r1 = client.post("/api/accounts", json={"provider": "openai", "api_key": "sk-account-one-123456"})
-    r2 = client.post("/api/accounts", json={"provider": "openai", "api_key": "sk-account-two-123456"})
+    r1 = client.post(
+        "/api/accounts", json={"provider": "openai", "api_key": "sk-account-one-123456"}
+    )
+    r2 = client.post(
+        "/api/accounts", json={"provider": "openai", "api_key": "sk-account-two-123456"}
+    )
     id1, id2 = r1.json()["id"], r2.json()["id"]
     assert id1 != id2
 
@@ -82,10 +91,13 @@ def test_list_accounts_allows_several_same_provider(client):
 
 # ── POST /api/accounts ───────────────────────────────────────────────────────
 
+
 def test_create_account_openai(client):
     """POST /api/accounts crea la cuenta y devuelve api_key enmascarada + id."""
     _setup_user(client, "postacc1")
-    r = client.post("/api/accounts", json={"provider": "openai", "api_key": "sk-test-openai-123456"})
+    r = client.post(
+        "/api/accounts", json={"provider": "openai", "api_key": "sk-test-openai-123456"}
+    )
     assert r.status_code == 200
     data = r.json()
     assert data["provider"] == "openai"
@@ -96,14 +108,19 @@ def test_create_account_openai(client):
 
 def test_create_account_anthropic(client):
     _setup_user(client, "postacc2")
-    r = client.post("/api/accounts", json={"provider": "anthropic", "api_key": "sk-ant-test-key-1234"})
+    r = client.post(
+        "/api/accounts",
+        json={"provider": "anthropic", "api_key": "sk-ant-test-key-1234"},
+    )
     assert r.status_code == 200
     assert r.json()["provider"] == "anthropic"
 
 
 def test_create_account_invalid_provider(client):
     _setup_user(client, "postacc3")
-    r = client.post("/api/accounts", json={"provider": "unsupported_llm", "api_key": "key123"})
+    r = client.post(
+        "/api/accounts", json={"provider": "unsupported_llm", "api_key": "key123"}
+    )
     assert r.status_code == 400
 
 
@@ -115,7 +132,9 @@ def test_create_account_missing_api_key(client):
 
 def test_create_account_ollama_no_key_required(client):
     _setup_user(client, "postacc5")
-    r = client.post("/api/accounts", json={"provider": "ollama", "host": "http://localhost:11434"})
+    r = client.post(
+        "/api/accounts", json={"provider": "ollama", "host": "http://localhost:11434"}
+    )
     assert r.status_code == 200
     assert r.json()["provider"] == "ollama"
 
@@ -126,6 +145,7 @@ def test_create_account_requires_auth(client):
 
 
 # ── PUT /api/accounts/{id} ───────────────────────────────────────────────────
+
 
 def test_update_account(client):
     _setup_user(client, "putacc1")
@@ -151,6 +171,7 @@ def test_update_account_requires_auth(client):
 
 # ── DELETE /api/accounts/{id} ────────────────────────────────────────────────
 
+
 def test_unlink_account(client):
     _setup_user(client, "delacc1")
     account_id = client.post(
@@ -175,8 +196,12 @@ def test_unlink_account_requires_auth(client):
 def test_unlink_account_does_not_affect_sibling(client):
     """Borrar una de dos cuentas OpenAI deja la otra intacta."""
     _setup_user(client, "delacc3")
-    id1 = client.post("/api/accounts", json={"provider": "openai", "api_key": "sk-one-123456"}).json()["id"]
-    id2 = client.post("/api/accounts", json={"provider": "openai", "api_key": "sk-two-123456"}).json()["id"]
+    id1 = client.post(
+        "/api/accounts", json={"provider": "openai", "api_key": "sk-one-123456"}
+    ).json()["id"]
+    id2 = client.post(
+        "/api/accounts", json={"provider": "openai", "api_key": "sk-two-123456"}
+    ).json()["id"]
     client.delete(f"/api/accounts/{id1}")
     remaining = client.get("/api/accounts").json()
     assert {a["id"] for a in remaining} == {id2}
@@ -210,14 +235,23 @@ def test_unlink_account_does_not_delete_sibling_or_manual_connections(client):
     """Desvincular una cuenta solo borra SUS conexiones — ni las de una
     cuenta hermana del mismo proveedor ni una Connection creada a mano."""
     _setup_user(client, "delacc5")
-    id1 = client.post("/api/accounts", json={"provider": "openai", "api_key": "sk-one-123456"}).json()["id"]
-    id2 = client.post("/api/accounts", json={"provider": "openai", "api_key": "sk-two-123456"}).json()["id"]
+    id1 = client.post(
+        "/api/accounts", json={"provider": "openai", "api_key": "sk-one-123456"}
+    ).json()["id"]
+    id2 = client.post(
+        "/api/accounts", json={"provider": "openai", "api_key": "sk-two-123456"}
+    ).json()["id"]
     with patch.object(httpx.AsyncClient, "get", new=_mock_openai_models("gpt-4o")):
         client.post(f"/api/accounts/{id1}/sync")
         client.post(f"/api/accounts/{id2}/sync")
     manual = client.post(
         "/api/connections",
-        json={"type": "openai", "name": "Manual conn", "api_key": "sk-manual", "model": "gpt-4o"},
+        json={
+            "type": "openai",
+            "name": "Manual conn",
+            "api_key": "sk-manual",
+            "model": "gpt-4o",
+        },
     ).json()
 
     r = client.delete(f"/api/accounts/{id1}")
@@ -225,15 +259,20 @@ def test_unlink_account_does_not_delete_sibling_or_manual_connections(client):
     assert r.json()["connections_deleted"] == 1
 
     remaining_ids = {c["id"] for c in client.get("/api/connections/raw").json()}
-    assert any(c["_account_id"] == id2 for c in client.get("/api/connections/raw").json())
+    assert any(
+        c["_account_id"] == id2 for c in client.get("/api/connections/raw").json()
+    )
     assert manual["id"] in remaining_ids
 
 
 # ── POST /api/accounts/test (credenciales nuevas, sin guardar) ──────────────
 
+
 def test_test_new_account_openai_mocked(client):
     _setup_user(client, "testnew1")
-    with patch.object(httpx.AsyncClient, "get", new=_mock_openai_models("gpt-4o", "gpt-3.5-turbo")):
+    with patch.object(
+        httpx.AsyncClient, "get", new=_mock_openai_models("gpt-4o", "gpt-3.5-turbo")
+    ):
         r = client.post(
             "/api/accounts/test",
             json={"provider": "openai", "api_key": "sk-test-openai-123456"},
@@ -246,16 +285,21 @@ def test_test_new_account_openai_mocked(client):
 
 def test_test_new_account_invalid_provider(client):
     _setup_user(client, "testnew2")
-    r = client.post("/api/accounts/test", json={"provider": "invalid_prov", "api_key": "key"})
+    r = client.post(
+        "/api/accounts/test", json={"provider": "invalid_prov", "api_key": "key"}
+    )
     assert r.status_code == 400
 
 
 def test_test_new_account_requires_auth(client):
-    r = client.post("/api/accounts/test", json={"provider": "openai", "api_key": "sk-test"})
+    r = client.post(
+        "/api/accounts/test", json={"provider": "openai", "api_key": "sk-test"}
+    )
     assert r.status_code == 401
 
 
 # ── POST /api/accounts/{id}/test (cuenta ya vinculada) ───────────────────────
+
 
 def test_test_account_uses_stored_credentials(client):
     """POST test con body vacío usa la api_key ya guardada de la cuenta."""
@@ -264,7 +308,9 @@ def test_test_account_uses_stored_credentials(client):
         "/api/accounts", json={"provider": "openai", "api_key": "sk-test-openai-123456"}
     ).json()["id"]
 
-    with patch.object(httpx.AsyncClient, "get", new=_mock_openai_models("gpt-4o", "gpt-3.5-turbo")):
+    with patch.object(
+        httpx.AsyncClient, "get", new=_mock_openai_models("gpt-4o", "gpt-3.5-turbo")
+    ):
         r = client.post(f"/api/accounts/{account_id}/test", json={})
 
     assert r.status_code == 200
@@ -286,6 +332,7 @@ def test_test_account_requires_auth(client):
 
 # ── POST /api/accounts/{id}/sync ─────────────────────────────────────────────
 
+
 def test_sync_account_not_found(client):
     _setup_user(client, "syncacc1")
     r = client.post("/api/accounts/does-not-exist/sync")
@@ -299,7 +346,9 @@ def test_sync_account_openai_mocked(client):
         "/api/accounts", json={"provider": "openai", "api_key": "sk-test-openai-123456"}
     ).json()["id"]
 
-    with patch.object(httpx.AsyncClient, "get", new=_mock_openai_models("gpt-4o", "gpt-3.5-turbo")):
+    with patch.object(
+        httpx.AsyncClient, "get", new=_mock_openai_models("gpt-4o", "gpt-3.5-turbo")
+    ):
         r = client.post(f"/api/accounts/{account_id}/sync")
 
     assert r.status_code == 200
@@ -317,7 +366,9 @@ def test_sync_account_with_selected_models(client):
     ).json()["id"]
 
     with patch.object(
-        httpx.AsyncClient, "get", new=_mock_openai_models("gpt-4o", "gpt-3.5-turbo", "gpt-4o-mini")
+        httpx.AsyncClient,
+        "get",
+        new=_mock_openai_models("gpt-4o", "gpt-3.5-turbo", "gpt-4o-mini"),
     ):
         r = client.post(f"/api/accounts/{account_id}/sync", json={"models": ["gpt-4o"]})
 
@@ -336,8 +387,12 @@ def test_sync_two_accounts_same_provider_do_not_clash(client):
     """Sincronizar dos cuentas OpenAI con el mismo modelo crea dos conexiones
     distintas, una por cuenta — no se pisan entre sí."""
     _setup_user(client, "syncacc5")
-    id1 = client.post("/api/accounts", json={"provider": "openai", "api_key": "sk-acc-one-123456"}).json()["id"]
-    id2 = client.post("/api/accounts", json={"provider": "openai", "api_key": "sk-acc-two-123456"}).json()["id"]
+    id1 = client.post(
+        "/api/accounts", json={"provider": "openai", "api_key": "sk-acc-one-123456"}
+    ).json()["id"]
+    id2 = client.post(
+        "/api/accounts", json={"provider": "openai", "api_key": "sk-acc-two-123456"}
+    ).json()["id"]
 
     with patch.object(httpx.AsyncClient, "get", new=_mock_openai_models("gpt-4o")):
         client.post(f"/api/accounts/{id1}/sync")
@@ -366,9 +421,7 @@ def test_sync_account_deselecting_deletes_connection(client):
             f"/api/accounts/{account_id}/sync",
             json={"models": ["gpt-4o", "gpt-3.5-turbo"]},
         )
-        r = client.post(
-            f"/api/accounts/{account_id}/sync", json={"models": ["gpt-4o"]}
-        )
+        r = client.post(f"/api/accounts/{account_id}/sync", json={"models": ["gpt-4o"]})
 
     assert r.status_code == 200
     assert r.json()["sync_summary"]["connections_deleted"] == 1
@@ -434,6 +487,7 @@ def test_sync_account_requires_auth(client):
 
 
 # ── Proveedor iagentshub (url+usuario+contraseña, sync = hub-sync) ──────────
+
 
 def test_create_account_iagentshub_missing_fields(client):
     """POST iagentshub sin url/username/api_key devuelve 422."""
@@ -527,19 +581,13 @@ def test_sync_account_iagentshub_creates_mirror_connection_mocked(client):
         },
     ).json()["id"]
 
-    mock_response = MagicMock()
-    mock_response.raise_for_status = MagicMock()
-    mock_response.json = MagicMock(return_value=[])
-
     from unittest.mock import AsyncMock
 
-    mock_http = AsyncMock()
-    mock_http.__aenter__ = AsyncMock(return_value=mock_http)
-    mock_http.__aexit__ = AsyncMock(return_value=False)
-    mock_http.get = AsyncMock(return_value=mock_response)
+    mock_get = AsyncMock(return_value=[])
 
-    with patch("app.connections.iagentshub._login", return_value="fake-token"), patch(
-        "httpx.AsyncClient", return_value=mock_http
+    with (
+        patch("app.connections.iagentshub._login", return_value="fake-token"),
+        patch("app.services.hub_sync._get_remote_json", new=mock_get),
     ):
         r = client.post(f"/api/accounts/{account_id}/sync")
 
@@ -575,6 +623,7 @@ def test_sync_account_iagentshub_login_failure_mocked(client):
 
 # ── GitHub OAuth Device Flow ──────────────────────────────────────────────────
 
+
 def _mock_post_json(payload):
     mock_response = MagicMock()
     mock_response.raise_for_status = lambda: None
@@ -603,8 +652,9 @@ def test_github_device_code_success_mocked(client):
         "expires_in": 900,
         "interval": 5,
     }
-    with patch("app.config.providers.GITHUB_OAUTH_CLIENT_ID", "test-client-id"), patch.object(
-        httpx.AsyncClient, "post", new=_mock_post_json(payload)
+    with (
+        patch("app.config.providers.GITHUB_OAUTH_CLIENT_ID", "test-client-id"),
+        patch.object(httpx.AsyncClient, "post", new=_mock_post_json(payload)),
     ):
         r = client.post("/api/accounts/github/device-code")
     assert r.status_code == 200
@@ -628,8 +678,13 @@ def test_github_device_token_missing_device_code(client):
 
 def test_github_device_token_pending_mocked(client):
     _setup_user(client, "ghdf4")
-    with patch("app.config.providers.GITHUB_OAUTH_CLIENT_ID", "test-client-id"), patch.object(
-        httpx.AsyncClient, "post", new=_mock_post_json({"error": "authorization_pending"})
+    with (
+        patch("app.config.providers.GITHUB_OAUTH_CLIENT_ID", "test-client-id"),
+        patch.object(
+            httpx.AsyncClient,
+            "post",
+            new=_mock_post_json({"error": "authorization_pending"}),
+        ),
     ):
         r = client.post(
             "/api/accounts/github/device-token", json={"device_code": "devcode123"}
@@ -642,8 +697,13 @@ def test_github_device_token_pending_mocked(client):
 
 def test_github_device_token_success_mocked(client):
     _setup_user(client, "ghdf5")
-    with patch("app.config.providers.GITHUB_OAUTH_CLIENT_ID", "test-client-id"), patch.object(
-        httpx.AsyncClient, "post", new=_mock_post_json({"access_token": "ghu_faketoken123"})
+    with (
+        patch("app.config.providers.GITHUB_OAUTH_CLIENT_ID", "test-client-id"),
+        patch.object(
+            httpx.AsyncClient,
+            "post",
+            new=_mock_post_json({"access_token": "ghu_faketoken123"}),
+        ),
     ):
         r = client.post(
             "/api/accounts/github/device-token", json={"device_code": "devcode123"}

@@ -59,15 +59,13 @@ def _terminate_process(proc: Any, source: str) -> None:
 
 def _broadcast_sync(event: dict) -> None:
     _run["events"].append(event)
-    _persist_run_events()
+    _persist_run_events(force=event.get("type") in {"summary", "error", "aborted"})
     for q in list(_subscribers):
         _put_latest(q, event, "run")
 
 
 async def _broadcast(event: dict) -> None:
     _broadcast_sync(event)
-
-
 
 
 def _push_history() -> None:

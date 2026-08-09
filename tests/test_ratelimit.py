@@ -118,3 +118,14 @@ def test_los_tests_corren_con_un_solo_worker():
     from app.config.server import WORKERS
 
     assert WORKERS == 1
+
+
+def test_limiter_compartido_conserva_la_cuota_global(monkeypatch):
+    import app.middleware.ratelimit as rl
+
+    monkeypatch.setattr(rl, "_WORKERS", 8)
+    limiter = rl.RateLimiter(
+        calls=5, window=60, shared=True, name="test-auth-global"
+    )
+    assert limiter._calls == 5
+    assert limiter._shared is True

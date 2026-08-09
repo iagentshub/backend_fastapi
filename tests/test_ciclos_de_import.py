@@ -7,9 +7,9 @@ haya 131 imports diferidos en `app/` y que casi ninguno esté rompiendo un ciclo
 de verdad — se metieron dentro de funciones por costumbre, y esa costumbre
 esconde los pocos que sí lo hacen.
 
-Los cuatro de abajo son los que hay hoy. Tres son la jerarquía de modelos de
-agente: una clase base que conoce a sus subclases para construirlas, que es
-normal y no se persigue. El cuarto es el que conviene mirar algún día.
+Los tres de abajo son los que hay hoy. Son la jerarquía de modelos de agente:
+una clase base que conoce a sus subclases para construirlas, que es normal y
+no se persigue.
 
 Si añades un ciclo a propósito, añádelo aquí y explica por qué. Si aparece sin
 querer, es que un módulo ha empezado a depender de quien depende de él.
@@ -26,7 +26,6 @@ CICLOS_CONOCIDOS = {
     frozenset({"app.models.agent", "app.models.openai_agent"}),
     frozenset({"app.models.agent", "app.models.github_agent"}),
     frozenset({"app.models.agent", "app.models.claude_agent"}),
-    frozenset({"app.api.routes.accounts", "app.api.routes.connections"}),
 }
 
 RAIZ = pathlib.Path(__file__).resolve().parent.parent / "app"
@@ -86,6 +85,9 @@ def test_los_ciclos_congelados_siguen_existiendo():
     """Si uno se arregla, hay que quitarlo de la lista — si no, deja de vigilar."""
     encontrados = _ciclos(_grafo())
     resueltos = CICLOS_CONOCIDOS - encontrados
-    assert not resueltos, "Ciclos ya resueltos, bórralos de CICLOS_CONOCIDOS:\n" + "\n".join(
-        "  " + " <-> ".join(sorted(c)) for c in sorted(resueltos, key=sorted)
+    assert not resueltos, (
+        "Ciclos ya resueltos, bórralos de CICLOS_CONOCIDOS:\n"
+        + "\n".join(
+            "  " + " <-> ".join(sorted(c)) for c in sorted(resueltos, key=sorted)
+        )
     )

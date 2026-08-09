@@ -468,7 +468,7 @@ def test_chat_streams_sse_response(admin_client):
         admin_client, {"name": "SSE Stream Agent", "connection_id": conn["id"]}
     )
 
-    with patch("app.api.routes.agents.stream_chat", new=_fake_stream_gen):
+    with patch("app.api.routes.agent_chat.stream_chat", new=_fake_stream_gen):
         r = admin_client.post(
             f"/api/agents/{agent['id']}/chat",
             json={"messages": [{"role": "user", "content": "Hola"}]},
@@ -489,7 +489,7 @@ def test_chat_malformed_sse_event_warns_and_continues(admin_client):
         yield 'data: {"type":"done","tokens":{"in":0,"out":0}}\n\n'
 
     with (
-        patch("app.api.routes.agents.stream_chat", new=malformed_stream),
+        patch("app.api.routes.agent_chat.stream_chat", new=malformed_stream),
         patch("app.api.routes.agents.flog.warning") as warning,
     ):
         response = admin_client.post(
@@ -528,7 +528,7 @@ def test_chat_with_conversation_id(admin_client):
         yield 'data: {"type": "chunk", "text": "ok"}\n\n'
         yield 'data: {"type": "done", "reply": "ok", "tokens": {"in": 5, "out": 3}}\n\n'
 
-    with patch("app.api.routes.agents.stream_chat", new=_fake_stream_with_tokens):
+    with patch("app.api.routes.agent_chat.stream_chat", new=_fake_stream_with_tokens):
         r = admin_client.post(
             f"/api/agents/{agent['id']}/chat",
             json={
@@ -550,7 +550,7 @@ def test_chat_with_ollama_virtual_connection(admin_client):
         {"name": "Ollama Chat Agent", "connection_id": ollama_conn_id},
     )
 
-    with patch("app.api.routes.agents.stream_chat", new=_fake_stream_gen):
+    with patch("app.api.routes.agent_chat.stream_chat", new=_fake_stream_gen):
         r = admin_client.post(
             f"/api/agents/{agent['id']}/chat",
             json={"messages": [{"role": "user", "content": "hi"}]},
@@ -577,7 +577,7 @@ def test_chat_attached_knowledge_ids_injected(admin_client):
         captured_kwargs.update(kwargs)
         yield 'data: {"type": "done", "reply": "ok", "tokens": {"in": 0, "out": 0}}\n\n'
 
-    with patch("app.api.routes.agents.stream_chat", new=_fake_stream_capture):
+    with patch("app.api.routes.agent_chat.stream_chat", new=_fake_stream_capture):
         r = admin_client.post(
             f"/api/agents/{agent['id']}/chat",
             json={
@@ -612,7 +612,7 @@ def test_chat_attached_knowledge_ids_without_permission_ignored(client):
         captured_kwargs.update(kwargs)
         yield 'data: {"type": "done", "reply": "ok", "tokens": {"in": 0, "out": 0}}\n\n'
 
-    with patch("app.api.routes.agents.stream_chat", new=_fake_stream_capture):
+    with patch("app.api.routes.agent_chat.stream_chat", new=_fake_stream_capture):
         r = client.post(
             f"/api/agents/{agent['id']}/chat",
             json={
@@ -660,7 +660,7 @@ def test_chat_tool_storage_passed_for_registered_user(admin_client):
         captured_kwargs.update(kwargs)
         yield 'data: {"type": "done", "reply": "ok", "tokens": {"in": 0, "out": 0}}\n\n'
 
-    with patch("app.api.routes.agents.stream_chat", new=_fake_stream_capture):
+    with patch("app.api.routes.agent_chat.stream_chat", new=_fake_stream_capture):
         r = admin_client.post(
             f"/api/agents/{agent['id']}/chat",
             json={"messages": [{"role": "user", "content": "Hola"}]},
@@ -683,7 +683,7 @@ def test_chat_guest_tool_storage_is_none(client):
         captured_kwargs.update(kwargs)
         yield 'data: {"type": "done", "reply": "ok", "tokens": {"in": 0, "out": 0}}\n\n'
 
-    with patch("app.api.routes.agents.stream_chat", new=_fake_stream_capture):
+    with patch("app.api.routes.agent_chat.stream_chat", new=_fake_stream_capture):
         r = client.post(
             f"/api/agents/{agent['id']}/chat",
             json={"messages": [{"role": "user", "content": "Hola"}]},
@@ -696,6 +696,7 @@ def test_chat_guest_tool_storage_is_none(client):
 # ── save_agent rechaza skills/knowledge ajenos ────────────────────────────────
 # Sin esto, cualquiera puede adjuntar el ID de una skill/knowledge privados de
 # otro usuario a su propio agente y leer su contenido completo vía chat/export.
+
 
 def test_save_agent_rejects_foreign_private_skill(client):
     _register_and_login(client, "idor_skill_victim")
@@ -734,10 +735,13 @@ def test_uncaught_valueerror_returns_generic_400_and_logs(client):
     _register_and_login(client, "valueerror_handler_probe")
     agent = _create_agent(client)
 
-    with patch(
-        "app.api.routes.agents.open_db",
-        side_effect=ValueError("boom: detalle interno de la ruta /users/x"),
-    ), patch("app.api.app.flog.error") as mock_error:
+    with (
+        patch(
+            "app.api.routes.agent_preferences.open_db",
+            side_effect=ValueError("boom: detalle interno de la ruta /users/x"),
+        ),
+        patch("app.api.app.flog.error") as mock_error,
+    ):
         r = client.put(
             f"/api/agents/{agent['id']}/preferences",
             json={"connection_id": None},
@@ -763,8 +767,14 @@ def test_save_agent_allogroup_own_private_skill(client):
 def test_save_agent_allogroup_skill_shared_with_group(client):
     from app.auth.auth import create_token, register_user
 
-    asyncio.run(register_user("idor_share_owner", "pass1234", email="idor_share_owner@cov.test"))
-    asyncio.run(register_user("idor_share_member", "pass1234", email="idor_share_member@cov.test"))
+    asyncio.run(
+        register_user("idor_share_owner", "pass1234", email="idor_share_owner@cov.test")
+    )
+    asyncio.run(
+        register_user(
+            "idor_share_member", "pass1234", email="idor_share_member@cov.test"
+        )
+    )
 
     client.cookies.set("ga_token", create_token("idor_share_owner"))
     skill = client.post(

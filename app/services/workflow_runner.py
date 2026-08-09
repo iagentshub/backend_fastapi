@@ -10,6 +10,7 @@ from typing import Any, AsyncGenerator, Awaitable, Callable, Dict, List, Set
 from app.models.agent import Agent
 from app.services.chat import stream_chat
 from app.services.llm_routing import stream_orchestrated_chat
+from app.services.workflow_errors import WorkflowPublicError
 from app.storage.connection_storage import ConnectionStorage
 
 AgentResolver = Callable[[str], Awaitable[tuple[Dict[str, Any], Dict[str, Any]]]]
@@ -133,7 +134,10 @@ async def _agent_reply(
                             int(usage.get("in") or 0),
                             int(usage.get("out") or 0),
                         )
-                    raise RuntimeError(str(event.get("message") or "Error del agente"))
+                    raise WorkflowPublicError(
+                        str(event.get("code") or "upstream_error"),
+                        str(event.get("message") or "Error del agente"),
+                    )
                 if event.get("type") == "done":
                     reply = str(event.get("reply") or "")
                     usage_by_connection = event.get("usage_by_connection") or {}
@@ -155,8 +159,12 @@ async def _agent_reply(
                             )
         except asyncio.CancelledError:
             raise
+        except WorkflowPublicError:
+            raise
         except Exception as exc:
-            raise RuntimeError(f"{agent.name}: {exc}") from exc
+            raise WorkflowPublicError(
+                "upstream_error", f"El agente {agent.name} no pudo responder"
+            ) from exc
         if reply.strip():
             return reply
         if attempt == 0:
@@ -164,8 +172,9 @@ async def _agent_reply(
                 f"{content}\n\nLa respuesta anterior llegó vacía. "
                 "Responde ahora con el contenido solicitado y sus marcadores."
             )
-    raise RuntimeError(
-        f"El agente {agent.name} no devolvió respuesta tras reintentarlo"
+    raise WorkflowPublicError(
+        "upstream_error",
+        f"El agente {agent.name} no devolvió respuesta tras reintentarlo",
     )
 
 
@@ -215,7 +224,10 @@ async def _evaluate(
         parsed = _evaluation_payload(reply)
         if parsed is not None:
             return parsed
-    raise RuntimeError(f"El evaluador {agent.name} no devolvió una decisión válida")
+    raise WorkflowPublicError(
+        "upstream_error",
+        f"El evaluador {agent.name} no devolvió una decisión válida",
+    )
 
 
 async def run_workflow(
@@ -225,7 +237,9 @@ async def run_workflow(
 ) -> AsyncGenerator[Dict[str, Any], None]:
     ordered_nodes = execution_order(definition)
     if len(ordered_nodes) != len(definition["nodes"]):
-        raise RuntimeError("El flujo principal no es un grafo acíclico válido")
+        raise WorkflowPublicError(
+            "invalid_field", "El flujo principal no es un grafo acíclico válido"
+        )
 
     predecessors, successors = _graph(definition)
     loops_by_source = {
@@ -274,8 +288,9 @@ async def run_workflow(
             and all(source in completed for source in predecessors[node["id"]])
         ]
         if not ready:
-            raise RuntimeError(
-                "La orquestación no puede continuar por sus dependencias"
+            raise WorkflowPublicError(
+                "invalid_field",
+                "La orquestación no puede continuar por sus dependencias",
             )
 
         tasks: List[asyncio.Task[Any]] = []
@@ -388,8 +403,9 @@ async def run_workflow(
                             f"en {iteration} vueltas"
                         ),
                     }
-                    raise RuntimeError(
-                        f"El ciclo alcanzó {iteration} vueltas sin cumplir la condición"
+                    raise WorkflowPublicError(
+                        "invalid_field",
+                        f"El ciclo alcanzó {iteration} vueltas sin cumplir la condición",
                     )
                 loop_passes[node_id] = iteration + 1
                 reset_scope(node_id)

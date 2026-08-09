@@ -12,7 +12,7 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import BackgroundTasks, Depends
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.api.routes.auth import require_admin
 from app.api.routes.centinel._router import router
@@ -24,7 +24,7 @@ from app.api.routes.centinel._state import (
     _read_centinel_state,
     _stress,
     _stress_subscribers,
-    _write_centinel_state,
+    _update_centinel_state,
 )
 from app.errors import APIError
 from app.utils import flog
@@ -35,12 +35,12 @@ class StressRequest(BaseModel):
     method: str = "GET"  # GET | POST | DELETE | RANDOM
     path: str = "/api/auth/me"  # ruta relativa o "RANDOM"
     body: Optional[str] = None  # JSON body para POST
-    users: int = 10  # usuarios concurrentes
-    duration: int = 30  # segundos totales
-    ramp_up: int = 0  # segundos de rampa inicial
-    timeout: float = 10.0  # timeout por petición en segundos
+    users: int = Field(10, ge=1, le=10_000)  # usuarios concurrentes
+    duration: int = Field(30, ge=1, le=3_600)  # segundos totales
+    ramp_up: int = Field(0, ge=0, le=3_600)  # segundos de rampa inicial
+    timeout: float = Field(10.0, gt=0, le=120)  # timeout por petición
     fluctuate_users: bool = False  # variar carga aleatoriamente durante el test
-    max_concurrency: int = 0  # 0 = sin límite
+    max_concurrency: int = Field(0, ge=0, le=10_000)  # 0 = sin límite
     token: Optional[str] = None  # cookie ga_token si es necesario
 
 
@@ -184,9 +184,7 @@ async def stress_abort(_: str = Depends(require_admin)) -> dict:
         # El ticker de ese proceso revisa "abort_requested" en cada tick (~1s)
         # y detiene sus threads al detectarlo.
         persisted["abort_requested"] = True
-        data = _read_centinel_state()
-        data["stress"] = persisted
-        _write_centinel_state(data)
+        _update_centinel_state(lambda data: data.__setitem__("stress", persisted))
 
     flog.warning("[centinel-stress] prueba abortada")
     return {"ok": True}
@@ -364,9 +362,8 @@ async def _execute_stress(run_id: str, cfg: StressRequest) -> None:
             # Un abort disparado desde OTRO worker (ver /stress/run DELETE)
             # llega aquí vía archivo compartido, no memoria — se revisa cada tick.
             other_worker_state = _read_centinel_state().get("stress", {})
-            if (
-                other_worker_state.get("run_id") == run_id
-                and other_worker_state.get("abort_requested")
+            if other_worker_state.get("run_id") == run_id and other_worker_state.get(
+                "abort_requested"
             ):
                 _stress["status"] = "aborted"
                 _stress["finished_at"] = time.time()
@@ -451,7 +448,9 @@ async def _execute_stress(run_id: str, cfg: StressRequest) -> None:
         per_worker_means = [
             statistics.mean(s) for s in per_worker_samples.values() if s
         ]
-        avg_per_user_s = round(statistics.mean(per_worker_means), 3) if per_worker_means else 0.0
+        avg_per_user_s = (
+            round(statistics.mean(per_worker_means), 3) if per_worker_means else 0.0
+        )
 
         result = {
             "total": request_count,
@@ -481,4 +480,10 @@ async def _execute_stress(run_id: str, cfg: StressRequest) -> None:
         _stress["status"] = "error"
         _stress["finished_at"] = time.time()
         _persist_stress_state()
-        _stress_broadcast_sync({"type": "stress_error", "message": str(exc)})
+        _stress_broadcast_sync(
+            {
+                "type": "stress_error",
+                "code": "internal_error",
+                "message": "Error interno durante la prueba de carga.",
+            }
+        )

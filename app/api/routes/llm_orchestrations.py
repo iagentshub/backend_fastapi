@@ -8,11 +8,11 @@ from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field, model_validator
 
 from app.api.routes.auth import GroupContext, require_group
-from app.api.routes.connections import _get_conn_any
 from app.config.data import AGENTS_DIR
 from app.config.providers import OPENAI_COMPAT_URLS
 from app.errors import APIError
 from app.models.llm_orchestration import orchestration_connection_id
+from app.services.connection_access import connection_access
 from app.storage.agent_storage import AgentStorage
 from app.storage.db import PH, open_db
 from app.storage.group_shares import GroupShareStorage
@@ -95,7 +95,9 @@ async def _validate_connections(body: LLMOrchestrationBody, ctx: GroupContext) -
     if body.router_connection_id:
         ids.append(body.router_connection_id)
     for connection_id in set(ids):
-        connection = await _get_conn_any(connection_id, ctx.user, ctx.group_id)
+        connection = await connection_access.get_accessible(
+            connection_id, ctx.user, ctx.group_id
+        )
         if not connection:
             raise APIError(
                 422,

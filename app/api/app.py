@@ -15,11 +15,17 @@ from app.api.pagination import TOTAL_HEADER
 from app.api.routes import (
     accounts,
     agent_builder,
+    agent_chat,
+    agent_exports,
+    agent_preferences,
     agents,
     auth,
     billing,
     centinel,
     chats,
+    connection_catalog,
+    connection_diagnostics,
+    connection_sync,
     connections,
     explore,
     groups,
@@ -195,6 +201,18 @@ def create_app() -> FastAPI:
         # la lista, el cliente Flutter cae a su fallback y el usuario ve
         # "Error 422" sin decirle qué campo falla.
         primero = (exc.errors() or [{}])[0]
+        if primero.get("type") in {"json_invalid", "model_attributes_type"} or (
+            primero.get("type") == "missing" and primero.get("loc") == ("body",)
+        ):
+            return JSONResponse(
+                status_code=400,
+                content={
+                    "detail": {
+                        "code": "invalid_json",
+                        "message": "El cuerpo debe ser un objeto JSON válido",
+                    }
+                },
+            )
         # loc[0] es siempre el origen ("body", "query", "path"); el nombre del
         # campo empieza en el segundo elemento.
         campo = ".".join(str(p) for p in primero.get("loc", [])[1:])
@@ -203,7 +221,9 @@ def create_app() -> FastAPI:
             content={
                 "detail": {
                     "code": "invalid_field",
-                    "message": f"Campo inválido: {campo}" if campo else "Petición inválida",
+                    "message": f"Campo inválido: {campo}"
+                    if campo
+                    else "Petición inválida",
                     "field": campo,
                 }
             },
@@ -234,7 +254,13 @@ def create_app() -> FastAPI:
     app.include_router(auth.router)
     app.include_router(admin_router)
     app.include_router(users.router)
+    app.include_router(connection_catalog.router)
+    app.include_router(connection_diagnostics.router)
+    app.include_router(connection_sync.router)
     app.include_router(connections.router)
+    app.include_router(agent_chat.router)
+    app.include_router(agent_exports.router)
+    app.include_router(agent_preferences.router)
     app.include_router(agents.router)
     app.include_router(skills.router)
     app.include_router(prompts.router)

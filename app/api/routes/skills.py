@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, Query, Request, Response
+from fastapi import APIRouter, Depends, Query, Response
 
 from app.api.pagination import paginar
 from app.api.routes.auth import GroupContext, require_group, require_group_session
 from app.auth.auth import get_user_role
 from app.config.data import SKILLS_DIR
 from app.errors import APIError
+from app.models.request_bodies import CatalogResourcePayload
 from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
 from app.storage.guest import get_session, is_guest
@@ -22,7 +23,6 @@ from app.storage.skill_storage import (
 )
 from app.utils import flog
 from app.utils.generators import generate_id
-from app.utils.net import json_body
 from app.utils.origin import compute_origin_type
 
 router = APIRouter(prefix="/api/skills", tags=["skills"])
@@ -169,11 +169,13 @@ async def get_skill(
 
 @router.post("/{scope}")
 async def save_skill(
-    scope: str, request: Request, ctx: GroupContext = Depends(require_group_session)
+    scope: str,
+    body: CatalogResourcePayload,
+    ctx: GroupContext = Depends(require_group_session),
 ) -> Dict[str, Any]:
     user, group_id = ctx.user, ctx.group_id
     _check_scope(scope)
-    payload = await json_body(request)
+    payload = body.payload()
     if payload.get("tags") not in (None, [], ""):
         raise APIError(
             422,

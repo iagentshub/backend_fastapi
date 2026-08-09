@@ -25,8 +25,24 @@ def _chat_storage_mock(convs: list, messages_by_conv: dict) -> MagicMock:
     async def _get_messages(conv_id, user_id, limit=200):
         return messages_by_conv.get(conv_id, [])
 
+    async def _list_memory_messages(
+        user_id,
+        agent_id,
+        exclude_conversation_id=None,
+        *,
+        limit=200,
+        chars_per_message=2000,
+    ):
+        result = []
+        for conversation in convs:
+            if conversation.get("id") == exclude_conversation_id:
+                continue
+            result.extend(messages_by_conv.get(conversation["id"], []))
+        return result[:limit]
+
     storage.list_conversations = _list_conversations
     storage.get_messages = _get_messages
+    storage.list_memory_messages = _list_memory_messages
     return storage
 
 
@@ -39,7 +55,7 @@ async def _sent_system_message(
         sent_payloads.append(json.loads(req.data.decode()))
         return _sse_done_response()
 
-    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+    with patch("app.services.chat.safe_urlopen", side_effect=fake_urlopen):
         [
             e
             async for e in stream_chat(
@@ -129,11 +145,11 @@ async def test_history_not_queried_without_user_id():
     conn = _make_conn("openai")
 
     chat_storage = MagicMock()
-    chat_storage.list_conversations = MagicMock(
+    chat_storage.list_memory_messages = MagicMock(
         side_effect=AssertionError("no debería llamarse sin user_id")
     )
 
-    with patch("urllib.request.urlopen", return_value=_sse_done_response()):
+    with patch("app.services.chat.safe_urlopen", return_value=_sse_done_response()):
         [
             e
             async for e in stream_chat(
@@ -150,6 +166,34 @@ async def test_history_not_queried_without_user_id():
         ]
 
 
+async def test_context_budget_truncates_resources_and_warns():
+    agent = _make_agent("openai")
+    agent["system_prompt"] = "x" * 260_000
+    conn = _make_conn("openai")
+    payloads = []
+
+    def fake_urlopen(req, timeout):
+        payloads.append(json.loads(req.data.decode()))
+        return _sse_done_response()
+
+    with patch("app.services.chat.safe_urlopen", side_effect=fake_urlopen):
+        events = [
+            event
+            async for event in stream_chat(
+                agent,
+                conn,
+                [{"role": "user", "content": "turno actual"}],
+                _skill_storage(),
+            )
+        ]
+
+    warning = next(event for event in events if '"type": "context_warning"' in event)
+    assert '"code": "context_truncated"' in warning
+    messages = payloads[0]["messages"]
+    estimated = sum(_estimate_tokens(str(item["content"])) for item in messages)
+    assert estimated <= 60_000 - 4_096
+
+
 async def test_effort_level_is_sent_to_openai_compatible_provider():
     agent = _make_agent("openai")
     agent["effort_level"] = "high"
@@ -160,7 +204,7 @@ async def test_effort_level_is_sent_to_openai_compatible_provider():
         sent_payloads.append(json.loads(req.data.decode()))
         return _sse_done_response()
 
-    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+    with patch("app.services.chat.safe_urlopen", side_effect=fake_urlopen):
         [
             event
             async for event in stream_chat(

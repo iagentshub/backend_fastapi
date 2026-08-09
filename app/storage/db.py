@@ -17,15 +17,13 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncGenerator, List, Optional, Tuple
 
-from app.storage.db_migrations import (
-    _migrate_pg,
-    _migrate_sqlite,
-    _migrate_users_json_pg,
-    _migrate_users_json_sqlite,
+from app.storage.migrations.legacy import (
     _pre_migrate_sqlite,
     _rename_legacy_group_schema_pg,
     _rename_legacy_group_schema_sqlite,
 )
+from app.storage.migrations.postgres import run_postgres_migrations
+from app.storage.migrations.sqlite import run_sqlite_migrations
 from app.storage.schema import SCHEMA_PG, SCHEMA_SQLITE
 from app.utils import flog
 
@@ -146,8 +144,7 @@ async def migrate_schema(sqlite_path: Optional[Path] = None) -> None:
                     s = stmt.strip()
                     if s:
                         await conn.execute(s)
-                await _migrate_pg(conn)
-                await _migrate_users_json_pg(conn)
+                await run_postgres_migrations(conn)
         finally:
             await conn.close()
         flog.ok("[db] esquema PostgreSQL migrado")
@@ -174,8 +171,7 @@ async def migrate_schema(sqlite_path: Optional[Path] = None) -> None:
             # IF NOT EXISTS is a no-op on existing tables.
             await _pre_migrate_sqlite(conn)
             await conn.executescript(SCHEMA_SQLITE)
-            await _migrate_sqlite(conn)
-            await _migrate_users_json_sqlite(conn)
+            await run_sqlite_migrations(conn)
             await conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_connections_owner ON connections(owner_id)"
             )

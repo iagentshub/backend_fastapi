@@ -16,11 +16,11 @@ from fastapi.responses import RedirectResponse
 from app.api.routes.auth.dependencies import _login_limiter, _tokens, require_auth
 from app.auth.auth import get_user_by_id
 from app.errors import APIError
+from app.models.request_bodies import VSCodeAuthorizeBody, VSCodeExchangeBody
 from app.storage.tokens import DEFAULT_EXPIRY_DAYS
 from app.storage.tokens import consume_auth_code as _consume_auth_code
 from app.storage.tokens import create_auth_code as _create_auth_code
 from app.utils import flog
-from app.utils.net import json_body
 
 router = APIRouter()
 
@@ -66,7 +66,7 @@ async def vscode_start(
 
 @router.post("/vscode/authorize")
 async def vscode_authorize(
-    request: Request, username: str = Depends(require_auth)
+    body: VSCodeAuthorizeBody, username: str = Depends(require_auth)
 ) -> dict[str, Any]:
     """Emite el código. Exige la sesión del navegador: es el consentimiento."""
     from app.storage.guest import is_guest as _is_guest
@@ -78,7 +78,7 @@ async def vscode_authorize(
             "Las sesiones de invitado no pueden conectar VS Code.",
         )
 
-    body = await json_body(request)
+    body = body.payload()
     state = str(body.get("state") or "")
     if not 8 <= len(state) <= 128:
         raise APIError(400, "invalid_field", "state inválido", extra={"field": "state"})
@@ -87,7 +87,7 @@ async def vscode_authorize(
 
 
 @router.post("/vscode/exchange")
-async def vscode_exchange(request: Request) -> dict[str, Any]:
+async def vscode_exchange(request: Request, body: VSCodeExchangeBody) -> dict[str, Any]:
     """Código + state → PAT. Sin cookie: quien llama aquí es la extensión.
 
     El PAT se crea aquí y no al autorizar, para que el token en claro exista solo
@@ -95,7 +95,7 @@ async def vscode_exchange(request: Request) -> dict[str, Any]:
     """
     await _login_limiter(request)
 
-    body = await json_body(request)
+    body = body.payload()
     code = str(body.get("code") or "")
     state = str(body.get("state") or "")
     if not code or not state:
@@ -103,9 +103,7 @@ async def vscode_exchange(request: Request) -> dict[str, Any]:
 
     user_id = await _consume_auth_code(code, state)
     if not user_id:
-        raise APIError(
-            400, "invalid_auth_code", "Código inválido, caducado o ya usado"
-        )
+        raise APIError(400, "invalid_auth_code", "Código inválido, caducado o ya usado")
 
     token, meta = await _tokens.create(user_id, "VS Code", DEFAULT_EXPIRY_DAYS)
     user = await get_user_by_id(user_id)

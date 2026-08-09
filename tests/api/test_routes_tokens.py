@@ -5,6 +5,7 @@ debe abrir exactamente las mismas puertas que la cookie de sesión, porque
 require_auth/require_group son las dos únicas funciones que leen la
 credencial y de ellas cuelgan los ~164 Depends() del resto de routers.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -27,6 +28,7 @@ def _register(client: TestClient, username: str) -> TestClient:
 
 def _user_id(username: str) -> str:
     from app.auth.auth import get_user_by_username
+
     user = asyncio.run(get_user_by_username(username))
     assert user is not None
     return str(user["id"])
@@ -92,6 +94,7 @@ def test_el_secreto_no_se_persiste_en_bd(client):
 
     from app.storage.db import open_db
     from app.storage.tokens import hash_token
+
     user_id = _user_id("pat_nostore")
 
     async def _fetch():
@@ -119,6 +122,14 @@ def test_expires_in_days_invalido(client):
     _register(client, "pat_badexp")
     r = client.post("/api/auth/tokens", json={"name": "x", "expires_in_days": 7})
     assert r.status_code == 400
+
+
+def test_expires_in_days_texto_conserva_error_400(client):
+    """La migración a Pydantic no cambia el contrato histórico a 422."""
+    _register(client, "pat_badexp_text")
+    r = client.post("/api/auth/tokens", json={"name": "x", "expires_in_days": "abc"})
+    assert r.status_code == 400
+    assert r.json()["detail"]["code"] == "invalid_field"
 
 
 def test_nombre_obligatorio(client):
@@ -278,7 +289,8 @@ def test_cuenta_desactivada_invalida_el_token(client):
         async with open_db() as conn:
             async with conn.transaction():
                 await conn.execute(
-                    "UPDATE users SET is_active = 0 WHERE username = ?", ("pat_inactive",)
+                    "UPDATE users SET is_active = 0 WHERE username = ?",
+                    ("pat_inactive",),
                 )
 
     asyncio.run(_deactivate())

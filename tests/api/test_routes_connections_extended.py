@@ -1,4 +1,5 @@
 """Tests extendidos de conexiones: paginación, raw, get por ID, update, test, test-all, ollama-models."""
+
 from __future__ import annotations
 
 import asyncio
@@ -24,6 +25,7 @@ _CONN_ANTHROPIC = {
 def _setup_user(client, username="connuser"):
     """Registra un usuario y autentica el client."""
     from app.auth.auth import create_token, register_user
+
     asyncio.run(register_user(username, "pass1234", email=f"{username}@example.com"))
     token = create_token(username)
     client.cookies.set("ga_token", token)
@@ -39,6 +41,7 @@ def _create_conn(client, payload=None):
 
 
 # ── GET /api/connections (paginación) ─────────────────────────────────────────
+
 
 def test_list_connections_pagination_limit(admin_client):
     """limit=1 devuelve solo 1 elemento."""
@@ -75,6 +78,7 @@ def test_list_connections_zero_limit_returns_all(admin_client):
 
 # ── GET /api/connections/raw ──────────────────────────────────────────────────
 
+
 def test_list_connections_raw_returns_list(admin_client):
     """/raw devuelve lista sin api_key."""
     _create_conn(admin_client, _CONN_OPENAI)
@@ -102,6 +106,7 @@ def test_list_connections_raw_empty_initially(client):
 
 # ── GET /api/connections/{id} ─────────────────────────────────────────────────
 
+
 def test_get_connection_by_id(admin_client):
     """Obtener conexión por ID devuelve los datos correctos."""
     created = _create_conn(admin_client, _CONN_OPENAI)
@@ -128,11 +133,17 @@ def test_get_connection_requires_auth(client):
 # ── PUT /api/connections/{id} (update via POST) ────────────────────────────────
 # El backend usa POST /api/connections para crear/actualizar (upsert con id existente).
 
+
 def test_update_connection_via_post(admin_client):
     """Actualizar una conexión enviando el id en el payload."""
     created = _create_conn(admin_client, _CONN_OPENAI)
     conn_id = created["id"]
-    updated_payload = {**_CONN_OPENAI, "id": conn_id, "name": "OpenAI Actualizado", "model": "gpt-4-turbo"}
+    updated_payload = {
+        **_CONN_OPENAI,
+        "id": conn_id,
+        "name": "OpenAI Actualizado",
+        "model": "gpt-4-turbo",
+    }
     r = admin_client.post("/api/connections", json=updated_payload)
     assert r.status_code == 200
     data = r.json()
@@ -146,6 +157,7 @@ def test_update_connection_via_post(admin_client):
 
 
 # ── POST /api/connections/{id}/test ──────────────────────────────────────────
+
 
 def test_test_connection_ok_false_when_invalid_key(admin_client):
     """El test de conexión devuelve ok=False con credenciales falsas (sin red real)."""
@@ -179,6 +191,7 @@ def test_test_connection_requires_auth(client):
 
 
 # ── POST /api/connections/test-all ───────────────────────────────────────────
+
 
 def test_test_all_connections_returns_list(admin_client):
     """test-all con conexión falsa devuelve lista con ok=False (sin red real)."""
@@ -217,10 +230,14 @@ def test_test_all_connections_requires_auth(client):
 
 # ── POST /api/connections/ollama-models ──────────────────────────────────────
 
+
 def test_ollama_models_returns_error_when_unreachable(client):
     """Cuando Ollama no es accesible, devuelve models=[] y un campo error."""
     _setup_user(client, "ollamauser")
-    with patch("app.connections.ollama.OllamaProvider._fetch_tags", side_effect=OSError("Connection refused")):
+    with patch(
+        "app.connections.ollama.OllamaProvider._fetch_tags",
+        side_effect=OSError("Connection refused"),
+    ):
         r = client.post(
             "/api/connections/ollama-models",
             json={"host": "http://localhost:11434"},
@@ -237,8 +254,12 @@ def test_ollama_models_returns_models_when_available(client):
     fake_tags = {"models": [{"name": "llama3:latest"}, {"name": "mistral:7b"}]}
     # assert_safe_url bloquea localhost (anti-SSRF); en tests lo deshabilitamos
     # para poder ejercer el path feliz sin necesitar un servidor Ollama real.
-    with patch("app.api.routes.connections.assert_safe_url"), \
-         patch("app.connections.ollama.OllamaProvider._fetch_tags", return_value=fake_tags):
+    with (
+        patch("app.api.routes.connection_catalog.assert_safe_url"),
+        patch(
+            "app.connections.ollama.OllamaProvider._fetch_tags", return_value=fake_tags
+        ),
+    ):
         r = client.post(
             "/api/connections/ollama-models",
             json={"host": "http://localhost:11434"},

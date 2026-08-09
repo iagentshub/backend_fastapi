@@ -1,9 +1,10 @@
 """Rutas de groups — CRUD y cambio de group activo."""
+
 from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Depends, Response
 
 from app.api.routes.auth import GroupContext, require_auth, require_group
 from app.auth.auth import (
@@ -12,11 +13,11 @@ from app.auth.auth import (
     get_user_by_username,
     get_user_role,
 )
-from app.config.session import SECURE_COOKIES
+from app.config.session import JWT_MAX_AGE_SECONDS, SECURE_COOKIES
 from app.errors import APIError
+from app.models.request_bodies import StatusBody, UsernameBody
 from app.storage.groups import GroupStorage
 from app.storage.guest import is_guest
-from app.utils.net import json_body
 
 router = APIRouter(prefix="/api/groups", tags=["groups"])
 
@@ -47,26 +48,54 @@ def _validate_permissions(permissions: Dict[str, Any]) -> None:
     for section, config in permissions.items():
         allowed_actions = _PERMISSION_ACTIONS.get(section)
         if allowed_actions is None or not isinstance(config, dict):
-            raise APIError(422, "invalid_field", "Permisos inválidos", extra={"field": "permissions"})
+            raise APIError(
+                422,
+                "invalid_field",
+                "Permisos inválidos",
+                extra={"field": "permissions"},
+            )
         if "default" in config and not isinstance(config["default"], bool):
-            raise APIError(422, "invalid_field", "Permisos inválidos", extra={"field": "permissions"})
+            raise APIError(
+                422,
+                "invalid_field",
+                "Permisos inválidos",
+                extra={"field": "permissions"},
+            )
         items = config.get("items", {})
         if not isinstance(items, dict):
-            raise APIError(422, "invalid_field", "Permisos inválidos", extra={"field": "permissions"})
+            raise APIError(
+                422,
+                "invalid_field",
+                "Permisos inválidos",
+                extra={"field": "permissions"},
+            )
         for resource_id, actions in items.items():
             if not resource_id or not isinstance(actions, dict):
-                raise APIError(422, "invalid_field", "Permisos inválidos", extra={"field": "permissions"})
+                raise APIError(
+                    422,
+                    "invalid_field",
+                    "Permisos inválidos",
+                    extra={"field": "permissions"},
+                )
             if any(
                 action not in allowed_actions or not isinstance(value, bool)
                 for action, value in actions.items()
             ):
-                raise APIError(422, "invalid_field", "Permisos inválidos", extra={"field": "permissions"})
+                raise APIError(
+                    422,
+                    "invalid_field",
+                    "Permisos inválidos",
+                    extra={"field": "permissions"},
+                )
 
 
 # ── Listar groups del usuario ──────────────────────────────────────────────
 
+
 @router.get("")
-async def list_groups(ctx: GroupContext = Depends(require_group)) -> List[Dict[str, Any]]:
+async def list_groups(
+    ctx: GroupContext = Depends(require_group),
+) -> List[Dict[str, Any]]:
     _assert_not_guest(ctx.user)
     team_groups = await _groups.list_for_user(ctx.user)
     personal_groups = {
@@ -85,6 +114,7 @@ async def list_groups(ctx: GroupContext = Depends(require_group)) -> List[Dict[s
 
 # ── Crear group de equipo ──────────────────────────────────────────────────
 
+
 @router.post("")
 async def create_group(
     body: Dict[str, Any],
@@ -93,10 +123,14 @@ async def create_group(
     _assert_not_guest(ctx.user)
     name = str(body.get("name") or "").strip()
     if not name:
-        raise APIError(400, "field_required", "El nombre es obligatorio", extra={"field": "name"})
+        raise APIError(
+            400, "field_required", "El nombre es obligatorio", extra={"field": "name"}
+        )
     if len(name) > 80:
         raise APIError(
-            400, "name_too_long", "El nombre no puede superar los 80 caracteres",
+            400,
+            "name_too_long",
+            "El nombre no puede superar los 80 caracteres",
             extra={"max_length": 80},
         )
     group = await _groups.create(name, created_by=ctx.user)
@@ -104,6 +138,7 @@ async def create_group(
 
 
 # ── Renombrar group ────────────────────────────────────────────────────────
+
 
 @router.patch("/{group_id}")
 async def update_group(
@@ -113,19 +148,29 @@ async def update_group(
 ) -> Dict[str, Any]:
     _assert_not_guest(ctx.user)
     if group_id == ctx.user:
-        raise APIError(400, "personal_group_forbidden", "El grupo Personal no se puede renombrar")
+        raise APIError(
+            400, "personal_group_forbidden", "El grupo Personal no se puede renombrar"
+        )
     name = str(body.get("name") or "").strip()
     if not name:
-        raise APIError(400, "field_required", "El nombre es obligatorio", extra={"field": "name"})
-    if not await _groups.can_manage(group_id, ctx.user) and await get_user_role(ctx.user) != "admin":
+        raise APIError(
+            400, "field_required", "El nombre es obligatorio", extra={"field": "name"}
+        )
+    if (
+        not await _groups.can_manage(group_id, ctx.user)
+        and await get_user_role(ctx.user) != "admin"
+    ):
         raise APIError(403, "forbidden", "Sin permisos para modificar este grupo")
     updated = await _groups.update(group_id, name)
     if not updated:
-        raise APIError(404, "not_found", "Grupo no encontrado", extra={"resource": "group"})
+        raise APIError(
+            404, "not_found", "Grupo no encontrado", extra={"resource": "group"}
+        )
     return {"ok": True, "id": group_id, "name": name}
 
 
 # ── Eliminar group ─────────────────────────────────────────────────────────
+
 
 @router.delete("/{group_id}")
 async def delete_group(
@@ -134,13 +179,19 @@ async def delete_group(
 ) -> Dict[str, Any]:
     _assert_not_guest(ctx.user)
     if group_id == ctx.user:
-        raise APIError(400, "personal_group_forbidden", "No puedes eliminar el grupo Personal")
+        raise APIError(
+            400, "personal_group_forbidden", "No puedes eliminar el grupo Personal"
+        )
     group = await _groups.get(group_id)
     if not group:
-        raise APIError(404, "not_found", "Grupo no encontrado", extra={"resource": "group"})
+        raise APIError(
+            404, "not_found", "Grupo no encontrado", extra={"resource": "group"}
+        )
     if group["created_by"] != ctx.user and await get_user_role(ctx.user) != "admin":
         raise APIError(
-            403, "owner_only_action", "Solo el creador puede eliminar el grupo",
+            403,
+            "owner_only_action",
+            "Solo el creador puede eliminar el grupo",
             extra={"action": "delete"},
         )
     await _groups.delete(group_id)
@@ -149,28 +200,37 @@ async def delete_group(
 
 # ── Desactivar / reactivar group (propietario) ──────────────────────────────
 
+
 @router.post("/{group_id}/status")
 async def set_group_status(
     group_id: str,
-    request: Request,
+    body: StatusBody,
     ctx: GroupContext = Depends(require_group),
 ) -> Dict[str, Any]:
     _assert_not_guest(ctx.user)
     if group_id == ctx.user:
-        raise APIError(400, "personal_group_forbidden", "El grupo Personal no se puede desactivar")
-    body = await json_body(request)
+        raise APIError(
+            400, "personal_group_forbidden", "El grupo Personal no se puede desactivar"
+        )
+    body = body.payload()
     status = str(body.get("status") or "").strip()
     if status not in ("active", "disabled"):
         raise APIError(
-            422, "invalid_field", "status debe ser 'active' o 'disabled'",
+            422,
+            "invalid_field",
+            "status debe ser 'active' o 'disabled'",
             extra={"field": "status"},
         )
     group = await _groups.get(group_id)
     if not group:
-        raise APIError(404, "not_found", "Grupo no encontrado", extra={"resource": "group"})
+        raise APIError(
+            404, "not_found", "Grupo no encontrado", extra={"resource": "group"}
+        )
     if group["created_by"] != ctx.user and await get_user_role(ctx.user) != "admin":
         raise APIError(
-            403, "owner_only_action", "Solo el propietario puede cambiar el estado del grupo",
+            403,
+            "owner_only_action",
+            "Solo el propietario puede cambiar el estado del grupo",
             extra={"action": "status"},
         )
     await _groups.set_status(group_id, status)
@@ -178,6 +238,7 @@ async def set_group_status(
 
 
 # ── Miembros ───────────────────────────────────────────────────────────────────
+
 
 @router.get("/{group_id}/members")
 async def list_members(
@@ -187,9 +248,20 @@ async def list_members(
     _assert_not_guest(ctx.user)
     if group_id == ctx.user:
         user = await get_user_by_id(ctx.user)
-        return [{"username": user["username"] if user else "", "role": "owner", "permissions": {}}]
-    if not await _groups.can_access(group_id, ctx.user) and await get_user_role(ctx.user) != "admin":
-        raise APIError(403, "forbidden", "Sin acceso a este grupo", extra={"resource": "group"})
+        return [
+            {
+                "username": user["username"] if user else "",
+                "role": "owner",
+                "permissions": {},
+            }
+        ]
+    if (
+        not await _groups.can_access(group_id, ctx.user)
+        and await get_user_role(ctx.user) != "admin"
+    ):
+        raise APIError(
+            403, "forbidden", "Sin acceso a este grupo", extra={"resource": "group"}
+        )
     return await _groups.list_members(group_id)
 
 
@@ -204,16 +276,28 @@ async def add_member(
     username = str(body.get("username") or "").strip()
     role = str(body.get("role") or "member").strip()
     if not username:
-        raise APIError(400, "field_required", "El username es obligatorio", extra={"field": "username"})
+        raise APIError(
+            400,
+            "field_required",
+            "El username es obligatorio",
+            extra={"field": "username"},
+        )
     if role not in ("owner", "admin", "member"):
         raise APIError(400, "invalid_field", "Rol inválido", extra={"field": "role"})
-    if not await _groups.can_manage(group_id, ctx.user) and await get_user_role(ctx.user) != "admin":
+    if (
+        not await _groups.can_manage(group_id, ctx.user)
+        and await get_user_role(ctx.user) != "admin"
+    ):
         raise APIError(403, "forbidden", "Sin permisos para invitar miembros")
     target_user = await get_user_by_username(username)
     if not target_user:
-        raise APIError(404, "not_found", "Usuario no encontrado", extra={"resource": "user"})
+        raise APIError(
+            404, "not_found", "Usuario no encontrado", extra={"resource": "user"}
+        )
     if not await _groups.get(group_id):
-        raise APIError(404, "not_found", "Grupo no encontrado", extra={"resource": "group"})
+        raise APIError(
+            404, "not_found", "Grupo no encontrado", extra={"resource": "group"}
+        )
     await _groups.add_member(group_id, target_user["id"], role)
     return {"ok": True, "group_id": group_id, "username": username, "role": role}
 
@@ -228,16 +312,25 @@ async def remove_member(
     _assert_not_personal_group(group_id, ctx.user)
     target_user = await get_user_by_username(username)
     target_user_id = target_user["id"] if target_user else ""
-    if not await _groups.can_manage(group_id, ctx.user) and await get_user_role(ctx.user) != "admin":
+    if (
+        not await _groups.can_manage(group_id, ctx.user)
+        and await get_user_role(ctx.user) != "admin"
+    ):
         if target_user_id != ctx.user:
             raise APIError(403, "forbidden", "Sin permisos para eliminar miembros")
     group = await _groups.get(group_id)
     if not group:
-        raise APIError(404, "not_found", "Grupo no encontrado", extra={"resource": "group"})
+        raise APIError(
+            404, "not_found", "Grupo no encontrado", extra={"resource": "group"}
+        )
     if target_user_id == group["created_by"]:
-        raise APIError(400, "cannot_remove_group_owner", "No puedes eliminar al creador del grupo")
+        raise APIError(
+            400, "cannot_remove_group_owner", "No puedes eliminar al creador del grupo"
+        )
     if not target_user or not await _groups.remove_member(group_id, target_user_id):
-        raise APIError(404, "not_found", "Miembro no encontrado", extra={"resource": "member"})
+        raise APIError(
+            404, "not_found", "Miembro no encontrado", extra={"resource": "member"}
+        )
     return {"ok": True}
 
 
@@ -254,25 +347,40 @@ async def update_member_role(
     role = str(body.get("role") or "").strip()
     permissions = body.get("permissions")
     if not has_role and permissions is None:
-        raise APIError(422, "role_or_permissions_required", "Rol o permisos obligatorios")
+        raise APIError(
+            422, "role_or_permissions_required", "Rol o permisos obligatorios"
+        )
     if has_role and role not in ("owner", "admin", "member"):
         raise APIError(400, "invalid_field", "Rol inválido", extra={"field": "role"})
     if permissions is not None and not isinstance(permissions, dict):
-        raise APIError(422, "invalid_field", "Permisos inválidos", extra={"field": "permissions"})
+        raise APIError(
+            422, "invalid_field", "Permisos inválidos", extra={"field": "permissions"}
+        )
     if permissions is not None:
         _validate_permissions(permissions)
-    if not await _groups.can_manage(group_id, ctx.user) and await get_user_role(ctx.user) != "admin":
+    if (
+        not await _groups.can_manage(group_id, ctx.user)
+        and await get_user_role(ctx.user) != "admin"
+    ):
         raise APIError(403, "forbidden", "Sin permisos para cambiar roles")
     target_user = await get_user_by_username(username)
     if not target_user:
-        raise APIError(404, "not_found", "Usuario no encontrado", extra={"resource": "user"})
+        raise APIError(
+            404, "not_found", "Usuario no encontrado", extra={"resource": "user"}
+        )
     target_user_id = target_user["id"]
-    if has_role and not await _groups.update_member_role(group_id, target_user_id, role):
-        raise APIError(404, "not_found", "Miembro no encontrado", extra={"resource": "member"})
+    if has_role and not await _groups.update_member_role(
+        group_id, target_user_id, role
+    ):
+        raise APIError(
+            404, "not_found", "Miembro no encontrado", extra={"resource": "member"}
+        )
     if permissions is not None and not await _groups.update_member_permissions(
         group_id, target_user_id, permissions
     ):
-        raise APIError(404, "not_found", "Miembro no encontrado", extra={"resource": "member"})
+        raise APIError(
+            404, "not_found", "Miembro no encontrado", extra={"resource": "member"}
+        )
     return {
         "ok": True,
         "group_id": group_id,
@@ -284,8 +392,11 @@ async def update_member_role(
 
 # ── Invitaciones ───────────────────────────────────────────────────────────────
 
+
 @router.get("/my-invitations")
-async def my_invitations(ctx: GroupContext = Depends(require_group)) -> List[Dict[str, Any]]:
+async def my_invitations(
+    ctx: GroupContext = Depends(require_group),
+) -> List[Dict[str, Any]]:
     _assert_not_guest(ctx.user)
     return await _groups.list_my_invitations(ctx.user)
 
@@ -298,7 +409,12 @@ async def accept_invitation(
     _assert_not_guest(ctx.user)
     group_id = await _groups.accept_invitation(inv_id, ctx.user)
     if not group_id:
-        raise APIError(404, "not_found", "Invitacion no encontrada", extra={"resource": "invitation"})
+        raise APIError(
+            404,
+            "not_found",
+            "Invitacion no encontrada",
+            extra={"resource": "invitation"},
+        )
     return {"ok": True, "group_id": group_id}
 
 
@@ -309,7 +425,12 @@ async def reject_invitation(
 ) -> Dict[str, Any]:
     _assert_not_guest(ctx.user)
     if not await _groups.reject_invitation(inv_id, ctx.user):
-        raise APIError(404, "not_found", "Invitacion no encontrada", extra={"resource": "invitation"})
+        raise APIError(
+            404,
+            "not_found",
+            "Invitacion no encontrada",
+            extra={"resource": "invitation"},
+        )
     return {"ok": True}
 
 
@@ -321,7 +442,10 @@ async def list_group_invitations(
     _assert_not_guest(ctx.user)
     if group_id == ctx.user:
         return []
-    if not await _groups.can_manage(group_id, ctx.user) and await get_user_role(ctx.user) != "admin":
+    if (
+        not await _groups.can_manage(group_id, ctx.user)
+        and await get_user_role(ctx.user) != "admin"
+    ):
         raise APIError(403, "forbidden", "Sin permisos")
     return await _groups.list_invitations(group_id)
 
@@ -336,21 +460,35 @@ async def invite_member(
     _assert_not_personal_group(group_id, ctx.user)
     username = str(body.get("username") or "").strip().lower()
     if not username:
-        raise APIError(400, "field_required", "El username es obligatorio", extra={"field": "username"})
-    if not await _groups.can_manage(group_id, ctx.user) and await get_user_role(ctx.user) != "admin":
+        raise APIError(
+            400,
+            "field_required",
+            "El username es obligatorio",
+            extra={"field": "username"},
+        )
+    if (
+        not await _groups.can_manage(group_id, ctx.user)
+        and await get_user_role(ctx.user) != "admin"
+    ):
         raise APIError(403, "forbidden", "Sin permisos para invitar miembros")
     if not await _groups.get(group_id):
-        raise APIError(404, "not_found", "Grupo no encontrado", extra={"resource": "group"})
+        raise APIError(
+            404, "not_found", "Grupo no encontrado", extra={"resource": "group"}
+        )
     target_user = await get_user_by_username(username)
     if not target_user:
-        raise APIError(404, "not_found", "Usuario no encontrado", extra={"resource": "user"})
+        raise APIError(
+            404, "not_found", "Usuario no encontrado", extra={"resource": "user"}
+        )
     target_user_id = target_user["id"]
     if await _groups.is_member(group_id, target_user_id):
         raise APIError(409, "already_member", "El usuario ya es miembro de este grupo")
     inv = await _groups.invite_user(group_id, target_user_id, ctx.user)
     if inv is None:
         raise APIError(
-            409, "already_exists", "Ya existe una invitacion pendiente para este usuario",
+            409,
+            "already_exists",
+            "Ya existe una invitacion pendiente para este usuario",
             extra={"resource": "invitation"},
         )
     inv["username"] = username
@@ -365,40 +503,56 @@ async def cancel_group_invitation(
 ) -> Dict[str, Any]:
     _assert_not_guest(ctx.user)
     _assert_not_personal_group(group_id, ctx.user)
-    if not await _groups.can_manage(group_id, ctx.user) and await get_user_role(ctx.user) != "admin":
+    if (
+        not await _groups.can_manage(group_id, ctx.user)
+        and await get_user_role(ctx.user) != "admin"
+    ):
         raise APIError(403, "forbidden", "Sin permisos")
     if not await _groups.cancel_invitation(inv_id, group_id):
-        raise APIError(404, "not_found", "Invitacion no encontrada", extra={"resource": "invitation"})
+        raise APIError(
+            404,
+            "not_found",
+            "Invitacion no encontrada",
+            extra={"resource": "invitation"},
+        )
     return {"ok": True}
 
 
 @router.post("/{group_id}/transfer-ownership")
 async def transfer_group_ownership(
     group_id: str,
-    request: Request,
+    body: UsernameBody,
     username: str = Depends(require_auth),
 ) -> Dict[str, Any]:
     """Transfiere la propiedad del grupo a otro miembro existente."""
     _assert_not_personal_group(group_id, username)
-    body = await json_body(request)
+    body = body.payload()
     new_owner = str(body.get("username", "")).strip()
     if not new_owner:
         raise APIError(
-            400, "field_required", "Se requiere 'username' del nuevo propietario",
+            400,
+            "field_required",
+            "Se requiere 'username' del nuevo propietario",
             extra={"field": "username"},
         )
     target_user = await get_user_by_username(new_owner)
     if not target_user:
-        raise APIError(404, "not_found", "Usuario no encontrado", extra={"resource": "user"})
+        raise APIError(
+            404, "not_found", "Usuario no encontrado", extra={"resource": "user"}
+        )
     new_owner_id = target_user["id"]
     if new_owner_id == username:
         raise APIError(400, "already_owner", "Ya eres el propietario")
     group = await _groups.get(group_id)
     if not group:
-        raise APIError(404, "not_found", "Grupo no encontrado", extra={"resource": "group"})
+        raise APIError(
+            404, "not_found", "Grupo no encontrado", extra={"resource": "group"}
+        )
     if group.get("created_by") != username and await get_user_role(username) != "admin":
         raise APIError(
-            403, "owner_only_action", "Solo el propietario puede transferir el grupo",
+            403,
+            "owner_only_action",
+            "Solo el propietario puede transferir el grupo",
             extra={"action": "transfer"},
         )
     if not await _groups.transfer_ownership(group_id, new_owner_id):
@@ -407,6 +561,7 @@ async def transfer_group_ownership(
 
 
 # ── Cambio de group activo ─────────────────────────────────────────────────
+
 
 @router.post("/switch/{group_id}")
 async def switch_group(
@@ -424,8 +579,12 @@ async def switch_group(
     if group_id == username:
         token = create_token(username, group_id=username)
         response.set_cookie(
-            "ga_token", token, httponly=True, samesite="lax",
-            secure=SECURE_COOKIES, max_age=43200,  # A1: flag Secure, A2: 12h = mismo que login
+            "ga_token",
+            token,
+            httponly=True,
+            samesite="lax",
+            secure=SECURE_COOKIES,
+            max_age=JWT_MAX_AGE_SECONDS,
         )
         return {"ok": True, "group_id": group_id}
 
@@ -437,7 +596,11 @@ async def switch_group(
         raise APIError(403, "not_a_member", "No eres miembro de este grupo")
     token = create_token(username, group_id=group_id)
     response.set_cookie(
-        "ga_token", token, httponly=True, samesite="lax",
-        secure=SECURE_COOKIES, max_age=43200,  # A1: flag Secure, A2: 12h = mismo que login
+        "ga_token",
+        token,
+        httponly=True,
+        samesite="lax",
+        secure=SECURE_COOKIES,
+        max_age=JWT_MAX_AGE_SECONDS,
     )
     return {"ok": True, "group_id": group_id}

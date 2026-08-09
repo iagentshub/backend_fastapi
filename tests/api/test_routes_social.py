@@ -333,9 +333,7 @@ def test_try_agente_publico_ok(client, monkeypatch):
 
     monkeypatch.setattr("app.api.routes.resource_linking.stream_chat", _fake_stream)
     warnings = []
-    monkeypatch.setattr(
-        "app.api.routes.resource_linking.flog.warning", warnings.append
-    )
+    monkeypatch.setattr("app.api.routes.resource_linking.flog.warning", warnings.append)
 
     r = client.post(
         f"/api/agents/private/{agent_id}/try",
@@ -414,3 +412,10 @@ def test_try_requiere_auth(client):
         },
     )
     assert r.status_code == 401
+
+
+def test_explore_and_feed_reject_negative_pagination(client):
+    _login(client, "social_pagevalidator")
+    for path in ("/api/explore", "/api/feed"):
+        assert client.get(path, params={"limit": -1}).status_code == 422
+        assert client.get(path, params={"offset": -1}).status_code == 422
