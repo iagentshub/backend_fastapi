@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from typing import Any
 
 from app.storage.migrations.legacy import (
@@ -49,10 +50,7 @@ async def _resource_origin_labels(conn: Any) -> None:
         rows = await conn.execute_fetchall(f"SELECT id, owner_id, data FROM {table}")
         await conn.executemany(
             f"UPDATE {table} SET data=? WHERE id=? AND owner_id=?",
-            [
-                (normalize_resource_data(row[2]), row[0], row[1])
-                for row in rows
-            ],
+            [(normalize_resource_data(row[2]), row[0], row[1]) for row in rows],
         )
     for table in ("knowledge_items", "agent_workflows", "resource_social"):
         rows = await conn.execute_fetchall(f"SELECT rowid, labels FROM {table}")
@@ -187,6 +185,126 @@ async def _official_content_as_resources(conn: Any) -> None:
         await conn.execute(f"DROP TABLE IF EXISTS {table}")
 
 
+async def _official_source_provenance(conn: Any) -> None:
+    """Normaliza procedencia, borradores y mappings sin perder columnas legacy."""
+    columns = {
+        str(row[1])
+        for row in await conn.execute_fetchall("PRAGMA table_info(official_sources)")
+    }
+    additions = {
+        "provider": "TEXT NOT NULL DEFAULT 'github'",
+        "repository_path": "TEXT NOT NULL DEFAULT ''",
+        "owner_id": "TEXT",
+        "default_branch": "TEXT NOT NULL DEFAULT 'main'",
+        "last_commit_sha": "TEXT",
+        "sync_state": "TEXT NOT NULL DEFAULT 'idle'",
+    }
+    for column, definition in additions.items():
+        if column not in columns:
+            await conn.execute(
+                f"ALTER TABLE official_sources ADD COLUMN {column} {definition}"
+            )
+    await conn.executescript("""
+        CREATE TABLE IF NOT EXISTS resource_source_links (
+            source_id TEXT NOT NULL, component_key TEXT NOT NULL,
+            resource_type TEXT NOT NULL, resource_id TEXT NOT NULL,
+            resource_owner_id TEXT NOT NULL, source_path TEXT NOT NULL DEFAULT '',
+            content_hash TEXT NOT NULL DEFAULT '', commit_sha TEXT NOT NULL DEFAULT '',
+            explicitly_selected INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+            PRIMARY KEY (source_id, component_key),
+            UNIQUE (resource_type, resource_id, resource_owner_id),
+            FOREIGN KEY (source_id) REFERENCES official_sources(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_resource_source_resource
+            ON resource_source_links(resource_type, resource_id, resource_owner_id);
+        CREATE TABLE IF NOT EXISTS official_import_drafts (
+            id TEXT PRIMARY KEY, source_id TEXT, owner_id TEXT NOT NULL,
+            repository_url TEXT NOT NULL, provider TEXT NOT NULL,
+            repository_path TEXT NOT NULL, tracking_mode TEXT NOT NULL,
+            tracking_ref TEXT NOT NULL, resolved_version TEXT NOT NULL,
+            commit_sha TEXT NOT NULL, source_payload TEXT NOT NULL,
+            errors TEXT NOT NULL DEFAULT '[]',
+            security_warnings TEXT NOT NULL DEFAULT '[]',
+            status TEXT NOT NULL DEFAULT 'pending', expires_at TEXT NOT NULL,
+            created_at TEXT NOT NULL, updated_at TEXT NOT NULL,
+            FOREIGN KEY (source_id) REFERENCES official_sources(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_official_drafts_source
+            ON official_import_drafts(source_id, status, updated_at DESC);
+        CREATE TABLE IF NOT EXISTS official_import_components (
+            draft_id TEXT NOT NULL, component_key TEXT NOT NULL, payload TEXT NOT NULL,
+            selected INTEGER NOT NULL DEFAULT 0,
+            explicitly_selected INTEGER NOT NULL DEFAULT 0,
+            forced_type TEXT, forced_language TEXT,
+            security_accepted INTEGER NOT NULL DEFAULT 0,
+            state TEXT NOT NULL DEFAULT 'new',
+            PRIMARY KEY (draft_id, component_key),
+            FOREIGN KEY (draft_id) REFERENCES official_import_drafts(id) ON DELETE CASCADE
+        );
+        CREATE INDEX IF NOT EXISTS idx_official_components_filter
+            ON official_import_components(draft_id, state, selected);
+        CREATE TABLE IF NOT EXISTS official_source_mappings (
+            source_id TEXT NOT NULL, source_path TEXT NOT NULL,
+            forced_type TEXT, forced_language TEXT,
+            ignored INTEGER NOT NULL DEFAULT 0,
+            dependencies TEXT NOT NULL DEFAULT '[]', updated_at TEXT NOT NULL,
+            PRIMARY KEY (source_id, source_path),
+            FOREIGN KEY (source_id) REFERENCES official_sources(id) ON DELETE CASCADE
+        );
+    """)
+    await conn.execute("""
+        UPDATE official_sources
+        SET provider=CASE
+            WHEN repository_url LIKE 'https://gitlab.com/%' THEN 'gitlab'
+            WHEN repository_url LIKE 'internal://%' THEN 'internal'
+            ELSE 'github' END,
+            repository_path=CASE
+            WHEN repository_owner<>'' THEN repository_owner || '/' || repository_name
+            ELSE repository_name END
+    """)
+    now = datetime.now(timezone.utc).isoformat()
+    for resource_type, table in (
+        ("agent", "agents"),
+        ("skill", "skills"),
+        ("prompt", "prompts"),
+        ("tool", "tools"),
+        ("knowledge", "knowledge_items"),
+        ("workflow", "agent_workflows"),
+    ):
+        await conn.execute(
+            "INSERT OR IGNORE INTO resource_source_links "
+            "(source_id,component_key,resource_type,resource_id,resource_owner_id,"
+            "source_path,content_hash,commit_sha,created_at,updated_at) "
+            f"SELECT official_source_id, official_component_id, ?, id, owner_id, '', '', '', ?, ? FROM {table} "
+            "WHERE official_source_id IS NOT NULL AND official_component_id IS NOT NULL",
+            (resource_type, now, now),
+        )
+    await conn.execute("""
+        UPDATE official_sources
+        SET owner_id=(
+            SELECT MIN(resource_owner_id) FROM resource_source_links l
+            WHERE l.source_id=official_sources.id
+            HAVING COUNT(DISTINCT resource_owner_id)=1
+        )
+        WHERE owner_id IS NULL
+    """)
+
+
+async def _official_explicit_selection(conn: Any) -> None:
+    columns = {
+        str(row[1])
+        for row in await conn.execute_fetchall(
+            "PRAGMA table_info(resource_source_links)"
+        )
+    }
+    if "explicitly_selected" not in columns:
+        await conn.execute(
+            "ALTER TABLE resource_source_links ADD COLUMN "
+            "explicitly_selected INTEGER NOT NULL DEFAULT 1"
+        )
+
+
 SQLITE_MIGRATIONS = (
     Migration(1, "legacy_schema_catchup", _migrate_sqlite, repeatable=True),
     Migration(
@@ -197,6 +315,8 @@ SQLITE_MIGRATIONS = (
     Migration(5, "official_copy_mode", _official_copy_mode),
     Migration(6, "official_published_components", _official_published_components),
     Migration(7, "official_content_as_resources", _official_content_as_resources),
+    Migration(8, "official_source_provenance", _official_source_provenance),
+    Migration(9, "official_explicit_selection", _official_explicit_selection),
 )
 
 

@@ -119,8 +119,14 @@ class AsyncConn:
             async with self._conn.transaction():
                 yield
         else:
-            yield
-            await self._conn.commit()
+            await self._conn.execute("BEGIN")
+            try:
+                yield
+            except Exception:
+                await self._conn.rollback()
+                raise
+            else:
+                await self._conn.commit()
 
 
 # ── Lifecycle ──────────────────────────────────────────────────────────────────

@@ -16,12 +16,14 @@ from app.api.routes.admin._router import admin_router
 from app.api.routes.auth import require_admin
 from app.errors import APIError
 from app.models.official_source import INTERNAL_SOURCE_ID, MATERIALIZABLE_TYPES
+from app.services.official_source_drafts import OfficialImportDraftService
 from app.services.official_source_importer import (
     GitHubImportError,
     OfficialSourceImporter,
-    parse_github_repository,
+    parse_repository_url,
 )
 from app.services.official_source_sync import OfficialSourceMaterializer
+from app.storage.db import open_db
 from app.storage.official_source_storage import (
     OFFICIAL_RESOURCE_TABLES,
     OfficialSourceStorage,
@@ -30,12 +32,13 @@ from app.storage.official_source_storage import (
 _storage = OfficialSourceStorage()
 _importer = OfficialSourceImporter(_storage)
 _materializer = OfficialSourceMaterializer(_storage)
+_drafts = OfficialImportDraftService(_storage, _importer, _materializer)
 
 
 class ImportSourceBody(BaseModel):
     repository_url: str = Field(min_length=1, max_length=500)
     tracking_mode: Literal["release", "branch"] = "release"
-    tracking_ref: str = Field(default="main", min_length=1, max_length=200)
+    tracking_ref: str = Field(default="", max_length=200)
 
 
 class UpdateSourceBody(ImportSourceBody):
@@ -58,6 +61,18 @@ class MarkOfficialBody(BaseModel):
     official: bool = True
 
 
+class UpdateDraftComponentBody(BaseModel):
+    selected: Optional[bool] = None
+    forced_type: Optional[Literal["skill", "prompt", "knowledge", "tool"]] = None
+    forced_language: Optional[str] = Field(default=None, max_length=40)
+    security_accepted: Optional[bool] = None
+    dependencies: Optional[List[str]] = Field(default=None, max_length=500)
+
+
+class TransferSourceBody(BaseModel):
+    owner_id: str = Field(min_length=1, max_length=100)
+
+
 def _not_found() -> APIError:
     return APIError(
         404,
@@ -65,6 +80,15 @@ def _not_found() -> APIError:
         "Fuente oficial no encontrada",
         extra={"resource": "official_source"},
     )
+
+
+async def _owned_draft(draft_id: str, admin: str) -> Dict[str, Any]:
+    draft = await _storage.get_draft(draft_id)
+    if not draft:
+        raise APIError(404, "not_found", "Borrador de importación no encontrado")
+    if draft["owner_id"] != admin:
+        raise APIError(403, "forbidden", "El borrador pertenece a otro administrador")
+    return draft
 
 
 async def _fetch_payload(
@@ -105,6 +129,22 @@ async def _fetch_payload(
     }
 
 
+async def _draft_payload(
+    draft: Dict[str, Any], *, applied: Optional[Dict[str, Any]] = None
+) -> Dict[str, Any]:
+    page = await _storage.list_draft_components(str(draft["id"]), limit=500)
+    items = page["items"]
+    return {
+        **draft,
+        "draft_id": draft["id"],
+        "components": items,
+        "selected": sorted(
+            str(item["component_id"]) for item in items if item["selected"]
+        ),
+        "applied": applied,
+    }
+
+
 @admin_router.get("/official-sources")
 async def admin_list_official_sources(
     _: str = Depends(require_admin),
@@ -120,15 +160,42 @@ async def admin_import_official_source(
     body: ImportSourceBody, admin: str = Depends(require_admin)
 ) -> Dict[str, Any]:
     try:
-        fetched = await _importer.import_repository(
+        draft = await _drafts.inspect(
             body.repository_url,
+            admin,
             tracking_mode=body.tracking_mode,
             tracking_ref=body.tracking_ref,
         )
     except GitHubImportError as exc:
         raise APIError(422, "official_source_import_failed", str(exc)) from exc
-    source_id = str(fetched["source"]["id"])
-    return await _fetch_payload(source_id, None, admin)
+    source = await _storage.save_source({**draft["source"], "owner_id": admin})
+    attached = await _storage.attach_draft_source(
+        str(draft["id"]),
+        {
+            **draft["source"],
+            **source,
+            "resolved_version": draft["resolved_version"],
+            "commit_sha": draft["commit_sha"],
+        },
+    )
+    assert attached is not None
+    return await _draft_payload(attached)
+
+
+@admin_router.post("/official-sources/inspect")
+async def admin_inspect_official_source(
+    body: ImportSourceBody, admin: str = Depends(require_admin)
+) -> Dict[str, Any]:
+    try:
+        draft = await _drafts.inspect(
+            body.repository_url,
+            admin,
+            tracking_mode=body.tracking_mode,
+            tracking_ref=body.tracking_ref,
+        )
+    except GitHubImportError as exc:
+        raise APIError(422, "official_source_import_failed", str(exc)) from exc
+    return await _draft_payload(draft)
 
 
 @admin_router.put("/official-sources/{source_id}")
@@ -138,14 +205,12 @@ async def admin_update_official_source(
     _: str = Depends(require_admin),
 ) -> Dict[str, Any]:
     try:
-        owner, repository, canonical_url = parse_github_repository(body.repository_url)
+        repository = parse_repository_url(body.repository_url)
         updated = await _storage.update_source(
             source_id,
             {
                 **body.model_dump(),
-                "repository_url": canonical_url,
-                "repository_owner": owner,
-                "repository_name": repository,
+                **repository,
             },
         )
     except GitHubImportError as exc:
@@ -173,13 +238,160 @@ async def admin_sync_official_source(
     if not await _storage.get_source(source_id):
         raise _not_found()
     try:
-        return await _fetch_payload(source_id, body, admin)
+        draft = await _drafts.inspect_source(source_id, admin)
+        if body is None or body.component_ids is None:
+            return await _draft_payload(draft)
+        await _storage.replace_draft_selection(
+            str(draft["id"]), selected=set(), explicit=set()
+        )
+        for component_id in body.component_ids:
+            updated = await _drafts.update_component(
+                str(draft["id"]), component_id, {"selected": True}
+            )
+            if not updated:
+                raise ValueError(f"Componente no encontrado: {component_id}")
+        applied = await _drafts.apply(str(draft["id"]), admin)
+        refreshed = await _storage.get_draft(str(draft["id"]))
+        assert refreshed is not None
+        return await _draft_payload(refreshed, applied=applied)
     except KeyError as exc:
         raise _not_found() from exc
     except GitHubImportError as exc:
         raise APIError(422, "official_source_sync_failed", str(exc)) from exc
     except ValueError as exc:
-        raise APIError(422, "invalid_field", str(exc), extra={"field": "component_ids"}) from exc
+        raise APIError(
+            422, "invalid_field", str(exc), extra={"field": "component_ids"}
+        ) from exc
+
+
+@admin_router.get("/official-source-drafts/{draft_id}")
+async def admin_get_official_source_draft(
+    draft_id: str, admin: str = Depends(require_admin)
+) -> Dict[str, Any]:
+    draft = await _owned_draft(draft_id, admin)
+    return await _draft_payload(draft)
+
+
+@admin_router.get("/official-source-drafts/{draft_id}/components")
+async def admin_list_official_source_draft_components(
+    draft_id: str,
+    offset: int = 0,
+    limit: int = 100,
+    component_type: Optional[str] = None,
+    state: Optional[str] = None,
+    q: str = "",
+    admin: str = Depends(require_admin),
+) -> Dict[str, Any]:
+    await _owned_draft(draft_id, admin)
+    return await _storage.list_draft_components(
+        draft_id,
+        offset=offset,
+        limit=limit,
+        component_type=component_type,
+        state=state,
+        query=q,
+    )
+
+
+@admin_router.patch("/official-source-drafts/{draft_id}/components/{component_key}")
+async def admin_update_official_source_draft_component(
+    draft_id: str,
+    component_key: str,
+    body: UpdateDraftComponentBody,
+    admin: str = Depends(require_admin),
+) -> Dict[str, Any]:
+    await _owned_draft(draft_id, admin)
+    try:
+        updated = await _drafts.update_component(
+            draft_id, component_key, body.model_dump(exclude_none=True)
+        )
+    except ValueError as exc:
+        raise APIError(422, "invalid_field", str(exc)) from exc
+    if not updated:
+        raise APIError(404, "not_found", "Componente del borrador no encontrado")
+    return updated
+
+
+@admin_router.get("/official-source-drafts/{draft_id}/diff")
+async def admin_get_official_source_draft_diff(
+    draft_id: str, admin: str = Depends(require_admin)
+) -> Dict[str, Any]:
+    await _owned_draft(draft_id, admin)
+    try:
+        return await _drafts.diff(draft_id)
+    except KeyError as exc:
+        raise APIError(
+            404, "not_found", "Borrador de importación no encontrado"
+        ) from exc
+
+
+@admin_router.get("/official-source-drafts/{draft_id}/graph")
+async def admin_get_official_source_draft_graph(
+    draft_id: str, admin: str = Depends(require_admin)
+) -> Dict[str, Any]:
+    await _owned_draft(draft_id, admin)
+    try:
+        return await _drafts.graph(draft_id)
+    except KeyError as exc:
+        raise APIError(
+            404, "not_found", "Borrador de importación no encontrado"
+        ) from exc
+
+
+@admin_router.post("/official-source-drafts/{draft_id}/apply")
+async def admin_apply_official_source_draft(
+    draft_id: str, admin: str = Depends(require_admin)
+) -> Dict[str, Any]:
+    try:
+        return await _drafts.apply(draft_id, admin)
+    except KeyError as exc:
+        raise APIError(
+            404, "not_found", "Borrador de importación no encontrado"
+        ) from exc
+    except PermissionError as exc:
+        raise APIError(403, "forbidden", str(exc)) from exc
+    except ValueError as exc:
+        raise APIError(409, "official_import_not_applicable", str(exc)) from exc
+
+
+@admin_router.put("/official-sources/{source_id}/owner")
+async def admin_transfer_official_source_owner(
+    source_id: str,
+    body: TransferSourceBody,
+    _: str = Depends(require_admin),
+) -> Dict[str, Any]:
+    async with open_db() as conn:
+        owner = await conn.fetchone(
+            "SELECT id FROM users WHERE id=? AND role='admin' AND is_active=1",
+            (body.owner_id,),
+        )
+    if not owner:
+        raise APIError(
+            422,
+            "invalid_field",
+            "El nuevo propietario debe ser un administrador activo",
+            extra={"field": "owner_id"},
+        )
+    try:
+        if not await _storage.transfer_owner(source_id, body.owner_id):
+            raise _not_found()
+    except ValueError as exc:
+        raise APIError(409, "owner_transfer_conflict", str(exc)) from exc
+    source = await _storage.get_source(source_id)
+    assert source is not None
+    return source
+
+
+@admin_router.get("/resources/{resource_type}/{resource_id}/origin")
+async def admin_get_resource_origin(
+    resource_type: str,
+    resource_id: str,
+    _: str = Depends(require_admin),
+) -> Dict[str, Any]:
+    origin = await _storage.get_origin(resource_type, resource_id)
+    if not origin:
+        raise APIError(404, "not_found", "El recurso no tiene procedencia registrada")
+    return origin
 
 
 @admin_router.delete("/official-sources/{source_id}")
@@ -188,8 +400,7 @@ async def admin_delete_official_source(
 ) -> Dict[str, Any]:
     if not await _storage.get_source(source_id):
         raise _not_found()
-    removed = await _materializer.remove_all(source_id)
-    await _storage.delete_source(source_id)
+    removed = await _materializer.delete_source(source_id)
     return {"ok": True, "removed_resources": removed}
 
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Optional
 
-from app.storage.db import open_db
+from app.storage.db import AsyncConn, open_db
 from app.utils.generators import generate_date as _now
 from app.utils.generators import generate_id
 
@@ -19,9 +19,11 @@ class ResourceVersionStorage:
         snapshot: Dict[str, Any],
         created_by: str,
         reason: str = "save",
+        *,
+        conn: Optional[AsyncConn] = None,
     ) -> Dict[str, Any]:
-        async with open_db() as conn:
-            latest = await conn.fetchval(
+        async def write(target: AsyncConn) -> Dict[str, Any]:
+            latest = await target.fetchval(
                 "SELECT MAX(version) FROM resource_versions "
                 "WHERE resource_type=? AND resource_id=? AND owner_id=?",
                 (resource_type, resource_id, owner_id),
@@ -38,7 +40,7 @@ class ResourceVersionStorage:
                 "reason": reason,
                 "created_at": _now(),
             }
-            await conn.execute(
+            await target.execute(
                 "INSERT INTO resource_versions "
                 "(id, resource_type, resource_id, owner_id, version, snapshot, "
                 "created_by, reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -54,7 +56,13 @@ class ResourceVersionStorage:
                     item["created_at"],
                 ),
             )
-            await conn.commit()
+            return item
+
+        if conn is not None:
+            return await write(conn)
+        async with open_db() as own_conn:
+            item = await write(own_conn)
+            await own_conn.commit()
         return item
 
     async def list(

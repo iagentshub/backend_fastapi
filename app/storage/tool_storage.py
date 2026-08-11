@@ -3,6 +3,7 @@
 Fase 1: solo catalogación y asignación a un agente, sin motor de
 ejecución (ver plan de la Fase 2).
 """
+
 from __future__ import annotations
 
 import json
@@ -11,7 +12,7 @@ from typing import Any, Dict, List, Optional
 # db se importa DOS veces a propósito: ver app/storage/_storage_helpers.py.
 from app.storage import db as _db
 from app.storage._storage_helpers import _PUBLIC_OWNER, _slug
-from app.storage.db import open_db
+from app.storage.db import AsyncConn, open_db
 from app.storage.db_migrations import _compact_resource_data
 from app.storage.resource_base import ResourceStorage
 
@@ -31,6 +32,7 @@ class ToolStorage(ResourceStorage):
     Sin migración legacy de ficheros (a diferencia de Skill): se instancia
     sin argumentos, igual que PromptStorage.
     """
+
     table = "tools"
     resource_type = "tool"
 
@@ -242,7 +244,12 @@ class ToolStorage(ResourceStorage):
         return None
 
     async def save(
-        self, scope: str, payload: Dict[str, Any], owner_id: Optional[str] = None
+        self,
+        scope: str,
+        payload: Dict[str, Any],
+        owner_id: Optional[str] = None,
+        *,
+        conn: Optional[AsyncConn] = None,
     ) -> Dict[str, Any]:
         if scope not in ("private", "public"):
             raise ValueError("scope must be private or public")
@@ -322,10 +329,16 @@ class ToolStorage(ResourceStorage):
             "is_active": existing.get("is_active", True) if existing else True,
             "deactivated_at": existing.get("deactivated_at") if existing else None,
         }
-        async with open_db() as conn:
+        if conn is not None:
             await self._upsert(conn, tool_id, actual_owner, scope, data)
-            await conn.commit()
-        await self.sync_labels(tool_id, actual_owner, data.get("labels") or [])
+            await self.sync_labels(
+                tool_id, actual_owner, data.get("labels") or [], conn=conn
+            )
+        else:
+            async with open_db() as own_conn:
+                await self._upsert(own_conn, tool_id, actual_owner, scope, data)
+                await own_conn.commit()
+            await self.sync_labels(tool_id, actual_owner, data.get("labels") or [])
         return data
 
     async def delete(

@@ -55,9 +55,14 @@ GET /api/admin/logs/summary
 GET /api/admin/memory
 GET /api/admin/metadata/tables
 GET /api/admin/metadata/tables/{table_name}/data
+GET /api/admin/official-source-drafts/{draft_id}
+GET /api/admin/official-source-drafts/{draft_id}/components
+GET /api/admin/official-source-drafts/{draft_id}/diff
+GET /api/admin/official-source-drafts/{draft_id}/graph
 GET /api/admin/official-sources
 GET /api/admin/prompts
 GET /api/admin/resources/{resource_type}/{resource_id}/graph
+GET /api/admin/resources/{resource_type}/{resource_id}/origin
 GET /api/admin/skills
 GET /api/admin/stats
 GET /api/admin/tools
@@ -128,6 +133,7 @@ GET /api/workflow-runs/{run_id}
 GET /api/workflow-runs/{run_id}/events
 GET /api/workflows
 GET /api/workflows/{workflow_id}
+PATCH /api/admin/official-source-drafts/{draft_id}/components/{component_key}
 PATCH /api/admin/users/{username}
 PATCH /api/groups/{group_id}
 PATCH /api/groups/{group_id}/members/{username}
@@ -143,7 +149,9 @@ POST /api/admin/centinel/stress/run
 POST /api/admin/groups/{group_id}/status
 POST /api/admin/impersonate/{username}
 POST /api/admin/logs/client
+POST /api/admin/official-source-drafts/{draft_id}/apply
 POST /api/admin/official-sources/import
+POST /api/admin/official-sources/inspect
 POST /api/admin/official-sources/{source_id}/sync
 POST /api/admin/resources/{resource_type}/{resource_id}/official
 POST /api/admin/update-now
@@ -239,6 +247,7 @@ PUT /api/accounts/{account_id}
 PUT /api/admin/agents/{agent_id}
 PUT /api/admin/auto-update
 PUT /api/admin/official-sources/{source_id}
+PUT /api/admin/official-sources/{source_id}/owner
 PUT /api/admin/resources/{resource_type}/{resource_id}/owner
 PUT /api/admin/resources/{resource_type}/{resource_id}/verify
 PUT /api/agents/{agent_id}/preferences

@@ -1,4 +1,5 @@
 """Storage de agentes. owner_id='__public__' para agentes de sistema/públicos."""
+
 from __future__ import annotations
 
 import json
@@ -10,7 +11,7 @@ from app.models.agent import Agent
 # db se importa DOS veces a propósito: ver app/storage/_storage_helpers.py.
 from app.storage import db as _db
 from app.storage._storage_helpers import _PUBLIC_OWNER
-from app.storage.db import open_db
+from app.storage.db import AsyncConn, open_db
 from app.storage.db_migrations import _compact_resource_data
 from app.storage.resource_base import ResourceStorage
 from app.storage.skill_storage import ensure_origin_label
@@ -47,6 +48,7 @@ class AgentSummary(TypedDict, total=False):
 
 class AgentStorage(ResourceStorage):
     """Async DB-backed agent storage (SQLite / PostgreSQL)."""
+
     table = "agents"
     resource_type = "agent"
 
@@ -295,6 +297,8 @@ class AgentStorage(ResourceStorage):
         payload: Dict[str, Any],
         scope: str = "private",
         owner_id: Optional[str] = None,
+        *,
+        conn: Optional[AsyncConn] = None,
     ) -> Dict[str, Any]:
         await self._ensure_migrated()
 
@@ -305,7 +309,9 @@ class AgentStorage(ResourceStorage):
         actual_owner = owner_id or "admin"
         existing = await self.get(agent_id, scope="private")
         now = _now()
-        raw_labels = [str(label) for label in (payload.get("labels") or [scope]) if label]
+        raw_labels = [
+            str(label) for label in (payload.get("labels") or [scope]) if label
+        ]
         agent = Agent.from_dict(
             {
                 **payload,
@@ -322,10 +328,16 @@ class AgentStorage(ResourceStorage):
             }
         )
         data = agent.to_dict()
-        async with open_db() as conn:
+        if conn is not None:
             await self._upsert(conn, agent_id, actual_owner, scope, data)
-            await conn.commit()
-        await self.sync_labels(agent_id, actual_owner, data.get("labels") or [])
+            await self.sync_labels(
+                agent_id, actual_owner, data.get("labels") or [], conn=conn
+            )
+        else:
+            async with open_db() as own_conn:
+                await self._upsert(own_conn, agent_id, actual_owner, scope, data)
+                await own_conn.commit()
+            await self.sync_labels(agent_id, actual_owner, data.get("labels") or [])
         return data
 
     async def add_tokens(

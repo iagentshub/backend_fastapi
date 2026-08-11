@@ -1,4 +1,5 @@
 """Storage de prompts reutilizables, invocables desde el chat vía "@alias"."""
+
 from __future__ import annotations
 
 import json
@@ -8,7 +9,7 @@ from typing import Any, Dict, List, Optional
 # db se importa DOS veces a propósito: ver app/storage/_storage_helpers.py.
 from app.storage import db as _db
 from app.storage._storage_helpers import _PUBLIC_OWNER
-from app.storage.db import open_db
+from app.storage.db import AsyncConn, open_db
 from app.storage.db_migrations import _compact_resource_data
 from app.storage.resource_base import ResourceStorage
 
@@ -22,6 +23,7 @@ PROMPT_ALIAS_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{1,28}[a-z0-9]$")
 
 class PromptStorage(ResourceStorage):
     """Async DB-backed prompt storage (SQLite / PostgreSQL)."""
+
     table = "prompts"
     resource_type = "prompt"
 
@@ -205,7 +207,12 @@ class PromptStorage(ResourceStorage):
         return self._row_to_dict(row) if row else None
 
     async def save(
-        self, scope: str, payload: Dict[str, Any], owner_id: Optional[str] = None
+        self,
+        scope: str,
+        payload: Dict[str, Any],
+        owner_id: Optional[str] = None,
+        *,
+        conn: Optional[AsyncConn] = None,
     ) -> Dict[str, Any]:
         if scope not in ("private", "public"):
             raise ValueError("scope must be private or public")
@@ -257,16 +264,28 @@ class PromptStorage(ResourceStorage):
             "is_active": existing.get("is_active", True) if existing else True,
             "deactivated_at": existing.get("deactivated_at") if existing else None,
         }
-        async with open_db() as conn:
-            async with conn.transaction():
-                dup = await conn.fetchone(
-                    "SELECT 1 FROM prompts WHERE owner_id=? AND alias=? AND id != ?",
-                    (actual_owner, alias, prompt_id),
-                )
-                if dup:
-                    raise ValueError("Ya tienes un prompt con ese alias")
-                await self._upsert(conn, prompt_id, actual_owner, scope, data)
-        await self.sync_labels(prompt_id, actual_owner, data.get("labels") or [])
+        if conn is not None:
+            dup = await conn.fetchone(
+                "SELECT 1 FROM prompts WHERE owner_id=? AND alias=? AND id != ?",
+                (actual_owner, alias, prompt_id),
+            )
+            if dup:
+                raise ValueError("Ya tienes un prompt con ese alias")
+            await self._upsert(conn, prompt_id, actual_owner, scope, data)
+            await self.sync_labels(
+                prompt_id, actual_owner, data.get("labels") or [], conn=conn
+            )
+        else:
+            async with open_db() as own_conn:
+                async with own_conn.transaction():
+                    dup = await own_conn.fetchone(
+                        "SELECT 1 FROM prompts WHERE owner_id=? AND alias=? AND id != ?",
+                        (actual_owner, alias, prompt_id),
+                    )
+                    if dup:
+                        raise ValueError("Ya tienes un prompt con ese alias")
+                    await self._upsert(own_conn, prompt_id, actual_owner, scope, data)
+            await self.sync_labels(prompt_id, actual_owner, data.get("labels") or [])
         return data
 
     async def delete(
@@ -306,7 +325,9 @@ class PromptStorage(ResourceStorage):
         await self.clear_labels(prompt_id)
         return True
 
-    async def unique_alias(self, owner_id: str, alias: str, exclude_id: str = "") -> str:
+    async def unique_alias(
+        self, owner_id: str, alias: str, exclude_id: str = ""
+    ) -> str:
         """Devuelve ``alias`` si está libre para ``owner_id``, o un sufijo
         incremental (``alias-2``, ``alias-3``…) si ya existe. Usado por los
         flujos de clonado/enlace, donde el alias del prompt de origen puede

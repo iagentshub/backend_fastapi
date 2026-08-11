@@ -14,11 +14,14 @@ en todas y que, al estar duplicado, ya provocó un fallo de aislamiento.
 
 from __future__ import annotations
 
-from typing import List, Optional
+from typing import TYPE_CHECKING, List, Optional
 
 from app.storage import labels as _labels
 from app.storage.migration import LegacyMigrationStorage
 from app.utils.generators import generate_date
+
+if TYPE_CHECKING:
+    from app.storage.db import AsyncConn
 
 
 class ResourceStorage(LegacyMigrationStorage):
@@ -72,9 +75,29 @@ class ResourceStorage(LegacyMigrationStorage):
         return True
 
     async def sync_labels(
-        self, resource_id: str, owner_id: Optional[str], labels: List[str]
+        self,
+        resource_id: str,
+        owner_id: Optional[str],
+        labels: List[str],
+        *,
+        conn: Optional["AsyncConn"] = None,
     ) -> None:
         """Refleja las etiquetas del recurso en el índice transversal."""
+        if conn is not None:
+            from app.models.resource_types import normalize_resource_type
+
+            resource_type = normalize_resource_type(self.resource_type)
+            await conn.execute(
+                "DELETE FROM resource_labels WHERE resource_type=? AND resource_id=?",
+                (resource_type, resource_id),
+            )
+            for label in sorted({item.strip() for item in labels if item.strip()}):
+                await conn.execute(
+                    "INSERT INTO resource_labels "
+                    "(resource_type,resource_id,owner_id,label) VALUES (?,?,?,?)",
+                    (resource_type, resource_id, owner_id or "", label),
+                )
+            return
         await _labels.sync_labels(self.resource_type, resource_id, owner_id, labels)
 
     async def clear_labels(self, resource_id: str) -> None:

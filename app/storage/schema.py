@@ -202,14 +202,86 @@ CREATE TABLE IF NOT EXISTS official_sources (
     repository_url      TEXT NOT NULL UNIQUE,
     repository_owner    TEXT NOT NULL DEFAULT '',
     repository_name     TEXT NOT NULL DEFAULT '',
+    provider            TEXT NOT NULL DEFAULT 'github',
+    repository_path     TEXT NOT NULL DEFAULT '',
+    owner_id            TEXT,
+    default_branch      TEXT NOT NULL DEFAULT 'main',
     tracking_mode       TEXT NOT NULL DEFAULT 'release',
     tracking_ref        TEXT NOT NULL DEFAULT 'main',
     license             TEXT NOT NULL DEFAULT '',
     last_version        TEXT,
+    last_commit_sha     TEXT,
+    sync_state          TEXT NOT NULL DEFAULT 'idle',
     latest_checked_at   TEXT,
     last_sync_error     TEXT,
     created_at          TEXT NOT NULL,
     updated_at          TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS resource_source_links (
+    source_id          TEXT NOT NULL,
+    component_key      TEXT NOT NULL,
+    resource_type      TEXT NOT NULL,
+    resource_id        TEXT NOT NULL,
+    resource_owner_id  TEXT NOT NULL,
+    source_path        TEXT NOT NULL DEFAULT '',
+    content_hash       TEXT NOT NULL DEFAULT '',
+    commit_sha         TEXT NOT NULL DEFAULT '',
+    explicitly_selected @BOOL@ NOT NULL DEFAULT 1,
+    created_at         TEXT NOT NULL,
+    updated_at         TEXT NOT NULL,
+    PRIMARY KEY (source_id, component_key),
+    UNIQUE (resource_type, resource_id, resource_owner_id),
+    FOREIGN KEY (source_id) REFERENCES official_sources(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_resource_source_resource
+    ON resource_source_links(resource_type, resource_id, resource_owner_id);
+CREATE TABLE IF NOT EXISTS official_import_drafts (
+    id                  TEXT PRIMARY KEY,
+    source_id           TEXT,
+    owner_id            TEXT NOT NULL,
+    repository_url      TEXT NOT NULL,
+    provider            TEXT NOT NULL,
+    repository_path     TEXT NOT NULL,
+    tracking_mode       TEXT NOT NULL,
+    tracking_ref        TEXT NOT NULL,
+    resolved_version    TEXT NOT NULL,
+    commit_sha          TEXT NOT NULL,
+    source_payload      TEXT NOT NULL,
+    errors              TEXT NOT NULL DEFAULT '[]',
+    security_warnings   TEXT NOT NULL DEFAULT '[]',
+    status              TEXT NOT NULL DEFAULT 'pending',
+    expires_at          TEXT NOT NULL,
+    created_at          TEXT NOT NULL,
+    updated_at          TEXT NOT NULL,
+    FOREIGN KEY (source_id) REFERENCES official_sources(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_official_drafts_source
+    ON official_import_drafts(source_id, status, updated_at DESC);
+CREATE TABLE IF NOT EXISTS official_import_components (
+    draft_id            TEXT NOT NULL,
+    component_key       TEXT NOT NULL,
+    payload             TEXT NOT NULL,
+    selected            @BOOL@ NOT NULL DEFAULT 0,
+    explicitly_selected @BOOL@ NOT NULL DEFAULT 0,
+    forced_type         TEXT,
+    forced_language     TEXT,
+    security_accepted   @BOOL@ NOT NULL DEFAULT 0,
+    state               TEXT NOT NULL DEFAULT 'new',
+    PRIMARY KEY (draft_id, component_key),
+    FOREIGN KEY (draft_id) REFERENCES official_import_drafts(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_official_components_filter
+    ON official_import_components(draft_id, state, selected);
+CREATE TABLE IF NOT EXISTS official_source_mappings (
+    source_id          TEXT NOT NULL,
+    source_path        TEXT NOT NULL,
+    forced_type        TEXT,
+    forced_language    TEXT,
+    ignored            @BOOL@ NOT NULL DEFAULT 0,
+    dependencies       TEXT NOT NULL DEFAULT '[]',
+    updated_at         TEXT NOT NULL,
+    PRIMARY KEY (source_id, source_path),
+    FOREIGN KEY (source_id) REFERENCES official_sources(id) ON DELETE CASCADE
 );
 CREATE TABLE IF NOT EXISTS users (
     id                    TEXT PRIMARY KEY,

@@ -16,7 +16,7 @@ import urllib.request
 import zipfile
 from pathlib import PurePosixPath
 from typing import Any, Dict, List, Optional, Tuple
-from urllib.parse import urlparse
+from urllib.parse import quote, urlencode, urlparse
 
 import yaml
 
@@ -64,32 +64,72 @@ _DANGEROUS_PATTERNS = (
         "creación de procesos",
     ),
 )
+_ALLOWED_DOWNLOAD_HOSTS = frozenset(
+    {"api.github.com", "codeload.github.com", "gitlab.com"}
+)
 
 
-class GitHubImportError(ValueError):
+class OfficialRepositoryImportError(ValueError):
     pass
 
 
-def parse_github_repository(repository_url: str) -> Tuple[str, str, str]:
+GitHubImportError = OfficialRepositoryImportError
+
+
+class _SafeRedirectHandler(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, req, fp, code, msg, headers, newurl):  # type: ignore[no-untyped-def]
+        if (urlparse(newurl).hostname or "").lower() not in _ALLOWED_DOWNLOAD_HOSTS:
+            raise OfficialRepositoryImportError(
+                "La descarga intentó redirigir a un host no permitido"
+            )
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
+def parse_repository_url(repository_url: str) -> Dict[str, str]:
+    """Normaliza una raíz pública GitHub/GitLab, incluidos grupos anidados."""
     parsed = urlparse(repository_url.strip())
-    if parsed.scheme != "https" or parsed.hostname not in {
+    hostname = (parsed.hostname or "").lower()
+    if parsed.scheme != "https" or hostname not in {
         "github.com",
         "www.github.com",
+        "gitlab.com",
+        "www.gitlab.com",
     }:
-        raise GitHubImportError("Solo se admiten repositorios https://github.com")
-    parts = [part for part in parsed.path.strip("/").split("/") if part]
-    if len(parts) != 2:
-        raise GitHubImportError(
-            "La URL debe apuntar a la raíz de un repositorio GitHub"
+        raise OfficialRepositoryImportError(
+            "Solo se admiten repositorios públicos HTTPS de GitHub y GitLab"
         )
-    owner, repository = parts
-    repository = repository.removesuffix(".git")
-    if not re.fullmatch(r"[A-Za-z0-9_.-]+", owner) or not re.fullmatch(
-        r"[A-Za-z0-9_.-]+", repository
-    ):
-        raise GitHubImportError("Propietario o repositorio no válido")
-    canonical = f"https://github.com/{owner}/{repository}"
-    return owner, repository, canonical
+    if parsed.query or parsed.fragment or parsed.username or parsed.password:
+        raise OfficialRepositoryImportError("La URL del repositorio no es válida")
+    parts = [part for part in parsed.path.strip("/").split("/") if part]
+    minimum = 2
+    if len(parts) < minimum or (hostname.endswith("github.com") and len(parts) != 2):
+        raise OfficialRepositoryImportError(
+            "La URL debe apuntar a la raíz de un repositorio"
+        )
+    parts[-1] = parts[-1].removesuffix(".git")
+    if any(not re.fullmatch(r"[A-Za-z0-9_.-]+", part) for part in parts):
+        raise OfficialRepositoryImportError("La ruta del proyecto no es válida")
+    provider = "gitlab" if hostname.endswith("gitlab.com") else "github"
+    project_path = "/".join(parts)
+    canonical = f"https://{provider}.com/{project_path}"
+    return {
+        "provider": provider,
+        "repository_path": project_path,
+        "repository_owner": "/".join(parts[:-1]),
+        "repository_name": parts[-1],
+        "repository_url": canonical,
+    }
+
+
+def parse_github_repository(repository_url: str) -> Tuple[str, str, str]:
+    parsed = parse_repository_url(repository_url)
+    if parsed["provider"] != "github":
+        raise OfficialRepositoryImportError("La URL no pertenece a GitHub")
+    return (
+        parsed["repository_owner"],
+        parsed["repository_name"],
+        parsed["repository_url"],
+    )
 
 
 def _request(
@@ -99,6 +139,9 @@ def _request(
     max_bytes: int = _MAX_JSON_BYTES,
     too_large_message: str = "La respuesta de GitHub supera 2 MB",
 ) -> bytes:
+    hostname = (urlparse(url).hostname or "").lower()
+    if hostname not in _ALLOWED_DOWNLOAD_HOSTS:
+        raise OfficialRepositoryImportError("Host de descarga no permitido")
     request = urllib.request.Request(
         url,
         headers={
@@ -108,19 +151,31 @@ def _request(
         },
     )
     try:
-        with urllib.request.urlopen(request, timeout=30) as response:
+        opener = urllib.request.build_opener(_SafeRedirectHandler())
+        with opener.open(request, timeout=30) as response:
+            final_host = (urlparse(response.geturl()).hostname or "").lower()
+            if final_host not in _ALLOWED_DOWNLOAD_HOSTS:
+                raise OfficialRepositoryImportError(
+                    "La descarga redirigió a un host no permitido"
+                )
             length = int(response.headers.get("Content-Length") or 0)
             if length > max_bytes:
-                raise GitHubImportError(too_large_message)
+                raise OfficialRepositoryImportError(too_large_message)
             data = response.read(max_bytes + 1)
     except urllib.error.HTTPError as exc:
         if exc.code == 404:
-            raise GitHubImportError("Repositorio o referencia no encontrados") from exc
-        raise GitHubImportError(f"GitHub respondió con HTTP {exc.code}") from exc
+            raise OfficialRepositoryImportError(
+                "Repositorio o referencia no encontrados"
+            ) from exc
+        raise OfficialRepositoryImportError(
+            f"El proveedor respondió con HTTP {exc.code}"
+        ) from exc
     except urllib.error.URLError as exc:
-        raise GitHubImportError("No se pudo conectar con GitHub") from exc
+        raise OfficialRepositoryImportError(
+            "No se pudo conectar con el proveedor"
+        ) from exc
     if len(data) > max_bytes:
-        raise GitHubImportError(too_large_message)
+        raise OfficialRepositoryImportError(too_large_message)
     return data
 
 
@@ -129,9 +184,13 @@ async def _json_request(url: str) -> Dict[str, Any]:
     try:
         value = json.loads(raw)
     except (json.JSONDecodeError, UnicodeDecodeError) as exc:
-        raise GitHubImportError("GitHub devolvió una respuesta no válida") from exc
+        raise OfficialRepositoryImportError(
+            "El proveedor devolvió una respuesta no válida"
+        ) from exc
     if not isinstance(value, dict):
-        raise GitHubImportError("GitHub devolvió una respuesta inesperada")
+        raise OfficialRepositoryImportError(
+            "El proveedor devolvió una respuesta inesperada"
+        )
     return value
 
 
@@ -190,46 +249,104 @@ def _slug(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-") or "component"
 
 
-def _component_kind(path: str) -> Optional[str]:
+_ROOT_KINDS = {
+    "agents": "agent",
+    "skills": "skill",
+    "commands": "command",
+    "prompts": "prompt",
+    "knowledge": "knowledge",
+    "documents": "knowledge",
+    "memory": "memory",
+    "tools": "tool",
+    "workflows": "workflow",
+    "rules": "rule",
+    "hooks": "hook",
+    "mcp": "mcp",
+    "mcp-configs": "mcp",
+}
+_PLATFORM_ROOTS = frozenset(
+    {
+        ".agents",
+        ".claude",
+        ".codex",
+        ".openclaw",
+        ".opencode",
+        ".cursor",
+        ".kiro",
+        ".gemini",
+    }
+)
+_IGNORED_ROOTS = frozenset(
+    {
+        ".git",
+        ".github",
+        "benchmarks",
+        "docs",
+        "documentation",
+        "evals",
+        "examples",
+        "node_modules",
+        "tests",
+        "test",
+        "vendor",
+        "dist",
+    }
+)
+_KIND_EXTENSIONS = {
+    "agent": {".md", ".json", ".yaml", ".yml", ".toml"},
+    "skill": {".md"},
+    "command": {".md", ".toml"},
+    "prompt": {".md", ".txt"},
+    "knowledge": {".md", ".txt", ".json", ".yaml", ".yml", ".toml"},
+    "memory": {".md", ".txt", ".json", ".yaml", ".yml", ".toml"},
+    "tool": {".py", ".sh", ".ps1", ".js", ".mjs", ".ts"},
+    "workflow": {".json", ".yaml", ".yml"},
+    "rule": {".md", ".txt"},
+    "hook": {".json", ".yaml", ".yml", ".py", ".sh", ".ps1", ".js", ".ts"},
+    "mcp": {".json", ".yaml", ".yml", ".toml"},
+}
+
+
+def _component_location(
+    path: str, *, declared: bool = False
+) -> Optional[Tuple[str, int]]:
+    """Tipo y prioridad. Las raíces del repositorio ganan a sus adaptadores."""
     pure = PurePosixPath(path)
     lowered = tuple(part.lower() for part in pure.parts)
-    if pure.name.upper() == "SKILL.MD":
-        return "skill"
-    if "agents" in lowered and pure.suffix.lower() == ".md":
-        return "agent"
-    if "knowledge" in lowered and pure.suffix.lower() in {".md", ".txt", ".json"}:
-        return "knowledge"
-    if "prompts" in lowered and pure.suffix.lower() == ".md":
-        return "prompt"
-    if "workflows" in lowered and pure.suffix.lower() in {".json", ".yaml", ".yml"}:
-        return "workflow"
-    if "commands" in lowered and pure.suffix.lower() == ".md":
-        return "command"
-    if "rules" in lowered and pure.suffix.lower() == ".md":
-        return "rule"
-    if "hooks" in lowered and pure.suffix.lower() in {
-        ".json",
-        ".js",
-        ".ts",
-        ".py",
-        ".sh",
-        ".ps1",
-    }:
-        return "hook"
-    if (
-        "mcp" in lowered or "mcp-configs" in lowered
-    ) and pure.suffix.lower() == ".json":
-        return "mcp"
-    if "tools" in lowered and pure.suffix.lower() in {
-        ".md",
-        ".json",
-        ".yaml",
-        ".yml",
-        ".py",
-        ".sh",
-    }:
-        return "tool"
-    return None
+    if not lowered or lowered[0] in _IGNORED_ROOTS:
+        return None
+    if declared:
+        return "unknown", -100
+    root = lowered[0]
+    kind = _ROOT_KINDS.get(root)
+    priority = 0
+    if kind is None and root in _PLATFORM_ROOTS:
+        nested = next((part for part in lowered[1:] if part in _ROOT_KINDS), None)
+        if nested not in {"agents", "skills", "commands", "prompts"}:
+            return None
+        kind = _ROOT_KINDS[nested]
+        priority = 30
+    elif kind is None and root == "plugins" and len(lowered) >= 3:
+        nested = lowered[2]
+        if nested not in {"agents", "skills", "commands", "prompts"}:
+            return None
+        kind = _ROOT_KINDS[nested]
+        priority = 40
+    elif kind is None and root == "src" and len(lowered) >= 2:
+        nested = lowered[1]
+        if nested not in {"tools", "hooks", "rules", "mcp", "mcp-configs"}:
+            return None
+        kind = _ROOT_KINDS[nested]
+        priority = 20
+    if kind is None or pure.suffix.lower() not in _KIND_EXTENSIONS[kind]:
+        return None
+    if kind == "skill" and pure.name.upper() != "SKILL.MD":
+        return None
+    if kind in {"agent", "command", "prompt"} and len(pure.parts) > 4:
+        return None
+    if pure.suffix.lower() == ".toml":
+        priority += 5
+    return kind, priority
 
 
 def _string_list(value: Any) -> List[str]:
@@ -240,22 +357,42 @@ def _string_list(value: Any) -> List[str]:
     return []
 
 
-def _component_dependencies(meta: Dict[str, Any]) -> List[str]:
+def _component_dependencies(
+    meta: Dict[str, Any], declared: Dict[str, Any]
+) -> List[str]:
     values = _string_list(meta.get("dependencies"))
-    for key in ("skills", "knowledge", "prompts", "tools", "workflows"):
-        values.extend(_string_list(meta.get(key)))
+    # Las claves de permisos de Claude/Codex también suelen llamarse "tools".
+    # Solo un manifiesto iAgentsHub puede convertir esas listas en relaciones.
+    for key in ("skills", "knowledge", "prompts", "tools", "memory", "workflows"):
+        values.extend(_string_list(declared.get(key)))
+    relations = declared.get("relations")
+    if isinstance(relations, dict):
+        for value in relations.values():
+            values.extend(_string_list(value))
     return list(dict.fromkeys(_slug(item.split(":", 1)[-1]) for item in values))
 
 
 def _manifest_components(files: Dict[str, str]) -> Dict[str, Dict[str, Any]]:
-    for path in (".iagentshub/manifest.json", "iagentshub.json"):
+    for path in (
+        ".iagentshub/manifest.json",
+        "iagentshub.json",
+        "plugin.json",
+        "plugin.yaml",
+        "plugin.yml",
+        ".claude-plugin/plugin.json",
+        ".codex-plugin/plugin.json",
+    ):
         raw = files.get(path)
         if not raw:
             continue
         try:
-            manifest = json.loads(raw)
-        except json.JSONDecodeError:
-            return {}
+            manifest = (
+                json.loads(raw)
+                if PurePosixPath(path).suffix == ".json"
+                else yaml.safe_load(raw)
+            )
+        except (json.JSONDecodeError, yaml.YAMLError):
+            continue
         declared = manifest.get("components") if isinstance(manifest, dict) else None
         if not isinstance(declared, list):
             return {}
@@ -267,35 +404,46 @@ def _manifest_components(files: Dict[str, str]) -> Dict[str, Dict[str, Any]]:
     return {}
 
 
-def detect_components(
-    source_id: str, files: Dict[str, str]
-) -> List[PackageComponent]:
-    components: List[PackageComponent] = []
-    used_ids: set[str] = set()
+def detect_components(source_id: str, files: Dict[str, str]) -> List[PackageComponent]:
+    candidates: List[Tuple[int, PackageComponent]] = []
     declared_components = _manifest_components(files)
+    canonical_kinds = {
+        _ROOT_KINDS[PurePosixPath(path).parts[0].lower()]
+        for path in files
+        if PurePosixPath(path).parts
+        and PurePosixPath(path).parts[0].lower() in _ROOT_KINDS
+    }
+    if "command" in canonical_kinds:
+        canonical_kinds.add("prompt")
     for path, content in sorted(files.items()):
         declared = declared_components.get(path, {})
         declared_type = str(
             declared.get("type") or declared.get("component_type") or ""
         )
-        kind = (
-            declared_type if declared_type in COMPONENT_TYPES else _component_kind(path)
-        )
-        if not kind:
+        location = _component_location(path, declared=bool(declared))
+        if not location:
             continue
+        inferred_kind, priority = location
+        kind = declared_type if declared_type in COMPONENT_TYPES else inferred_kind
+        if kind == "unknown" and not declared_type:
+            continue
+        if kind == "workflow":
+            try:
+                definition = yaml.safe_load(content) or {}
+            except yaml.YAMLError:
+                definition = {}
+            if not isinstance(definition, dict) or not {
+                "nodes",
+                "edges",
+            }.issubset(definition):
+                continue
         pure = PurePosixPath(path)
         meta = {**_frontmatter(content), **declared}
         inferred = pure.parent.name if pure.name.upper() == "SKILL.MD" else pure.stem
         name = str(
             meta.get("name") or inferred.replace("-", " ").replace("_", " ").title()
         )
-        base_id = _slug(str(meta.get("id") or meta.get("name") or inferred))
-        component_id = base_id
-        number = 2
-        while component_id in used_ids:
-            component_id = f"{base_id}-{number}"
-            number += 1
-        used_ids.add(component_id)
+        component_id = _slug(str(meta.get("id") or inferred))
         companion_files: Dict[str, str] = {}
         if kind == "skill":
             prefix = pure.parent.as_posix().rstrip("/") + "/"
@@ -307,22 +455,65 @@ def detect_components(
         digest_source = content + "".join(
             key + companion_files[key] for key in sorted(companion_files)
         )
-        components.append(
-            PackageComponent(
-                source_id=source_id,
-                component_id=component_id,
-                component_type=kind,
-                name=name,
-                description=str(meta.get("description") or ""),
-                source_path=path,
-                content=content,
-                files=companion_files,
-                labels=ensure_origin_label(_string_list(meta.get("labels")), "official"),
-                dependencies=_component_dependencies(meta),
-                content_hash=hashlib.sha256(digest_source.encode()).hexdigest(),
+        language = str(meta.get("language") or meta.get("lang") or "").lower()
+        language_label = f"lang_{language.replace('-', '_')}" if language else ""
+        labels = ensure_origin_label(_string_list(meta.get("labels")), "official")
+        if language_label in SKILL_LABELS:
+            labels.append(language_label)
+        executable_candidate = kind in {"tool", "hook"}
+        executable = kind == "tool"
+        blocked = executable_candidate and (
+            (kind == "tool" and pure.suffix.lower() not in {".py", ".sh"})
+            or any(
+                pattern.search(content) and label == "borrado recursivo"
+                for pattern, label in _DANGEROUS_PATTERNS
             )
         )
-    return components
+        component = PackageComponent(
+            source_id=source_id,
+            component_id=component_id,
+            component_type=kind,
+            name=name,
+            description=str(meta.get("description") or ""),
+            source_path=path,
+            content=content,
+            files=companion_files,
+            labels=list(dict.fromkeys(labels)),
+            dependencies=_component_dependencies(meta, declared),
+            content_hash=hashlib.sha256(digest_source.encode()).hexdigest(),
+            language=language_label,
+            detected_by="native_manifest" if declared else "canonical_directory",
+            executable=executable,
+            security_blocked=blocked,
+            security_review_required=executable_candidate,
+        )
+        candidates.append((priority, component))
+
+    # Una plataforma puede publicar la misma pieza para varios clientes. La
+    # raíz canónica produce un objeto; el resto queda registrado como variante.
+    grouped: Dict[Tuple[str, str], List[Tuple[int, PackageComponent]]] = {}
+    for candidate in candidates:
+        component = candidate[1]
+        grouped.setdefault(
+            (component.component_type, component.component_id), []
+        ).append(candidate)
+    components: List[PackageComponent] = []
+    used_ids: set[str] = set()
+    for (kind, base_id), variants in sorted(grouped.items()):
+        variants.sort(key=lambda item: (item[0], item[1].source_path))
+        if variants[0][0] >= 30 and kind in canonical_kinds:
+            continue
+        component = variants[0][1]
+        component.variants = [item[1].source_path for item in variants[1:]]
+        component_id = base_id
+        number = 2
+        while component_id in used_ids:
+            component_id = f"{base_id}-{number}"
+            number += 1
+        component.component_id = component_id
+        used_ids.add(component_id)
+        components.append(component)
+    return sorted(components, key=lambda item: (item.component_type, item.component_id))
 
 
 def validate_components(
@@ -418,75 +609,122 @@ class OfficialSourceImporter:
         repository_url: str,
         *,
         tracking_mode: str = "release",
-        tracking_ref: str = "main",
+        tracking_ref: str = "",
     ) -> Dict[str, Any]:
-        owner, repository, canonical = parse_github_repository(repository_url)
+        """Compatibilidad: registra la fuente. El flujo nuevo usa inspect."""
+        inspected = await self.inspect_repository(
+            repository_url,
+            tracking_mode=tracking_mode,
+            tracking_ref=tracking_ref,
+        )
+        source = await self.storage.save_source(inspected["source"])
+        inspected["source"] = source
+        for component in inspected["components"]:
+            component.source_id = str(source["id"])
+        return inspected
+
+    async def inspect_repository(
+        self,
+        repository_url: str,
+        *,
+        tracking_mode: str = "release",
+        tracking_ref: str = "",
+    ) -> Dict[str, Any]:
+        """Inspecciona sin crear fuente ni objetos; primera fase del borrador."""
+        parsed = parse_repository_url(repository_url)
         if tracking_mode not in {"release", "branch"}:
-            raise GitHubImportError("tracking_mode debe ser 'release' o 'branch'")
-        metadata = await _json_request(
-            f"https://api.github.com/repos/{owner}/{repository}"
-        )
-        license_id = str((metadata.get("license") or {}).get("spdx_id") or "")
-        source = await self.storage.save_source(
-            {
-                "name": str(metadata.get("name") or repository),
-                "description": str(metadata.get("description") or ""),
-                "repository_url": canonical,
-                "repository_owner": owner,
-                "repository_name": repository,
-                "tracking_mode": tracking_mode,
-                "tracking_ref": tracking_ref
-                or str(metadata.get("default_branch") or "main"),
-                "license": license_id,
-            }
-        )
-        return await self.fetch(str(source["id"]))
+            raise OfficialRepositoryImportError(
+                "tracking_mode debe ser 'release' o 'branch'"
+            )
+        metadata = await self._metadata(parsed)
+        if metadata.get("private") is True or metadata.get("visibility") not in {
+            None,
+            "public",
+        }:
+            raise OfficialRepositoryImportError("Solo se admiten repositorios públicos")
+        default_branch = str(metadata.get("default_branch") or "main")
+        source = {
+            "id": "draft",
+            "name": str(metadata.get("name") or parsed["repository_name"]),
+            "description": str(metadata.get("description") or ""),
+            **parsed,
+            "default_branch": default_branch,
+            "tracking_mode": tracking_mode,
+            "tracking_ref": tracking_ref or default_branch,
+            "license": str((metadata.get("license") or {}).get("spdx_id") or ""),
+        }
+        return await self._fetch_source(source)
 
     async def fetch(self, source_id: str) -> Dict[str, Any]:
-        """Descarga la fuente y devuelve sus componentes, sin guardarlos.
-
-        Quien decide qué se queda es el admin (ver
-        ``services/official_source_sync.materialize``), así que aquí no hay
-        nada que publicar ni versión que revisar: solo el contenido de GitHub
-        y los problemas que se le hayan encontrado.
-        """
         source = await self.storage.get_source(source_id)
         if not source:
             raise KeyError("source_not_found")
         try:
-            version, sha, archive_url = await self._resolve_version(source)
-            raw = await asyncio.to_thread(
-                _request,
-                archive_url,
-                accept="application/vnd.github+json",
-                max_bytes=_MAX_ARCHIVE_BYTES,
-                too_large_message="El repositorio comprimido supera 100 MB",
+            result = await self._fetch_source(source)
+            await self.storage.mark_sync(
+                source_id,
+                version=result["version"],
+                commit_sha=result["commit_sha"],
             )
-            files = _safe_archive_files(raw)
-            components = detect_components(source_id, files)
-            errors: List[str] = []
-            if source.get("license") not in _ALLOWED_LICENSES:
-                errors.append(
-                    "La licencia no está reconocida o no pertenece al catálogo permitido"
-                )
-            if not components:
-                errors.append("No se detectaron componentes compatibles")
-            content_errors, security_warnings = validate_components(components)
-            errors.extend(content_errors)
-            await self.storage.mark_sync(source_id, version=version)
-            return {
-                "source": await self.storage.get_source(source_id),
-                "version": version,
-                "commit_sha": sha,
-                "components": components,
-                "errors": errors,
-                "security_warnings": security_warnings,
-            }
+            result["source"] = await self.storage.get_source(source_id)
+            return result
         except Exception as exc:
             await self.storage.mark_sync(source_id, error=str(exc))
             raise
 
+    async def _fetch_source(self, source: Dict[str, Any]) -> Dict[str, Any]:
+        version, sha, archive_url = await self._resolve_version(source)
+        raw = await asyncio.to_thread(
+            _request,
+            archive_url,
+            accept="application/zip",
+            max_bytes=_MAX_ARCHIVE_BYTES,
+            too_large_message="El repositorio comprimido supera 100 MB",
+        )
+        files = _safe_archive_files(raw)
+        source_id = str(source.get("id") or "draft")
+        components = detect_components(source_id, files)
+        errors: List[str] = []
+        warnings: List[str] = []
+        if source.get("license") not in _ALLOWED_LICENSES:
+            warnings.append(
+                "La licencia no está reconocida o no pertenece al catálogo conocido"
+            )
+        if not components:
+            errors.append("No se detectaron componentes compatibles")
+        content_errors, security_warnings = validate_components(components)
+        errors.extend(content_errors)
+        warnings.extend(security_warnings)
+        return {
+            "source": {**source, "commit_sha": sha, "resolved_version": version},
+            "version": version,
+            "commit_sha": sha,
+            "components": components,
+            "errors": errors,
+            "security_warnings": sorted(set(warnings)),
+        }
+
+    async def _metadata(self, parsed: Dict[str, str]) -> Dict[str, Any]:
+        if parsed["provider"] == "github":
+            metadata = await _json_request(
+                f"https://api.github.com/repos/{parsed['repository_path']}"
+            )
+            if metadata.get("private") is True:
+                raise OfficialRepositoryImportError(
+                    "Solo se admiten repositorios públicos"
+                )
+            return metadata
+        project = quote(parsed["repository_path"], safe="")
+        return await _json_request(f"https://gitlab.com/api/v4/projects/{project}")
+
     async def _resolve_version(self, source: Dict[str, Any]) -> Tuple[str, str, str]:
+        if source.get("provider", "github") == "gitlab":
+            return await self._resolve_gitlab_version(source)
+        return await self._resolve_github_version(source)
+
+    async def _resolve_github_version(
+        self, source: Dict[str, Any]
+    ) -> Tuple[str, str, str]:
         owner = source["repository_owner"]
         repository = source["repository_name"]
         if source["tracking_mode"] == "release":
@@ -497,25 +735,64 @@ class OfficialSourceImporter:
                 tag = str(release.get("tag_name") or "").strip()
                 if tag:
                     ref = await _json_request(
-                        f"https://api.github.com/repos/{owner}/{repository}/commits/{tag}"
+                        f"https://api.github.com/repos/{owner}/{repository}/commits/"
+                        f"{quote(tag, safe='')}"
                     )
                     sha = str(ref.get("sha") or "")
                     return (
                         tag,
                         sha,
-                        f"https://api.github.com/repos/{owner}/{repository}/zipball/{tag}",
+                        f"https://codeload.github.com/{owner}/{repository}/zip/{sha}",
                     )
-            except GitHubImportError:
+            except OfficialRepositoryImportError:
                 pass
-        branch = str(source.get("tracking_ref") or "main")
+        branch = str(
+            source.get("tracking_ref") or source.get("default_branch") or "main"
+        )
         ref = await _json_request(
-            f"https://api.github.com/repos/{owner}/{repository}/commits/{branch}"
+            f"https://api.github.com/repos/{owner}/{repository}/commits/"
+            f"{quote(branch, safe='')}"
         )
         sha = str(ref.get("sha") or "")
         if not sha:
-            raise GitHubImportError("GitHub no devolvió el commit de la referencia")
+            raise OfficialRepositoryImportError(
+                "GitHub no devolvió el commit de la referencia"
+            )
         return (
             sha[:12],
             sha,
-            f"https://api.github.com/repos/{owner}/{repository}/zipball/{sha}",
+            f"https://codeload.github.com/{owner}/{repository}/zip/{sha}",
+        )
+
+    async def _resolve_gitlab_version(
+        self, source: Dict[str, Any]
+    ) -> Tuple[str, str, str]:
+        project = quote(str(source["repository_path"]), safe="")
+        ref_name = str(
+            source.get("tracking_ref") or source.get("default_branch") or "main"
+        )
+        version = ""
+        if source["tracking_mode"] == "release":
+            try:
+                release = await _json_request(
+                    f"https://gitlab.com/api/v4/projects/{project}/releases/permalink/latest"
+                )
+                version = str(release.get("tag_name") or "")
+                ref_name = version or ref_name
+            except OfficialRepositoryImportError:
+                pass
+        ref = await _json_request(
+            f"https://gitlab.com/api/v4/projects/{project}/repository/commits/"
+            f"{quote(ref_name, safe='')}"
+        )
+        sha = str(ref.get("id") or "")
+        if not sha:
+            raise OfficialRepositoryImportError(
+                "GitLab no devolvió el commit de la referencia"
+            )
+        query = urlencode({"sha": sha})
+        return (
+            version or sha[:12],
+            sha,
+            f"https://gitlab.com/api/v4/projects/{project}/repository/archive.zip?{query}",
         )

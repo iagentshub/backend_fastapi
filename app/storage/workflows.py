@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Optional
 
-from app.storage.db import open_db
+from app.storage.db import AsyncConn, open_db
 from app.storage.resource_base import ResourceStorage
 from app.storage.skill_storage import SKILL_LABELS, ensure_origin_label
 from app.utils.generators import generate_date as _now
@@ -78,7 +78,13 @@ class WorkflowStorage(ResourceStorage):
             )
         return [self._decode(row) for row in rows]
 
-    async def save(self, owner_id: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+    async def save(
+        self,
+        owner_id: str,
+        payload: Dict[str, Any],
+        *,
+        conn: Optional[AsyncConn] = None,
+    ) -> Dict[str, Any]:
         workflow_id = str(payload.get("id") or generate_id())
         existing = await self.get(workflow_id, owner_id)
         now = _now()
@@ -100,8 +106,9 @@ class WorkflowStorage(ResourceStorage):
             "updated_at": now,
             "is_active": bool(existing.get("is_active", True)) if existing else True,
         }
-        async with open_db() as conn:
-            await conn.execute(
+
+        async def write(target: AsyncConn) -> None:
+            await target.execute(
                 "INSERT INTO agent_workflows "
                 "(id, owner_id, name, description, definition, scope, labels, created_at, updated_at) "
                 "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?) "
@@ -121,8 +128,15 @@ class WorkflowStorage(ResourceStorage):
                     item["updated_at"],
                 ),
             )
-            await conn.commit()
-        await self.sync_labels(workflow_id, owner_id, labels)
+
+        if conn is not None:
+            await write(conn)
+            await self.sync_labels(workflow_id, owner_id, labels, conn=conn)
+        else:
+            async with open_db() as own_conn:
+                await write(own_conn)
+                await own_conn.commit()
+            await self.sync_labels(workflow_id, owner_id, labels)
         return item
 
     async def delete(self, workflow_id: str, owner_id: str) -> bool:

@@ -29,6 +29,9 @@ from app.models.llm_orchestration import (
     orchestration_id_from_connection,
 )
 from app.storage.db import open_db
+from app.storage.official_source_storage import OfficialSourceStorage
+
+_official_sources = OfficialSourceStorage()
 
 _ADMIN_EXPLORE_TYPES = (
     "user",
@@ -507,6 +510,33 @@ async def admin_resource_graph(
                 "workflow", workflow_id, resource_label("workflow", workflow_item)
             )
             add_edge(workflow_node, root_id, "orchestrates")
+
+    if resource_type in {
+        "agent",
+        "knowledge",
+        "workflow",
+        "skill",
+        "prompt",
+        "tool",
+        "memory",
+    }:
+        origin_resource_id = canonical_resource_id
+        if resource_type == "memory" and "::" in origin_resource_id:
+            _, _, filename = origin_resource_id.partition("::")
+            origin_resource_id = filename.removesuffix(".md")
+        origin = await _official_sources.get_origin(
+            resource_type,
+            origin_resource_id,
+            str(root.get("owner_id") or "") or None,
+        )
+        if origin:
+            source_node = add_node(
+                "official_source",
+                str(origin["source_id"]),
+                str(origin["source_name"]),
+                str(origin["repository_url"]),
+            )
+            add_edge(source_node, root_id, "origin")
 
     return {
         "root_id": root_id,

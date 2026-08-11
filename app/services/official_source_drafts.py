@@ -1,0 +1,471 @@
+"""Borradores revisables para importar repositorios oficiales sin LLM."""
+
+from __future__ import annotations
+
+import json
+from typing import Any, Dict, Iterable, List, Optional
+
+from app.models.official_source import MATERIALIZABLE_TYPES, PackageComponent
+from app.services.official_source_importer import OfficialSourceImporter
+from app.services.official_source_sync import OfficialSourceMaterializer
+from app.storage.db import open_db
+from app.storage.official_source_storage import OfficialSourceStorage
+from app.storage.skill_storage import SKILL_LABELS
+
+_MANUAL_TYPES = frozenset({"skill", "prompt", "knowledge", "tool"})
+
+
+class OfficialImportDraftService:
+    def __init__(
+        self,
+        storage: Optional[OfficialSourceStorage] = None,
+        importer: Optional[OfficialSourceImporter] = None,
+        materializer: Optional[OfficialSourceMaterializer] = None,
+    ) -> None:
+        self.storage = storage or OfficialSourceStorage()
+        self.importer = importer or OfficialSourceImporter(self.storage)
+        self.materializer = materializer or OfficialSourceMaterializer(self.storage)
+
+    async def inspect(
+        self,
+        repository_url: str,
+        owner_id: str,
+        *,
+        tracking_mode: str,
+        tracking_ref: str,
+    ) -> Dict[str, Any]:
+        await self.storage.delete_expired_drafts()
+        fetched = await self.importer.inspect_repository(
+            repository_url,
+            tracking_mode=tracking_mode,
+            tracking_ref=tracking_ref,
+        )
+        source = dict(fetched["source"])
+        source["resolved_version"] = fetched["version"]
+        source["commit_sha"] = fetched["commit_sha"]
+        components = [
+            {
+                **item.as_dict(include_content=True),
+                "materializable": item.component_type in MATERIALIZABLE_TYPES,
+                "selected": False,
+                "explicitly_selected": False,
+                "state": "new",
+            }
+            for item in fetched["components"]
+        ]
+        return await self.storage.create_draft(
+            owner_id=owner_id,
+            source=source,
+            components=components,
+            errors=fetched["errors"],
+            security_warnings=fetched["security_warnings"],
+        )
+
+    async def inspect_source(self, source_id: str, owner_id: str) -> Dict[str, Any]:
+        await self.storage.delete_expired_drafts()
+        source = await self.storage.get_source(source_id)
+        if not source:
+            raise KeyError("source_not_found")
+        if not source.get("owner_id"):
+            existing_links = await self.storage.list_resources(source_id)
+            if existing_links:
+                raise ValueError("source_owner_required")
+            await self.storage.set_owner(source_id, owner_id)
+            source = await self.storage.get_source(source_id)
+            assert source is not None
+        fetched = await self.importer.fetch(source_id)
+        existing = await self.storage.list_resources(source_id)
+        mappings = await self.storage.list_mappings(source_id)
+        by_key = {str(item["component_id"]): item for item in existing}
+        by_hash: Dict[str, List[Dict[str, Any]]] = {}
+        for item in existing:
+            if item.get("content_hash"):
+                by_hash.setdefault(str(item["content_hash"]), []).append(item)
+
+        seen: set[str] = set()
+        components: List[Dict[str, Any]] = []
+        for component in fetched["components"]:
+            direct = by_key.get(component.component_id)
+            if direct is None:
+                matches = by_hash.get(component.content_hash, [])
+                direct = matches[0] if len(matches) == 1 else None
+                if direct:
+                    component.component_id = str(direct["component_id"])
+            mapping = mappings.get(component.source_path, {})
+            selected = direct is not None
+            state = (
+                "new"
+                if direct is None
+                else "unchanged"
+                if direct.get("content_hash") == component.content_hash
+                else "updated"
+            )
+            payload = {
+                **component.as_dict(include_content=True),
+                "materializable": component.component_type in MATERIALIZABLE_TYPES,
+                "selected": selected,
+                "explicitly_selected": bool(
+                    direct.get("explicitly_selected", True) if direct else False
+                ),
+                "forced_type": mapping.get("forced_type"),
+                "forced_language": mapping.get("forced_language"),
+                "state": state,
+            }
+            if mapping.get("dependencies"):
+                payload["dependencies"] = list(mapping["dependencies"])
+            components.append(payload)
+            seen.add(component.component_id)
+
+        for component_key, item in by_key.items():
+            if component_key in seen:
+                continue
+            components.append(
+                {
+                    "source_id": source_id,
+                    "component_id": component_key,
+                    "component_type": item["resource_type"],
+                    "name": component_key,
+                    "description": "",
+                    "source_path": item.get("source_path", ""),
+                    "content_hash": item.get("content_hash", ""),
+                    "labels": ["official"],
+                    "dependencies": [],
+                    "materializable": True,
+                    "selected": False,
+                    "explicitly_selected": False,
+                    "state": "removed",
+                }
+            )
+        draft_source = {
+            **source,
+            "resolved_version": fetched["version"],
+            "commit_sha": fetched["commit_sha"],
+            "base_commit_sha": source.get("last_commit_sha") or "",
+        }
+        return await self.storage.create_draft(
+            owner_id=owner_id,
+            source_id=source_id,
+            source=draft_source,
+            components=components,
+            errors=fetched["errors"],
+            security_warnings=fetched["security_warnings"],
+        )
+
+    async def update_component(
+        self, draft_id: str, component_key: str, updates: Dict[str, Any]
+    ) -> Optional[Dict[str, Any]]:
+        current = await self.storage.get_draft_component(draft_id, component_key)
+        if not current:
+            return None
+        forced_type = updates.get("forced_type")
+        if forced_type is not None and forced_type not in _MANUAL_TYPES:
+            raise ValueError("invalid_forced_type")
+        forced_language = updates.get("forced_language")
+        if forced_language not in {None, ""} and forced_language not in SKILL_LABELS:
+            raise ValueError("invalid_forced_language")
+        await self.storage.update_draft_component(draft_id, component_key, updates)
+        if "selected" not in updates and "dependencies" not in updates:
+            return await self.storage.get_draft_component(draft_id, component_key)
+
+        items = await self.storage.get_all_draft_components(draft_id)
+        by_id = {str(item["component_id"]): item for item in items}
+        explicit = {
+            key for key, item in by_id.items() if item.get("explicitly_selected")
+        }
+        if "selected" in updates:
+            selecting = bool(updates["selected"])
+            if selecting:
+                explicit.add(component_key)
+            else:
+                explicit.discard(component_key)
+                # Desmarcar una dependencia elimina la selección de quienes la
+                # necesitan. La cascada continúa hasta estabilizarse.
+                changed = True
+                blocked = {component_key}
+                while changed:
+                    changed = False
+                    for key in list(explicit):
+                        if blocked.intersection(by_id[key].get("dependencies", [])):
+                            explicit.discard(key)
+                            blocked.add(key)
+                            changed = True
+        selected = self._dependency_closure(explicit, by_id)
+        await self.storage.replace_draft_selection(
+            draft_id, selected=selected, explicit=explicit
+        )
+        return await self.storage.get_draft_component(draft_id, component_key)
+
+    async def diff(self, draft_id: str) -> Dict[str, Any]:
+        draft = await self.storage.get_draft(draft_id)
+        if not draft:
+            raise KeyError("draft_not_found")
+        items = await self.storage.get_all_draft_components(draft_id)
+        create = [item for item in items if item["selected"] and item["state"] == "new"]
+        update = [
+            item for item in items if item["selected"] and item["state"] == "updated"
+        ]
+        unchanged = [
+            item for item in items if item["selected"] and item["state"] == "unchanged"
+        ]
+        delete = [
+            item for item in items if not item["selected"] and item["state"] != "new"
+        ]
+        detached_references: List[Dict[str, str]] = []
+        if draft.get("source_id"):
+            links = {
+                str(item["component_id"]): item
+                for item in await self.storage.list_resources(str(draft["source_id"]))
+            }
+            async with open_db() as conn:
+                agent_rows = await conn.fetchall(
+                    "SELECT id,name,data FROM agents WHERE owner_id=? "
+                    "AND COALESCE(official_source_id,'')<>?",
+                    (draft["source"].get("owner_id"), draft["source_id"]),
+                )
+            field_by_type = {
+                "skill": "skills",
+                "knowledge": "knowledge",
+                "prompt": "prompts",
+                "tool": "tools",
+            }
+            for item in delete:
+                link = links.get(str(item["component_id"]))
+                if not link:
+                    continue
+                resource_id = str(link["resource_id"])
+                field = field_by_type.get(str(link["resource_type"]))
+                for agent in agent_rows:
+                    data = json.loads(agent["data"])
+                    related = (
+                        resource_id in {str(value) for value in data.get(field, [])}
+                        if field
+                        else str(link["resource_type"]) == "memory"
+                        and str(data.get("memory_file") or "") == f"{resource_id}.md"
+                    )
+                    if related:
+                        detached_references.append(
+                            {
+                                "agent_id": str(agent["id"]),
+                                "agent_name": str(agent["name"]),
+                                "component_id": str(item["component_id"]),
+                            }
+                        )
+        warnings = list(draft["security_warnings"])
+        if detached_references:
+            warnings.append(
+                "Se retirarán referencias desde agentes manuales conservados"
+            )
+        return {
+            "draft_id": draft_id,
+            "create": self._summaries(create),
+            "update": self._summaries(update),
+            "delete": self._summaries(delete),
+            "unchanged": self._summaries(unchanged),
+            "counts": {
+                "create": len(create),
+                "update": len(update),
+                "delete": len(delete),
+                "unchanged": len(unchanged),
+            },
+            "warnings": warnings,
+            "detached_references": detached_references,
+        }
+
+    async def graph(self, draft_id: str) -> Dict[str, Any]:
+        draft = await self.storage.get_draft(draft_id)
+        if not draft:
+            raise KeyError("draft_not_found")
+        items = await self.storage.get_all_draft_components(draft_id)
+        nodes = [
+            {
+                "id": "source",
+                "type": "official_source",
+                "label": draft["source"].get("name", "Repositorio"),
+                "description": draft["source"].get("repository_url", ""),
+            },
+            *[
+                {
+                    "id": item["component_id"],
+                    "type": item.get("forced_type") or item["component_type"],
+                    "label": item["name"],
+                    "description": (
+                        f"{item['state']} · "
+                        f"{'seleccionado' if item['selected'] else 'no seleccionado'}"
+                    ),
+                }
+                for item in items
+            ],
+        ]
+        edges = [
+            {
+                "source_id": "source",
+                "target_id": item["component_id"],
+                "dashed": False,
+            }
+            for item in items
+        ]
+        edges.extend(
+            {
+                "source_id": item["component_id"],
+                "target_id": dependency,
+                "dashed": True,
+            }
+            for item in items
+            for dependency in item.get("dependencies", [])
+        )
+        return {"root_id": "source", "nodes": nodes, "edges": edges}
+
+    async def apply(self, draft_id: str, admin_id: str) -> Dict[str, Any]:
+        draft = await self.storage.get_draft(draft_id)
+        if not draft:
+            raise KeyError("draft_not_found")
+        if draft["expired"] or draft["status"] != "pending":
+            raise ValueError("draft_not_applicable")
+        if draft["owner_id"] != admin_id:
+            raise PermissionError("draft_owner_mismatch")
+        if draft["errors"]:
+            raise ValueError("draft_has_errors")
+        source = dict(draft["source"])
+        source_id = draft.get("source_id")
+        created_source = False
+        items = await self.storage.get_all_draft_components(draft_id)
+        selected = [
+            item for item in items if item["selected"] and item["state"] != "removed"
+        ]
+        selected_ids = {str(item["component_id"]) for item in selected}
+        for item in selected:
+            effective_type = str(item.get("forced_type") or item["component_type"])
+            if effective_type not in MATERIALIZABLE_TYPES:
+                raise ValueError("selected_component_not_materializable")
+            if item.get("security_blocked"):
+                raise ValueError("selected_tool_security_blocked")
+            if effective_type == "tool" and not item.get("security_accepted"):
+                raise ValueError("selected_tool_requires_review")
+            if set(item.get("dependencies", [])) - selected_ids:
+                raise ValueError("selected_component_has_missing_dependencies")
+        if source_id:
+            current = await self.storage.get_source(str(source_id))
+            if not current or not current.get("owner_id"):
+                raise ValueError("source_owner_required")
+            owner_id = str(current["owner_id"])
+            source = {**current, **source, "id": str(source_id)}
+        else:
+            existing = await self.storage.find_by_repository(source["repository_url"])
+            if existing:
+                raise ValueError("repository_already_registered")
+            source["owner_id"] = admin_id
+            saved = await self.storage.save_source(source)
+            source_id = str(saved["id"])
+            source = saved
+            owner_id = admin_id
+            created_source = True
+
+        source["commit_sha"] = str(draft["commit_sha"])
+        components: List[PackageComponent] = []
+        for item in selected:
+            effective_type = str(item.get("forced_type") or item["component_type"])
+            components.append(
+                self._package_component(item, str(source_id), effective_type)
+            )
+
+        expected_commit = str(source.get("base_commit_sha") or "")
+        if not await self.storage.acquire_sync_lock(str(source_id), expected_commit):
+            current = await self.storage.get_source(str(source_id))
+            if current and current.get("sync_state") == "applying":
+                raise ValueError("source_sync_in_progress")
+            raise ValueError("draft_outdated")
+        try:
+            result = await self.materializer.materialize(
+                source,
+                components,
+                [component.component_id for component in components],
+                owner_id=owner_id,
+                explicit_component_ids=[
+                    str(item["component_id"])
+                    for item in selected
+                    if item.get("explicitly_selected")
+                ],
+            )
+            await self.storage.mark_sync(
+                str(source_id),
+                version=str(draft["resolved_version"]),
+                commit_sha=str(draft["commit_sha"]),
+                state="idle",
+            )
+            for item in items:
+                if (
+                    item.get("forced_type")
+                    or item.get("forced_language")
+                    or item.get("dependencies")
+                ):
+                    await self.storage.save_mapping(
+                        str(source_id),
+                        str(item.get("source_path") or ""),
+                        forced_type=item.get("forced_type"),
+                        forced_language=item.get("forced_language"),
+                        dependencies=list(item.get("dependencies", [])),
+                    )
+            await self.storage.mark_draft_status(draft_id, "applied")
+            return {**result, "draft_id": draft_id}
+        except Exception as exc:
+            if created_source:
+                await self.materializer.delete_source(str(source_id))
+            else:
+                await self.storage.mark_sync(
+                    str(source_id), error=str(exc), state="failed"
+                )
+            raise
+
+    @staticmethod
+    def _dependency_closure(
+        explicit: Iterable[str], by_id: Dict[str, Dict[str, Any]]
+    ) -> set[str]:
+        selected = set(explicit)
+        pending = list(selected)
+        while pending:
+            current = pending.pop()
+            for dependency in by_id.get(current, {}).get("dependencies", []):
+                if dependency in by_id and dependency not in selected:
+                    selected.add(dependency)
+                    pending.append(dependency)
+        return selected
+
+    @staticmethod
+    def _summaries(items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        return [
+            {
+                "component_id": item["component_id"],
+                "name": item["name"],
+                "component_type": item.get("forced_type") or item["component_type"],
+                "source_path": item.get("source_path", ""),
+            }
+            for item in items
+        ]
+
+    @staticmethod
+    def _package_component(
+        item: Dict[str, Any], source_id: str, component_type: str
+    ) -> PackageComponent:
+        labels = list(item.get("labels", ["official"]))
+        language = str(item.get("forced_language") or item.get("language") or "")
+        if language and language not in labels:
+            labels.append(language)
+        return PackageComponent(
+            source_id=source_id,
+            component_id=str(item["component_id"]),
+            component_type=component_type,
+            name=str(item["name"]),
+            description=str(item.get("description") or ""),
+            source_path=str(item.get("source_path") or ""),
+            content_hash=str(item.get("content_hash") or ""),
+            content=str(item.get("content") or ""),
+            files=dict(item.get("files") or {}),
+            labels=labels,
+            dependencies=list(item.get("dependencies") or []),
+            language=language,
+            detected_by=str(item.get("detected_by") or "generic"),
+            variants=list(item.get("variants") or []),
+            executable=bool(item.get("executable")),
+            security_blocked=bool(item.get("security_blocked")),
+            security_review_required=bool(item.get("security_review_required")),
+        )

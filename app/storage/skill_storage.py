@@ -1,4 +1,5 @@
 """Storage de skills. owner_id='__public__' para skills de sistema/públicas."""
+
 from __future__ import annotations
 
 import json
@@ -12,7 +13,7 @@ from app.config.content_languages import CONTENT_LANGUAGE_LABELS
 # db se importa DOS veces a propósito: ver app/storage/_storage_helpers.py.
 from app.storage import db as _db
 from app.storage._storage_helpers import _PUBLIC_OWNER, _slug
-from app.storage.db import open_db
+from app.storage.db import AsyncConn, open_db
 from app.storage.db_migrations import _compact_resource_data
 from app.storage.resource_base import ResourceStorage
 from app.utils import flog
@@ -39,27 +40,30 @@ SKILL_CATEGORIES = frozenset(
 # El catálogo es compartido a propósito: prompt_storage y tool_storage validan
 # contra esta misma lista y la importan desde aquí. Vive en el módulo de skill
 # porque es donde nació y de donde lo importan ya los routers; no lo dupliques.
-SKILL_LABELS = frozenset(
-    {
-        "private",
-        "public",
-        "production",
-        "staging",
-        "development",
-        "test",
-        "favorite",
-        "draft",
-        "review",
-        "deprecated",
-        "quarantine",
-        "archived",
-        "delete",
-        "linked",
-        "fork",
-        "official",
-        "community",
-    }
-) | CONTENT_LANGUAGE_LABELS
+SKILL_LABELS = (
+    frozenset(
+        {
+            "private",
+            "public",
+            "production",
+            "staging",
+            "development",
+            "test",
+            "favorite",
+            "draft",
+            "review",
+            "deprecated",
+            "quarantine",
+            "archived",
+            "delete",
+            "linked",
+            "fork",
+            "official",
+            "community",
+        }
+    )
+    | CONTENT_LANGUAGE_LABELS
+)
 ORIGIN_LABELS = frozenset({"official", "community"})
 SKILL_ASSIGNABLE_LABELS = SKILL_LABELS - {"linked", "fork"} - ORIGIN_LABELS
 
@@ -69,9 +73,15 @@ def ensure_origin_label(labels: List[str], origin: Optional[str] = None) -> List
     chosen = origin
     if chosen not in ORIGIN_LABELS:
         chosen = "official" if "official" in labels else "community"
-    normalized = list(dict.fromkeys(label for label in labels if label not in ORIGIN_LABELS))
+    normalized = list(
+        dict.fromkeys(label for label in labels if label not in ORIGIN_LABELS)
+    )
     insert_at = next(
-        (index + 1 for index, label in enumerate(normalized) if label in {"private", "public"}),
+        (
+            index + 1
+            for index, label in enumerate(normalized)
+            if label in {"private", "public"}
+        ),
         0,
     )
     normalized.insert(insert_at, chosen)
@@ -95,6 +105,7 @@ def _parse_skill_md(raw: str, default_id: str = "") -> Dict[str, Any]:
 
 class SkillStorage(ResourceStorage):
     """Async DB-backed skill storage (SQLite / PostgreSQL)."""
+
     table = "skills"
     resource_type = "skill"
 
@@ -309,7 +320,12 @@ class SkillStorage(ResourceStorage):
         return None
 
     async def save(
-        self, scope: str, payload: Dict[str, Any], owner_id: Optional[str] = None
+        self,
+        scope: str,
+        payload: Dict[str, Any],
+        owner_id: Optional[str] = None,
+        *,
+        conn: Optional[AsyncConn] = None,
     ) -> Dict[str, Any]:
         if scope not in ("private", "public"):
             raise ValueError("scope must be private or public")
@@ -359,10 +375,16 @@ class SkillStorage(ResourceStorage):
             "is_active": existing.get("is_active", True) if existing else True,
             "deactivated_at": existing.get("deactivated_at") if existing else None,
         }
-        async with open_db() as conn:
+        if conn is not None:
             await self._upsert(conn, skill_id, actual_owner, scope, data)
-            await conn.commit()
-        await self.sync_labels(skill_id, actual_owner, data.get("labels") or [])
+            await self.sync_labels(
+                skill_id, actual_owner, data.get("labels") or [], conn=conn
+            )
+        else:
+            async with open_db() as own_conn:
+                await self._upsert(own_conn, skill_id, actual_owner, scope, data)
+                await own_conn.commit()
+            await self.sync_labels(skill_id, actual_owner, data.get("labels") or [])
         return data
 
     async def delete(

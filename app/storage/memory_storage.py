@@ -1,4 +1,5 @@
 """Storage de ficheros de memoria. La propiedad interna se guarda con users.id."""
+
 from __future__ import annotations
 
 import re
@@ -7,7 +8,7 @@ from typing import Any, Dict, List, Optional
 
 # db se importa DOS veces a propósito: ver app/storage/_storage_helpers.py.
 from app.storage import db as _db
-from app.storage.db import open_db
+from app.storage.db import AsyncConn, open_db
 from app.storage.migration import LegacyMigrationStorage
 from app.utils import flog
 from app.utils import now_iso as _now
@@ -21,6 +22,7 @@ def _safe_mem_id(filename: str) -> str:
 
 class MemoryStorage(LegacyMigrationStorage):
     """Async DB-backed memory storage (SQLite / PostgreSQL)."""
+
     def __init__(self, root_dir: Path) -> None:
         super().__init__()
         self._root_dir = Path(root_dir)  # solo para la migración única desde ficheros
@@ -83,25 +85,36 @@ class MemoryStorage(LegacyMigrationStorage):
         return row["content"] if row else None
 
     async def save(
-        self, filename: str, content: str, owner_id: str = "admin"
+        self,
+        filename: str,
+        content: str,
+        owner_id: str = "admin",
+        *,
+        conn: Optional[AsyncConn] = None,
     ) -> Dict[str, Any]:
         await self._ensure_migrated()
         mem_id = _safe_mem_id(filename)
         now = _now()
 
-        async with open_db() as conn:
+        async def write(target: AsyncConn) -> None:
             if _db.IS_PG:
-                await conn.execute(
+                await target.execute(
                     "INSERT INTO memory_files (id, owner_id, content, updated_at) VALUES (?, ?, ?, ?) "
                     "ON CONFLICT (id, owner_id) DO UPDATE SET content=EXCLUDED.content, updated_at=EXCLUDED.updated_at",
                     (mem_id, owner_id, content, now),
                 )
             else:
-                await conn.execute(
+                await target.execute(
                     "INSERT OR REPLACE INTO memory_files (id, owner_id, content, updated_at) VALUES (?, ?, ?, ?)",
                     (mem_id, owner_id, content, now),
                 )
-            await conn.commit()
+
+        if conn is not None:
+            await write(conn)
+        else:
+            async with open_db() as own_conn:
+                await write(own_conn)
+                await own_conn.commit()
         return {
             "id": mem_id,
             "filename": f"{mem_id}.md",

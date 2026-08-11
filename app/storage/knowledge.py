@@ -6,7 +6,7 @@ import json
 from html.parser import HTMLParser
 from typing import Any, Dict, List, Optional
 
-from app.storage.db import open_db
+from app.storage.db import AsyncConn, open_db
 from app.storage.resource_base import ResourceStorage
 from app.storage.skill_storage import ensure_origin_label
 from app.utils.generators import generate_date, generate_id
@@ -190,31 +190,95 @@ class KnowledgeStorage(ResourceStorage):
         content: str,
         owner_id: str,
         labels: Optional[List[str]] = None,
+        item_id: Optional[str] = None,
+        conn: Optional[AsyncConn] = None,
     ) -> Dict[str, Any]:
         now = generate_date()
         normalized_labels = ensure_origin_label(labels or ["private"])
-        item_id = generate_id(16)
-        async with open_db() as conn:
-            await conn.execute(
-                "INSERT INTO knowledge_items "
-                "(id, owner_id, type, title, source, content, char_count, labels, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                (
+        item_id = item_id or generate_id(16)
+        existing = await self.get(item_id, owner_id)
+        target = conn
+        if target is None:
+            async with open_db() as own_conn:
+                await self._save_text_row(
+                    own_conn,
                     item_id,
                     owner_id,
                     type,
                     title,
                     source,
                     content,
-                    len(content),
-                    json.dumps(normalized_labels, ensure_ascii=False),
+                    normalized_labels,
+                    existing["created_at"] if existing else now,
                     now,
-                    now,
-                ),
+                )
+                await own_conn.commit()
+            await self.sync_labels(item_id, owner_id, normalized_labels)
+        else:
+            await self._save_text_row(
+                target,
+                item_id,
+                owner_id,
+                type,
+                title,
+                source,
+                content,
+                normalized_labels,
+                existing["created_at"] if existing else now,
+                now,
             )
-            await conn.commit()
-        await self.sync_labels(item_id, owner_id, normalized_labels)
-        return await self.get(item_id)  # type: ignore[return-value]
+            await self.sync_labels(item_id, owner_id, normalized_labels, conn=target)
+        return (
+            await self.get(item_id, owner_id)
+            if conn is None
+            else {
+                "id": item_id,
+                "owner_id": owner_id,
+                "type": type,
+                "title": title,
+                "name": title,
+                "source": source,
+                "content": content,
+                "labels": normalized_labels,
+                "created_at": existing["created_at"] if existing else now,
+                "updated_at": now,
+            }
+        )
+
+    async def _save_text_row(
+        self,
+        conn: AsyncConn,
+        item_id: str,
+        owner_id: str,
+        type: str,
+        title: str,
+        source: str,
+        content: str,
+        labels: List[str],
+        created_at: str,
+        updated_at: str,
+    ) -> None:
+        await conn.execute(
+            "INSERT INTO knowledge_items "
+            "(id, owner_id, type, title, source, content, char_count, labels, created_at, updated_at) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "ON CONFLICT(id) DO UPDATE SET type=excluded.type,title=excluded.title,"
+            "source=excluded.source,content=excluded.content,"
+            "char_count=excluded.char_count,labels=excluded.labels,"
+            "updated_at=excluded.updated_at",
+            (
+                item_id,
+                owner_id,
+                type,
+                title,
+                source,
+                content,
+                len(content),
+                json.dumps(labels, ensure_ascii=False),
+                created_at,
+                updated_at,
+            ),
+        )
 
     async def delete(self, item_id: str, owner_id: Optional[str]) -> bool:
         cond, params = _owner_filter(item_id, owner_id)
