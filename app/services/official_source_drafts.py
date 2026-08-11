@@ -3,16 +3,35 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, Iterable, List, Optional
+from pathlib import PurePosixPath
+from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional
 
+from app.config.content_languages import CONTENT_LANGUAGE_LABELS
 from app.models.official_source import MATERIALIZABLE_TYPES, PackageComponent
 from app.services.official_source_importer import OfficialSourceImporter
+from app.services.official_source_llm import OfficialSourceLLMAnalyzer
 from app.services.official_source_sync import OfficialSourceMaterializer
 from app.storage.db import open_db
 from app.storage.official_source_storage import OfficialSourceStorage
 from app.storage.skill_storage import SKILL_LABELS
+from app.storage.tool_storage import TOOL_LANGUAGES
 
-_MANUAL_TYPES = frozenset({"skill", "prompt", "knowledge", "tool"})
+_MANUAL_TYPES = frozenset(
+    {"agent", "skill", "prompt", "knowledge", "tool", "memory", "workflow"}
+)
+
+
+def _tool_language(item: Dict[str, Any]) -> str:
+    explicit = str(
+        item.get("forced_tool_language") or item.get("tool_language") or ""
+    )
+    if explicit:
+        return explicit
+    return {
+        ".py": "python",
+        ".sh": "shell",
+        ".cpp": "cpp",
+    }.get(PurePosixPath(str(item.get("source_path") or "")).suffix.lower(), "")
 
 
 class OfficialImportDraftService:
@@ -21,10 +40,12 @@ class OfficialImportDraftService:
         storage: Optional[OfficialSourceStorage] = None,
         importer: Optional[OfficialSourceImporter] = None,
         materializer: Optional[OfficialSourceMaterializer] = None,
+        llm_analyzer: Optional[OfficialSourceLLMAnalyzer] = None,
     ) -> None:
         self.storage = storage or OfficialSourceStorage()
         self.importer = importer or OfficialSourceImporter(self.storage)
         self.materializer = materializer or OfficialSourceMaterializer(self.storage)
+        self.llm_analyzer = llm_analyzer or OfficialSourceLLMAnalyzer()
 
     async def inspect(
         self,
@@ -33,13 +54,46 @@ class OfficialImportDraftService:
         *,
         tracking_mode: str,
         tracking_ref: str,
+        import_mode: str = "deterministic",
+        llm_connection_id: str = "",
+        progress: Optional[Callable[[Dict[str, Any]], Awaitable[None]]] = None,
     ) -> Dict[str, Any]:
         await self.storage.delete_expired_drafts()
-        fetched = await self.importer.inspect_repository(
+        if progress:
+            await progress({"stage": "downloading", "current": 0, "total": 0})
+        snapshot = await self.importer.inspect_snapshot(
             repository_url,
             tracking_mode=tracking_mode,
             tracking_ref=tracking_ref,
         )
+        if progress:
+            await progress(
+                {
+                    "stage": "detecting",
+                    "current": 0,
+                    "total": 0,
+                    "files": len(snapshot["files"]),
+                }
+            )
+        deterministic = self.importer.analyze_snapshot(snapshot)
+        if import_mode == "llm":
+            if not llm_connection_id:
+                raise ValueError("llm_connection_required")
+            fetched = await self.llm_analyzer.analyze(
+                snapshot,
+                llm_connection_id,
+                deterministic["components"],
+                progress=progress,
+            )
+        elif import_mode == "deterministic":
+            fetched = deterministic
+            fetched["source"] = {
+                **fetched["source"],
+                "import_mode": "deterministic",
+                "llm_connection_id": None,
+            }
+        else:
+            raise ValueError("invalid_import_mode")
         source = dict(fetched["source"])
         source["resolved_version"] = fetched["version"]
         source["commit_sha"] = fetched["commit_sha"]
@@ -53,6 +107,16 @@ class OfficialImportDraftService:
             }
             for item in fetched["components"]
         ]
+        if progress:
+            await progress(
+                {
+                    "stage": "saving_draft",
+                    "current": len(components),
+                    "total": len(components),
+                    "files": len(snapshot["files"]),
+                    "components": len(components),
+                }
+            )
         return await self.storage.create_draft(
             owner_id=owner_id,
             source=source,
@@ -73,7 +137,22 @@ class OfficialImportDraftService:
             await self.storage.set_owner(source_id, owner_id)
             source = await self.storage.get_source(source_id)
             assert source is not None
-        fetched = await self.importer.fetch(source_id)
+        snapshot = await self.importer.inspect_snapshot(
+            str(source["repository_url"]),
+            tracking_mode=str(source.get("tracking_mode") or "release"),
+            tracking_ref=str(source.get("tracking_ref") or ""),
+        )
+        snapshot["source"] = {**source, **snapshot["source"], "id": source_id}
+        deterministic = self.importer.analyze_snapshot(snapshot)
+        if source.get("import_mode") == "llm":
+            connection_id = str(source.get("llm_connection_id") or "")
+            if not connection_id:
+                raise ValueError("llm_connection_required")
+            fetched = await self.llm_analyzer.analyze(
+                snapshot, connection_id, deterministic["components"]
+            )
+        else:
+            fetched = deterministic
         existing = await self.storage.list_resources(source_id)
         mappings = await self.storage.list_mappings(source_id)
         by_key = {str(item["component_id"]): item for item in existing}
@@ -109,6 +188,7 @@ class OfficialImportDraftService:
                 ),
                 "forced_type": mapping.get("forced_type"),
                 "forced_language": mapping.get("forced_language"),
+                "forced_tool_language": mapping.get("forced_tool_language"),
                 "state": state,
             }
             if mapping.get("dependencies"):
@@ -161,8 +241,17 @@ class OfficialImportDraftService:
         if forced_type is not None and forced_type not in _MANUAL_TYPES:
             raise ValueError("invalid_forced_type")
         forced_language = updates.get("forced_language")
-        if forced_language not in {None, ""} and forced_language not in SKILL_LABELS:
+        if (
+            forced_language not in {None, ""}
+            and forced_language not in CONTENT_LANGUAGE_LABELS
+        ):
             raise ValueError("invalid_forced_language")
+        forced_tool_language = updates.get("forced_tool_language")
+        if (
+            forced_tool_language not in {None, ""}
+            and forced_tool_language not in TOOL_LANGUAGES
+        ):
+            raise ValueError("invalid_forced_tool_language")
         await self.storage.update_draft_component(draft_id, component_key, updates)
         if "selected" not in updates and "dependencies" not in updates:
             return await self.storage.get_draft_component(draft_id, component_key)
@@ -313,6 +402,17 @@ class OfficialImportDraftService:
             for item in items
             for dependency in item.get("dependencies", [])
         )
+        edges.extend(
+            {
+                "source_id": item["component_id"],
+                "target_id": relation["target_id"],
+                "dashed": relation.get("relation_type") != "uses",
+            }
+            for item in items
+            for relation in item.get("relations", [])
+            if relation.get("target_id")
+            and relation.get("target_id") not in item.get("dependencies", [])
+        )
         return {"root_id": "source", "nodes": nodes, "edges": edges}
 
     async def apply(self, draft_id: str, admin_id: str) -> Dict[str, Any]:
@@ -341,6 +441,10 @@ class OfficialImportDraftService:
                 raise ValueError("selected_tool_security_blocked")
             if effective_type == "tool" and not item.get("security_accepted"):
                 raise ValueError("selected_tool_requires_review")
+            if effective_type == "tool" and str(
+                _tool_language(item)
+            ) not in TOOL_LANGUAGES:
+                raise ValueError("selected_tool_requires_language")
             if set(item.get("dependencies", [])) - selected_ids:
                 raise ValueError("selected_component_has_missing_dependencies")
         if source_id:
@@ -396,6 +500,7 @@ class OfficialImportDraftService:
                 if (
                     item.get("forced_type")
                     or item.get("forced_language")
+                    or item.get("forced_tool_language")
                     or item.get("dependencies")
                 ):
                     await self.storage.save_mapping(
@@ -403,6 +508,7 @@ class OfficialImportDraftService:
                         str(item.get("source_path") or ""),
                         forced_type=item.get("forced_type"),
                         forced_language=item.get("forced_language"),
+                        forced_tool_language=item.get("forced_tool_language"),
                         dependencies=list(item.get("dependencies", [])),
                     )
             await self.storage.mark_draft_status(draft_id, "applied")
@@ -446,8 +552,11 @@ class OfficialImportDraftService:
     def _package_component(
         item: Dict[str, Any], source_id: str, component_type: str
     ) -> PackageComponent:
-        labels = list(item.get("labels", ["official"]))
+        labels = [
+            label for label in item.get("labels", ["official"]) if label in SKILL_LABELS
+        ]
         language = str(item.get("forced_language") or item.get("language") or "")
+        tool_language = _tool_language(item)
         if language and language not in labels:
             labels.append(language)
         return PackageComponent(
@@ -462,7 +571,9 @@ class OfficialImportDraftService:
             files=dict(item.get("files") or {}),
             labels=labels,
             dependencies=list(item.get("dependencies") or []),
+            relations=list(item.get("relations") or []),
             language=language,
+            tool_language=tool_language,
             detected_by=str(item.get("detected_by") or "generic"),
             variants=list(item.get("variants") or []),
             executable=bool(item.get("executable")),

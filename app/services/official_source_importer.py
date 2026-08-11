@@ -11,15 +11,18 @@ import io
 import json
 import posixpath
 import re
+import tomllib
 import urllib.error
 import urllib.request
 import zipfile
+from collections import defaultdict
 from pathlib import PurePosixPath
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 from urllib.parse import quote, urlencode, urlparse
 
 import yaml
 
+from app.config.content_languages import language_label
 from app.models.official_source import COMPONENT_TYPES, PackageComponent
 from app.storage.official_source_storage import OfficialSourceStorage
 from app.storage.skill_storage import SKILL_LABELS, ensure_origin_label
@@ -207,6 +210,42 @@ def _frontmatter(text: str) -> Dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
+def _structured_mapping(content: str, suffix: str) -> Dict[str, Any]:
+    try:
+        if suffix == ".json":
+            value = json.loads(content)
+        elif suffix == ".toml":
+            value = tomllib.loads(content)
+        else:
+            value = yaml.safe_load(content)
+    except (json.JSONDecodeError, tomllib.TOMLDecodeError, yaml.YAMLError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _is_agent_definition(
+    path: PurePosixPath,
+    content: str,
+    meta: Dict[str, Any],
+    *,
+    declared: bool,
+) -> bool:
+    if declared:
+        return True
+    if path.suffix.lower() == ".md":
+        return bool(
+            meta.get("name")
+            and any(meta.get(key) for key in ("description", "model", "tools"))
+        )
+    structured = _structured_mapping(content, path.suffix.lower())
+    has_identity = bool(structured.get("name") or structured.get("id"))
+    has_instructions = any(
+        structured.get(key)
+        for key in ("system_prompt", "instructions", "prompt", "role", "content")
+    )
+    return has_identity and has_instructions
+
+
 def _safe_archive_files(raw: bytes) -> Dict[str, str]:
     files: Dict[str, str] = {}
     unpacked = 0
@@ -361,15 +400,163 @@ def _component_dependencies(
     meta: Dict[str, Any], declared: Dict[str, Any]
 ) -> List[str]:
     values = _string_list(meta.get("dependencies"))
-    # Las claves de permisos de Claude/Codex también suelen llamarse "tools".
-    # Solo un manifiesto iAgentsHub puede convertir esas listas en relaciones.
+    # Skills, documentos, prompts y memoria no son permisos de ejecución y se
+    # pueden interpretar en frontmatter común. "tools", en cambio, suele ser
+    # la lista Read/Write/Bash de Claude/Codex: solo un manifiesto nativo puede
+    # convertir esa clave en relaciones de recursos.
+    for key in ("skills", "knowledge", "prompts", "memory", "workflows"):
+        values.extend(_string_list(meta.get(key)))
     for key in ("skills", "knowledge", "prompts", "tools", "memory", "workflows"):
         values.extend(_string_list(declared.get(key)))
+    resources = meta.get("resources")
+    if isinstance(resources, dict):
+        for value in resources.values():
+            values.extend(_string_list(value))
     relations = declared.get("relations")
     if isinstance(relations, dict):
         for value in relations.values():
             values.extend(_string_list(value))
-    return list(dict.fromkeys(_slug(item.split(":", 1)[-1]) for item in values))
+    return list(dict.fromkeys(values))
+
+
+_REFERENCE_PATH = re.compile(
+    r"(?<![A-Za-z0-9_.-])"
+    r"((?:\.\.?/)?(?:agents|skills|commands|prompts|knowledge|documents|memory|"
+    r"tools|workflows)/[A-Za-z0-9_./-]+)",
+    re.IGNORECASE,
+)
+_ACTIVATION_REFERENCE = re.compile(
+    r"(?<![A-Za-z0-9_])(?:@|\$|/)([A-Za-z0-9][A-Za-z0-9_.-]*)"
+)
+_BACKTICK_REFERENCE = re.compile(r"`([A-Za-z0-9][A-Za-z0-9_.:-]*)`")
+_AGENT_RESOURCE_TYPES = frozenset(
+    {"skill", "knowledge", "prompt", "command", "tool", "memory"}
+)
+
+
+def _reference_aliases(component: PackageComponent) -> set[str]:
+    path = PurePosixPath(component.source_path)
+    aliases = {
+        component.component_id.lower(),
+        _slug(component.name),
+        path.as_posix().lower(),
+        path.with_suffix("").as_posix().lower(),
+    }
+    if path.name.upper() == "SKILL.MD":
+        aliases.update(
+            {
+                path.parent.as_posix().lower(),
+                path.parent.name.lower(),
+                f"skill:{path.parent.name.lower()}",
+                f"skill:{component.component_id.lower()}",
+                f"skills:{component.component_id.lower()}",
+            }
+        )
+    else:
+        aliases.add(path.stem.lower())
+        aliases.add(f"{component.component_type}:{path.stem.lower()}")
+    prefix = path.parent.as_posix().rstrip("/")
+    aliases.update(
+        f"{prefix}/{relative}".lower() for relative in component.files if prefix
+    )
+    return {alias.strip("./") for alias in aliases if alias.strip("./")}
+
+
+def _reference_candidates(value: str, source_path: str) -> List[str]:
+    cleaned = value.strip().strip("`'\"<>()[]{}.,;:").split("#", 1)[0]
+    cleaned = cleaned.replace("\\", "/")
+    if not cleaned:
+        return []
+    candidates = [cleaned.lower().lstrip("./")]
+    if cleaned.startswith(("./", "../")):
+        relative = posixpath.normpath(
+            PurePosixPath(source_path).parent.joinpath(cleaned).as_posix()
+        )
+        candidates.insert(0, relative.lower().lstrip("./"))
+    if ":" in cleaned:
+        candidates.append(cleaned.split(":", 1)[-1].lower())
+    candidates.append(_slug(cleaned))
+    pure = PurePosixPath(cleaned)
+    if pure.name.upper() == "SKILL.MD":
+        candidates.extend([pure.parent.as_posix().lower(), pure.parent.name.lower()])
+    elif pure.suffix:
+        candidates.append(pure.stem.lower())
+    return list(dict.fromkeys(item for item in candidates if item))
+
+
+def _content_references(component: PackageComponent) -> List[str]:
+    values = [match.group(1) for match in _REFERENCE_PATH.finditer(component.content)]
+    values.extend(
+        match.group(1) for match in _ACTIVATION_REFERENCE.finditer(component.content)
+    )
+    values.extend(
+        match.group(1) for match in _BACKTICK_REFERENCE.finditer(component.content)
+    )
+    return list(dict.fromkeys(values))
+
+
+def _resolve_component_relations(components: List[PackageComponent]) -> None:
+    """Resuelve relaciones exactas después de fijar IDs y variantes.
+
+    Solo se automatizan referencias estructuradas (campos, rutas y tokens de
+    activación). El texto libre no participa para evitar unir recursos por una
+    coincidencia semántica accidental.
+    """
+    aliases: Dict[str, set[str]] = defaultdict(set)
+    by_id = {component.component_id: component for component in components}
+    for component in components:
+        for alias in _reference_aliases(component):
+            aliases[alias].add(component.component_id)
+
+    def resolve(value: str, source: PackageComponent) -> Optional[str]:
+        for candidate in _reference_candidates(value, source.source_path):
+            matches = aliases.get(candidate, set()) - {source.component_id}
+            if len(matches) == 1:
+                return next(iter(matches))
+        return None
+
+    explicit_by_id = {
+        component.component_id: list(component.dependencies) for component in components
+    }
+    for component in components:
+        resolved: List[str] = []
+        for reference in explicit_by_id[component.component_id]:
+            target = resolve(reference, component)
+            if target:
+                resolved.append(target)
+                continue
+            # Conserva una referencia explícita no resuelta para que la
+            # validación la muestre como error en vez de ocultarla.
+            pure = PurePosixPath(reference)
+            fallback = (
+                pure.parent.name if pure.name.upper() == "SKILL.MD" else pure.stem
+            )
+            resolved.append(_slug(fallback or reference.split(":", 1)[-1]))
+        component.dependencies = list(dict.fromkeys(resolved))
+
+    for component in components:
+        for reference in _content_references(component):
+            target_id = resolve(reference, component)
+            if not target_id:
+                continue
+            target = by_id[target_id]
+            if (
+                component.component_type == "agent"
+                and target.component_type in _AGENT_RESOURCE_TYPES
+            ):
+                component.dependencies = list(
+                    dict.fromkeys([*component.dependencies, target_id])
+                )
+                component.relations.append(
+                    {"target_id": target_id, "relation_type": "uses"}
+                )
+            elif (
+                target.component_type == "agent"
+                and component.component_type in _AGENT_RESOURCE_TYPES
+            ):
+                component.relations.append(
+                    {"target_id": target_id, "relation_type": "orchestrates"}
+                )
 
 
 def _manifest_components(files: Dict[str, str]) -> Dict[str, Dict[str, Any]]:
@@ -427,6 +614,7 @@ def detect_components(source_id: str, files: Dict[str, str]) -> List[PackageComp
         kind = declared_type if declared_type in COMPONENT_TYPES else inferred_kind
         if kind == "unknown" and not declared_type:
             continue
+        workflow_dependencies: List[str] = []
         if kind == "workflow":
             try:
                 definition = yaml.safe_load(content) or {}
@@ -437,8 +625,22 @@ def detect_components(source_id: str, files: Dict[str, str]) -> List[PackageComp
                 "edges",
             }.issubset(definition):
                 continue
+            workflow_dependencies = [
+                str(node.get("agent_id") or "")
+                for node in definition.get("nodes", [])
+                if isinstance(node, dict) and node.get("agent_id")
+            ]
         pure = PurePosixPath(path)
         meta = {**_frontmatter(content), **declared}
+        detected_by = "native_manifest" if declared else "canonical_directory"
+        if kind == "agent" and not _is_agent_definition(
+            pure, content, meta, declared=bool(declared)
+        ):
+            kind = "unknown"
+            detected_by = "ambiguous_agent_file"
+        if kind == "tool" and not declared:
+            kind = "unknown"
+            detected_by = "undeclared_executable"
         inferred = pure.parent.name if pure.name.upper() == "SKILL.MD" else pure.stem
         name = str(
             meta.get("name") or inferred.replace("-", " ").replace("_", " ").title()
@@ -456,14 +658,19 @@ def detect_components(source_id: str, files: Dict[str, str]) -> List[PackageComp
             key + companion_files[key] for key in sorted(companion_files)
         )
         language = str(meta.get("language") or meta.get("lang") or "").lower()
-        language_label = f"lang_{language.replace('-', '_')}" if language else ""
+        content_language = language_label(language) or ""
         labels = ensure_origin_label(_string_list(meta.get("labels")), "official")
-        if language_label in SKILL_LABELS:
-            labels.append(language_label)
-        executable_candidate = kind in {"tool", "hook"}
+        if content_language:
+            labels.append(content_language)
+        tool_language = {
+            ".py": "python",
+            ".sh": "shell",
+            ".cpp": "cpp",
+        }.get(pure.suffix.lower(), "")
+        executable_candidate = kind in {"tool", "hook"} or detected_by == "undeclared_executable"
         executable = kind == "tool"
         blocked = executable_candidate and (
-            (kind == "tool" and pure.suffix.lower() not in {".py", ".sh"})
+            (kind == "tool" and pure.suffix.lower() not in {".py", ".sh", ".cpp"})
             or any(
                 pattern.search(content) and label == "borrado recursivo"
                 for pattern, label in _DANGEROUS_PATTERNS
@@ -479,10 +686,15 @@ def detect_components(source_id: str, files: Dict[str, str]) -> List[PackageComp
             content=content,
             files=companion_files,
             labels=list(dict.fromkeys(labels)),
-            dependencies=_component_dependencies(meta, declared),
+            dependencies=list(
+                dict.fromkeys(
+                    [*_component_dependencies(meta, declared), *workflow_dependencies]
+                )
+            ),
             content_hash=hashlib.sha256(digest_source.encode()).hexdigest(),
-            language=language_label,
-            detected_by="native_manifest" if declared else "canonical_directory",
+            language=content_language,
+            tool_language=tool_language if kind == "tool" else "",
+            detected_by=detected_by,
             executable=executable,
             security_blocked=blocked,
             security_review_required=executable_candidate,
@@ -513,15 +725,17 @@ def detect_components(source_id: str, files: Dict[str, str]) -> List[PackageComp
         component.component_id = component_id
         used_ids.add(component_id)
         components.append(component)
-    return sorted(components, key=lambda item: (item.component_type, item.component_id))
+    components.sort(key=lambda item: (item.component_type, item.component_id))
+    _resolve_component_relations(components)
+    return components
 
 
 def validate_components(
     components: List[PackageComponent],
-) -> Tuple[List[str], List[str]]:
+) -> Tuple[List[str], List[Any]]:
     """Devuelve errores bloqueantes y avisos de seguridad para la revisión."""
     errors: List[str] = []
-    warnings: List[str] = []
+    warnings: List[Any] = []
     component_ids = {component.component_id for component in components}
     dependencies_by_id = {
         component.component_id: component.dependencies for component in components
@@ -562,6 +776,16 @@ def validate_components(
                 f"{component.component_id}: dependencias no encontradas "
                 f"({', '.join(missing_dependencies)})"
             )
+        missing_relations = [
+            str(relation.get("target_id") or "")
+            for relation in component.relations
+            if str(relation.get("target_id") or "") not in component_ids
+        ]
+        if missing_relations:
+            errors.append(
+                f"{component.component_id}: relaciones no encontradas "
+                f"({', '.join(missing_relations)})"
+            )
         component_root = PurePosixPath(component.source_path).parent
         texts = {component.source_path: component.content}
         texts.update(
@@ -587,15 +811,35 @@ def validate_components(
                     or resolved.startswith("../")
                     or resolved.startswith("/")
                 ):
-                    errors.append(
-                        f"{component.component_id}: referencia fuera del repositorio ({destination})"
+                    warnings.append(
+                        {
+                            "level": "log",
+                            "code": "external_markdown_reference",
+                            "message": (
+                                f"{component.component_id}: referencia fuera del "
+                                f"repositorio ({destination})"
+                            ),
+                        }
                     )
             for pattern, label in _DANGEROUS_PATTERNS:
                 if pattern.search(content):
                     warnings.append(
                         f"{component.component_id}: posible {label} en {path}"
                     )
-    return sorted(set(errors)), sorted(set(warnings))
+    return sorted(set(errors)), unique_import_notices(warnings)
+
+
+def unique_import_notices(values: Iterable[Any]) -> List[Any]:
+    """Deduplica avisos conservando mensajes estructurados para la UI."""
+    result: List[Any] = []
+    seen: set[str] = set()
+    for value in values:
+        key = json.dumps(value, ensure_ascii=False, sort_keys=True)
+        if key in seen:
+            continue
+        seen.add(key)
+        result.append(value)
+    return result
 
 
 class OfficialSourceImporter:
@@ -631,6 +875,21 @@ class OfficialSourceImporter:
         tracking_ref: str = "",
     ) -> Dict[str, Any]:
         """Inspecciona sin crear fuente ni objetos; primera fase del borrador."""
+        snapshot = await self.inspect_snapshot(
+            repository_url,
+            tracking_mode=tracking_mode,
+            tracking_ref=tracking_ref,
+        )
+        return self.analyze_snapshot(snapshot)
+
+    async def inspect_snapshot(
+        self,
+        repository_url: str,
+        *,
+        tracking_mode: str = "release",
+        tracking_ref: str = "",
+    ) -> Dict[str, Any]:
+        """Descarga fijada a commit y devuelve todos los textos seguros."""
         parsed = parse_repository_url(repository_url)
         if tracking_mode not in {"release", "branch"}:
             raise OfficialRepositoryImportError(
@@ -653,7 +912,44 @@ class OfficialSourceImporter:
             "tracking_ref": tracking_ref or default_branch,
             "license": str((metadata.get("license") or {}).get("spdx_id") or ""),
         }
-        return await self._fetch_source(source)
+        version, sha, archive_url = await self._resolve_version(source)
+        raw = await asyncio.to_thread(
+            _request,
+            archive_url,
+            accept="application/zip",
+            max_bytes=_MAX_ARCHIVE_BYTES,
+            too_large_message="El repositorio comprimido supera 100 MB",
+        )
+        return {
+            "source": {**source, "commit_sha": sha, "resolved_version": version},
+            "version": version,
+            "commit_sha": sha,
+            "files": _safe_archive_files(raw),
+        }
+
+    def analyze_snapshot(self, snapshot: Dict[str, Any]) -> Dict[str, Any]:
+        """Aplica el detector manual a un snapshot ya descargado."""
+        source = dict(snapshot["source"])
+        components = detect_components(str(source.get("id") or "draft"), snapshot["files"])
+        errors: List[str] = []
+        warnings: List[Any] = []
+        if source.get("license") not in _ALLOWED_LICENSES:
+            warnings.append(
+                "La licencia no está reconocida o no pertenece al catálogo conocido"
+            )
+        if not components:
+            errors.append("No se detectaron componentes compatibles")
+        content_errors, security_warnings = validate_components(components)
+        errors.extend(content_errors)
+        warnings.extend(security_warnings)
+        return {
+            "source": source,
+            "version": snapshot["version"],
+            "commit_sha": snapshot["commit_sha"],
+            "components": components,
+            "errors": errors,
+            "security_warnings": unique_import_notices(warnings),
+        }
 
     async def fetch(self, source_id: str) -> Dict[str, Any]:
         source = await self.storage.get_source(source_id)
@@ -682,27 +978,14 @@ class OfficialSourceImporter:
             too_large_message="El repositorio comprimido supera 100 MB",
         )
         files = _safe_archive_files(raw)
-        source_id = str(source.get("id") or "draft")
-        components = detect_components(source_id, files)
-        errors: List[str] = []
-        warnings: List[str] = []
-        if source.get("license") not in _ALLOWED_LICENSES:
-            warnings.append(
-                "La licencia no está reconocida o no pertenece al catálogo conocido"
-            )
-        if not components:
-            errors.append("No se detectaron componentes compatibles")
-        content_errors, security_warnings = validate_components(components)
-        errors.extend(content_errors)
-        warnings.extend(security_warnings)
-        return {
-            "source": {**source, "commit_sha": sha, "resolved_version": version},
-            "version": version,
-            "commit_sha": sha,
-            "components": components,
-            "errors": errors,
-            "security_warnings": sorted(set(warnings)),
-        }
+        return self.analyze_snapshot(
+            {
+                "source": {**source, "commit_sha": sha, "resolved_version": version},
+                "files": files,
+                "version": version,
+                "commit_sha": sha,
+            }
+        )
 
     async def _metadata(self, parsed: Dict[str, str]) -> Dict[str, Any]:
         if parsed["provider"] == "github":

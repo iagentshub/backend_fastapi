@@ -59,7 +59,9 @@ class PackageComponent:
     files: Dict[str, str] = field(default_factory=dict)
     labels: List[str] = field(default_factory=lambda: ["official"])
     dependencies: List[str] = field(default_factory=list)
+    relations: List[Dict[str, Any]] = field(default_factory=list)
     language: str = ""
+    tool_language: str = ""
     detected_by: str = "generic"
     variants: List[str] = field(default_factory=list)
     executable: bool = False
@@ -76,8 +78,10 @@ class PackageComponent:
             "source_path": self.source_path,
             "labels": self.labels,
             "dependencies": self.dependencies,
+            "relations": self.relations,
             "content_hash": self.content_hash,
             "language": self.language,
+            "tool_language": self.tool_language,
             "detected_by": self.detected_by,
             "variants": self.variants,
             "executable": self.executable,
@@ -105,6 +109,8 @@ class OfficialSource(BaseModel):
     description: str = ""
     tracking_mode: str = "release"
     tracking_ref: str = "main"
+    import_mode: str = "deterministic"
+    llm_connection_id: Optional[str] = None
     license: str = ""
     last_version: Optional[str] = None
     last_commit_sha: Optional[str] = None
@@ -133,6 +139,7 @@ class ImportComponent(BaseModel):
     variants: List[str] = Field(default_factory=list)
     forced_type: Optional[str] = None
     forced_language: Optional[str] = None
+    forced_tool_language: Optional[str] = None
     security_accepted: bool = False
     security_blocked: bool = False
     security_review_required: bool = False

@@ -7,9 +7,12 @@ revisar ni publicar: solo la fuente y qué componentes suyos se quedan.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Literal, Optional
+import asyncio
+import json
+from typing import Any, AsyncIterator, Dict, List, Literal, Optional
 
 from fastapi import Depends
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.api.routes.admin._router import admin_router
@@ -39,6 +42,8 @@ class ImportSourceBody(BaseModel):
     repository_url: str = Field(min_length=1, max_length=500)
     tracking_mode: Literal["release", "branch"] = "release"
     tracking_ref: str = Field(default="", max_length=200)
+    import_mode: Literal["deterministic", "llm"] = "deterministic"
+    llm_connection_id: Optional[str] = Field(default=None, max_length=300)
 
 
 class UpdateSourceBody(ImportSourceBody):
@@ -63,8 +68,11 @@ class MarkOfficialBody(BaseModel):
 
 class UpdateDraftComponentBody(BaseModel):
     selected: Optional[bool] = None
-    forced_type: Optional[Literal["skill", "prompt", "knowledge", "tool"]] = None
+    forced_type: Optional[
+        Literal["agent", "skill", "prompt", "knowledge", "tool", "memory", "workflow"]
+    ] = None
     forced_language: Optional[str] = Field(default=None, max_length=40)
+    forced_tool_language: Optional[Literal["", "python", "shell", "cpp"]] = None
     security_accepted: Optional[bool] = None
     dependencies: Optional[List[str]] = Field(default=None, max_length=500)
 
@@ -165,8 +173,12 @@ async def admin_import_official_source(
             admin,
             tracking_mode=body.tracking_mode,
             tracking_ref=body.tracking_ref,
+            import_mode=body.import_mode,
+            llm_connection_id=body.llm_connection_id or "",
         )
     except GitHubImportError as exc:
+        raise APIError(422, "official_source_import_failed", str(exc)) from exc
+    except ValueError as exc:
         raise APIError(422, "official_source_import_failed", str(exc)) from exc
     source = await _storage.save_source({**draft["source"], "owner_id": admin})
     attached = await _storage.attach_draft_source(
@@ -192,10 +204,75 @@ async def admin_inspect_official_source(
             admin,
             tracking_mode=body.tracking_mode,
             tracking_ref=body.tracking_ref,
+            import_mode=body.import_mode,
+            llm_connection_id=body.llm_connection_id or "",
         )
     except GitHubImportError as exc:
         raise APIError(422, "official_source_import_failed", str(exc)) from exc
+    except ValueError as exc:
+        raise APIError(422, "official_source_import_failed", str(exc)) from exc
     return await _draft_payload(draft)
+
+
+@admin_router.post("/official-sources/inspect-stream")
+async def admin_inspect_official_source_stream(
+    body: ImportSourceBody, admin: str = Depends(require_admin)
+) -> StreamingResponse:
+    """Inspección larga con progreso SSE y latidos para evitar timeouts."""
+
+    async def generate() -> AsyncIterator[str]:
+        queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue()
+
+        async def progress(event: Dict[str, Any]) -> None:
+            await queue.put({"type": "progress", **event})
+
+        async def inspect() -> None:
+            try:
+                draft = await _drafts.inspect(
+                    body.repository_url,
+                    admin,
+                    tracking_mode=body.tracking_mode,
+                    tracking_ref=body.tracking_ref,
+                    import_mode=body.import_mode,
+                    llm_connection_id=body.llm_connection_id or "",
+                    progress=progress,
+                )
+                await queue.put(
+                    {"type": "result", "draft": await _draft_payload(draft)}
+                )
+            except (GitHubImportError, ValueError) as exc:
+                await queue.put({"type": "error", "message": str(exc)})
+            except Exception:
+                await queue.put(
+                    {
+                        "type": "error",
+                        "message": "No se pudo completar el análisis del repositorio",
+                    }
+                )
+
+        yield f"data: {json.dumps({'type': 'started'}, ensure_ascii=False)}\n\n"
+        task = asyncio.create_task(inspect())
+        try:
+            while True:
+                try:
+                    event = await asyncio.wait_for(queue.get(), timeout=10)
+                except TimeoutError:
+                    event = {"type": "heartbeat"}
+                yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+                if event["type"] in {"result", "error"}:
+                    break
+        finally:
+            if not task.done():
+                task.cancel()
+
+    return StreamingResponse(
+        generate(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+        },
+    )
 
 
 @admin_router.put("/official-sources/{source_id}")

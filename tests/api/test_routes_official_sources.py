@@ -243,18 +243,28 @@ def test_sync_por_el_endpoint_materializa_la_seleccion(admin_client, admin_id, m
 
     source_id = _seed_source()
 
-    async def fake_fetch(self, requested_id: str):
-        source = await OfficialSourceStorage().get_source(requested_id)
+    async def fake_snapshot(self, *_args, **_kwargs):
+        source = await OfficialSourceStorage().get_source(source_id)
         return {
             "source": source,
             "version": "v1",
             "commit_sha": "sha",
+            "files": {},
+        }
+
+    def fake_analyze(self, snapshot):
+        return {
+            "source": snapshot["source"],
+            "version": snapshot["version"],
+            "commit_sha": snapshot["commit_sha"],
             "components": _components(requested_id),
             "errors": [],
             "security_warnings": [],
         }
 
-    monkeypatch.setattr(routes._importer.__class__, "fetch", fake_fetch)
+    requested_id = source_id
+    monkeypatch.setattr(routes._importer.__class__, "inspect_snapshot", fake_snapshot)
+    monkeypatch.setattr(routes._importer.__class__, "analyze_snapshot", fake_analyze)
 
     mirar = admin_client.post(f"/api/admin/official-sources/{source_id}/sync")
     assert mirar.status_code == 200
@@ -353,3 +363,44 @@ def test_un_comando_se_materializa_como_prompt(admin_client, admin_id):
     applied = asyncio.run(run())
 
     assert [item["resource_type"] for item in applied["resources"]] == ["prompt"]
+
+
+def test_inspeccion_stream_emite_progreso_y_resultado(admin_client, monkeypatch):
+    from app.api.routes.admin import official_sources as routes
+
+    async def fake_inspect(*_args, progress=None, **_kwargs):
+        assert progress is not None
+        await progress({"stage": "downloading", "current": 0, "total": 0})
+        await progress(
+            {
+                "stage": "llm_analyzing",
+                "current": 1,
+                "total": 2,
+                "files": 20,
+                "components": 4,
+            }
+        )
+        return {"id": "draft-stream"}
+
+    async def fake_payload(draft, **_kwargs):
+        return {"draft_id": draft["id"], "components": []}
+
+    monkeypatch.setattr(routes._drafts, "inspect", fake_inspect)
+    monkeypatch.setattr(routes, "_draft_payload", fake_payload)
+
+    with admin_client.stream(
+        "POST",
+        "/api/admin/official-sources/inspect-stream",
+        json={
+            "repository_url": "https://github.com/example/demo",
+            "import_mode": "llm",
+            "llm_connection_id": "connection-1",
+        },
+    ) as response:
+        body = "".join(response.iter_text())
+
+    assert response.status_code == 200
+    assert '"type": "started"' in body
+    assert '"stage": "llm_analyzing"' in body
+    assert '"type": "result"' in body
+    assert '"draft_id": "draft-stream"' in body

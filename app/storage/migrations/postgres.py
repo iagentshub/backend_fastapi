@@ -287,6 +287,24 @@ async def _official_explicit_selection(conn: Any) -> None:
     )
 
 
+async def _official_source_import_modes(conn: Any) -> None:
+    await conn.execute(
+        "ALTER TABLE official_sources ADD COLUMN IF NOT EXISTS "
+        "import_mode TEXT NOT NULL DEFAULT 'deterministic'"
+    )
+    await conn.execute(
+        "ALTER TABLE official_sources ADD COLUMN IF NOT EXISTS llm_connection_id TEXT"
+    )
+
+
+async def _official_tool_languages(conn: Any) -> None:
+    for table in ("official_import_components", "official_source_mappings"):
+        await conn.execute(
+            f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS "
+            "forced_tool_language TEXT"
+        )
+
+
 POSTGRES_MIGRATIONS = (
     Migration(1, "legacy_schema_catchup", _migrate_pg, repeatable=True),
     Migration(2, "users_json_to_relational", _migrate_users_json_pg, repeatable=True),
@@ -297,6 +315,8 @@ POSTGRES_MIGRATIONS = (
     Migration(7, "official_content_as_resources", _official_content_as_resources),
     Migration(8, "official_source_provenance", _official_source_provenance),
     Migration(9, "official_explicit_selection", _official_explicit_selection),
+    Migration(10, "official_source_import_modes", _official_source_import_modes),
+    Migration(11, "official_tool_languages", _official_tool_languages),
 )
 
 

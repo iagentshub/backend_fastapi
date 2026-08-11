@@ -11,13 +11,13 @@ from __future__ import annotations
 
 import json
 import re
-from pathlib import PurePosixPath
 from typing import Any, Dict, Iterable, List, Optional, Sequence
 
 import yaml
 
 from app.config import data as _cfg
 from app.models.official_source import MATERIALIZABLE_TYPES, PackageComponent
+from app.services.workflow_validator import validate_workflow
 from app.storage import db as _db
 from app.storage.agent_storage import AgentStorage
 from app.storage.db import AsyncConn, open_db
@@ -30,7 +30,7 @@ from app.storage.official_source_storage import (
 from app.storage.prompt_storage import PromptStorage
 from app.storage.resource_versions import ResourceVersionStorage
 from app.storage.skill_storage import SkillStorage
-from app.storage.tool_storage import ToolStorage
+from app.storage.tool_storage import TOOL_LANGUAGES, ToolStorage
 from app.storage.workflows import WorkflowStorage
 
 # Lo oficial nace público: es la razón de traerlo. El resto de labels del
@@ -389,10 +389,8 @@ class OfficialSourceMaterializer:
             return "prompt", str(resource["id"])
 
         if kind == "tool":
-            language = {".py": "python", ".sh": "shell"}.get(
-                PurePosixPath(component.source_path).suffix
-            )
-            if not language:
+            language = component.tool_language
+            if language not in TOOL_LANGUAGES:
                 return None
             payload = {
                 "name": component.name,
@@ -472,7 +470,16 @@ class OfficialSourceMaterializer:
             except yaml.YAMLError:
                 definition = {}
             if not isinstance(definition, dict):
-                return None
+                raise ValueError("invalid_official_workflow")
+            nodes = definition.get("nodes")
+            if isinstance(nodes, list):
+                for node in nodes:
+                    if not isinstance(node, dict):
+                        continue
+                    component_agent_id = str(node.get("agent_id") or "")
+                    if resource_types.get(component_agent_id) == "agent":
+                        node["agent_id"] = resource_ids[component_agent_id]
+            definition = validate_workflow(definition)
             payload = {
                 "name": component.name,
                 "description": component.description,

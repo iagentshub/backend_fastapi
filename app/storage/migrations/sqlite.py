@@ -305,6 +305,34 @@ async def _official_explicit_selection(conn: Any) -> None:
         )
 
 
+async def _official_source_import_modes(conn: Any) -> None:
+    columns = {
+        str(row[1])
+        for row in await conn.execute_fetchall("PRAGMA table_info(official_sources)")
+    }
+    if "import_mode" not in columns:
+        await conn.execute(
+            "ALTER TABLE official_sources ADD COLUMN "
+            "import_mode TEXT NOT NULL DEFAULT 'deterministic'"
+        )
+    if "llm_connection_id" not in columns:
+        await conn.execute(
+            "ALTER TABLE official_sources ADD COLUMN llm_connection_id TEXT"
+        )
+
+
+async def _official_tool_languages(conn: Any) -> None:
+    for table in ("official_import_components", "official_source_mappings"):
+        columns = {
+            str(row[1])
+            for row in await conn.execute_fetchall(f"PRAGMA table_info({table})")
+        }
+        if "forced_tool_language" not in columns:
+            await conn.execute(
+                f"ALTER TABLE {table} ADD COLUMN forced_tool_language TEXT"
+            )
+
+
 SQLITE_MIGRATIONS = (
     Migration(1, "legacy_schema_catchup", _migrate_sqlite, repeatable=True),
     Migration(
@@ -317,6 +345,8 @@ SQLITE_MIGRATIONS = (
     Migration(7, "official_content_as_resources", _official_content_as_resources),
     Migration(8, "official_source_provenance", _official_source_provenance),
     Migration(9, "official_explicit_selection", _official_explicit_selection),
+    Migration(10, "official_source_import_modes", _official_source_import_modes),
+    Migration(11, "official_tool_languages", _official_tool_languages),
 )
 
 

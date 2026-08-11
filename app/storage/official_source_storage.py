@@ -7,9 +7,11 @@ con ``official_source_id`` apuntando aquí (ver services/official_source_sync).
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
+from app.config.content_languages import CONTENT_LANGUAGE_LABELS
 from app.models.official_source import INTERNAL_SOURCE_ID, OfficialSource
 from app.storage.db import AsyncConn, open_db
 from app.utils import now_iso
@@ -25,6 +27,20 @@ OFFICIAL_RESOURCE_TABLES: Dict[str, str] = {
     "workflow": "agent_workflows",
 }
 SOURCE_RESOURCE_TYPES = frozenset({*OFFICIAL_RESOURCE_TABLES, "memory"})
+_INVALID_LANGUAGE_ERROR = re.compile(
+    r"^[^:]+: etiquetas no válidas \(([^)]+)\)$"
+)
+
+
+def _is_legacy_invalid_language_error(value: Any) -> bool:
+    match = _INVALID_LANGUAGE_ERROR.fullmatch(str(value))
+    if not match:
+        return False
+    labels = {item.strip() for item in match.group(1).split(",")}
+    return bool(labels) and all(
+        label.startswith("lang_") and label not in CONTENT_LANGUAGE_LABELS
+        for label in labels
+    )
 
 
 class OfficialSourceStorage:
@@ -61,7 +77,8 @@ class OfficialSourceStorage:
                     "UPDATE official_sources SET name=?, description=?, "
                     "repository_owner=?, repository_name=?, provider=?, repository_path=?, "
                     "owner_id=COALESCE(owner_id, ?), default_branch=?, tracking_mode=?, "
-                    "tracking_ref=?, license=?, updated_at=? WHERE id=?",
+                    "tracking_ref=?, import_mode=?, llm_connection_id=?, license=?, "
+                    "updated_at=? WHERE id=?",
                     (
                         data["name"],
                         data.get("description", ""),
@@ -73,6 +90,8 @@ class OfficialSourceStorage:
                         data.get("default_branch", "main"),
                         data.get("tracking_mode", "release"),
                         data.get("tracking_ref", "main"),
+                        data.get("import_mode", "deterministic"),
+                        data.get("llm_connection_id"),
                         data.get("license", ""),
                         now,
                         source_id,
@@ -83,8 +102,8 @@ class OfficialSourceStorage:
                     "INSERT INTO official_sources "
                     "(id,name,description,repository_url,repository_owner,"
                     "repository_name,provider,repository_path,owner_id,default_branch,"
-                    "tracking_mode,tracking_ref,license,created_at,updated_at) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    "tracking_mode,tracking_ref,import_mode,llm_connection_id,license,"
+                    "created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
                     (
                         source_id,
                         data["name"],
@@ -98,6 +117,8 @@ class OfficialSourceStorage:
                         data.get("default_branch", "main"),
                         data.get("tracking_mode", "release"),
                         data.get("tracking_ref", "main"),
+                        data.get("import_mode", "deterministic"),
+                        data.get("llm_connection_id"),
                         data.get("license", ""),
                         now,
                         now,
@@ -489,8 +510,8 @@ class OfficialSourceStorage:
                 await conn.executemany(
                     "INSERT INTO official_import_components "
                     "(draft_id,component_key,payload,selected,explicitly_selected,"
-                    "forced_type,forced_language,security_accepted,state) "
-                    "VALUES (?,?,?,?,?,?,?,?,?)",
+                    "forced_type,forced_language,forced_tool_language,security_accepted,state) "
+                    "VALUES (?,?,?,?,?,?,?,?,?,?)",
                     [
                         (
                             draft_id,
@@ -500,6 +521,7 @@ class OfficialSourceStorage:
                             int(bool(item.get("explicitly_selected", False))),
                             item.get("forced_type"),
                             item.get("forced_language"),
+                            item.get("forced_tool_language"),
                             int(bool(item.get("security_accepted", False))),
                             item.get("state", "new"),
                         )
@@ -524,7 +546,11 @@ class OfficialSourceStorage:
             return None
         result = dict(row)
         result["source"] = json.loads(result.pop("source_payload"))
-        result["errors"] = json.loads(result["errors"])
+        result["errors"] = [
+            error
+            for error in json.loads(result["errors"])
+            if not _is_legacy_invalid_language_error(error)
+        ]
         result["security_warnings"] = json.loads(result["security_warnings"])
         result["component_count"] = int(count or 0)
         result["expired"] = (
@@ -600,6 +626,7 @@ class OfficialSourceStorage:
             "explicitly_selected",
             "forced_type",
             "forced_language",
+            "forced_tool_language",
             "security_accepted",
         }
         values = {key: value for key, value in updates.items() if key in allowed}
@@ -704,23 +731,26 @@ class OfficialSourceStorage:
         *,
         forced_type: Optional[str],
         forced_language: Optional[str],
+        forced_tool_language: Optional[str],
         dependencies: List[str],
         ignored: bool = False,
     ) -> None:
         async with open_db() as conn:
             await conn.execute(
                 "INSERT INTO official_source_mappings "
-                "(source_id,source_path,forced_type,forced_language,ignored,"
-                "dependencies,updated_at) VALUES (?,?,?,?,?,?,?) "
+                "(source_id,source_path,forced_type,forced_language,forced_tool_language,ignored,"
+                "dependencies,updated_at) VALUES (?,?,?,?,?,?,?,?) "
                 "ON CONFLICT(source_id,source_path) DO UPDATE SET "
                 "forced_type=excluded.forced_type,"
                 "forced_language=excluded.forced_language,ignored=excluded.ignored,"
+                "forced_tool_language=excluded.forced_tool_language,"
                 "dependencies=excluded.dependencies,updated_at=excluded.updated_at",
                 (
                     source_id,
                     source_path,
                     forced_type,
                     forced_language,
+                    forced_tool_language,
                     ignored,
                     json.dumps(dependencies, ensure_ascii=False),
                     now_iso(),
@@ -770,6 +800,17 @@ class OfficialSourceStorage:
     @staticmethod
     def _draft_component_from_row(row: Any) -> Dict[str, Any]:
         payload = json.loads(row["payload"])
+        payload["labels"] = [
+            label
+            for label in payload.get("labels", [])
+            if not str(label).startswith("lang_")
+            or label in CONTENT_LANGUAGE_LABELS
+        ]
+        if (
+            payload.get("language")
+            and payload["language"] not in CONTENT_LANGUAGE_LABELS
+        ):
+            payload["language"] = ""
         return {
             **payload,
             "component_id": row["component_key"],
@@ -777,6 +818,7 @@ class OfficialSourceStorage:
             "explicitly_selected": bool(row["explicitly_selected"]),
             "forced_type": row["forced_type"],
             "forced_language": row["forced_language"],
+            "forced_tool_language": row["forced_tool_language"],
             "security_accepted": bool(row["security_accepted"]),
             "state": row["state"],
         }
