@@ -69,7 +69,9 @@ def _seed_source() -> str:
     return asyncio.run(seed())
 
 
-def _materialize(source_id: str, component_ids: List[str] | None, owner_id: str) -> Dict[str, Any]:
+def _materialize(
+    source_id: str, component_ids: List[str] | None, owner_id: str
+) -> Dict[str, Any]:
     async def run() -> Dict[str, Any]:
         storage = OfficialSourceStorage()
         source = await storage.get_source(source_id)
@@ -124,7 +126,9 @@ def test_lo_sincronizado_es_un_recurso_normal_marcado_con_su_fuente(
     assert rows[0]["official_component_id"] == "brainstorming"
 
 
-def test_lo_oficial_aparece_en_explore_como_una_fila_mas(client, admin_client, admin_id):
+def test_lo_oficial_aparece_en_explore_como_una_fila_mas(
+    client, admin_client, admin_id
+):
     source_id = _seed_source()
     _materialize(source_id, ["checklists"], admin_id)
 
@@ -146,6 +150,212 @@ def test_lo_oficial_aparece_en_explore_como_una_fila_mas(client, admin_client, a
     # Ni ids compuestos ni campos propios: el cliente no distingue el origen.
     assert ":" not in rows[0]["resource_id"]
     assert "official_package_id" not in rows[0]
+
+
+def test_explore_agrupa_los_recursos_oficiales_por_fuente(
+    client, admin_client, admin_id
+):
+    source_id = _seed_source()
+    _materialize(source_id, None, admin_id)
+    client.post(
+        "/api/auth/register",
+        json={
+            "username": "packviewer",
+            "email": "packviewer@example.com",
+            "password": "pass1234",
+        },
+    )
+
+    response = client.get("/api/explore/official-packs")
+
+    assert response.status_code == 200
+    assert response.json() == [
+        {
+            "item_kind": "official_pack",
+            "source_id": source_id,
+            "name": "Superpowers",
+            "description": "Flujo de ingeniería",
+            "repository_url": "https://github.com/obra/superpowers",
+            "repository_owner": "obra",
+            "repository_name": "superpowers",
+            "provider": "github",
+            "license": "MIT",
+            "commit_sha": "",
+            "labels": ["official"],
+            "counts": {"skill": 1, "agent": 1, "knowledge": 1},
+            "matching_count": 3,
+            "total_count": 3,
+            "linked_count": 0,
+            "link_state": "none",
+            "owned_by_requester": False,
+        }
+    ]
+    flat = client.get("/api/explore", params={"include_official": "false"})
+    assert flat.status_code == 200
+    assert all("official" not in item["labels"] for item in flat.json())
+
+
+def test_detalle_y_grafo_del_pack_conservan_relaciones(client, admin_client, admin_id):
+    source_id = _seed_source()
+    _materialize(source_id, None, admin_id)
+    client.post(
+        "/api/auth/register",
+        json={
+            "username": "packgraph",
+            "email": "packgraph@example.com",
+            "password": "pass1234",
+        },
+    )
+
+    detail = client.get(f"/api/explore/official-packs/{source_id}")
+    assert detail.status_code == 200
+    components = {item["component_key"]: item for item in detail.json()["components"]}
+    assert components["researcher"]["dependencies"] == ["brainstorming"]
+
+    graph = client.get(f"/api/explore/official-packs/{source_id}/graph")
+    assert graph.status_code == 200
+    assert graph.json()["root_id"] == f"official_source:{source_id}"
+    assert any(edge["relation"] == "uses" for edge in graph.json()["edges"])
+
+
+def test_vincular_pack_es_atomico_idempotente_y_reutiliza_dependencias(
+    client, admin_client, admin_id
+):
+    source_id = _seed_source()
+    _materialize(source_id, None, admin_id)
+    client.post(
+        "/api/auth/register",
+        json={
+            "username": "packlinker",
+            "email": "packlinker@example.com",
+            "password": "pass1234",
+        },
+    )
+
+    first = client.post(
+        f"/api/explore/official-packs/{source_id}/link",
+        json={"mode": "selected", "component_keys": ["researcher"]},
+    )
+    assert first.status_code == 200, first.text
+    body = first.json()
+    assert {item["component_key"] for item in body["created"]} == {
+        "brainstorming",
+        "researcher",
+    }
+    assert body["included_dependencies"] == ["brainstorming"]
+    ids = {item["component_key"]: item["resource_id"] for item in body["created"]}
+    linked_agent = client.get(f"/api/agents/{ids['researcher']}")
+    assert linked_agent.status_code == 200
+    assert linked_agent.json()["skills"] == [ids["brainstorming"]]
+
+    second = client.post(
+        f"/api/explore/official-packs/{source_id}/link",
+        json={"mode": "selected", "component_keys": ["researcher"]},
+    )
+    assert second.status_code == 200
+    assert second.json()["created"] == []
+    assert {item["component_key"] for item in second.json()["existing"]} == {
+        "brainstorming",
+        "researcher",
+    }
+
+
+def test_vincular_pack_revierte_todo_si_falla_un_componente(
+    client, admin_client, admin_id, monkeypatch
+):
+    from app.api.routes import explore as explore_routes
+    from app.auth.auth import get_user_by_username
+
+    source_id = _seed_source()
+    _materialize(source_id, None, admin_id)
+    client.post(
+        "/api/auth/register",
+        json={
+            "username": "packrollback",
+            "email": "packrollback@example.com",
+            "password": "pass1234",
+        },
+    )
+    user_id = asyncio.run(get_user_by_username("packrollback"))["id"]
+    original_copy = explore_routes._official_packs._copy
+
+    async def fail_on_agent(row, *args, **kwargs):
+        if row["resource_type"] == "agent":
+            raise ValueError("induced_failure")
+        return await original_copy(row, *args, **kwargs)
+
+    monkeypatch.setattr(explore_routes._official_packs, "_copy", fail_on_agent)
+    response = client.post(
+        f"/api/explore/official-packs/{source_id}/link",
+        json={"mode": "selected", "component_keys": ["researcher"]},
+    )
+
+    assert response.status_code == 422
+
+    async def linked_rows() -> tuple[List[Any], List[Any]]:
+        async with open_db() as conn:
+            social = await conn.fetchall(
+                "SELECT resource_id FROM resource_social "
+                "WHERE owner=? AND linked_to_id IS NOT NULL",
+                (user_id,),
+            )
+            skills = await conn.fetchall(
+                "SELECT id FROM skills WHERE owner_id=?",
+                (user_id,),
+            )
+            return social, skills
+
+    assert asyncio.run(linked_rows()) == ([], [])
+
+
+def test_completar_pack_adopta_dependencias_de_un_enlace_individual_legacy(
+    client, admin_client, admin_id
+):
+    source_id = _seed_source()
+    applied = _materialize(source_id, None, admin_id)
+    source_ids = {
+        item["component_id"]: item["resource_id"] for item in applied["resources"]
+    }
+    client.post(
+        "/api/auth/register",
+        json={
+            "username": "packlegacy",
+            "email": "packlegacy@example.com",
+            "password": "pass1234",
+        },
+    )
+    legacy = client.post(f"/api/agents/private/{source_ids['researcher']}/link")
+    assert legacy.status_code == 200
+    linked_agent = client.get(f"/api/agents/{legacy.json()['agent_id']}").json()
+    inherited_skill_id = linked_agent["skills"][0]
+
+    completed = client.post(
+        f"/api/explore/official-packs/{source_id}/link",
+        json={"mode": "selected", "component_keys": ["researcher"]},
+    )
+
+    assert completed.status_code == 200, completed.text
+    assert completed.json()["created"] == []
+    existing = {
+        item["component_key"]: item["resource_id"]
+        for item in completed.json()["existing"]
+    }
+    assert existing == {
+        "researcher": legacy.json()["agent_id"],
+        "brainstorming": inherited_skill_id,
+    }
+
+    async def social_row() -> Dict[str, Any]:
+        async with open_db() as conn:
+            row = await conn.fetchone(
+                "SELECT linked_to_id FROM resource_social "
+                "WHERE resource_type='skill' AND resource_id=?",
+                (inherited_skill_id,),
+            )
+            return dict(row) if row else {}
+
+    social = asyncio.run(social_row())
+    assert social["linked_to_id"] == source_ids["brainstorming"]
 
 
 def test_desmarcar_borra_el_recurso_y_volver_a_marcarlo_lo_recrea(
@@ -237,7 +447,9 @@ def test_solo_admin_gestiona_fuentes(client, reset_rate_limiter):
     assert client.get("/api/admin/official-sources").status_code == 403
 
 
-def test_sync_por_el_endpoint_materializa_la_seleccion(admin_client, admin_id, monkeypatch):
+def test_sync_por_el_endpoint_materializa_la_seleccion(
+    admin_client, admin_id, monkeypatch
+):
     """Camino real del panel: POST /sync con la selección del diálogo."""
     from app.api.routes.admin import official_sources as routes
 

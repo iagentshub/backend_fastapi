@@ -10,7 +10,7 @@ recurso — nunca se persiste tal cual.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Any, ClassVar, Dict, List, Optional
+from typing import Any, ClassVar, Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
@@ -181,3 +181,56 @@ class OriginInfo(BaseModel):
     source_path: str = ""
     content_hash: str = ""
     commit_sha: str = ""
+
+
+class PublicOfficialPack(BaseModel):
+    """Proyeccion publica de una fuente oficial en el catalogo Explore."""
+
+    item_kind: Literal["official_pack"] = "official_pack"
+    source_id: str
+    name: str
+    description: str = ""
+    repository_url: str
+    repository_owner: str = ""
+    repository_name: str = ""
+    provider: str = "github"
+    license: str = ""
+    commit_sha: str = ""
+    labels: List[str] = Field(default_factory=lambda: ["official"])
+    counts: Dict[str, int] = Field(default_factory=dict)
+    matching_count: int = 0
+    total_count: int = 0
+    linked_count: int = 0
+    link_state: Literal["none", "partial", "complete"] = "none"
+    owned_by_requester: bool = False
+
+
+class PublicOfficialPackComponent(BaseModel):
+    component_key: str
+    resource_type: str
+    resource_id: str
+    name: str
+    description: str = ""
+    labels: List[str] = Field(default_factory=list)
+    dependencies: List[str] = Field(default_factory=list)
+    selectable: bool = True
+    linked: bool = False
+
+
+class PublicOfficialPackDetail(BaseModel):
+    pack: PublicOfficialPack
+    components: List[PublicOfficialPackComponent] = Field(default_factory=list)
+
+
+class LinkOfficialPackRequest(BaseModel):
+    mode: Literal["all", "selected"] = "all"
+    component_keys: List[str] = Field(default_factory=list, max_length=1000)
+    commit_sha: str = ""
+
+
+class LinkOfficialPackResult(BaseModel):
+    ok: bool = True
+    source_id: str
+    created: List[Dict[str, str]] = Field(default_factory=list)
+    existing: List[Dict[str, str]] = Field(default_factory=list)
+    included_dependencies: List[str] = Field(default_factory=list)

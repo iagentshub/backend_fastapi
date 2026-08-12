@@ -22,6 +22,13 @@ from app.config.content_languages import (
     language_codes_from_labels,
 )
 from app.errors import APIError
+from app.models.official_source import (
+    LinkOfficialPackRequest,
+    LinkOfficialPackResult,
+    PublicOfficialPack,
+    PublicOfficialPackDetail,
+)
+from app.services.official_pack_service import OfficialPackService
 from app.storage.agent_storage import AgentStorage
 from app.storage.db import IS_PG, open_db
 from app.storage.group_shares import GroupShareStorage
@@ -47,6 +54,7 @@ _knowledge = KnowledgeStorage()
 _workflows = WorkflowStorage()
 _shares = GroupShareStorage()
 _groups = GroupStorage()
+_official_packs = OfficialPackService()
 
 
 async def _add_owner_usernames(rows: List[Dict[str, Any]]) -> None:
@@ -75,6 +83,7 @@ async def explore(
     language: Optional[List[str]] = Query(None),
     limit: int = Query(40, ge=1, le=100),
     offset: int = Query(0, ge=0),
+    include_official: bool = True,
     response: Response = None,  # type: ignore[assignment]
     # Abierto al invitado: solo devuelve filas is_public y el usuario únicamente
     # sirve para excluir lo propio. Es el catálogo público, y la superficie que
@@ -91,6 +100,13 @@ async def explore(
             "(owner != ? OR labels LIKE '%\"official\"%')",
         ]
         params: List[Any] = [_PUBLIC_VAL, username]
+        if not include_official:
+            conditions.append(
+                "NOT EXISTS (SELECT 1 FROM resource_source_links source_link "
+                "WHERE source_link.resource_type=resource_social.resource_type "
+                "AND source_link.resource_id=resource_social.resource_id "
+                "AND source_link.resource_owner_id=resource_social.owner)"
+            )
         if type and type != "all":
             conditions.append("resource_type = ?")
             params.append(type)
@@ -108,7 +124,8 @@ async def explore(
                 str(value).strip().lower() for value in language if str(value).strip()
             ]
             invalid_languages = [
-                value for value in normalized_languages
+                value
+                for value in normalized_languages
                 if value not in CONTENT_LANGUAGE_SET
             ]
             if invalid_languages:
@@ -120,16 +137,14 @@ async def explore(
                 )
             if normalized_languages:
                 conditions.append(
-                    "(" + " OR ".join(["labels LIKE ?"] * len(normalized_languages)) + ")"
+                    "("
+                    + " OR ".join(["labels LIKE ?"] * len(normalized_languages))
+                    + ")"
                 )
-                params.extend(
-                    f'%"lang_{value}"%' for value in normalized_languages
-                )
+                params.extend(f'%"lang_{value}"%' for value in normalized_languages)
         if label:
             # Coincide con cualquiera de las etiquetas seleccionadas (OR)
-            conditions.append(
-                "(" + " OR ".join(["labels LIKE ?"] * len(label)) + ")"
-            )
+            conditions.append("(" + " OR ".join(["labels LIKE ?"] * len(label)) + ")")
             params.extend(f'%"{label_value}"%' for label_value in label)
         where = " AND ".join(conditions)
         # El total va en cabecera (ver app/api/pagination.py). Aquí la página se
@@ -165,6 +180,118 @@ async def explore(
         rows.append(row)
     await _add_owner_usernames(rows)
     return rows
+
+
+@router.get("/api/explore/official-packs", response_model=List[PublicOfficialPack])
+async def explore_official_packs(
+    type: Optional[str] = None,
+    category: Optional[str] = None,
+    q: Optional[str] = None,
+    tag: Optional[str] = None,
+    label: Optional[List[str]] = Query(None),
+    language: Optional[List[str]] = Query(None),
+    username: str = Depends(require_session),
+) -> List[PublicOfficialPack]:
+    normalized_languages = [
+        str(value).strip().lower() for value in (language or []) if str(value).strip()
+    ]
+    invalid_languages = [
+        value for value in normalized_languages if value not in CONTENT_LANGUAGE_SET
+    ]
+    if invalid_languages:
+        raise APIError(
+            422,
+            "invalid_field",
+            "Idioma de contenido no soportado",
+            extra={"field": "language", "invalid": invalid_languages},
+        )
+    return await _official_packs.list_packs(
+        username,
+        resource_type=type or "all",
+        category=category or "",
+        query=q or "",
+        tag=tag or "",
+        labels=label,
+        languages=normalized_languages,
+    )
+
+
+@router.get(
+    "/api/explore/official-packs/{source_id}",
+    response_model=PublicOfficialPackDetail,
+)
+async def explore_official_pack_detail(
+    source_id: str,
+    username: str = Depends(require_session),
+) -> PublicOfficialPackDetail:
+    detail = await _official_packs.detail(username, source_id)
+    if detail is None:
+        raise APIError(
+            404,
+            "not_found",
+            "Pack oficial no encontrado o sin recursos publicos",
+            extra={"resource": "official_pack"},
+        )
+    return detail
+
+
+@router.get("/api/explore/official-packs/{source_id}/graph")
+async def explore_official_pack_graph(
+    source_id: str,
+    username: str = Depends(require_session),
+) -> Dict[str, Any]:
+    graph = await _official_packs.graph(username, source_id)
+    if graph is None:
+        raise APIError(
+            404,
+            "not_found",
+            "Pack oficial no encontrado o sin recursos publicos",
+            extra={"resource": "official_pack"},
+        )
+    return graph
+
+
+@router.post(
+    "/api/explore/official-packs/{source_id}/link",
+    response_model=LinkOfficialPackResult,
+)
+async def link_official_pack(
+    source_id: str,
+    body: LinkOfficialPackRequest,
+    username: str = Depends(require_auth),
+) -> LinkOfficialPackResult:
+    try:
+        result = await _official_packs.link(username, source_id, body)
+    except PermissionError as exc:
+        raise APIError(
+            400,
+            "already_owner",
+            "Ya eres el propietario de los recursos de este pack",
+            extra={"resource": "official_pack"},
+        ) from exc
+    except ValueError as exc:
+        code = str(exc)
+        if code == "official_pack_stale":
+            raise APIError(
+                409,
+                "conflict",
+                "El repositorio ha cambiado; vuelve a abrir el pack",
+                extra={"resource": "official_pack"},
+            ) from exc
+        raise APIError(
+            422,
+            "invalid_field",
+            "La seleccion del pack oficial no es valida",
+            extra={"field": "component_keys"},
+        ) from exc
+    if result is None:
+        raise APIError(
+            404,
+            "not_found",
+            "Pack oficial no encontrado o sin recursos publicos",
+            extra={"resource": "official_pack"},
+        )
+    return result
 
 
 @router.get("/api/explore/{resource_type}/{resource_id}/preview")
@@ -397,7 +524,9 @@ async def user_resources(
             "SELECT id FROM users WHERE username = ?", (target_username,)
         )
         if not target_id:
-            raise APIError(404, "not_found", "Usuario no encontrado", extra={"resource": "user"})
+            raise APIError(
+                404, "not_found", "Usuario no encontrado", extra={"resource": "user"}
+            )
         # Las publicaciones nuevas usan el id interno; las creadas antes de la
         # migracion de identidad conservan el username en owner. El perfil
         # publico debe mostrar ambas sin exigir republicar los recursos.
@@ -440,7 +569,9 @@ async def follow_user(
     async with open_db() as conn:
         row = await conn.fetchone("SELECT id FROM users WHERE username = ?", (target,))
         if not row:
-            raise APIError(404, "not_found", "Usuario no encontrado", extra={"resource": "user"})
+            raise APIError(
+                404, "not_found", "Usuario no encontrado", extra={"resource": "user"}
+            )
         target_id = row["id"]
         if target_id == username:
             raise APIError(400, "cannot_follow_self", "No puedes seguirte a ti mismo")
@@ -467,9 +598,13 @@ async def unfollow_user(
 ) -> Dict[str, Any]:
 
     async with open_db() as conn:
-        target_id = await conn.fetchval("SELECT id FROM users WHERE username = ?", (target,))
+        target_id = await conn.fetchval(
+            "SELECT id FROM users WHERE username = ?", (target,)
+        )
         if not target_id:
-            raise APIError(404, "not_found", "Usuario no encontrado", extra={"resource": "user"})
+            raise APIError(
+                404, "not_found", "Usuario no encontrado", extra={"resource": "user"}
+            )
         await conn.execute(
             "DELETE FROM user_follows WHERE follower = ? AND following = ?",
             (username, target_id),
@@ -485,9 +620,13 @@ async def follow_status(
 ) -> Dict[str, Any]:
 
     async with open_db() as conn:
-        target_id = await conn.fetchval("SELECT id FROM users WHERE username = ?", (target,))
+        target_id = await conn.fetchval(
+            "SELECT id FROM users WHERE username = ?", (target,)
+        )
         if not target_id:
-            raise APIError(404, "not_found", "Usuario no encontrado", extra={"resource": "user"})
+            raise APIError(
+                404, "not_found", "Usuario no encontrado", extra={"resource": "user"}
+            )
         is_following_row = await conn.fetchone(
             "SELECT 1 FROM user_follows WHERE follower = ? AND following = ?",
             (username, target_id),

@@ -90,6 +90,9 @@ GET /api/connections/raw
 GET /api/connections/tokens-daily
 GET /api/connections/{conn_id}
 GET /api/explore
+GET /api/explore/official-packs
+GET /api/explore/official-packs/{source_id}
+GET /api/explore/official-packs/{source_id}/graph
 GET /api/explore/{resource_type}/{resource_id}/preview
 GET /api/feed
 GET /api/groups
@@ -197,6 +200,7 @@ POST /api/connections/{conn_id}/deactivate
 POST /api/connections/{conn_id}/hub-sync
 POST /api/connections/{conn_id}/import-models
 POST /api/connections/{conn_id}/test
+POST /api/explore/official-packs/{source_id}/link
 POST /api/groups
 POST /api/groups/invitations/{inv_id}/accept
 POST /api/groups/invitations/{inv_id}/reject
