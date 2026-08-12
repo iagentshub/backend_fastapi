@@ -160,28 +160,67 @@ async def link_agent(
     # el nombre colisionaría con el original (misma slug) y una lectura por id sin
     # filtro de owner devolvería cualquiera de los dos.
     link_payload["id"] = generate_id()
+    # La conexión es configuración privada del propietario y nunca forma parte
+    # del recurso publicado ni de una copia enlazada.
+    link_payload["connection_id"] = None
+    link_payload["op_connections"] = []
     link_labels = list(link_payload.get("labels") or ["private"])
     for ol in ("fork", "linked", "public"):
         if ol in link_labels:
             link_labels.remove(ol)
     link_labels.append("linked")
     link_payload["labels"] = link_labels
+    raw_selection = source.get("public_dependencies")
+    selected = (
+        {str(value) for value in raw_selection if value}
+        if raw_selection is not None
+        else None
+    )
+    for kind, field_name in (
+        ("skill", "skills"),
+        ("knowledge", "knowledge"),
+        ("prompt", "prompts"),
+        ("tool", "tools"),
+    ):
+        link_payload[field_name] = [
+            resource_id
+            for resource_id in (link_payload.get(field_name) or [])
+            if selected is None or f"{kind}:{resource_id}" in selected
+        ]
+
+    memory_file = str(source.get("memory_file") or "").strip()
+    copy_memory = bool(
+        source.get("use_memory")
+        and memory_file
+        and (selected is None or f"memory:{memory_file}" in selected)
+    )
+    if copy_memory:
+        link_payload["memory_file"] = f"{link_payload['id']}.md"
+    else:
+        link_payload["use_memory"] = False
+        link_payload["memory_file"] = None
+
     if username != source_owner:
-        # Skills/conocimiento privados y memoria se heredan junto con el agente
+        # Solo se heredan las dependencias que el autor publicó con el agente.
         link_payload["skills"] = await _inherit_resource_ids(
             link_payload.get("skills") or [], "skill", username
         )
         link_payload["knowledge"] = await _inherit_resource_ids(
             link_payload.get("knowledge") or [], "knowledge", username
         )
-        link_payload["memory_file"] = None
+        link_payload["prompts"] = await _inherit_resource_ids(
+            link_payload.get("prompts") or [], "prompt", username
+        )
+        link_payload["tools"] = await _inherit_resource_ids(
+            link_payload.get("tools") or [], "tool", username
+        )
 
     try:
         result = await agents.save(link_payload, "private", owner_id=username)
     except ValueError as exc:
         raise APIError(422, "agent_save_invalid", str(exc)) from exc
 
-    if username != source_owner:
+    if username != source_owner and copy_memory:
         await _inherit_agent_memory(source, source_owner, result["id"], username)
 
     new_id = result["id"]
@@ -491,9 +530,30 @@ async def sync_linked_agent(
     sync_fields = {
         k: v
         for k, v in original.items()
-        if k not in ("id", "scope", "owner_id", "created_at", "name")
+        if k
+        not in (
+            "id",
+            "scope",
+            "owner_id",
+            "created_at",
+            "name",
+            "connection_id",
+            "op_connections",
+            "skills",
+            "knowledge",
+            "prompts",
+            "tools",
+            "use_memory",
+            "memory_file",
+            "public_dependencies",
+        )
     }
-    updated = {**local, **sync_fields}
+    updated = {
+        **local,
+        **sync_fields,
+        "connection_id": None,
+        "op_connections": [],
+    }
     await agents.save(updated, "private", owner_id=local.get("owner_id"))
 
     return {"ok": True, "synced_from": original_id}

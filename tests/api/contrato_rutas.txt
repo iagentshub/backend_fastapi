@@ -90,6 +90,7 @@ GET /api/connections/raw
 GET /api/connections/tokens-daily
 GET /api/connections/{conn_id}
 GET /api/explore
+GET /api/explore/{resource_type}/{resource_id}/graph
 GET /api/explore/official-packs
 GET /api/explore/official-packs/{source_id}
 GET /api/explore/official-packs/{source_id}/graph

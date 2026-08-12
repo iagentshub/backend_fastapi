@@ -301,8 +301,7 @@ async def _official_source_import_modes(conn: Any) -> None:
 async def _official_tool_languages(conn: Any) -> None:
     for table in ("official_import_components", "official_source_mappings"):
         await conn.execute(
-            f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS "
-            "forced_tool_language TEXT"
+            f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS forced_tool_language TEXT"
         )
 
 
@@ -322,7 +321,8 @@ async def _connection_provider_accounts(conn: Any) -> None:
         if not account_id:
             continue
         account = await conn.fetchone(
-            "SELECT 1 FROM accounts WHERE id=? AND owner_id=?", (account_id, row["owner_id"])
+            "SELECT 1 FROM accounts WHERE id=? AND owner_id=?",
+            (account_id, row["owner_id"]),
         )
         if account:
             await conn.execute(
@@ -333,6 +333,40 @@ async def _connection_provider_accounts(conn: Any) -> None:
         "CREATE INDEX IF NOT EXISTS idx_connections_provider_account "
         "ON connections(owner_id,provider_account_id)"
     )
+
+
+async def _resource_social_origin_index(conn: Any) -> None:
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_rsoc_link_origin ON resource_social("
+        "owner,linked_to_user,linked_to_id,resource_type) "
+        "WHERE linked_to_id IS NOT NULL"
+    )
+
+
+async def _public_agents_in_social_catalog(conn: Any) -> None:
+    """Repara agentes de usuario públicos que quedaron fuera de Explore."""
+    await conn.execute("""
+        INSERT INTO resource_social (
+            resource_type, resource_id, owner, name, description, is_public,
+            category, trial_missing_deps, tags, labels, updated_at
+        )
+        SELECT
+            'agent', a.id, a.owner_id, a.name,
+            COALESCE(a.data::jsonb ->> 'description', ''), 1,
+            'Other', 'warn',
+            COALESCE((a.data::jsonb -> 'tags')::text, '[]'),
+            COALESCE((a.data::jsonb -> 'labels')::text, '["public","community"]'),
+            a.updated_at::timestamptz
+        FROM agents a
+        WHERE a.scope='public'
+          AND a.owner_id!='__public__'
+          AND (a.data::jsonb -> 'labels') ? 'public'
+          AND NOT EXISTS (
+              SELECT 1 FROM resource_social rs
+              WHERE rs.resource_type='agent' AND rs.resource_id=a.id
+                AND rs.owner=a.owner_id
+          )
+    """)
 
 
 POSTGRES_MIGRATIONS = (
@@ -348,6 +382,8 @@ POSTGRES_MIGRATIONS = (
     Migration(10, "official_source_import_modes", _official_source_import_modes),
     Migration(11, "official_tool_languages", _official_tool_languages),
     Migration(12, "connection_provider_accounts", _connection_provider_accounts),
+    Migration(13, "resource_social_origin_index", _resource_social_origin_index),
+    Migration(14, "public_agents_in_social_catalog", _public_agents_in_social_catalog),
 )
 
 

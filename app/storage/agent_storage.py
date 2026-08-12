@@ -299,6 +299,7 @@ class AgentStorage(ResourceStorage):
         owner_id: Optional[str] = None,
         *,
         conn: Optional[AsyncConn] = None,
+        assume_new: bool = False,
     ) -> Dict[str, Any]:
         await self._ensure_migrated()
 
@@ -307,7 +308,7 @@ class AgentStorage(ResourceStorage):
             raise ValueError("name required")
         agent_id = payload.get("id") or generate_id()
         actual_owner = owner_id or "admin"
-        existing = await self.get(agent_id, scope="private")
+        existing = None if assume_new else await self.get(agent_id, scope="private")
         now = _now()
         raw_labels = [
             str(label) for label in (payload.get("labels") or [scope]) if label

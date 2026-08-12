@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Query, Response
@@ -27,6 +28,7 @@ from app.services.agent_presentation import validate_agent_scope as _check_scope
 from app.storage.agent_storage import AgentStorage
 from app.storage.chat import ChatStorage
 from app.storage.connection_storage import ConnectionStorage
+from app.storage.db import open_db
 from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
 from app.storage.guest import (
@@ -294,6 +296,7 @@ async def save_agent(
 ) -> Dict[str, Any]:
     user, group_id = ctx.user, ctx.group_id
     payload = body.payload()
+    requested_public_dependencies = payload.pop("publish_dependencies", None)
     connection_id = str(payload.get("connection_id") or "").strip()
     if (
         connection_id
@@ -317,7 +320,9 @@ async def save_agent(
             400, "invalid_field", "Scope no válido", extra={"field": "scope"}
         )
     if is_guest(user):
-        labels = [str(label) for label in (payload.get("labels") or ["private"]) if label]
+        labels = [
+            str(label) for label in (payload.get("labels") or ["private"]) if label
+        ]
         invalid = [label for label in labels if label == "official"]
         if invalid:
             raise APIError(
@@ -343,7 +348,9 @@ async def save_agent(
         return agent
     role = await get_user_role(user)
     labels = [str(label) for label in (payload.get("labels") or [scope]) if label]
-    invalid = [] if role == "admin" else [label for label in labels if label == "official"]
+    invalid = (
+        [] if role == "admin" else [label for label in labels if label == "official"]
+    )
     if invalid:
         message = (
             "El origen del recurso solo puede definirlo un administrador"
@@ -381,13 +388,109 @@ async def save_agent(
         # Un id entrante solo es válido para editar una fila existente;
         # en altas el id lo genera siempre el servidor.
         payload.pop("id", None)
+    if scope == "public":
+        if requested_public_dependencies is not None:
+            public_dependencies: List[str] | None = list(
+                dict.fromkeys(
+                    str(value) for value in requested_public_dependencies if value
+                )
+            )
+        elif existing:
+            # Clientes antiguos que editan un agente ya publicado no deben
+            # cambiar involuntariamente su selección.
+            existing_selection = existing.get("public_dependencies")
+            public_dependencies = (
+                [str(value) for value in existing_selection if value]
+                if existing_selection is not None
+                else None
+            )
+        else:
+            # Un agente nuevo no publica dependencias por omisión.
+            public_dependencies = []
+
+        from app.api.routes.social import _agent_public_dependency_keys
+
+        invalid_dependencies = sorted(
+            set(public_dependencies or []) - _agent_public_dependency_keys(payload)
+        )
+        if invalid_dependencies:
+            raise APIError(
+                422,
+                "invalid_field",
+                "Hay dependencias seleccionadas que no pertenecen al agente",
+                extra={
+                    "field": "publish_dependencies",
+                    "invalid": invalid_dependencies,
+                },
+            )
+        payload["public_dependencies"] = public_dependencies
+    else:
+        payload["public_dependencies"] = []
     if role != "admin":
         await _validate_resource_refs(payload, user, group_id)
     try:
-        saved = await _agents.save(payload, scope, owner_id=group_id)
-        await _versions.create(
-            "agent", saved["id"], group_id, saved, user, reason="save"
+        # La etiqueta/``scope`` público debe materializar también la entrada de
+        # catálogo. Antes el formulario guardaba el agente como público, pero
+        # solo el endpoint de visibilidad escribía ``resource_social``; por eso
+        # un agente creado directamente como público no aparecía en Explore.
+        # Recurso, versión y catálogo comparten transacción para que nunca
+        # queden estados públicos a medias.
+        from app.api.routes.social import (
+            _assert_not_linked_copy,
+            _cascade_publish_agent,
+            _upsert_social,
         )
+
+        async with open_db() as conn:
+            saved = await _agents.save(payload, scope, owner_id=group_id, conn=conn)
+            await _versions.create(
+                "agent",
+                saved["id"],
+                group_id,
+                saved,
+                user,
+                reason="save",
+                conn=conn,
+            )
+            if scope == "public":
+                await _assert_not_linked_copy(conn, "agent", saved["id"], group_id)
+                previous = await conn.fetchone(
+                    "SELECT category, trial_missing_deps FROM resource_social "
+                    "WHERE resource_type=? AND resource_id=? AND owner=?",
+                    ("agent", saved["id"], group_id),
+                )
+                await _upsert_social(
+                    conn,
+                    "agent",
+                    saved["id"],
+                    group_id,
+                    saved.get("name", saved["id"]),
+                    saved.get("description", ""),
+                    previous["category"] if previous else "Other",
+                    previous["trial_missing_deps"] if previous else "warn",
+                    json.dumps(saved.get("tags") or []),
+                    1,
+                    json.dumps(saved.get("labels") or ["public"]),
+                )
+            else:
+                await conn.execute(
+                    "DELETE FROM resource_social WHERE resource_type=? "
+                    "AND resource_id=? AND owner=?",
+                    ("agent", saved["id"], group_id),
+                )
+            await conn.commit()
+        if scope == "public":
+            saved_selection = saved.get("public_dependencies")
+            await _cascade_publish_agent(
+                saved,
+                group_id,
+                group_id,
+                selected=(
+                    set(str(value) for value in saved_selection if value)
+                    if saved_selection is not None
+                    else None
+                ),
+            )
         action = "actualizado" if existing else "creado"
         flog.info(
             f"Agente {action}: {saved['id']} {saved.get('name', '')!r}",

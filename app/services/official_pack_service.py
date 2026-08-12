@@ -17,7 +17,7 @@ from app.models.official_source import (
 from app.storage import db as _db
 from app.storage.agent_storage import AgentStorage
 from app.storage.db import AsyncConn, open_db
-from app.storage.knowledge import KnowledgeStorage
+from app.storage.knowledge import KnowledgeStorage, _coerce_active
 from app.storage.memory_storage import MemoryStorage
 from app.storage.prompt_storage import PromptStorage
 from app.storage.skill_storage import SkillStorage
@@ -223,29 +223,74 @@ class OfficialPackService:
         packs.sort(key=lambda item: (item.name.lower(), item.source_id))
         return packs
 
-    async def _load_resource(self, row: dict[str, Any]) -> Any:
-        kind = str(row["resource_type"])
-        resource_id = str(row["resource_id"])
-        owner_id = str(row["resource_owner_id"])
-        if kind == "agent":
-            return await self.agents.get(resource_id, owner_id=owner_id)
-        if kind == "skill":
-            return await self.skills.get_any(resource_id, owner_id=owner_id)
-        if kind == "prompt":
-            return await self.prompts.get_any(resource_id, owner_id=owner_id)
-        if kind == "tool":
-            return await self.tools.get_any(resource_id, owner_id=owner_id)
-        if kind == "knowledge":
-            return await self.knowledge.get(resource_id, owner_id)
-        if kind == "workflow":
-            return await self.workflows.get(resource_id, owner_id)
-        if kind == "memory":
-            return await self.memory.get(resource_id, owner_id)
-        return None
+    async def _load_resources(
+        self, rows: Iterable[dict[str, Any]]
+    ) -> dict[tuple[str, str, str], Any]:
+        """Load official resources in one query per resource type.
 
-    async def _component_rows(
-        self, source_id: str, *, load_all_payloads: bool = False
-    ) -> list[dict[str, Any]]:
+        Source links include the owner, so decoding the exact ``(type, id,
+        owner)`` tuple also avoids the ambiguous cross-owner lookup performed
+        by several legacy ``get_any`` methods.
+        """
+
+        grouped: dict[str, list[dict[str, Any]]] = defaultdict(list)
+        for row in rows:
+            kind = str(row["resource_type"])
+            if kind in _SUPPORTED_TYPES:
+                grouped[kind].append(row)
+        if not grouped:
+            return {}
+
+        table_by_type = {
+            "agent": "agents",
+            "skill": "skills",
+            "prompt": "prompts",
+            "tool": "tools",
+            "knowledge": "knowledge_items",
+            "memory": "memory_files",
+            "workflow": "agent_workflows",
+        }
+        loaded: dict[tuple[str, str, str], Any] = {}
+        async with open_db() as conn:
+            for kind, kind_rows in grouped.items():
+                ids = sorted({str(row["resource_id"]) for row in kind_rows})
+                owners = sorted({str(row["resource_owner_id"]) for row in kind_rows})
+                owner_marks = ",".join("?" for _ in owners)
+                for start in range(0, len(ids), 400):
+                    id_chunk = ids[start : start + 400]
+                    id_marks = ",".join("?" for _ in id_chunk)
+                    db_rows = await conn.fetchall(
+                        f"SELECT * FROM {table_by_type[kind]} "
+                        f"WHERE id IN ({id_marks}) AND owner_id IN ({owner_marks})",
+                        tuple([*id_chunk, *owners]),
+                    )
+                    for db_row in db_rows:
+                        key = (kind, str(db_row["id"]), str(db_row["owner_id"]))
+                        if kind == "agent":
+                            loaded[key] = self.agents._row_to_dict(db_row)
+                        elif kind == "skill":
+                            loaded[key] = self.skills._row_to_dict(db_row)
+                        elif kind == "prompt":
+                            loaded[key] = self.prompts._row_to_dict(db_row)
+                        elif kind == "tool":
+                            loaded[key] = self.tools._row_to_dict(db_row)
+                        elif kind == "knowledge":
+                            loaded[key] = _coerce_active(dict(db_row))
+                        elif kind == "memory":
+                            loaded[key] = str(db_row["content"])
+                        elif kind == "workflow":
+                            loaded[key] = self.workflows._decode(db_row)
+        return loaded
+
+    @staticmethod
+    def _payload_key(row: dict[str, Any]) -> tuple[str, str, str]:
+        return (
+            str(row["resource_type"]),
+            str(row["resource_id"]),
+            str(row["resource_owner_id"]),
+        )
+
+    async def _component_rows(self, source_id: str) -> list[dict[str, Any]]:
         rows = await self._public_rows(source_id)
         if not rows:
             return []
@@ -255,14 +300,12 @@ class OfficialPackService:
             )
             for row in rows
         }
+        relationship_payloads = await self._load_resources(
+            row for row in rows if row["resource_type"] in {"agent", "workflow"}
+        )
         for row in rows:
             row["dependencies"] = []
-            kind = str(row["resource_type"])
-            payload = (
-                await self._load_resource(row)
-                if load_all_payloads or kind in {"agent", "workflow"}
-                else None
-            )
+            payload = relationship_payloads.get(self._payload_key(row))
             row["payload"] = payload
             if not isinstance(payload, dict):
                 continue
@@ -292,15 +335,15 @@ class OfficialPackService:
         rows = await self._component_rows(source_id)
         if not rows:
             return None
-        packs = await self.list_packs(requester_id)
-        pack = next((item for item in packs if item.source_id == source_id), None)
-        if pack is None:
-            return None
         async with open_db() as conn:
             linked_rows = await conn.fetchall(
-                "SELECT resource_type,linked_to_id,linked_to_user FROM resource_social "
-                "WHERE owner=? AND linked_to_id IS NOT NULL",
-                (requester_id,),
+                "SELECT l.component_key,copied.resource_type,copied.linked_to_id,"
+                "copied.linked_to_user FROM resource_source_links l "
+                "JOIN resource_social copied ON copied.resource_type=l.resource_type "
+                "AND copied.linked_to_id=l.resource_id "
+                "AND copied.linked_to_user=l.resource_owner_id "
+                "WHERE l.source_id=? AND copied.owner=?",
+                (source_id, requester_id),
             )
         linked_keys = {
             (
@@ -310,6 +353,36 @@ class OfficialPackService:
             )
             for row in linked_rows
         }
+        first = rows[0]
+        counts = Counter(str(row["resource_type"]) for row in rows)
+        linked_count = min(len(linked_keys), len(rows))
+        pack = PublicOfficialPack(
+            source_id=source_id,
+            name=str(first["source_name"]),
+            description=str(first.get("source_description") or ""),
+            repository_url=str(first["repository_url"]),
+            repository_owner=str(first.get("repository_owner") or ""),
+            repository_name=str(first.get("repository_name") or ""),
+            provider=str(first.get("provider") or "github"),
+            license=str(first.get("license") or ""),
+            commit_sha=str(
+                first.get("last_commit_sha") or first.get("commit_sha") or ""
+            ),
+            counts=dict(counts),
+            matching_count=len(rows),
+            total_count=len(rows),
+            linked_count=linked_count,
+            link_state=(
+                "complete"
+                if rows and linked_count == len(rows)
+                else "partial"
+                if linked_count
+                else "none"
+            ),
+            owned_by_requester=all(
+                str(row["resource_owner_id"]) == requester_id for row in rows
+            ),
+        )
         components = [
             PublicOfficialPackComponent(
                 component_key=str(row["component_key"]),
@@ -379,7 +452,7 @@ class OfficialPackService:
     async def link(
         self, requester_id: str, source_id: str, request: LinkOfficialPackRequest
     ) -> Optional[LinkOfficialPackResult]:
-        rows = await self._component_rows(source_id, load_all_payloads=True)
+        rows = await self._component_rows(source_id)
         if not rows:
             return None
         if all(str(row["resource_owner_id"]) == requester_id for row in rows):
@@ -422,6 +495,9 @@ class OfficialPackService:
                 "FROM resource_social WHERE owner=? AND linked_to_id IS NOT NULL",
                 (requester_id,),
             )
+            prompt_alias_rows = await conn.fetchall(
+                "SELECT alias FROM prompts WHERE owner_id=?", (requester_id,)
+            )
         for row in existing_rows:
             existing_map[
                 (
@@ -430,6 +506,7 @@ class OfficialPackService:
                     str(row["linked_to_user"]),
                 )
             ] = str(row["resource_id"])
+        used_prompt_aliases = {str(row["alias"]) for row in prompt_alias_rows}
 
         # El enlace individual legacy de un agente clonaba sus dependencias,
         # pero solo registraba `linked_to_*` para el agente. Recuperamos esas
@@ -441,6 +518,7 @@ class OfficialPackService:
 
         destination_ids: dict[str, str] = {}
         existing_result: list[dict[str, str]] = []
+        existing_keys: set[str] = set()
         for key in selected:
             row = by_key[key]
             existing_id = existing_map.get(
@@ -452,6 +530,7 @@ class OfficialPackService:
             )
             if existing_id:
                 destination_ids[key] = existing_id
+                existing_keys.add(key)
                 existing_result.append(
                     {
                         "component_key": key,
@@ -461,6 +540,7 @@ class OfficialPackService:
                 )
             elif key in recovered:
                 destination_ids[key] = recovered[key]
+                existing_keys.add(key)
                 existing_result.append(
                     {
                         "component_key": key,
@@ -471,6 +551,34 @@ class OfficialPackService:
             else:
                 destination_ids[key] = generate_id()
 
+        payload_keys = {
+            key
+            for key in selected - existing_keys
+            if by_key[key].get("payload") is None
+        }
+        selected_payloads = await self._load_resources(
+            by_key[key] for key in payload_keys
+        )
+        for key in payload_keys:
+            by_key[key]["payload"] = selected_payloads.get(
+                self._payload_key(by_key[key])
+            )
+
+        for key in sorted(selected):
+            row = by_key[key]
+            if row["resource_type"] != "prompt" or key in existing_keys:
+                continue
+            payload = row.get("payload") or {}
+            base = str(payload.get("alias") or "prompt")[:30] or "prompt"
+            candidate = base
+            suffix = 2
+            while candidate in used_prompt_aliases:
+                tail = f"-{suffix}"
+                candidate = f"{base[: 30 - len(tail)].rstrip('-_')}{tail}"
+                suffix += 1
+            used_prompt_aliases.add(candidate)
+            row["destination_alias"] = candidate
+
         order = {
             "skill": 0,
             "knowledge": 0,
@@ -479,6 +587,10 @@ class OfficialPackService:
             "memory": 0,
             "agent": 1,
             "workflow": 2,
+        }
+        resource_keys = {
+            (str(row["resource_type"]), str(row["resource_id"])): key
+            for key, row in by_key.items()
         }
         created: list[dict[str, str]] = []
         async with open_db() as conn:
@@ -497,10 +609,16 @@ class OfficialPackService:
                 ):
                     row = by_key[key]
                     destination_id = destination_ids[key]
-                    if any(item["component_key"] == key for item in existing_result):
+                    if key in existing_keys:
                         continue
                     await self._copy(
-                        row, destination_id, destination_ids, by_key, requester_id, conn
+                        row,
+                        destination_id,
+                        destination_ids,
+                        by_key,
+                        resource_keys,
+                        requester_id,
+                        conn,
                     )
                     await self._record_link(row, destination_id, requester_id, conn)
                     created.append(
@@ -529,6 +647,8 @@ class OfficialPackService:
             (str(row["resource_type"]), str(row["resource_id"])): key
             for key, row in by_key.items()
         }
+        local_agent_refs: list[dict[str, Any]] = []
+        local_agent_ids: dict[str, str] = {}
         for agent_key in selected:
             agent_row = by_key[agent_key]
             if agent_row["resource_type"] != "agent":
@@ -540,12 +660,25 @@ class OfficialPackService:
                     str(agent_row["resource_owner_id"]),
                 )
             )
+            if local_agent_id:
+                local_agent_ids[agent_key] = local_agent_id
+                local_agent_refs.append(
+                    {
+                        "resource_type": "agent",
+                        "resource_id": local_agent_id,
+                        "resource_owner_id": requester_id,
+                    }
+                )
+        local_agents = await self._load_resources(local_agent_refs)
+        for agent_key in selected:
+            agent_row = by_key[agent_key]
+            if agent_row["resource_type"] != "agent":
+                continue
+            local_agent_id = local_agent_ids.get(agent_key)
             source_agent = agent_row.get("payload")
             if not local_agent_id or not isinstance(source_agent, dict):
                 continue
-            local_agent = await self.agents.get(
-                local_agent_id, scope="private", owner_id=requester_id
-            )
+            local_agent = local_agents.get(("agent", local_agent_id, requester_id))
             if not local_agent:
                 continue
             for field, kind in _DEPENDENCY_FIELDS.items():
@@ -570,6 +703,7 @@ class OfficialPackService:
         destination_id: str,
         destination_ids: dict[str, str],
         by_key: dict[str, dict[str, Any]],
+        resource_keys: dict[tuple[str, str], str],
         requester_id: str,
         conn: AsyncConn,
     ) -> None:
@@ -599,17 +733,18 @@ class OfficialPackService:
         payload["id"] = destination_id
         payload["labels"] = _linked_labels(source.get("labels") or [])
         if kind == "skill":
-            await self.skills.save("private", payload, requester_id, conn=conn)
-        elif kind == "prompt":
-            payload["alias"] = await self._unique_prompt_alias(
-                conn,
-                requester_id,
-                str(payload.get("alias") or "prompt"),
-                destination_id,
+            await self.skills.save(
+                "private", payload, requester_id, conn=conn, assume_new=True
             )
-            await self.prompts.save("private", payload, requester_id, conn=conn)
+        elif kind == "prompt":
+            payload["alias"] = str(row.get("destination_alias") or "prompt")
+            await self.prompts.save(
+                "private", payload, requester_id, conn=conn, assume_new=True
+            )
         elif kind == "tool":
-            await self.tools.save("private", payload, requester_id, conn=conn)
+            await self.tools.save(
+                "private", payload, requester_id, conn=conn, assume_new=True
+            )
         elif kind == "knowledge":
             await self.knowledge.save(
                 type=str(source.get("type") or "text"),
@@ -620,20 +755,13 @@ class OfficialPackService:
                 labels=payload["labels"],
                 item_id=destination_id,
                 conn=conn,
+                assume_new=True,
             )
         elif kind == "agent":
             for field, dependency_type in _DEPENDENCY_FIELDS.items():
                 remapped: list[str] = []
                 for resource_id in source.get(field) or []:
-                    match = next(
-                        (
-                            key
-                            for key, candidate in by_key.items()
-                            if candidate["resource_type"] == dependency_type
-                            and str(candidate["resource_id"]) == str(resource_id)
-                        ),
-                        None,
-                    )
+                    match = resource_keys.get((dependency_type, str(resource_id)))
                     if match and match in destination_ids:
                         remapped.append(destination_ids[match])
                 payload[field] = remapped
@@ -649,42 +777,21 @@ class OfficialPackService:
                 f"{destination_ids[memory_key]}.md" if memory_key else None
             )
             payload["use_memory"] = memory_key is not None
-            await self.agents.save(payload, "private", requester_id, conn=conn)
+            await self.agents.save(
+                payload, "private", requester_id, conn=conn, assume_new=True
+            )
         elif kind == "workflow":
             definition = json.loads(json.dumps(source.get("definition") or {}))
             for node in definition.get("nodes", []):
                 old_id = str(node.get("agent_id") or "")
-                match = next(
-                    (
-                        key
-                        for key, candidate in by_key.items()
-                        if candidate["resource_type"] == "agent"
-                        and str(candidate["resource_id"]) == old_id
-                    ),
-                    None,
-                )
+                match = resource_keys.get(("agent", old_id))
                 if match and match in destination_ids:
                     node["agent_id"] = destination_ids[match]
             payload["definition"] = definition
             payload["scope"] = "private"
-            await self.workflows.save(requester_id, payload, conn=conn)
+            await self.workflows.save(requester_id, payload, conn=conn, assume_new=True)
         else:
             raise ValueError("official_pack_invalid_component")
-
-    async def _unique_prompt_alias(
-        self, conn: AsyncConn, owner_id: str, alias: str, destination_id: str
-    ) -> str:
-        base = alias[:30] or "prompt"
-        candidate = base
-        suffix = 2
-        while await conn.fetchone(
-            "SELECT 1 FROM prompts WHERE owner_id=? AND alias=? AND id != ?",
-            (owner_id, candidate, destination_id),
-        ):
-            tail = f"-{suffix}"
-            candidate = f"{base[: 30 - len(tail)].rstrip('-_')}{tail}"
-            suffix += 1
-        return candidate
 
     async def _record_link(
         self,

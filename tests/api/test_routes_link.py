@@ -104,6 +104,33 @@ def test_link_agente_tiene_label_linked(client):
     assert "fork" not in labels
 
 
+def test_link_agente_no_copia_conexiones_privadas(client):
+    owner = _login(client, "link_connection_owner")
+    created = client.post(
+        "/api/agents",
+        json={
+            "name": "Agente con conexión privada",
+            "connection_id": "private-connection-id",
+            "op_connections": ["other-private-connection"],
+            "scope": "public",
+            "labels": ["public"],
+            "publish_dependencies": [],
+        },
+    )
+    assert created.status_code == 200, created.text
+    source_id = created.json()["id"]
+    _make_agent_public(source_id, owner)
+
+    _login(client, "link_connection_viewer")
+    linked = client.post(f"/api/agents/public/{source_id}/link")
+    assert linked.status_code == 200, linked.text
+    detail = client.get(f"/api/agents/{linked.json()['agent_id']}")
+
+    assert detail.status_code == 200
+    assert detail.json().get("connection_id") in (None, "")
+    assert detail.json().get("op_connections") == []
+
+
 def test_link_agente_es_solo_lectura(client):
     owner = _login(client, "linkreadonly01")
     created = client.post(

@@ -84,9 +84,10 @@ class WorkflowStorage(ResourceStorage):
         payload: Dict[str, Any],
         *,
         conn: Optional[AsyncConn] = None,
+        assume_new: bool = False,
     ) -> Dict[str, Any]:
         workflow_id = str(payload.get("id") or generate_id())
-        existing = await self.get(workflow_id, owner_id)
+        existing = None if assume_new else await self.get(workflow_id, owner_id)
         now = _now()
         labels = [str(lbl) for lbl in (payload.get("labels") or ["private"]) if lbl]
         invalid_labels = [label for label in labels if label not in SKILL_LABELS]

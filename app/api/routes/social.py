@@ -12,7 +12,7 @@ import json
 from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 import app.config.data as _cfg
 from app.api.routes.auth import GroupContext, require_auth, require_group
@@ -68,6 +68,24 @@ _inherit_knowledge_store = _knowledge_store
 _inherit_memory_store = _memory_store
 _inherit_prompts_store = _prompts_store
 _inherit_tools_store = _tools_store
+
+
+def _agent_public_dependency_keys(agent: Dict[str, Any]) -> set[str]:
+    keys = {
+        f"{kind}:{resource_id}"
+        for kind, field_name in (
+            ("skill", "skills"),
+            ("knowledge", "knowledge"),
+            ("prompt", "prompts"),
+            ("tool", "tools"),
+        )
+        for resource_id in (agent.get(field_name) or [])
+        if resource_id
+    }
+    memory_file = str(agent.get("memory_file") or "").strip()
+    if agent.get("use_memory") and memory_file:
+        keys.add(f"memory:{memory_file}")
+    return keys
 
 
 async def _inherit_resource_ids(
@@ -203,22 +221,59 @@ async def _inherit_workflow_agents(
                     for lbl in (clone_payload.get("labels") or ["private"])
                     if lbl not in ("linked", "fork", "public")
                 ] or ["private"]
+                clone_payload["connection_id"] = None
+                clone_payload["op_connections"] = []
+                raw_selection = agent.get("public_dependencies")
+                selected = (
+                    {str(value) for value in raw_selection if value}
+                    if raw_selection is not None
+                    else None
+                )
+                for kind, field_name in (
+                    ("skill", "skills"),
+                    ("knowledge", "knowledge"),
+                    ("prompt", "prompts"),
+                    ("tool", "tools"),
+                ):
+                    clone_payload[field_name] = [
+                        resource_id
+                        for resource_id in (clone_payload.get(field_name) or [])
+                        if selected is None
+                        or f"{kind}:{resource_id}" in selected
+                    ]
                 clone_payload["skills"] = await _inherit_resource_ids(
                     clone_payload.get("skills") or [], "skill", target_owner_id
                 )
                 clone_payload["knowledge"] = await _inherit_resource_ids(
                     clone_payload.get("knowledge") or [], "knowledge", target_owner_id
                 )
-                clone_payload["memory_file"] = None
+                clone_payload["prompts"] = await _inherit_resource_ids(
+                    clone_payload.get("prompts") or [], "prompt", target_owner_id
+                )
+                clone_payload["tools"] = await _inherit_resource_ids(
+                    clone_payload.get("tools") or [], "tool", target_owner_id
+                )
+                memory_file = str(agent.get("memory_file") or "").strip()
+                copy_memory = bool(
+                    agent.get("use_memory")
+                    and memory_file
+                    and (selected is None or f"memory:{memory_file}" in selected)
+                )
+                clone_payload["memory_file"] = (
+                    f"{clone_payload['id']}.md" if copy_memory else None
+                )
+                if not copy_memory:
+                    clone_payload["use_memory"] = False
                 saved = await agents_storage.save(
                     clone_payload, "private", owner_id=target_owner_id
                 )
-                await _inherit_agent_memory(
-                    agent,
-                    str(agent.get("owner_id") or ""),
-                    saved["id"],
-                    target_owner_id,
-                )
+                if copy_memory:
+                    await _inherit_agent_memory(
+                        agent,
+                        str(agent.get("owner_id") or ""),
+                        saved["id"],
+                        target_owner_id,
+                    )
                 new_agent_id = saved["id"]
             id_map[old_agent_id] = new_agent_id
         new_nodes.append({**node, "agent_id": new_agent_id})
@@ -336,18 +391,73 @@ async def _publish_prompt_cascade(
         await conn.commit()
 
 
-async def _cascade_publish_agent(
-    agent: Dict[str, Any], username: str, group_id: str = ""
+async def _publish_knowledge_cascade(
+    knowledge_id: str, username: str, owner_ids: set[str]
 ) -> None:
-    """Al publicar un agente, publica en cascada sus skills, conocimiento y
-    prompts propios."""
+    item = await _knowledge_store.get(knowledge_id)
+    if not item or item.get("owner_id") not in owner_ids:
+        return
+    labels = list(item.get("labels") or ["private"])
+    if "public" not in labels:
+        labels.append("public")
+        item = await _knowledge_store.save(
+            type=item.get("type", "text"),
+            title=item.get("title", knowledge_id),
+            source=item.get("source", ""),
+            content=item.get("content", ""),
+            owner_id=item["owner_id"],
+            labels=labels,
+            item_id=knowledge_id,
+        )
+    async with open_db() as conn:
+        row = await conn.fetchone(
+            "SELECT linked_to_id FROM resource_social "
+            "WHERE resource_type=? AND resource_id=? AND owner=?",
+            ("knowledge", knowledge_id, username),
+        )
+        if row and row["linked_to_id"]:
+            return
+        await _upsert_social(
+            conn,
+            "knowledge",
+            knowledge_id,
+            username,
+            item.get("title", knowledge_id),
+            item.get("source", ""),
+            "Other",
+            "warn",
+            "[]",
+            1,
+            json.dumps(labels),
+        )
+        await conn.commit()
+
+
+async def _cascade_publish_agent(
+    agent: Dict[str, Any],
+    username: str,
+    group_id: str = "",
+    selected: set[str] | None = None,
+) -> None:
+    """Publica únicamente las dependencias elegidas por el propietario.
+
+    ``None`` mantiene compatibilidad con agentes públicos creados antes de que
+    existiera la selección explícita. Un conjunto vacío publica solo el agente.
+    Las conexiones no forman parte de este catálogo ni se aceptan como claves.
+    """
     owner_ids = {username, group_id} - {""}
     for skill_id in agent.get("skills") or []:
-        await _publish_skill_cascade(skill_id, username, owner_ids)
+        if selected is None or f"skill:{skill_id}" in selected:
+            await _publish_skill_cascade(skill_id, username, owner_ids)
+    for knowledge_id in agent.get("knowledge") or []:
+        if selected is None or f"knowledge:{knowledge_id}" in selected:
+            await _publish_knowledge_cascade(knowledge_id, username, owner_ids)
     for prompt_id in agent.get("prompts") or []:
-        await _publish_prompt_cascade(prompt_id, username, owner_ids)
+        if selected is None or f"prompt:{prompt_id}" in selected:
+            await _publish_prompt_cascade(prompt_id, username, owner_ids)
     for tool_id in agent.get("tools") or []:
-        await _publish_tool_cascade(tool_id, username, owner_ids)
+        if selected is None or f"tool:{tool_id}" in selected:
+            await _publish_tool_cascade(tool_id, username, owner_ids)
 
 
 async def _cascade_publish_workflow(
@@ -532,6 +642,7 @@ class _AgentVisibilityBody(BaseModel):
     is_public: bool
     category: str
     trial_missing_deps: str = "warn"
+    publish_dependencies: List[str] = Field(default_factory=list)
 
 
 class _SkillVisibilityBody(BaseModel):
@@ -577,8 +688,27 @@ async def set_agent_visibility(
         )
     assert_resource_writable(agent, "agent")
     resource_labels = agent.get("labels") or ["private"]
+    selected_dependencies = (
+        list(dict.fromkeys(body.publish_dependencies)) if body.is_public else []
+    )
+    invalid_dependencies = sorted(
+        set(selected_dependencies) - _agent_public_dependency_keys(agent)
+    )
+    if invalid_dependencies:
+        raise APIError(
+            422,
+            "invalid_field",
+            "Hay dependencias seleccionadas que no pertenecen al agente",
+            extra={"field": "publish_dependencies", "invalid": invalid_dependencies},
+        )
 
     async with open_db() as conn:
+        agent = await agents.save(
+            {**agent, "public_dependencies": selected_dependencies},
+            scope,
+            owner_id=str(agent.get("owner_id") or username),
+            conn=conn,
+        )
         if body.is_public:
             await _assert_not_linked_copy(conn, "agent", agent_id, username)
             _assert_publicable(resource_labels, "agent")
@@ -602,6 +732,13 @@ async def set_agent_visibility(
                 ("agent", agent_id, username),
             )
         await conn.commit()
+    if body.is_public:
+        await _cascade_publish_agent(
+            agent,
+            username,
+            str(agent.get("owner_id") or ""),
+            selected=set(selected_dependencies),
+        )
     return {"ok": True}
 
 

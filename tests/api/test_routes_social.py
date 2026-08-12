@@ -78,6 +78,264 @@ def test_agente_publico_aparece_en_explore(client):
     assert found["category"] == "Coding"
 
 
+def test_crear_agente_publico_lo_publica_sin_segunda_peticion(client):
+    owner = _login(client, "explore_direct_owner")
+    response = client.post(
+        "/api/agents",
+        json={
+            "name": "Agente público directo",
+            "description": "Debe aparecer al guardarlo",
+            "scope": "public",
+            "labels": ["public"],
+        },
+    )
+    assert response.status_code == 200, response.text
+    agent_id = response.json()["id"]
+
+    _login(client, "explore_direct_viewer")
+    response = client.get(
+        "/api/explore", params={"type": "agent", "q": "Agente público directo"}
+    )
+
+    assert response.status_code == 200
+    assert [item["resource_id"] for item in response.json()] == [agent_id]
+    assert response.json()[0]["owner"] != owner
+    assert response.json()[0]["owner_username"] == owner
+
+
+def test_hacer_privado_un_agente_guardado_lo_retira_de_explore(client):
+    _login(client, "explore_direct_private_owner")
+    created = client.post(
+        "/api/agents",
+        json={
+            "name": "Agente que vuelve a privado",
+            "scope": "public",
+            "labels": ["public"],
+        },
+    ).json()
+
+    response = client.post(
+        "/api/agents",
+        json={
+            "id": created["id"],
+            "name": created["name"],
+            "scope": "private",
+            "labels": ["private"],
+        },
+    )
+    assert response.status_code == 200, response.text
+
+    _login(client, "explore_direct_private_viewer")
+    response = client.get(
+        "/api/explore", params={"type": "agent", "q": created["name"]}
+    )
+    assert response.status_code == 200
+    assert response.json() == []
+
+
+def test_grafo_publico_de_agente_incluye_solo_dependencias_publicadas(client):
+    _login(client, "explore_graph_owner")
+    public_skill = _create_skill(client, "Skill pública del grafo")
+    client.put(
+        f"/api/skills/private/{public_skill['id']}/visibility",
+        json={"is_public": True, "category": "Coding"},
+    )
+    private_skill = client.post(
+        "/api/skills/private",
+        json={"name": "Skill privada del grafo", "content": "# privada"},
+    ).json()
+    agent = client.post(
+        "/api/agents",
+        json={
+            "name": "Agente con grafo público",
+            "scope": "public",
+            "labels": ["public"],
+            "skills": [public_skill["id"], private_skill["id"]],
+            "publish_dependencies": [f"skill:{public_skill['id']}"],
+        },
+    ).json()
+
+    # Publicar el agente publica sus dependencias propias en cascada. Simula
+    # que una de ellas se retiró después del catálogo: el grafo no debe
+    # revelar su nombre solo porque el agente aún conserve el ID.
+    import asyncio
+
+    from app.storage.db import open_db
+
+    async def unpublish_private_dependency() -> None:
+        async with open_db() as conn:
+            await conn.execute(
+                "DELETE FROM resource_social WHERE resource_type=? AND resource_id=?",
+                ("skill", private_skill["id"]),
+            )
+            await conn.commit()
+
+    asyncio.run(unpublish_private_dependency())
+
+    _login(client, "explore_graph_viewer")
+    response = client.get(f"/api/explore/agent/{agent['id']}/graph")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["root_id"] == f"agent:{agent['id']}"
+    node_ids = {node["id"] for node in payload["nodes"]}
+    assert f"skill:{public_skill['id']}" in node_ids
+    assert f"skill:{private_skill['id']}" not in node_ids
+
+
+def test_publicar_agente_materializa_solo_dependencias_elegidas(client):
+    import asyncio
+
+    from app.storage.db import open_db
+
+    _login(client, "publish_selection_owner")
+    skill = _create_skill(client, "Skill elegida")
+    knowledge = client.post(
+        "/api/knowledge/text",
+        json={"title": "Documento no elegido", "content": "privado"},
+    ).json()
+
+    response = client.post(
+        "/api/agents",
+        json={
+            "name": "Agente con selección explícita",
+            "scope": "public",
+            "labels": ["public"],
+            "skills": [skill["id"]],
+            "knowledge": [knowledge["id"]],
+            "publish_dependencies": [f"skill:{skill['id']}"],
+        },
+    )
+    assert response.status_code == 200, response.text
+    assert response.json()["public_dependencies"] == [f"skill:{skill['id']}"]
+
+    async def published_types() -> set[tuple[str, str]]:
+        async with open_db() as conn:
+            rows = await conn.fetchall(
+                "SELECT resource_type, resource_id FROM resource_social WHERE is_public=1"
+            )
+            return {(row["resource_type"], row["resource_id"]) for row in rows}
+
+    published = asyncio.run(published_types())
+    assert ("skill", skill["id"]) in published
+    assert ("knowledge", knowledge["id"]) not in published
+
+
+def test_publicar_agente_rechaza_dependencias_ajenas_y_conexiones(client):
+    _login(client, "publish_selection_invalid")
+    response = client.post(
+        "/api/agents",
+        json={
+            "name": "Agente con selección inválida",
+            "scope": "public",
+            "labels": ["public"],
+            "publish_dependencies": ["connection:private-connection"],
+        },
+    )
+
+    assert response.status_code == 422
+    detail = response.json()["detail"]
+    assert detail["code"] == "invalid_field"
+    assert detail["field"] == "publish_dependencies"
+
+
+def test_grafo_publico_de_workflow_conserva_flujo_y_recursos(client):
+    _login(client, "explore_workflow_graph_owner")
+    skill = _create_skill(client, "Skill workflow pública")
+    client.put(
+        f"/api/skills/private/{skill['id']}/visibility",
+        json={"is_public": True, "category": "Coding"},
+    )
+    first_agent = client.post(
+        "/api/agents",
+        json={
+            "name": "Primer agente público",
+            "scope": "public",
+            "labels": ["public"],
+            "skills": [skill["id"]],
+            "publish_dependencies": [f"skill:{skill['id']}"],
+        },
+    ).json()
+    second_agent = client.post(
+        "/api/agents",
+        json={
+            "name": "Segundo agente público",
+            "scope": "public",
+            "labels": ["public"],
+        },
+    ).json()
+    workflow = client.post(
+        "/api/workflows",
+        json={
+            "name": "Workflow público con grafo",
+            "labels": ["public"],
+            "scope": "public",
+            "definition": {
+                "nodes": [
+                    {"id": "one", "agent_id": first_agent["id"]},
+                    {"id": "two", "agent_id": second_agent["id"]},
+                ],
+                "edges": [{"source": "one", "target": "two"}],
+            },
+        },
+    )
+    assert workflow.status_code in (200, 201), workflow.text
+    workflow_id = workflow.json()["id"]
+    publish = client.put(
+        f"/api/workflows/{workflow_id}/visibility",
+        json={"is_public": True, "category": "Productivity"},
+    )
+    assert publish.status_code == 200, publish.text
+
+    _login(client, "explore_workflow_graph_viewer")
+    response = client.get(f"/api/explore/workflow/{workflow_id}/graph")
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["root_id"] == f"workflow:{workflow_id}"
+    assert any(edge.get("relation") == "flow" for edge in payload["edges"])
+    assert any(node["id"] == f"skill:{skill['id']}" for node in payload["nodes"])
+
+
+def test_grafo_publico_rechaza_tipos_sin_grafo(client):
+    _login(client, "explore_graph_invalid")
+    response = client.get("/api/explore/skill/anything/graph")
+    assert response.status_code == 422
+
+
+def test_explore_muestra_antes_un_agente_recien_publicado_sin_estrellas(client):
+    import asyncio
+
+    from app.storage.db import open_db
+
+    _login(client, "recentviewer")
+
+    async def seed_catalog() -> None:
+        async with open_db() as conn:
+            await conn.execute(
+                "INSERT INTO resource_social (resource_type,resource_id,owner,name,"
+                "description,is_public,category,stars_count,updated_at) "
+                "VALUES ('agent','popular-old','other-owner','Orden reciente antiguo',"
+                "'',1,'Coding',999,'2025-01-01T00:00:00Z')"
+            )
+            await conn.execute(
+                "INSERT INTO resource_social (resource_type,resource_id,owner,name,"
+                "description,is_public,category,stars_count,updated_at) "
+                "VALUES ('agent','new-no-stars','other-owner','Orden reciente nuevo',"
+                "'',1,'Coding',0,'2026-01-01T00:00:00Z')"
+            )
+            await conn.commit()
+
+    asyncio.run(seed_catalog())
+    response = client.get("/api/explore", params={"q": "Orden reciente"})
+
+    assert response.status_code == 200
+    assert [item["resource_id"] for item in response.json()] == [
+        "new-no-stars",
+        "popular-old",
+    ]
+
+
 def test_agente_privado_desaparece_de_explore(client):
     _login(client, "exploretest2")
     agent = _create_agent(client, "Toggle Visibility Agent")

@@ -260,6 +260,41 @@ def test_vincular_pack_es_atomico_idempotente_y_reutiliza_dependencias(
     }
 
 
+def test_vincular_seleccion_no_carga_componentes_ajenos(
+    client, admin_client, admin_id, monkeypatch
+):
+    from app.api.routes import explore as explore_routes
+
+    source_id = _seed_source()
+    _materialize(source_id, None, admin_id)
+    client.post(
+        "/api/auth/register",
+        json={
+            "username": "selectivepack",
+            "email": "selectivepack@example.com",
+            "password": "pass1234",
+        },
+    )
+    service = explore_routes._official_packs
+    original = service._load_resources
+    loaded_types: list[set[str]] = []
+
+    async def record_loads(rows):
+        materialized = list(rows)
+        loaded_types.append({str(row["resource_type"]) for row in materialized})
+        return await original(materialized)
+
+    monkeypatch.setattr(service, "_load_resources", record_loads)
+    response = client.post(
+        f"/api/explore/official-packs/{source_id}/link",
+        json={"mode": "selected", "component_keys": ["researcher"]},
+    )
+
+    assert response.status_code == 200, response.text
+    assert [types for types in loaded_types if types] == [{"agent"}, {"skill"}]
+    assert all("knowledge" not in types for types in loaded_types)
+
+
 def test_vincular_pack_revierte_todo_si_falla_un_componente(
     client, admin_client, admin_id, monkeypatch
 ):

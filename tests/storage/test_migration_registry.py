@@ -136,6 +136,62 @@ async def test_connection_provider_migration_backfills_legacy_account_link(tmp_p
     assert row[0] == "account-1"
 
 
+async def test_resource_social_origin_index_is_partial_and_idempotent(tmp_path):
+    from app.storage.migrations.sqlite import _resource_social_origin_index
+
+    async with aiosqlite.connect(tmp_path / "origin-index.db") as conn:
+        await conn.execute(
+            "CREATE TABLE resource_social ("
+            "owner TEXT NOT NULL, linked_to_user TEXT, linked_to_id TEXT, "
+            "resource_type TEXT NOT NULL)"
+        )
+        await _resource_social_origin_index(conn)
+        await _resource_social_origin_index(conn)
+        indexes = await conn.execute_fetchall("PRAGMA index_list(resource_social)")
+        sql = (
+            await conn.execute_fetchall(
+                "SELECT sql FROM sqlite_master WHERE name='idx_rsoc_link_origin'"
+            )
+        )[0][0]
+
+    assert [row[1] for row in indexes].count("idx_rsoc_link_origin") == 1
+    assert "WHERE linked_to_id IS NOT NULL" in sql
+
+
+async def test_public_agent_catalog_migration_repairs_missing_social_row(tmp_path):
+    from app.storage.migrations.sqlite import _public_agents_in_social_catalog
+
+    async with aiosqlite.connect(tmp_path / "public-agent.db") as conn:
+        conn.row_factory = sqlite3.Row
+        await conn.executescript("""
+            CREATE TABLE agents (
+                id TEXT, owner_id TEXT, name TEXT, scope TEXT, data TEXT,
+                updated_at TEXT
+            );
+            CREATE TABLE resource_social (
+                resource_type TEXT, resource_id TEXT, owner TEXT, name TEXT,
+                description TEXT, is_public INTEGER, category TEXT,
+                trial_missing_deps TEXT, tags TEXT, labels TEXT,
+                updated_at TEXT,
+                PRIMARY KEY (resource_type, resource_id, owner)
+            );
+            INSERT INTO agents VALUES (
+                'agent-1', 'owner-1', 'Visible', 'public',
+                '{"description":"desc","tags":[],"labels":["public","community"]}',
+                '2026-08-12T00:00:00Z'
+            );
+        """)
+
+        await _public_agents_in_social_catalog(conn)
+        await _public_agents_in_social_catalog(conn)
+        rows = await conn.execute_fetchall("SELECT * FROM resource_social")
+
+    assert len(rows) == 1
+    assert rows[0]["resource_id"] == "agent-1"
+    assert rows[0]["is_public"] == 1
+    assert rows[0]["category"] == "Other"
+
+
 async def test_migraciones_del_catalogo_viejo_no_fallan_sin_sus_tablas(tmp_path):
     """En una base nueva esas tablas ya no existen: deben ser no-ops."""
     from app.storage.migrations.sqlite import (

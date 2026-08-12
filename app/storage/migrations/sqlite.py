@@ -336,7 +336,8 @@ async def _official_tool_languages(conn: Any) -> None:
 
 async def _connection_provider_accounts(conn: Any) -> None:
     columns = {
-        str(row[1]) for row in await conn.execute_fetchall("PRAGMA table_info(connections)")
+        str(row[1])
+        for row in await conn.execute_fetchall("PRAGMA table_info(connections)")
     }
     if "provider_account_id" not in columns:
         await conn.execute(
@@ -367,6 +368,49 @@ async def _connection_provider_accounts(conn: Any) -> None:
     )
 
 
+async def _resource_social_origin_index(conn: Any) -> None:
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_rsoc_link_origin ON resource_social("
+        "owner,linked_to_user,linked_to_id,resource_type) "
+        "WHERE linked_to_id IS NOT NULL"
+    )
+
+
+async def _public_agents_in_social_catalog(conn: Any) -> None:
+    """Repara agentes de usuario guardados como públicos pero no publicados.
+
+    Versiones anteriores permitían ``agents.scope='public'`` sin crear la fila
+    de ``resource_social``. Solo se recuperan agentes con label pública y se
+    excluyen los agentes de sistema para no alterar su exposición histórica.
+    """
+    await conn.execute("""
+        INSERT INTO resource_social (
+            resource_type, resource_id, owner, name, description, is_public,
+            category, trial_missing_deps, tags, labels, updated_at
+        )
+        SELECT
+            'agent', a.id, a.owner_id, a.name,
+            COALESCE(json_extract(a.data, '$.description'), ''), 1,
+            'Other', 'warn',
+            COALESCE(json_extract(a.data, '$.tags'), '[]'),
+            COALESCE(json_extract(a.data, '$.labels'), '["public","community"]'),
+            a.updated_at
+        FROM agents a
+        WHERE a.scope='public'
+          AND a.owner_id!='__public__'
+          AND json_valid(a.data)
+          AND EXISTS (
+              SELECT 1 FROM json_each(json_extract(a.data, '$.labels'))
+              WHERE value='public'
+          )
+          AND NOT EXISTS (
+              SELECT 1 FROM resource_social rs
+              WHERE rs.resource_type='agent' AND rs.resource_id=a.id
+                AND rs.owner=a.owner_id
+          )
+    """)
+
+
 SQLITE_MIGRATIONS = (
     Migration(1, "legacy_schema_catchup", _migrate_sqlite, repeatable=True),
     Migration(
@@ -382,6 +426,8 @@ SQLITE_MIGRATIONS = (
     Migration(10, "official_source_import_modes", _official_source_import_modes),
     Migration(11, "official_tool_languages", _official_tool_languages),
     Migration(12, "connection_provider_accounts", _connection_provider_accounts),
+    Migration(13, "resource_social_origin_index", _resource_social_origin_index),
+    Migration(14, "public_agents_in_social_catalog", _public_agents_in_social_catalog),
 )
 
 

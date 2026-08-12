@@ -149,6 +149,7 @@ class AgentPayload(ResourcePayload):
     knowledge: list[str] | None = None
     prompts: list[str] | None = None
     tools: list[str] | None = None
+    publish_dependencies: list[str] | None = None
 
 
 class ConnectionPayload(ResourcePayload):

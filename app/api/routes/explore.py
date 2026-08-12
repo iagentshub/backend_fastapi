@@ -160,7 +160,10 @@ async def explore(
             f"SELECT resource_type, resource_id, owner, name, description, category, "
             f"stars_count, linked_to_user, linked_to_id, trial_missing_deps, tags, labels, verified "
             f"FROM resource_social WHERE {where} "
-            f"ORDER BY stars_count DESC, updated_at DESC "
+            # Lo recién publicado debe ser descubrible aunque todavía no tenga
+            # estrellas. El catálogo permite cargar páginas posteriores para
+            # consultar también los recursos históricos más populares.
+            f"ORDER BY updated_at DESC, stars_count DESC "
             f"LIMIT ? OFFSET ?",
             tuple(params),
         )
@@ -452,6 +455,210 @@ async def explore_preview(
             base["agent_names"] = agent_names
 
     return base
+
+
+async def _public_agent_graph_parts(
+    agent: Dict[str, Any], source_node_id: str
+) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
+    """Recursos públicos que usa un agente, sin revelar dependencias privadas."""
+    raw_selection = agent.get("public_dependencies")
+    selected = (
+        {str(value) for value in raw_selection if value}
+        if raw_selection is not None
+        else None
+    )
+    references = (
+        ("skill", agent.get("skills") or []),
+        ("knowledge", agent.get("knowledge") or []),
+        ("prompt", agent.get("prompts") or []),
+        ("tool", agent.get("tools") or []),
+    )
+    nodes: List[Dict[str, Any]] = []
+    edges: List[Dict[str, Any]] = []
+    seen: set[str] = set()
+    async with open_db() as conn:
+        for kind, resource_ids in references:
+            for child_resource_id in resource_ids:
+                child_id = str(child_resource_id or "")
+                if not child_id:
+                    continue
+                if selected is not None and f"{kind}:{child_id}" not in selected:
+                    continue
+                row = await conn.fetchone(
+                    "SELECT name, description FROM resource_social "
+                    "WHERE resource_type=? AND resource_id=? AND is_public=? "
+                    "ORDER BY updated_at DESC LIMIT 1",
+                    (kind, child_id, _PUBLIC_VAL),
+                )
+                if not row:
+                    continue
+                node_id = f"{kind}:{child_id}"
+                if node_id not in seen:
+                    seen.add(node_id)
+                    nodes.append(
+                        {
+                            "id": node_id,
+                            "label": row["name"] or child_id,
+                            "type": kind,
+                            "description": row["description"] or "",
+                        }
+                    )
+                edges.append(
+                    {
+                        "source_id": source_node_id,
+                        "target_id": node_id,
+                        "relation": "uses",
+                    }
+                )
+    memory_file = str(agent.get("memory_file") or "").strip()
+    if (
+        agent.get("use_memory")
+        and memory_file
+        and (selected is None or f"memory:{memory_file}" in selected)
+    ):
+        memory_node_id = f"memory:{memory_file}"
+        nodes.append(
+            {
+                "id": memory_node_id,
+                "label": memory_file,
+                "type": "memory",
+                "description": "Memoria publicada con el agente",
+            }
+        )
+        edges.append(
+            {
+                "source_id": source_node_id,
+                "target_id": memory_node_id,
+                "relation": "uses",
+            }
+        )
+    return nodes, edges
+
+
+@router.get("/api/explore/{resource_type}/{resource_id}/graph")
+async def explore_resource_graph(
+    resource_type: str,
+    resource_id: str,
+    _: str = Depends(require_session),
+) -> Dict[str, Any]:
+    """Grafo público de agentes y orquestaciones visibles en Explore."""
+    if resource_type not in {"agent", "workflow"}:
+        raise APIError(
+            422,
+            "invalid_field",
+            "Este tipo de recurso no dispone de grafo público",
+            extra={"field": "resource_type"},
+        )
+    async with open_db() as conn:
+        published = await conn.fetchone(
+            "SELECT name, description FROM resource_social "
+            "WHERE resource_type=? AND resource_id=? AND is_public=? "
+            "ORDER BY updated_at DESC LIMIT 1",
+            (resource_type, resource_id, _PUBLIC_VAL),
+        )
+    if not published:
+        raise APIError(
+            404,
+            "not_found",
+            "Recurso no encontrado o no es público",
+            extra={"resource": resource_type},
+        )
+
+    root_id = f"{resource_type}:{resource_id}"
+    nodes: List[Dict[str, Any]] = [
+        {
+            "id": root_id,
+            "label": published["name"] or resource_id,
+            "type": resource_type,
+            "description": published["description"] or "",
+        }
+    ]
+    edges: List[Dict[str, Any]] = []
+
+    if resource_type == "agent":
+        agent = await _agents.get(resource_id)
+        if agent:
+            child_nodes, child_edges = await _public_agent_graph_parts(agent, root_id)
+            nodes.extend(child_nodes)
+            edges.extend(child_edges)
+    else:
+        workflow = await _workflows.get_any(resource_id)
+        definition = (workflow or {}).get("definition") or {}
+        raw_nodes = definition.get("nodes") or []
+        raw_edges = definition.get("edges") or []
+        step_ids: Dict[str, str] = {}
+        incoming: set[str] = set()
+        public_agents: Dict[str, Dict[str, Any]] = {}
+        async with open_db() as conn:
+            for raw_node in raw_nodes:
+                agent_id = str(raw_node.get("agent_id") or "")
+                if not agent_id or agent_id in public_agents:
+                    continue
+                row = await conn.fetchone(
+                    "SELECT name, description FROM resource_social "
+                    "WHERE resource_type='agent' AND resource_id=? AND is_public=? "
+                    "ORDER BY updated_at DESC LIMIT 1",
+                    (agent_id, _PUBLIC_VAL),
+                )
+                if row:
+                    public_agents[agent_id] = dict(row)
+
+        for index, raw_node in enumerate(raw_nodes):
+            raw_step_id = str(raw_node.get("id") or f"step-{index}")
+            step_id = f"workflow_step:{resource_id}:{raw_step_id}"
+            step_ids[raw_step_id] = step_id
+            agent_id = str(raw_node.get("agent_id") or "")
+            public_agent = public_agents.get(agent_id)
+            label = (
+                (public_agent or {}).get("name") or raw_node.get("label") or raw_step_id
+            )
+            nodes.append(
+                {
+                    "id": step_id,
+                    "label": label,
+                    "type": "evaluator"
+                    if raw_node.get("kind") == "evaluator"
+                    else "agent",
+                    "description": (public_agent or {}).get("description") or "",
+                }
+            )
+            if public_agent:
+                agent = await _agents.get(agent_id)
+                if agent:
+                    child_nodes, child_edges = await _public_agent_graph_parts(
+                        agent, step_id
+                    )
+                    known_node_ids = {node["id"] for node in nodes}
+                    nodes.extend(
+                        node for node in child_nodes if node["id"] not in known_node_ids
+                    )
+                    edges.extend(child_edges)
+
+        for raw_edge in raw_edges:
+            source = step_ids.get(str(raw_edge.get("source") or ""))
+            target = step_ids.get(str(raw_edge.get("target") or ""))
+            if not source or not target:
+                continue
+            incoming.add(target)
+            edges.append(
+                {
+                    "source_id": source,
+                    "target_id": target,
+                    "relation": "flow",
+                    "dashed": raw_edge.get("type") == "loop",
+                }
+            )
+        for step_id in step_ids.values():
+            if step_id not in incoming:
+                edges.append(
+                    {
+                        "source_id": root_id,
+                        "target_id": step_id,
+                        "relation": "orchestrates",
+                    }
+                )
+
+    return {"root_id": root_id, "nodes": nodes, "edges": edges}
 
 
 @router.get("/api/social/me/resources")

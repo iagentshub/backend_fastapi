@@ -118,6 +118,10 @@ class Agent(BaseResource):
     #: dataclass completamente distinto (app.models.tool). Fase 1: sin efecto
     #: en tiempo de ejecución, el modelo aún no puede invocarlas.
     tools: List[str] = field(default_factory=list)
+    # Dependencias elegidas expresamente al publicar. ``None`` conserva la
+    # semántica de agentes públicos legacy; ``[]`` significa publicar solo el
+    # agente. Formato: ``skill:<id>``, ``knowledge:<id>``, etc.
+    public_dependencies: Optional[List[str]] = None
     use_memory: bool = False
     memory_file: Optional[str] = None
     routines: List[dict] = field(default_factory=list)
@@ -176,6 +180,11 @@ class Agent(BaseResource):
             knowledge=[str(k) for k in (data.get("knowledge") or []) if k],
             prompts=[str(p) for p in (data.get("prompts") or []) if p],
             tools=[str(t) for t in (data.get("tools") or []) if t],
+            public_dependencies=(
+                [str(value) for value in data.get("public_dependencies", []) if value]
+                if data.get("public_dependencies") is not None
+                else None
+            ),
             use_memory=bool(data.get("use_memory", False)),
             memory_file=str(data.get("memory_file") or "").strip() or None,
             routines=[r for r in (data.get("routines") or []) if isinstance(r, dict)],
@@ -224,6 +233,7 @@ class Agent(BaseResource):
             "knowledge": self.knowledge,
             "prompts": self.prompts,
             "tools": self.tools,
+            "public_dependencies": self.public_dependencies,
             "use_memory": self.use_memory,
             "memory_file": self.memory_file,
             "routines": self.routines,

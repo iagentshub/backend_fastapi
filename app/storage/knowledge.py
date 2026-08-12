@@ -192,11 +192,12 @@ class KnowledgeStorage(ResourceStorage):
         labels: Optional[List[str]] = None,
         item_id: Optional[str] = None,
         conn: Optional[AsyncConn] = None,
+        assume_new: bool = False,
     ) -> Dict[str, Any]:
         now = generate_date()
         normalized_labels = ensure_origin_label(labels or ["private"])
         item_id = item_id or generate_id(16)
-        existing = await self.get(item_id, owner_id)
+        existing = None if assume_new else await self.get(item_id, owner_id)
         target = conn
         if target is None:
             async with open_db() as own_conn:

@@ -213,6 +213,7 @@ class PromptStorage(ResourceStorage):
         owner_id: Optional[str] = None,
         *,
         conn: Optional[AsyncConn] = None,
+        assume_new: bool = False,
     ) -> Dict[str, Any]:
         if scope not in ("private", "public"):
             raise ValueError("scope must be private or public")
@@ -231,7 +232,9 @@ class PromptStorage(ResourceStorage):
         prompt_id = payload.get("id") or generate_id()
         actual_owner = owner_id or "admin"
         now = _now()
-        existing = await self.get_any(prompt_id, owner_id=actual_owner)
+        existing = (
+            None if assume_new else await self.get_any(prompt_id, owner_id=actual_owner)
+        )
         if "labels" in payload:
             labels = [str(label) for label in (payload.get("labels") or []) if label]
         elif existing:
@@ -265,12 +268,13 @@ class PromptStorage(ResourceStorage):
             "deactivated_at": existing.get("deactivated_at") if existing else None,
         }
         if conn is not None:
-            dup = await conn.fetchone(
-                "SELECT 1 FROM prompts WHERE owner_id=? AND alias=? AND id != ?",
-                (actual_owner, alias, prompt_id),
-            )
-            if dup:
-                raise ValueError("Ya tienes un prompt con ese alias")
+            if not assume_new:
+                dup = await conn.fetchone(
+                    "SELECT 1 FROM prompts WHERE owner_id=? AND alias=? AND id != ?",
+                    (actual_owner, alias, prompt_id),
+                )
+                if dup:
+                    raise ValueError("Ya tienes un prompt con ese alias")
             await self._upsert(conn, prompt_id, actual_owner, scope, data)
             await self.sync_labels(
                 prompt_id, actual_owner, data.get("labels") or [], conn=conn

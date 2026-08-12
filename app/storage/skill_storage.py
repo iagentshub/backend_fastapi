@@ -326,6 +326,7 @@ class SkillStorage(ResourceStorage):
         owner_id: Optional[str] = None,
         *,
         conn: Optional[AsyncConn] = None,
+        assume_new: bool = False,
     ) -> Dict[str, Any]:
         if scope not in ("private", "public"):
             raise ValueError("scope must be private or public")
@@ -342,7 +343,9 @@ class SkillStorage(ResourceStorage):
         skill_id = payload.get("id") or generate_id()
         actual_owner = owner_id or "admin"
         now = _now()
-        existing = await self.get_any(skill_id, owner_id=actual_owner)
+        existing = (
+            None if assume_new else await self.get_any(skill_id, owner_id=actual_owner)
+        )
         if "labels" in payload:
             labels = [str(label) for label in (payload.get("labels") or []) if label]
         elif existing:
