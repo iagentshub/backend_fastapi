@@ -133,6 +133,7 @@ CREATE INDEX IF NOT EXISTS idx_memory_owner ON memory_files(owner_id, updated_at
 CREATE TABLE IF NOT EXISTS connections (
     id          TEXT PRIMARY KEY,
     owner_id    TEXT NOT NULL,
+    provider_account_id TEXT,
     name        TEXT NOT NULL DEFAULT '',
     data        TEXT NOT NULL,
     tokens_in   INTEGER NOT NULL DEFAULT 0,

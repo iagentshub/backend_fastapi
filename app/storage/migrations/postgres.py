@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from typing import Any
 
 from app.storage.migrations.legacy import _migrate_pg, _migrate_users_json_pg
@@ -305,6 +306,35 @@ async def _official_tool_languages(conn: Any) -> None:
         )
 
 
+async def _connection_provider_accounts(conn: Any) -> None:
+    await conn.execute(
+        "ALTER TABLE connections ADD COLUMN IF NOT EXISTS provider_account_id TEXT"
+    )
+    rows = await conn.fetchall(
+        "SELECT id,owner_id,data FROM connections WHERE provider_account_id IS NULL"
+    )
+    for row in rows:
+        try:
+            payload = json.loads(row["data"] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            continue
+        account_id = str(payload.get("_account_id") or "").strip()
+        if not account_id:
+            continue
+        account = await conn.fetchone(
+            "SELECT 1 FROM accounts WHERE id=? AND owner_id=?", (account_id, row["owner_id"])
+        )
+        if account:
+            await conn.execute(
+                "UPDATE connections SET provider_account_id=? WHERE id=?",
+                (account_id, row["id"]),
+            )
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_connections_provider_account "
+        "ON connections(owner_id,provider_account_id)"
+    )
+
+
 POSTGRES_MIGRATIONS = (
     Migration(1, "legacy_schema_catchup", _migrate_pg, repeatable=True),
     Migration(2, "users_json_to_relational", _migrate_users_json_pg, repeatable=True),
@@ -317,6 +347,7 @@ POSTGRES_MIGRATIONS = (
     Migration(9, "official_explicit_selection", _official_explicit_selection),
     Migration(10, "official_source_import_modes", _official_source_import_modes),
     Migration(11, "official_tool_languages", _official_tool_languages),
+    Migration(12, "connection_provider_accounts", _connection_provider_accounts),
 )
 
 

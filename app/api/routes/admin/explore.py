@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from typing import Any
 
 from fastapi import Depends, Query
@@ -203,6 +204,45 @@ async def admin_resource_graph(
         for kind, values in inventory.items()
         if kind not in ("user", "group")
     }
+    official_sources = {
+        str(item["id"]): item for item in await _official_sources.list_sources()
+    }
+    source_links: dict[tuple[str, str, str], dict[str, Any]] = {}
+    if official_sources:
+        linked_groups = await asyncio.gather(
+            *(
+                _official_sources.list_resources(source_id)
+                for source_id in official_sources
+            )
+        )
+        for source_id, links in zip(official_sources, linked_groups):
+            for link in links:
+                kind = str(link["resource_type"])
+                linked_id = str(link["resource_id"])
+                owner_id = str(link["resource_owner_id"])
+                source_links[(kind, linked_id, owner_id)] = {
+                    **link,
+                    "source_id": source_id,
+                }
+
+    async with open_db() as conn:
+        account_rows = await conn.fetchall(
+            "SELECT id,owner_id,provider,data FROM accounts"
+        )
+    provider_accounts: dict[tuple[str, str], dict[str, str]] = {}
+    for row in account_rows:
+        account = dict(row)
+        try:
+            account_data = json.loads(account.get("data") or "{}")
+        except (TypeError, json.JSONDecodeError):
+            account_data = {}
+        provider = str(account.get("provider") or "")
+        provider_accounts[(str(account["id"]), str(account["owner_id"]))] = {
+            "id": str(account["id"]),
+            "owner_id": str(account["owner_id"]),
+            "provider": provider,
+            "label": str(account_data.get("name") or provider or account["id"]),
+        }
 
     if resource_type == "user":
         root = users_by_id.get(resource_id) or users_by_username.get(resource_id)
@@ -266,6 +306,38 @@ async def admin_resource_graph(
         else:
             return
         item_node = add_node(kind, str(item["id"]), resource_label(kind, item))
+        origin_id = str(item["id"])
+        origin = source_links.get((kind, origin_id, owner_id))
+        if kind == "memory" and origin is None and "::" in origin_id:
+            _, _, filename = origin_id.partition("::")
+            origin = source_links.get(
+                (kind, filename.removesuffix(".md"), owner_id)
+            )
+        if origin:
+            source = official_sources.get(str(origin["source_id"]))
+            if source:
+                source_node = add_node(
+                    "official_source",
+                    str(source["id"]),
+                    str(source.get("name") or source["id"]),
+                    str(source.get("repository_url") or ""),
+                )
+                add_edge(owner_node, source_node, "owns")
+                add_edge(source_node, item_node, "origin")
+                return
+        if kind == "connection":
+            account_id = str(item.get("provider_account_id") or "")
+            account = provider_accounts.get((account_id, owner_id))
+            if account:
+                provider_node = add_node(
+                    "provider",
+                    account_id,
+                    account["label"],
+                    account["provider"],
+                )
+                add_edge(owner_node, provider_node, "owns")
+                add_edge(provider_node, item_node, "provides")
+                return
         add_edge(owner_node, item_node, "owns")
 
     if resource_type in resources_by_type:
@@ -370,10 +442,8 @@ async def admin_resource_graph(
         for kind, by_id in resources_by_type.items():
             for item in by_id.values():
                 if str(item.get("owner_id") or "") == user_id:
-                    item_node = add_node(
-                        kind, str(item["id"]), resource_label(kind, item)
-                    )
-                    add_edge(root_id, item_node, "owns")
+                    connect_owner(kind, item)
+                    item_node = f"{kind}:{item['id']}"
                     if kind == "agent":
                         wire_agent_uses(item, item_node)
 
@@ -390,10 +460,8 @@ async def admin_resource_graph(
         for kind, by_id in resources_by_type.items():
             for item in by_id.values():
                 if str(item.get("owner_id") or "") == canonical_resource_id:
-                    item_node = add_node(
-                        kind, str(item["id"]), resource_label(kind, item)
-                    )
-                    add_edge(root_id, item_node, "owns")
+                    connect_owner(kind, item)
+                    item_node = f"{kind}:{item['id']}"
                     if kind == "agent":
                         wire_agent_uses(item, item_node)
 
@@ -510,33 +578,6 @@ async def admin_resource_graph(
                 "workflow", workflow_id, resource_label("workflow", workflow_item)
             )
             add_edge(workflow_node, root_id, "orchestrates")
-
-    if resource_type in {
-        "agent",
-        "knowledge",
-        "workflow",
-        "skill",
-        "prompt",
-        "tool",
-        "memory",
-    }:
-        origin_resource_id = canonical_resource_id
-        if resource_type == "memory" and "::" in origin_resource_id:
-            _, _, filename = origin_resource_id.partition("::")
-            origin_resource_id = filename.removesuffix(".md")
-        origin = await _official_sources.get_origin(
-            resource_type,
-            origin_resource_id,
-            str(root.get("owner_id") or "") or None,
-        )
-        if origin:
-            source_node = add_node(
-                "official_source",
-                str(origin["source_id"]),
-                str(origin["source_name"]),
-                str(origin["repository_url"]),
-            )
-            add_edge(source_node, root_id, "origin")
 
     return {
         "root_id": root_id,

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from typing import Any
 
@@ -333,6 +334,39 @@ async def _official_tool_languages(conn: Any) -> None:
             )
 
 
+async def _connection_provider_accounts(conn: Any) -> None:
+    columns = {
+        str(row[1]) for row in await conn.execute_fetchall("PRAGMA table_info(connections)")
+    }
+    if "provider_account_id" not in columns:
+        await conn.execute(
+            "ALTER TABLE connections ADD COLUMN provider_account_id TEXT"
+        )
+    rows = await conn.execute_fetchall(
+        "SELECT id,owner_id,data FROM connections WHERE provider_account_id IS NULL"
+    )
+    for row in rows:
+        try:
+            payload = json.loads(row[2] or "{}")
+        except (TypeError, json.JSONDecodeError):
+            continue
+        account_id = str(payload.get("_account_id") or "").strip()
+        if not account_id:
+            continue
+        accounts = await conn.execute_fetchall(
+            "SELECT 1 FROM accounts WHERE id=? AND owner_id=?", (account_id, row[1])
+        )
+        if accounts:
+            await conn.execute(
+                "UPDATE connections SET provider_account_id=? WHERE id=?",
+                (account_id, row[0]),
+            )
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_connections_provider_account "
+        "ON connections(owner_id,provider_account_id)"
+    )
+
+
 SQLITE_MIGRATIONS = (
     Migration(1, "legacy_schema_catchup", _migrate_sqlite, repeatable=True),
     Migration(
@@ -347,6 +381,7 @@ SQLITE_MIGRATIONS = (
     Migration(9, "official_explicit_selection", _official_explicit_selection),
     Migration(10, "official_source_import_modes", _official_source_import_modes),
     Migration(11, "official_tool_languages", _official_tool_languages),
+    Migration(12, "connection_provider_accounts", _connection_provider_accounts),
 )
 
 

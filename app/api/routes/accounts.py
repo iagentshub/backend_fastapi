@@ -116,6 +116,7 @@ async def _sync_hub_account(
         "username": account.get("username", ""),
         "api_key": account.get("api_key", ""),
         "_account_id": account_id,
+        "provider_account_id": account_id,
     }
     if mirror:
         conn_data["id"] = mirror["id"]
@@ -402,6 +403,7 @@ async def sync_account(
             "api_key": api_key,
             "model": model_id,
             "_account_id": account_id,
+            "provider_account_id": account_id,
         }
         if host:
             conn_data["host"] = host

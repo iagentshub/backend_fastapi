@@ -102,6 +102,40 @@ async def test_official_published_components_column_is_added_on_old_dbs(tmp_path
     assert stored[0][0] == "[]"
 
 
+async def test_connection_provider_migration_backfills_legacy_account_link(tmp_path):
+    """La migración se ejecuta con una Connection cruda de aiosqlite."""
+    from app.storage.migrations.sqlite import _connection_provider_accounts
+
+    async with aiosqlite.connect(tmp_path / "provider-account.db") as conn:
+        conn.row_factory = sqlite3.Row
+        await conn.executescript("""
+            CREATE TABLE accounts (
+                id TEXT NOT NULL, owner_id TEXT NOT NULL, provider TEXT NOT NULL,
+                data TEXT NOT NULL, linked_at TEXT NOT NULL,
+                PRIMARY KEY (id, owner_id)
+            );
+            CREATE TABLE connections (
+                id TEXT PRIMARY KEY, owner_id TEXT NOT NULL, data TEXT NOT NULL
+            );
+            INSERT INTO accounts VALUES (
+                'account-1', 'alice', 'openai', '{}', 'old'
+            );
+            INSERT INTO connections VALUES (
+                'connection-1', 'alice', '{"_account_id":"account-1"}'
+            );
+        """)
+
+        await _connection_provider_accounts(conn)
+        await _connection_provider_accounts(conn)
+        row = (
+            await conn.execute_fetchall(
+                "SELECT provider_account_id FROM connections WHERE id='connection-1'"
+            )
+        )[0]
+
+    assert row[0] == "account-1"
+
+
 async def test_migraciones_del_catalogo_viejo_no_fallan_sin_sus_tablas(tmp_path):
     """En una base nueva esas tablas ya no existen: deben ser no-ops."""
     from app.storage.migrations.sqlite import (

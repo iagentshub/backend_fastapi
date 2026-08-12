@@ -50,6 +50,24 @@ async def test_save_preserves_created_at(storage):
     assert updated["created_at"] == original_created
 
 
+async def test_provider_account_is_relational_and_survives_normal_edit(storage):
+    conn = await storage.save(
+        {
+            "type": "openai",
+            "api_key": "sk-test",
+            "_account_id": "account-1",
+            "provider_account_id": "account-1",
+        }
+    )
+    assert (await storage.get(conn["id"]))["provider_account_id"] == "account-1"
+
+    updated = await storage.save(
+        {"id": conn["id"], "type": "openai", "name": "Renamed"}
+    )
+    assert updated["provider_account_id"] == "account-1"
+    assert (await storage.get(conn["id"]))["_account_id"] == "account-1"
+
+
 async def test_delete_existing(storage):
     conn = await storage.save({"type": "openai", "api_key": "sk-test"})
     assert await storage.delete(conn["id"]) is True

@@ -184,3 +184,97 @@ def test_admin_resource_graph_not_found(admin_client):
     response = admin_client.get("/api/admin/resources/agent/missing/graph")
 
     assert response.status_code == 404
+
+
+def test_user_graph_groups_official_resources_under_repository(admin_client):
+    import asyncio
+
+    from app.storage.official_source_storage import OfficialSourceStorage
+
+    admin_user = next(
+        user
+        for user in admin_client.get("/api/admin/users").json()
+        if user["username"] == "testadmin"
+    )
+    skill = admin_client.post(
+        "/api/skills/private",
+        json={"name": "Repository skill", "content": "# Repository skill"},
+    ).json()
+
+    async def mark() -> str:
+        storage = OfficialSourceStorage()
+        source = await storage.save_source(
+            {
+                "name": "Caveman",
+                "repository_url": "https://github.com/juliusbrussee/caveman",
+                "repository_owner": "juliusbrussee",
+                "repository_name": "caveman",
+                "repository_path": "juliusbrussee/caveman",
+                "owner_id": admin_user["id"],
+            }
+        )
+        await storage.mark_resource(
+            "skill",
+            skill["id"],
+            admin_user["id"],
+            source_id=source["id"],
+            component_id="skills/repository-skill",
+            source_path="skills/repository-skill/SKILL.md",
+            content_hash="hash",
+            commit_sha="abc123",
+        )
+        return str(source["id"])
+
+    source_id = asyncio.run(mark())
+    graph = admin_client.get(
+        f"/api/admin/resources/user/{admin_user['id']}/graph"
+    ).json()
+    edges = {
+        (edge["source_id"], edge["target_id"], edge["relation"])
+        for edge in graph["edges"]
+    }
+    assert (f"user:{admin_user['id']}", f"official_source:{source_id}", "owns") in edges
+    assert (f"official_source:{source_id}", f"skill:{skill['id']}", "origin") in edges
+    assert (f"user:{admin_user['id']}", f"skill:{skill['id']}", "owns") not in edges
+
+
+def test_user_graph_groups_synced_connections_under_provider_account(admin_client):
+    import asyncio
+
+    from app.storage.accounts import AccountStorage
+    from app.storage.connection_storage import ConnectionStorage
+
+    admin_user = next(
+        user
+        for user in admin_client.get("/api/admin/users").json()
+        if user["username"] == "testadmin"
+    )
+
+    async def seed() -> tuple[str, str]:
+        account = await AccountStorage().save(
+            {"provider": "openai", "name": "OpenAI Production", "api_key": "sk-test"},
+            admin_user["id"],
+        )
+        connection = await ConnectionStorage().save(
+            {
+                "name": "OpenAI / gpt-4o",
+                "type": "openai",
+                "model": "gpt-4o",
+                "api_key": "sk-test",
+                "provider_account_id": account["id"],
+            },
+            admin_user["id"],
+        )
+        return str(account["id"]), str(connection["id"])
+
+    account_id, connection_id = asyncio.run(seed())
+    graph = admin_client.get(
+        f"/api/admin/resources/user/{admin_user['id']}/graph"
+    ).json()
+    edges = {
+        (edge["source_id"], edge["target_id"], edge["relation"])
+        for edge in graph["edges"]
+    }
+    assert (f"user:{admin_user['id']}", f"provider:{account_id}", "owns") in edges
+    assert (f"provider:{account_id}", f"connection:{connection_id}", "provides") in edges
+    assert (f"user:{admin_user['id']}", f"connection:{connection_id}", "owns") not in edges

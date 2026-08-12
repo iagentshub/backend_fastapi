@@ -44,7 +44,7 @@ async def admin_list_connections(
 
     async with open_db() as conn:
         rows = await conn.fetchall(
-            "SELECT id, owner_id, name, data, tokens_in, tokens_out, created_at "
+            "SELECT id, owner_id, provider_account_id, name, data, tokens_in, tokens_out, created_at "
             "FROM connections ORDER BY created_at DESC"
         )
         username_map = await _username_map(conn)
@@ -56,11 +56,12 @@ async def admin_list_connections(
             else {
                 "id": row[0],
                 "owner_id": row[1],
-                "name": row[2],
-                "data": row[3],
-                "tokens_in": row[4],
-                "tokens_out": row[5],
-                "created_at": row[6],
+                "provider_account_id": row[2],
+                "name": row[3],
+                "data": row[4],
+                "tokens_in": row[5],
+                "tokens_out": row[6],
+                "created_at": row[7],
             }
         )
         try:
@@ -72,6 +73,7 @@ async def admin_list_connections(
                 "id": d["id"],
                 "owner_id": d["owner_id"],
                 "owner_username": username_map.get(d["owner_id"], d["owner_id"]),
+                "provider_account_id": d.get("provider_account_id"),
                 "name": d["name"],
                 "type": data.get("type", ""),
                 "tokens_in": d["tokens_in"],

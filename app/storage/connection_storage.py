@@ -67,21 +67,26 @@ class ConnectionStorage(ResourceStorage):
         conn_id = str(payload.get("id") or "").strip() or generate_id()
         payload["id"] = conn_id
         name = _display_name(payload, conn_id)
+        provider_account_id = str(
+            payload.get("provider_account_id") or payload.get("_account_id") or ""
+        ).strip() or None
         is_active = 1 if payload.get("is_active", True) else 0
         deactivated_at = payload.get("deactivated_at")
         data_json = _compact_resource_data(payload)
         if _db.IS_PG:
             await conn.execute(
-                "INSERT INTO connections (id, owner_id, name, data, tokens_in, tokens_out, "
+                "INSERT INTO connections (id, owner_id, provider_account_id, name, data, tokens_in, tokens_out, "
                 "is_active, deactivated_at, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-                "ON CONFLICT (id) DO UPDATE SET owner_id=EXCLUDED.owner_id, name=EXCLUDED.name, data=EXCLUDED.data, "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+                "ON CONFLICT (id) DO UPDATE SET owner_id=EXCLUDED.owner_id, provider_account_id=EXCLUDED.provider_account_id, "
+                "name=EXCLUDED.name, data=EXCLUDED.data, "
                 "tokens_in=EXCLUDED.tokens_in, tokens_out=EXCLUDED.tokens_out, "
                 "is_active=EXCLUDED.is_active, deactivated_at=EXCLUDED.deactivated_at, "
                 "updated_at=EXCLUDED.updated_at",
                 (
                     conn_id,
                     owner_id,
+                    provider_account_id,
                     name,
                     data_json,
                     int(payload.get("tokens_in") or 0),
@@ -95,12 +100,13 @@ class ConnectionStorage(ResourceStorage):
         else:
             await conn.execute(
                 "INSERT OR REPLACE INTO connections "
-                "(id, owner_id, name, data, tokens_in, tokens_out, "
+                "(id, owner_id, provider_account_id, name, data, tokens_in, tokens_out, "
                 "is_active, deactivated_at, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (
                     conn_id,
                     owner_id,
+                    provider_account_id,
                     name,
                     data_json,
                     int(payload.get("tokens_in") or 0),
@@ -124,6 +130,7 @@ class ConnectionStorage(ResourceStorage):
                 "resource_type": "connection",
                 "scope": "private",
                 "owner_id": row["owner_id"],
+                "provider_account_id": row["provider_account_id"],
                 "tokens_in": row["tokens_in"],
                 "tokens_out": row["tokens_out"],
                 "created_at": row["created_at"],
@@ -133,6 +140,8 @@ class ConnectionStorage(ResourceStorage):
         d.setdefault("description", "")
         d.setdefault("icon", "")
         d.setdefault("labels", ["private"])
+        if d.get("provider_account_id"):
+            d.setdefault("_account_id", d["provider_account_id"])
         d["is_active"] = bool(row["is_active"])
         d["deactivated_at"] = row["deactivated_at"]
         return d
@@ -144,12 +153,12 @@ class ConnectionStorage(ResourceStorage):
         async with open_db() as conn:
             if owner_id is None:
                 rows = await conn.fetchall(
-                    "SELECT id, owner_id, name, data, tokens_in, tokens_out, is_active, "
+                    "SELECT id, owner_id, provider_account_id, name, data, tokens_in, tokens_out, is_active, "
                     "deactivated_at, created_at, updated_at FROM connections ORDER BY created_at ASC"
                 )
             else:
                 rows = await conn.fetchall(
-                    "SELECT id, owner_id, name, data, tokens_in, tokens_out, is_active, "
+                    "SELECT id, owner_id, provider_account_id, name, data, tokens_in, tokens_out, is_active, "
                     "deactivated_at, created_at, updated_at FROM connections "
                     "WHERE owner_id = ? ORDER BY created_at ASC",
                     (owner_id,),
@@ -163,13 +172,13 @@ class ConnectionStorage(ResourceStorage):
         async with open_db() as conn:
             if owner_id is None:
                 row = await conn.fetchone(
-                    "SELECT id, owner_id, name, data, tokens_in, tokens_out, is_active, "
+                    "SELECT id, owner_id, provider_account_id, name, data, tokens_in, tokens_out, is_active, "
                     "deactivated_at, created_at, updated_at FROM connections WHERE id = ?",
                     (conn_id,),
                 )
             else:
                 row = await conn.fetchone(
-                    "SELECT id, owner_id, name, data, tokens_in, tokens_out, is_active, "
+                    "SELECT id, owner_id, provider_account_id, name, data, tokens_in, tokens_out, is_active, "
                     "deactivated_at, created_at, updated_at FROM connections "
                     "WHERE id = ? AND owner_id = ?",
                     (conn_id, owner_id),
@@ -205,6 +214,8 @@ class ConnectionStorage(ResourceStorage):
             # Conservar el borrado suave a través de las ediciones.
             payload["is_active"] = existing.get("is_active", True)
             payload["deactivated_at"] = existing.get("deactivated_at")
+            if not payload.get("provider_account_id") and not payload.get("_account_id"):
+                payload["provider_account_id"] = existing.get("provider_account_id")
         else:
             payload.setdefault("created_at", _now())
             payload.setdefault("is_active", True)
