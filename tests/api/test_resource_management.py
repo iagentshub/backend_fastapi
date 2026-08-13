@@ -41,6 +41,68 @@ def test_workflow_crud_validates_graph(admin_client):
     assert admin_client.delete(f"/api/workflows/{workflow_id}").json() == {"ok": True}
 
 
+def test_workflow_global_llm_orchestration_overrides_agent_connection(
+    admin_client, monkeypatch
+):
+    def connection(name):
+        return admin_client.post(
+            "/api/connections",
+            json={
+                "type": "openai",
+                "label": name,
+                "api_key": "sk-test",
+                "model": "gpt-4o-mini",
+            },
+        ).json()
+
+    agent_connection = connection("Agent connection")
+    first = connection("Route first")
+    second = connection("Route second")
+    route = admin_client.post(
+        "/api/llm-orchestrations",
+        json={
+            "name": "Workflow route",
+            "mode": "stack",
+            "candidates": [
+                {"connection_id": first["id"]},
+                {"connection_id": second["id"]},
+            ],
+        },
+    ).json()
+    virtual_id = f"llm-orchestration:{route['id']}"
+    agent = admin_client.post(
+        "/api/agents",
+        json={"name": "Step", "connection_id": agent_connection["id"]},
+    ).json()
+    workflow = admin_client.post(
+        "/api/workflows",
+        json={
+            "name": "Global LLM route",
+            "definition": {
+                "nodes": [{"id": "one", "agent_id": agent["id"]}],
+                "edges": [],
+                "llm_orchestration_connection_id": virtual_id,
+            },
+        },
+    ).json()
+
+    async def inspect_run(_definition, _input, resolve):
+        resolved_agent, resolved_connection = await resolve(agent["id"])
+        assert resolved_agent["connection_id"] == agent_connection["id"]
+        assert resolved_connection["id"] == virtual_id
+        assert resolved_connection.get("_llm_orchestration")
+        yield {"type": "workflow_done", "output": "ok"}
+
+    monkeypatch.setattr(
+        "app.api.routes.resource_management.run_workflow", inspect_run
+    )
+    response = admin_client.post(
+        f"/api/workflows/{workflow['id']}/run", json={"input": "hola"}
+    )
+    assert response.status_code == 200
+    assert '"type": "workflow_done"' in response.text
+
+
 def test_workflow_run_exposes_sse_heartbeat_headers(admin_client, monkeypatch):
     created = admin_client.post(
         "/api/agents",

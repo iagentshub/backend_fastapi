@@ -13,6 +13,7 @@ from app.storage.connection_storage import ConnectionStorage
 from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
 from app.storage.guest import get_session, is_guest
+from app.storage.llm_orchestration_bindings import LLMOrchestrationBindingStorage
 from app.storage.llm_orchestrations import LLMOrchestrationStorage
 
 
@@ -20,6 +21,7 @@ class ConnectionAccessService:
     def __init__(self) -> None:
         self._connections = ConnectionStorage()
         self._orchestrations = LLMOrchestrationStorage()
+        self._bindings = LLMOrchestrationBindingStorage()
         self._shares = GroupShareStorage()
         self._groups = GroupStorage()
 
@@ -131,11 +133,21 @@ class ConnectionAccessService:
             and orchestration_id not in shared_ids
         ):
             return None
+        effective_item = item
+        if orchestration_id in shared_ids and item.get("owner_id") not in {user, group_id}:
+            binding = await self._bindings.get(orchestration_id, user)
+            if not binding:
+                return None
+            effective_item = {
+                **item,
+                "candidates": binding["candidates"],
+                "router_connection_id": binding.get("router_connection_id"),
+            }
         target_ids = {
             str(candidate.get("connection_id") or "")
-            for candidate in item.get("candidates") or []
+            for candidate in effective_item.get("candidates") or []
         }
-        router_id = str(item.get("router_connection_id") or "")
+        router_id = str(effective_item.get("router_connection_id") or "")
         if router_id:
             target_ids.add(router_id)
         resolved: Dict[str, Dict[str, Any]] = {}
@@ -147,14 +159,16 @@ class ConnectionAccessService:
                 if role == "admin"
                 else await self._get_physical(target_id, user, group_id)
             )
-            if target:
+            if target and target.get("is_active", True):
                 resolved[target_id] = target
+        if set(resolved) != target_ids - {""}:
+            return None
         result = self.virtual_connection(
             item,
             shared=orchestration_id in shared_ids,
             personal=item.get("owner_id") == user and group_id != user,
         )
-        result["_llm_orchestration"] = item
+        result["_llm_orchestration"] = effective_item
         result["_connections"] = resolved
         return result
 

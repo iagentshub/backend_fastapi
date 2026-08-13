@@ -14,6 +14,8 @@ from app.api.routes.auth import GroupContext, require_group
 from app.auth.auth import get_user_role
 from app.config.data import AGENTS_DIR, SKILLS_DIR
 from app.errors import APIError
+from app.models.llm_orchestration import orchestration_id_from_connection
+from app.services.connection_access import connection_access
 from app.services.workflow_errors import WorkflowPublicError, workflow_error_event
 from app.services.workflow_run_executor import start_workflow_run
 from app.services.workflow_runner import run_workflow
@@ -253,6 +255,26 @@ async def save_workflow(
         raise APIError(
             422, "invalid_workflow", str(exc), extra={"field": "definition"}
         ) from exc
+    workflow_connection_id = str(
+        definition.get("llm_orchestration_connection_id") or ""
+    )
+    if workflow_connection_id:
+        if not orchestration_id_from_connection(workflow_connection_id):
+            raise APIError(
+                422,
+                "invalid_field",
+                "El workflow solo admite una orquestación LLM como conexión global",
+                extra={"field": "llm_orchestration_connection_id"},
+            )
+        if not await connection_access.get_accessible(
+            workflow_connection_id, ctx.user, ctx.group_id
+        ):
+            raise APIError(
+                422,
+                "invalid_field",
+                "La orquestación LLM no está configurada o disponible",
+                extra={"field": "llm_orchestration_connection_id"},
+            )
     return await _workflows.save(
         ctx.group_id,
         {
@@ -358,15 +380,18 @@ async def _prepare_workflow_run(workflow_id: str, ctx: GroupContext):
                 raise RuntimeError(
                     f"El agente {agent_id} no está disponible para tu grupo"
                 )
-        connection_id = str(agent.get("connection_id") or "")
+        connection_id = str(
+            definition.get("llm_orchestration_connection_id")
+            or agent.get("connection_id")
+            or ""
+        )
         if not connection_id:
             raise WorkflowPublicError(
                 "invalid_field", f"El agente {agent.get('name')} no tiene conexión"
             )
-        from app.services.connection_access import connection_access
-
         if (
             ctx.group_id != ctx.user
+            and not orchestration_id_from_connection(connection_id)
             and not await _group_storage.has_resource_permission(
                 ctx.group_id,
                 ctx.user,
@@ -388,7 +413,9 @@ async def _prepare_workflow_run(workflow_id: str, ctx: GroupContext):
                 f"La conexión del agente {agent.get('name')} no está disponible",
             )
         if connection.get("_llm_orchestration") and ctx.group_id != ctx.user:
-            for target_id in connection.get("_connections") or {}:
+            for target_id, target in (connection.get("_connections") or {}).items():
+                if target.get("owner_id") == ctx.user:
+                    continue
                 if not await _group_storage.has_resource_permission(
                     ctx.group_id,
                     ctx.user,

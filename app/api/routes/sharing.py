@@ -241,32 +241,6 @@ async def _cascade_share_workflow(
     return cascaded
 
 
-async def _cascade_share_llm_orchestration(
-    orchestration_id: str,
-    group_id: str,
-    shared_by: str,
-) -> List[str]:
-    """Comparte las conexiones que hacen ejecutable la orquestación LLM."""
-    item = await _orch_store.get_any(orchestration_id)
-    if not item:
-        return []
-    ids = {
-        str(candidate.get("connection_id") or "")
-        for candidate in item.get("candidates") or []
-    }
-    router_id = str(item.get("router_connection_id") or "")
-    if router_id:
-        ids.add(router_id)
-    cascaded: List[str] = []
-    for connection_id in ids - {""}:
-        owner = await _resource_owner("connection", connection_id)
-        if owner != item.get("owner_id"):
-            continue
-        await _shares.share_with_group("connection", connection_id, group_id, shared_by)
-        cascaded.append(connection_id)
-    return cascaded
-
-
 @router.post("/{resource_type}/{resource_id}")
 async def share_resource_with_group(
     resource_type: str,
@@ -276,9 +250,9 @@ async def share_resource_with_group(
 ) -> Dict[str, Any]:
     """Concede acceso de uso al grupo indicado.
 
-    Para agentes comparte sus skills y knowledge privados. Para una
-    orquestación LLM comparte las conexiones necesarias, que conservan siempre
-    su naturaleza privada y solo quedan accesibles dentro del grupo destino.
+    Para agentes comparte sus skills y knowledge privados. Una orquestación
+    LLM comparte solo su definición; cada miembro vincula conexiones propias o
+    compartidas con él, sin propagar las credenciales del autor.
     """
     _assert_valid_type(resource_type)
     payload = body.payload() if body else {}
@@ -304,10 +278,6 @@ async def share_resource_with_group(
     elif resource_type == "workflow":
         cascaded = await _cascade_share_workflow(
             resource_id, group_id, ctx.user, ctx.group_id
-        )
-    elif resource_type == "llm_orchestration":
-        cascaded = await _cascade_share_llm_orchestration(
-            resource_id, group_id, ctx.user
         )
 
     return {"ok": True, "cascaded": cascaded}

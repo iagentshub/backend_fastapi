@@ -259,6 +259,7 @@ PUT /api/admin/resources/{resource_type}/{resource_id}/verify
 PUT /api/agents/{agent_id}/preferences
 PUT /api/agents/{scope}/{agent_id}/visibility
 PUT /api/auth/me/profile
+PUT /api/llm-orchestrations/{item_id}/binding
 PUT /api/prompts/{scope}/{prompt_id}/visibility
 PUT /api/settings
 PUT /api/settings/admin

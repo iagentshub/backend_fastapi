@@ -25,6 +25,7 @@ from app.config.session import (
 from app.connections import get_provider
 from app.errors import APIError
 from app.middleware.ratelimit import RateLimiter
+from app.models.llm_orchestration import orchestration_connection_id
 from app.models.request_bodies import (
     ConnectionPayload,
 )
@@ -97,6 +98,12 @@ async def _list_orchestration_connections(
             continue
         item = await _llm_orchestration_storage.get_any(item_id)
         if item and await _groups.owner_is_active(str(item.get("owner_id") or "")):
+            if item.get("owner_id") not in {user, group_id}:
+                configured = await connection_access.get_accessible(
+                    orchestration_connection_id(item_id), user, group_id
+                )
+                if not configured:
+                    continue
             seen.add(item_id)
             items.append(
                 connection_access.virtual_connection(item, shared=True, personal=False)

@@ -239,4 +239,17 @@ def validate_workflow(definition: Dict[str, Any]) -> Dict[str, Any]:
     if evaluator_ids != condition_sources:
         raise ValueError("Cada evaluador debe cerrar exactamente un ciclo por condición")
 
-    return {"nodes": normalized_nodes, "edges": sequence_edges + loop_edges}
+    orchestration_connection_id = str(
+        definition.get("llm_orchestration_connection_id") or ""
+    ).strip()
+    if len(orchestration_connection_id) > 300:
+        raise ValueError("La conexión LLM de la orquestación es demasiado larga")
+    return {
+        "nodes": normalized_nodes,
+        "edges": sequence_edges + loop_edges,
+        **(
+            {"llm_orchestration_connection_id": orchestration_connection_id}
+            if orchestration_connection_id
+            else {}
+        ),
+    }

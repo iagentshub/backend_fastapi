@@ -17,12 +17,14 @@ from app.storage.agent_storage import AgentStorage
 from app.storage.db import PH, open_db
 from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
+from app.storage.llm_orchestration_bindings import LLMOrchestrationBindingStorage
 from app.storage.llm_orchestrations import LLMOrchestrationStorage
 from app.utils import flog
 from app.utils.origin import assert_resource_writable
 
 router = APIRouter(prefix="/api/llm-orchestrations", tags=["llm-orchestrations"])
 _storage = LLMOrchestrationStorage()
+_bindings = LLMOrchestrationBindingStorage()
 _agents = AgentStorage(AGENTS_DIR)
 _shares = GroupShareStorage()
 _groups = GroupStorage()
@@ -55,6 +57,32 @@ class LLMOrchestrationBody(BaseModel):
         return self
 
 
+class LLMOrchestrationBindingBody(BaseModel):
+    candidates: list[CandidateBody] = Field(min_length=2, max_length=20)
+    router_connection_id: str | None = Field(default=None, max_length=300)
+
+
+async def _shared_view(item: Dict[str, Any], user: str) -> Dict[str, Any]:
+    """Expose a shared definition with only the current user's private binding."""
+    binding = await _bindings.get(str(item["id"]), user)
+    result = dict(item)
+    result["_shared"] = True
+    result["_binding_configured"] = binding is not None
+    if binding:
+        result["candidates"] = binding["candidates"]
+        result["router_connection_id"] = binding.get("router_connection_id")
+    else:
+        result["candidates"] = [
+            {
+                "connection_id": "",
+                "routing_hint": str(candidate.get("routing_hint") or ""),
+            }
+            for candidate in item.get("candidates") or []
+        ]
+        result["router_connection_id"] = None
+    return result
+
+
 async def _owned(item_id: str, ctx: GroupContext) -> Dict[str, Any]:
     item = await _storage.get(item_id, ctx.group_id)
     if not item:
@@ -82,9 +110,8 @@ async def _accessible(item_id: str, ctx: GroupContext) -> Dict[str, Any]:
             group_id, "llm_orchestration"
         )
         if item_id in shared_ids and await _groups.owner_is_active(item["owner_id"]):
-            item["_shared"] = True
             item["_group_id"] = group_id
-            return item
+            return await _shared_view(item, ctx.user)
     raise APIError(
         404, "not_found", "Orquestación LLM no encontrada",
         extra={"resource": "llm_orchestration"},
@@ -141,8 +168,7 @@ async def list_llm_orchestrations(
     for item_id in shared_ids - own_ids:
         item = await _storage.get_any(item_id)
         if item and await _groups.owner_is_active(item["owner_id"]):
-            item["_shared"] = True
-            items.append(item)
+            items.append(await _shared_view(item, ctx.user))
     if not include_inactive:
         items = [item for item in items if item.get("is_active", True)]
     return sorted(items, key=lambda item: item["updated_at"], reverse=True)
@@ -153,6 +179,70 @@ async def get_llm_orchestration(
     item_id: str, ctx: GroupContext = Depends(require_group)
 ) -> Dict[str, Any]:
     return await _accessible(item_id, ctx)
+
+
+@router.put("/{item_id}/binding")
+async def save_llm_orchestration_binding(
+    item_id: str,
+    body: LLMOrchestrationBindingBody,
+    ctx: GroupContext = Depends(require_group),
+) -> Dict[str, Any]:
+    item = await _accessible(item_id, ctx)
+    if not item.get("_shared"):
+        raise APIError(
+            422,
+            "invalid_field",
+            "La vinculación personal solo se aplica a orquestaciones compartidas",
+            extra={"field": "orchestration_id"},
+        )
+    if len(body.candidates) != len(item.get("candidates") or []):
+        raise APIError(
+            422,
+            "invalid_field",
+            "Debes asignar una conexión a cada candidata",
+            extra={"field": "candidates"},
+        )
+    ids = [candidate.connection_id for candidate in body.candidates]
+    if len(ids) != len(set(ids)):
+        raise APIError(
+            422,
+            "invalid_field",
+            "Las conexiones candidatas no pueden repetirse",
+            extra={"field": "candidates"},
+        )
+    source = await _storage.get_any(item_id)
+    if not source:
+        raise APIError(404, "not_found", "Orquestación LLM no encontrada")
+    if source.get("mode") == "balanced" and not body.router_connection_id:
+        raise APIError(
+            422,
+            "invalid_field",
+            "El modo balanceado necesita una conexión enrutadora",
+            extra={"field": "router_connection_id"},
+        )
+    definition = {
+        "candidates": [
+            {
+                "connection_id": binding_candidate.connection_id,
+                "routing_hint": str(source_candidate.get("routing_hint") or ""),
+            }
+            for binding_candidate, source_candidate in zip(
+                body.candidates, source.get("candidates") or [], strict=True
+            )
+        ],
+        "router_connection_id": body.router_connection_id
+        if source.get("mode") == "balanced"
+        else None,
+    }
+    validation_body = LLMOrchestrationBody(
+        name=str(source.get("name") or item_id),
+        mode=source.get("mode") or "stack",
+        candidates=definition["candidates"],
+        router_connection_id=definition["router_connection_id"],
+    )
+    await _validate_connections(validation_body, ctx)
+    await _bindings.save(item_id, ctx.user, definition)
+    return await _shared_view(source, ctx.user)
 
 
 @router.post("")

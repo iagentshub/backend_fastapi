@@ -113,6 +113,15 @@ async def purge_user_data(username: str) -> None:
                 await conn.execute(
                     "DELETE FROM connections WHERE owner_id = ?", (user_id,)
                 )
+                await conn.execute(
+                    "DELETE FROM llm_orchestration_bindings "
+                    "WHERE user_id = ? OR orchestration_id IN "
+                    "(SELECT id FROM llm_orchestrations WHERE owner_id = ?)",
+                    (user_id, user_id),
+                )
+                await conn.execute(
+                    "DELETE FROM llm_orchestrations WHERE owner_id = ?", (user_id,)
+                )
                 await conn.execute("DELETE FROM agent_workflows WHERE owner_id = ?", (user_id,))
                 await conn.execute("DELETE FROM resource_social WHERE owner = ?", (user_id,))
                 await conn.execute("DELETE FROM resource_stars WHERE username = ?", (user_id,))

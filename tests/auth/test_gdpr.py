@@ -138,6 +138,53 @@ async def test_purge_no_afecta_a_otros_usuarios(patch_data_dir):
     assert await get_user_by_username("purge_bystander") is not None
 
 
+async def test_purge_elimina_orquestaciones_y_bindings_privados(patch_data_dir):
+    await _make_user("purge_llm_victim")
+    await _make_user("purge_llm_bystander")
+    victim_id = await _user_id("purge_llm_victim")
+    bystander_id = await _user_id("purge_llm_bystander")
+    from app.storage.db import open_db
+
+    async with open_db() as conn:
+        for item_id, owner_id in (
+            ("victim-route", victim_id),
+            ("bystander-route", bystander_id),
+        ):
+            await conn.execute(
+                "INSERT INTO llm_orchestrations "
+                "(id, owner_id, name, description, definition, labels, "
+                "is_active, created_at, updated_at) "
+                "VALUES (?, ?, ?, '', ?, '[\"private\"]', 1, ?, ?)",
+                (item_id, owner_id, item_id, '{"mode":"stack","candidates":[]}', "now", "now"),
+            )
+        for orchestration_id, user_id in (
+            ("victim-route", bystander_id),
+            ("bystander-route", victim_id),
+        ):
+            await conn.execute(
+                "INSERT INTO llm_orchestration_bindings "
+                "(orchestration_id, user_id, definition, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, ?)",
+                (orchestration_id, user_id, '{"candidates":[]}', "now", "now"),
+            )
+        await conn.commit()
+
+    await purge_user_data("purge_llm_victim")
+
+    async with open_db() as conn:
+        assert not await conn.fetchval(
+            "SELECT 1 FROM llm_orchestrations WHERE id = ?", ("victim-route",)
+        )
+        assert await conn.fetchval(
+            "SELECT 1 FROM llm_orchestrations WHERE id = ?", ("bystander-route",)
+        )
+        assert not await conn.fetchval(
+            "SELECT 1 FROM llm_orchestration_bindings "
+            "WHERE orchestration_id IN (?, ?)",
+            ("victim-route", "bystander-route"),
+        )
+
+
 async def test_purge_elimina_miembros_del_group(patch_data_dir):
     await _make_user("purge_member_owner")
     await _make_user("purge_member_user")

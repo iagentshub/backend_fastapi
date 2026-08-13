@@ -210,7 +210,7 @@ def test_llm_orchestration_can_be_shared_privately_with_a_group(admin_client):
         json={"group_id": group["id"]},
     )
     assert shared.status_code == 200
-    assert set(shared.json()["cascaded"]) == {first["id"], second["id"]}
+    assert shared.json()["cascaded"] == []
 
     route_groups = admin_client.get(
         f"/api/sharing/llm_orchestration/{item['id']}/groups"
@@ -220,7 +220,7 @@ def test_llm_orchestration_can_be_shared_privately_with_a_group(admin_client):
         connection_groups = admin_client.get(
             f"/api/sharing/connection/{connection['id']}/groups"
         ).json()["group_ids"]
-        assert group["id"] in connection_groups
+        assert group["id"] not in connection_groups
 
     public_items = admin_client.get("/api/explore").json()
     assert all(
@@ -229,7 +229,9 @@ def test_llm_orchestration_can_be_shared_privately_with_a_group(admin_client):
     )
 
 
-def test_group_member_can_use_shared_orchestration_without_publication(client):
+def test_group_member_can_use_shared_orchestration_without_publication(
+    client, monkeypatch
+):
     _register("llm_route_owner")
     _register("llm_route_member")
     _as(client, "llm_route_owner")
@@ -255,16 +257,89 @@ def test_group_member_can_use_shared_orchestration_without_publication(client):
         f"/api/sharing/llm_orchestration/{item['id']}",
         json={"group_id": group["id"]},
     ).status_code == 200
+    assert client.post(
+        f"/api/sharing/connection/{second['id']}",
+        json={"group_id": group["id"]},
+    ).status_code == 200
 
     _as(client, "llm_route_member", group["id"])
     routes = client.get("/api/llm-orchestrations").json()
     shared = next(route for route in routes if route["id"] == item["id"])
     assert shared["_shared"] is True
+    assert shared["_binding_configured"] is False
+    assert {candidate["connection_id"] for candidate in shared["candidates"]} == {""}
     available_connection_ids = {
         connection["id"] for connection in client.get("/api/connections").json()
     }
-    assert {first["id"], second["id"]} <= available_connection_ids
-    assert f"llm-orchestration:{item['id']}" in available_connection_ids
+    assert first["id"] not in available_connection_ids
+    assert second["id"] in available_connection_ids
+    virtual_id = f"llm-orchestration:{item['id']}"
+    assert virtual_id not in available_connection_ids
+
+    member_first = _connection(client, "Member own first")
+    binding = client.put(
+        f"/api/llm-orchestrations/{item['id']}/binding",
+        json={
+            "candidates": [
+                {"connection_id": member_first["id"], "routing_hint": "rápida"},
+                {"connection_id": second["id"], "routing_hint": "reserva"},
+            ]
+        },
+    )
+    assert binding.status_code == 200
+    assert binding.json()["_binding_configured"] is True
+    assert [
+        candidate["routing_hint"] for candidate in binding.json()["candidates"]
+    ] == ["", ""]
+    available_connection_ids = {
+        connection["id"] for connection in client.get("/api/connections").json()
+    }
+    assert virtual_id in available_connection_ids
+
+    agent = client.post(
+        "/api/agents",
+        json={"name": "Member routed", "connection_id": member_first["id"]},
+    )
+    assert agent.status_code == 200
+    assert agent.json()["connection_id"] == member_first["id"]
+    workflow = client.post(
+        "/api/workflows",
+        json={
+            "name": "Member routed workflow",
+            "definition": {
+                "nodes": [{"id": "one", "agent_id": agent.json()["id"]}],
+                "edges": [],
+                "llm_orchestration_connection_id": virtual_id,
+            },
+        },
+    )
+    assert workflow.status_code == 200
+    assert (
+        workflow.json()["definition"]["llm_orchestration_connection_id"]
+        == virtual_id
+    )
+
+    async def inspect_run(_definition, _input, resolve):
+        _, resolved = await resolve(agent.json()["id"])
+        assert resolved["id"] == virtual_id
+        assert set(resolved["_connections"]) == {member_first["id"], second["id"]}
+        yield {"type": "workflow_done", "output": "ok"}
+
+    monkeypatch.setattr(
+        "app.api.routes.resource_management.run_workflow", inspect_run
+    )
+    run = client.post(
+        f"/api/workflows/{workflow.json()['id']}/run", json={"input": "hola"}
+    )
+    assert run.status_code == 200
+    assert '"type": "workflow_done"' in run.text
+    assert client.post(
+        f"/api/connections/{member_first['id']}/deactivate"
+    ).status_code == 200
+    available_connection_ids = {
+        connection["id"] for connection in client.get("/api/connections").json()
+    }
+    assert virtual_id not in available_connection_ids
     assert all(
         entry.get("resource_type") != "llm_orchestration"
         for entry in client.get("/api/explore").json()

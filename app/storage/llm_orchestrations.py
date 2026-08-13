@@ -122,6 +122,10 @@ class LLMOrchestrationStorage(ResourceStorage):
                 "DELETE FROM llm_orchestrations WHERE id=? AND owner_id=?",
                 (item_id, owner_id),
             )
+            await conn.execute(
+                "DELETE FROM llm_orchestration_bindings WHERE orchestration_id=?",
+                (item_id,),
+            )
             await conn.commit()
         await self.clear_labels(item_id)
         return True
@@ -134,6 +138,10 @@ class LLMOrchestrationStorage(ResourceStorage):
             if not found:
                 return False
             await conn.execute("DELETE FROM llm_orchestrations WHERE id=?", (item_id,))
+            await conn.execute(
+                "DELETE FROM llm_orchestration_bindings WHERE orchestration_id=?",
+                (item_id,),
+            )
             await conn.execute(
                 "DELETE FROM resource_group_shares "
                 "WHERE resource_type='llm_orchestration' AND resource_id=?",
