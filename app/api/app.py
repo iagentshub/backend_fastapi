@@ -11,7 +11,6 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
-from app.api.pagination import TOTAL_HEADER
 from app.api.routes import (
     accounts,
     agent_builder,
@@ -55,6 +54,7 @@ from app.middleware.licenses import LicenseGateMiddleware
 from app.middleware.locale import LocaleMiddleware
 from app.middleware.request_logging import RequestLoggerMiddleware
 from app.middleware.security import SecurityHeadersMiddleware
+from app.pagination.http import PAGINATION_HEADERS
 from app.services.llm_executor import shutdown_llm_executor
 from app.services.workflow_run_executor import (
     stop_workflow_runs,
@@ -144,9 +144,8 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
-        # Sin esto el navegador no deja leer X-Total-Count en una petición
-        # cross-origin y el paginador recibe siempre un total vacío, sin error.
-        expose_headers=[TOTAL_HEADER],
+        # Metadatos de páginas offset y cursor accesibles desde Flutter Web.
+        expose_headers=PAGINATION_HEADERS,
     )
 
     @app.exception_handler(ValueError)

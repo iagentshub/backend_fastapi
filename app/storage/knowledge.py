@@ -7,7 +7,10 @@ import json
 from html.parser import HTMLParser
 from typing import Any, Dict, List, Optional
 
+from app.pagination.models import OffsetPage, OffsetParams
+from app.services.resource_visibility import VisibilityFilter
 from app.storage.db import AsyncConn, open_db
+from app.storage.page_query import fetch_offset_page
 from app.storage.resource_base import ResourceStorage
 from app.storage.skill_storage import ensure_origin_label
 from app.utils.generators import generate_date, generate_id
@@ -180,6 +183,171 @@ def extract_document_text(content_bytes: bytes, filename: str, mime: str = "") -
 class KnowledgeStorage(ResourceStorage):
     table = "knowledge_items"
     resource_type = "knowledge"
+
+    async def list_visible_page(
+        self,
+        *,
+        user: str,
+        owner_id: str,
+        type: str | None,
+        page: OffsetParams,
+        permission_filter: VisibilityFilter | None = None,
+        requested_group_id: str | None = None,
+    ) -> OffsetPage[Dict[str, Any]]:
+        """Página de knowledge propio y compartido, incluidos packs."""
+
+        if requested_group_id is not None:
+            direct_sql = (
+                "EXISTS (SELECT 1 FROM resource_group_shares direct_share "
+                "WHERE direct_share.resource_type='knowledge' "
+                "AND direct_share.resource_id=k.id AND direct_share.group_id=?)"
+            )
+            pack_sql = (
+                "(k.pack_id IS NOT NULL AND EXISTS ("
+                "SELECT 1 FROM resource_group_shares pack_share "
+                "WHERE pack_share.resource_type='knowledge_pack' "
+                "AND pack_share.resource_id=k.pack_id AND pack_share.group_id=?))"
+            )
+            direct_params: tuple[Any, ...] = (requested_group_id,)
+            pack_params: tuple[Any, ...] = (requested_group_id,)
+            owner_active = (
+                "NOT EXISTS (SELECT 1 FROM groups inactive_owner "
+                "WHERE inactive_owner.id=k.owner_id AND inactive_owner.is_active=0)"
+            )
+            visibility_sql = f"((({direct_sql}) OR ({pack_sql})) AND {owner_active})"
+            visibility_params = (*direct_params, *pack_params)
+        else:
+            membership = (
+                "JOIN group_members visible_member "
+                "ON visible_member.group_id=visible_share.group_id "
+                "JOIN groups visible_group ON visible_group.id=visible_share.group_id "
+            )
+            direct_sql = (
+                "EXISTS (SELECT 1 FROM resource_group_shares visible_share "
+                f"{membership}WHERE visible_share.resource_type='knowledge' "
+                "AND visible_share.resource_id=k.id "
+                "AND visible_member.username=? AND visible_group.is_active=1)"
+            )
+            pack_sql = (
+                "(k.pack_id IS NOT NULL AND EXISTS ("
+                "SELECT 1 FROM resource_group_shares visible_share "
+                f"{membership}WHERE visible_share.resource_type='knowledge_pack' "
+                "AND visible_share.resource_id=k.pack_id "
+                "AND visible_member.username=? AND visible_group.is_active=1))"
+            )
+            direct_params = (user,)
+            pack_params = (user,)
+            owner_active = (
+                "NOT EXISTS (SELECT 1 FROM groups inactive_owner "
+                "WHERE inactive_owner.id=k.owner_id AND inactive_owner.is_active=0)"
+            )
+            visibility_sql = (
+                f"(k.owner_id=? OR ((({direct_sql}) OR ({pack_sql})) "
+                f"AND {owner_active}))"
+            )
+            visibility_params = (owner_id, *direct_params, *pack_params)
+
+        clauses = [visibility_sql]
+        params = list(visibility_params)
+        if type:
+            clauses.append("k.type=?")
+            params.append(type)
+        if permission_filter is not None:
+            clauses.append(f"(({pack_sql}) OR ({permission_filter.sql}))")
+            params.extend(pack_params)
+            params.extend(permission_filter.params)
+        where = " AND ".join(f"({clause})" for clause in clauses)
+        columns = (
+            "k.id,k.owner_id,k.type,k.title,k.source,k.char_count,k.mime_type,"
+            "k.size_bytes,k.checksum,k.labels,k.is_active,k.deactivated_at,"
+            "k.created_at,k.updated_at,k.pack_id,k.pack_relative_path,k.pack_kind"
+        )
+        async with open_db() as conn:
+            result = await fetch_offset_page(
+                conn,
+                count_sql=f"SELECT COUNT(*) FROM knowledge_items k WHERE {where}",
+                select_sql=(
+                    f"SELECT {columns} FROM knowledge_items k WHERE {where} "
+                    "ORDER BY k.created_at DESC,k.id DESC"
+                ),
+                params=tuple(params),
+                page=page,
+                decode=lambda row: _coerce_active(dict(row)),
+            )
+            await self._annotate_shared_page(
+                conn,
+                result.items,
+                user=user,
+                owner_id=owner_id,
+                requested_group_id=requested_group_id,
+            )
+        return result
+
+    async def _annotate_shared_page(
+        self,
+        conn: AsyncConn,
+        items: List[Dict[str, Any]],
+        *,
+        user: str,
+        owner_id: str,
+        requested_group_id: str | None,
+    ) -> None:
+        candidates = [
+            item
+            for item in items
+            if requested_group_id is not None or item.get("owner_id") != owner_id
+        ]
+        if not candidates:
+            return
+        ids = [str(item["id"]) for item in candidates]
+        placeholders = ",".join("?" for _ in ids)
+        membership_sql: str
+        suffix_params: tuple[Any, ...]
+        if requested_group_id is not None:
+            membership_sql = "AND s.group_id=?"
+            suffix_params = (requested_group_id,)
+        else:
+            membership_sql = (
+                "AND EXISTS (SELECT 1 FROM group_members m JOIN groups g "
+                "ON g.id=m.group_id WHERE m.group_id=s.group_id "
+                "AND m.username=? AND g.is_active=1)"
+            )
+            suffix_params = (user,)
+        direct_rows = await conn.fetchall(
+            "SELECT s.resource_id,MIN(s.group_id) FROM resource_group_shares s "
+            "WHERE s.resource_type='knowledge' "
+            f"AND s.resource_id IN ({placeholders}) {membership_sql} "
+            "GROUP BY s.resource_id",
+            (*ids, *suffix_params),
+        )
+        direct = {str(row[0]): str(row[1]) for row in direct_rows}
+        packs = {
+            str(item["pack_id"])
+            for item in candidates
+            if item.get("pack_id") is not None
+        }
+        pack_groups: dict[str, str] = {}
+        if packs:
+            pack_placeholders = ",".join("?" for _ in packs)
+            pack_rows = await conn.fetchall(
+                "SELECT s.resource_id,MIN(s.group_id) FROM resource_group_shares s "
+                "WHERE s.resource_type='knowledge_pack' "
+                f"AND s.resource_id IN ({pack_placeholders}) {membership_sql} "
+                "GROUP BY s.resource_id",
+                (*packs, *suffix_params),
+            )
+            pack_groups = {str(row[0]): str(row[1]) for row in pack_rows}
+        for item in candidates:
+            item_id = str(item["id"])
+            if item_id in direct:
+                item["_shared"] = True
+                item["_group_id"] = direct[item_id]
+                continue
+            pack_group = pack_groups.get(str(item.get("pack_id") or ""))
+            if pack_group is not None:
+                item["_shared"] = True
+                item["_group_id"] = pack_group
+                item["_shared_via_pack"] = True
 
     async def list(
         self, owner_id: Optional[str], type: Optional[str] = None

@@ -67,13 +67,12 @@ def test_list_connections_pagination_offset(admin_client):
     assert len(r_off.json()) == total - 1
 
 
-def test_list_connections_zero_limit_returns_all(admin_client):
-    """limit=0 (valor por defecto) devuelve todos."""
+def test_list_connections_zero_limit_is_rejected(admin_client):
+    """Los listados no permiten desactivar el límite de respuesta."""
     _create_conn(admin_client, _CONN_OPENAI)
     _create_conn(admin_client, _CONN_ANTHROPIC)
     r = admin_client.get("/api/connections?limit=0")
-    assert r.status_code == 200
-    assert len(r.json()) >= 2
+    assert r.status_code == 422
 
 
 # ── GET /api/connections/raw ──────────────────────────────────────────────────

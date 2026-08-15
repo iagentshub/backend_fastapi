@@ -39,6 +39,20 @@ El helper `PH` en `app/storage/db.py` abstrae el dialecto SQL (`?` en SQLite, `%
 
 ---
 
+## Listados y paginación
+
+`app/pagination/` define páginas offset y cursor, cabeceras HTTP y el codec de
+cursores. `app/storage/page_query.py` ejecuta `COUNT(*)` y `LIMIT/OFFSET` sobre
+el mismo `WHERE`; cada storage selecciona sus columnas y decodifica únicamente
+las filas de la página. `app/services/resource_visibility.py` centraliza
+propiedad, shares, grupos activos y permisos para que seguridad y paginación no
+divergan entre agentes, skills, prompts, tools y Knowledge.
+
+La migración 23 añade índices compuestos para órdenes estables (`fecha DESC, id
+DESC`) en SQLite y PostgreSQL. El benchmark
+`tests/performance/test_pagination.py` verifica que una página de 50 sobre
+10.000 filas decodifica solo esos 50 objetos.
+
 ## Control de acceso
 
 Existen dos formas de acceder a la plataforma:

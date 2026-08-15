@@ -1,4 +1,4 @@
-"""X-Total-Count en los listados paginados (mejora #15).
+"""X-Total-Count en los listados paginados (mejora #16).
 
 Diez listados aceptaban `limit`/`offset` y devolvían una lista pelada: el
 cliente podía pedir la página 3 pero no sabía cuántas hay. El total viaja ahora
@@ -10,7 +10,7 @@ from __future__ import annotations
 
 from uuid import uuid4
 
-from app.api.pagination import TOTAL_HEADER
+from app.pagination.http import TOTAL_HEADER
 
 
 def _login(client) -> str:
@@ -52,8 +52,15 @@ def test_el_cuerpo_sigue_siendo_una_lista(client):
 
 def test_listados_con_el_total_en_cabecera(client):
     _login(client)
-    for ruta in ("/api/agents", "/api/skills", "/api/prompts", "/api/tools",
-                 "/api/knowledge", "/api/connections", "/api/users"):
+    for ruta in (
+        "/api/agents",
+        "/api/skills",
+        "/api/prompts",
+        "/api/tools",
+        "/api/knowledge",
+        "/api/connections",
+        "/api/users",
+    ):
         r = client.get(ruta, params={"limit": 5})
         assert r.status_code == 200, f"{ruta}: {r.text}"
         assert TOTAL_HEADER in r.headers, f"{ruta} no publica el total"

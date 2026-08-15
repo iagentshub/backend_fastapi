@@ -522,6 +522,30 @@ async def _remove_obsolete_knowledge_pack_items(conn: Any) -> None:
     await _knowledge_items_pack_membership(conn)
 
 
+async def _pagination_indexes(conn: Any) -> None:
+    """Índices compuestos alineados con filtros y órdenes de páginas."""
+    statements = (
+        "CREATE INDEX IF NOT EXISTS idx_agents_owner_page "
+        "ON agents(owner_id,scope,updated_at DESC,id DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_skills_owner_page "
+        "ON skills(owner_id,scope,updated_at DESC,id DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_prompts_owner_page "
+        "ON prompts(owner_id,scope,updated_at DESC,id DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_tools_owner_page "
+        "ON tools(owner_id,scope,updated_at DESC,id DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_knowledge_owner_page "
+        "ON knowledge_items(owner_id,type,created_at DESC,id DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_connections_owner_page "
+        "ON connections(owner_id,is_active,updated_at DESC,id DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_conv_user_agent_page "
+        "ON conversations(user_id,agent_id,updated_at DESC,id DESC)",
+        "CREATE INDEX IF NOT EXISTS idx_msg_conv_page "
+        "ON messages(conversation_id,created_at DESC,id DESC)",
+    )
+    for statement in statements:
+        await conn.execute(statement)
+
+
 POSTGRES_MIGRATIONS = (
     Migration(1, "legacy_schema_catchup", _migrate_pg, repeatable=True),
     Migration(2, "users_json_to_relational", _migrate_users_json_pg, repeatable=True),
@@ -549,6 +573,7 @@ POSTGRES_MIGRATIONS = (
         "remove_obsolete_knowledge_pack_items",
         _remove_obsolete_knowledge_pack_items,
     ),
+    Migration(23, "pagination_indexes", _pagination_indexes),
 )
 
 

@@ -11,7 +11,6 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, File, Form, Query, Response, UploadFile
 
-from app.api.pagination import paginar
 from app.api.routes.auth import GroupContext, require_group_session
 from app.auth.auth import get_user_role
 from app.config.data import AGENTS_DIR
@@ -25,6 +24,9 @@ from app.models.request_bodies import (
     KnowledgeUrlBody,
     LabelsBody,
 )
+from app.pagination.materialized import paginate_materialized
+from app.pagination.models import OffsetParams
+from app.services.knowledge_listing import list_authenticated_knowledge
 from app.storage.agent_storage import AgentStorage
 from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
@@ -465,94 +467,28 @@ async def list_items(
     type: Optional[str] = None,
     owner_scope: str = "group",
     requested_group_id: Optional[str] = Query(None, alias="group_id"),
-    limit: int = Query(0, ge=0, description="Máx. items. 0 = sin límite"),
+    limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
     response: Response = None,  # type: ignore[assignment]
     ctx: GroupContext = Depends(require_group_session),
 ) -> List[Dict[str, Any]]:
     user = ctx.user
-    owner_id = user if owner_scope == "personal" else ctx.group_id
     if is_guest(user):
         items = get_session(user).knowledge
         filtered = [i for i in items if not type or i["type"] == type]
-        filtered = paginar(filtered, limit, offset, response)
+        filtered = paginate_materialized(
+            filtered, limit=limit, offset=offset, response=response
+        )
         return filtered
-    role = await get_user_role(user)
-    if requested_group_id is not None:
-        # Filtro por grupo: se aplica siempre, incluido admin
-        if role != "admin" and not await _groups.can_access(requested_group_id, user):
-            raise APIError(403, "forbidden", "Sin acceso a este grupo")
-        shared_ids = set(
-            await _shares.get_group_shared_resource_ids(requested_group_id, "knowledge")
-        )
-        shared_pack_ids = set(
-            await _shares.get_group_shared_resource_ids(
-                requested_group_id, "knowledge_pack"
-            )
-        )
-        for pack_id in shared_pack_ids:
-            shared_ids.update(await _packs.item_ids(pack_id))
-        items: List[Dict[str, Any]] = []
-        for kid in shared_ids:
-            k = await _storage.get(kid)
-            if (
-                k
-                and (not type or k.get("type") == type)
-                and await _groups.owner_is_active(k.get("owner_id") or "")
-            ):
-                k["_shared"] = True
-                k["_group_id"] = requested_group_id
-                if k.get("pack_id") in shared_pack_ids:
-                    k["_shared_via_pack"] = True
-                items.append(k)
-    else:
-        # (incluye admin: la visibilidad global de admin se sirve vía /api/admin/*,
-        # listar por owner_id=None aquí exponía knowledge privado de otros usuarios
-        # sin marcarlo como ajeno)
-        items = await _storage.list(owner_id, type)
-        own_ids = {i["id"] for i in items}
-        # Acumula shares de todos los grupos del usuario
-        user_groups = await _groups.list_for_user(user)
-        shared_map: Dict[str, str] = {}  # resource_id -> group_id
-        pack_shared_map: Dict[str, str] = {}
-        for group in user_groups:
-            gid = group["id"]
-            for rid in await _shares.get_group_shared_resource_ids(gid, "knowledge"):
-                if rid not in shared_map:
-                    shared_map[rid] = gid
-            for pack_id in await _shares.get_group_shared_resource_ids(
-                gid, "knowledge_pack"
-            ):
-                for rid in await _packs.item_ids(pack_id):
-                    if rid not in shared_map:
-                        shared_map[rid] = gid
-                        pack_shared_map[rid] = gid
-        extra: List[Dict[str, Any]] = []
-        for kid, gid in shared_map.items():
-            if kid not in own_ids:
-                k = await _storage.get(kid)
-                if (
-                    k
-                    and (not type or k.get("type") == type)
-                    and await _groups.owner_is_active(k.get("owner_id") or "")
-                ):
-                    k["_shared"] = True
-                    k["_group_id"] = gid
-                    if kid in pack_shared_map:
-                        k["_shared_via_pack"] = True
-                    extra.append(k)
-        items = items + extra
-    permission_group_id = requested_group_id or ctx.group_id
-    if permission_group_id != user and role != "admin":
-        allowed_items: List[Dict[str, Any]] = []
-        for item in items:
-            if item.get("_shared_via_pack") or await _groups.has_resource_permission(
-                permission_group_id, user, "knowledge", item["id"], "view"
-            ):
-                allowed_items.append(item)
-        items = allowed_items
-    items = paginar(items, limit, offset, response)
-    return items
+    return await list_authenticated_knowledge(
+        _storage,
+        ctx=ctx,
+        owner_scope=owner_scope,
+        type=type,
+        page=OffsetParams(limit=limit, offset=offset),
+        response=response,
+        requested_group_id=requested_group_id,
+    )
 
 
 @router.post("/text")

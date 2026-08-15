@@ -6,12 +6,18 @@ import json
 import re
 from typing import Any, Dict, List, Optional
 
+from app.pagination.models import OffsetPage, OffsetParams
+
 # db se importa DOS veces a propósito: ver app/storage/_storage_helpers.py.
 from app.storage import db as _db
 from app.storage._storage_helpers import _PUBLIC_OWNER
 from app.storage.db import AsyncConn, open_db
 from app.storage.db_migrations import _compact_resource_data
 from app.storage.resource_base import ResourceStorage
+from app.storage.scoped_resource_page import (
+    ScopedResourcePageSpec,
+    list_scoped_resource_page,
+)
 
 # Catálogo de labels compartido; vive en skill_storage (ver comentario allí).
 from app.storage.skill_storage import SKILL_LABELS, ensure_origin_label
@@ -26,6 +32,38 @@ class PromptStorage(ResourceStorage):
 
     table = "prompts"
     resource_type = "prompt"
+
+    async def list_visible_page(
+        self,
+        *,
+        user: str,
+        active_group_id: str,
+        scope: str,
+        include_inactive: bool,
+        page: OffsetParams,
+        requested_group_id: str | None = None,
+    ) -> OffsetPage[Dict[str, Any]]:
+        await self._ensure_migrated()
+        spec = ScopedResourcePageSpec(
+            table=self.table,
+            columns=(
+                "resource_row.id, resource_row.owner_id, resource_row.name, "
+                "resource_row.alias, resource_row.scope, resource_row.data, "
+                "resource_row.is_active, resource_row.deactivated_at, "
+                "resource_row.created_at, resource_row.updated_at"
+            ),
+            resource_type=self.resource_type,
+            decode=lambda row: self._row_to_dict(row, include_content=False),
+        )
+        return await list_scoped_resource_page(
+            spec,
+            user=user,
+            active_group_id=active_group_id,
+            scope=scope,
+            include_inactive=include_inactive,
+            page=page,
+            requested_group_id=requested_group_id,
+        )
 
     # ── internal helpers ─────────────────────────────────────────────────────
 

@@ -6,12 +6,14 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Query, Response
 
-from app.api.pagination import paginar
 from app.api.routes.auth import GroupContext, require_group, require_group_session
 from app.auth.auth import get_user_role
 from app.config.data import SKILLS_DIR
 from app.errors import APIError
 from app.models.request_bodies import CatalogResourcePayload
+from app.pagination.materialized import paginate_materialized
+from app.pagination.models import OffsetParams
+from app.services.scoped_resource_listing import list_authenticated_scoped_resources
 from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
 from app.storage.guest import get_session, is_guest
@@ -58,7 +60,7 @@ async def list_skills(
     owner_scope: str = "group",
     group_id: Optional[str] = None,
     include_inactive: bool = False,
-    limit: int = Query(0, ge=0, description="Máx. items. 0 = sin límite"),
+    limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
     response: Response = None,  # type: ignore[assignment]
     ctx: GroupContext = Depends(require_group_session),
@@ -74,54 +76,20 @@ async def list_skills(
             items = [sk for sk in items if sk.get("is_active", True)]
         for sk in items:
             _mark_origin(sk, user, ctx.group_id)
-        items = paginar(items, limit, offset, response)
+        items = paginate_materialized(
+            items, limit=limit, offset=offset, response=response
+        )
         return items
-    items = await _storage.list(scope)
-    role = await get_user_role(user)
-    if group_id is not None:
-        # Filtro por grupo: se aplica siempre, incluido admin
-        if role != "admin" and not await _groups.can_access(group_id, user):
-            raise APIError(403, "forbidden", "Sin acceso a este grupo")
-        shared_ids = set(await _shares.get_group_shared_resource_ids(group_id, "skill"))
-        items = [sk for sk in items if sk["id"] in shared_ids]
-        for sk in items:
-            sk["_shared"] = True
-            sk["_group_id"] = group_id
-    else:
-        # Skills propias (personales o del group activo) + públicas + legacy sin owner
-        # (incluye admin: la visibilidad global de admin se sirve vía /api/admin/*,
-        # no filtrar aquí exponía skills privadas de otros usuarios sin marcar como ajenas)
-        # + shares de todos los grupos del usuario.
-        # En group de equipo (group_id != user), owner_id puede ser el UUID del group.
-        group_id = ctx.group_id
-        items = [
-            sk
-            for sk in items
-            if sk.get("scope") == "public"
-            or sk.get("owner_id") is None
-            or sk.get("owner_id") == user
-            or sk.get("owner_id") == group_id
-        ]
-        own_ids = {sk["id"] for sk in items}
-        user_groups = await _groups.list_for_user(user)
-        shared_map: Dict[str, str] = {}  # resource_id -> group_id
-        for group in user_groups:
-            gid = group["id"]
-            for rid in await _shares.get_group_shared_resource_ids(gid, "skill"):
-                if rid not in shared_map:
-                    shared_map[rid] = gid
-        for sid in set(shared_map.keys()) - own_ids:
-            sk = await _storage.get_any(sid)
-            if sk and await _groups.owner_is_active(sk.get("owner_id") or ""):
-                sk["_shared"] = True
-                sk["_group_id"] = shared_map[sid]
-                items.append(sk)
-    if not include_inactive:
-        items = [sk for sk in items if sk.get("is_active", True)]
-    items = paginar(items, limit, offset, response)
-    for sk in items:
-        _mark_origin(sk, user, ctx.group_id)
-    return items
+    return await list_authenticated_scoped_resources(
+        _storage,
+        ctx=ctx,
+        scope=scope,
+        include_inactive=include_inactive,
+        page=OffsetParams(limit=limit, offset=offset),
+        response=response,
+        requested_group_id=group_id,
+        mark_origin=_mark_origin,
+    )
 
 
 @router.get("/{scope}/{skill_id}")
@@ -206,9 +174,7 @@ async def save_skill(
                 str(label).strip() for label in raw_labels if str(label).strip()
             )
         )
-        invalid_labels = [
-            label for label in labels if label not in allowed_labels
-        ]
+        invalid_labels = [label for label in labels if label not in allowed_labels]
         if invalid_labels:
             raise APIError(
                 422,

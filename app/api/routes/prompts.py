@@ -6,11 +6,13 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Query, Response
 
-from app.api.pagination import paginar
 from app.api.routes.auth import GroupContext, require_group, require_group_session
 from app.auth.auth import get_user_role
 from app.errors import APIError
 from app.models.request_bodies import CatalogResourcePayload
+from app.pagination.materialized import paginate_materialized
+from app.pagination.models import OffsetParams
+from app.services.scoped_resource_listing import list_authenticated_scoped_resources
 from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
 from app.storage.guest import get_session, is_guest
@@ -56,7 +58,7 @@ async def list_prompts(
     owner_scope: str = "group",
     group_id: Optional[str] = None,
     include_inactive: bool = False,
-    limit: int = Query(0, ge=0, description="Máx. items. 0 = sin límite"),
+    limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
     response: Response = None,  # type: ignore[assignment]
     ctx: GroupContext = Depends(require_group_session),
@@ -72,53 +74,20 @@ async def list_prompts(
             items = [pr for pr in items if pr.get("is_active", True)]
         for pr in items:
             _mark_origin(pr, user, ctx.group_id)
-        items = paginar(items, limit, offset, response)
-        return items
-    items = await _storage.list(scope)
-    role = await get_user_role(user)
-    if group_id is not None:
-        # Filtro por grupo: se aplica siempre, incluido admin
-        if role != "admin" and not await _groups.can_access(group_id, user):
-            raise APIError(403, "forbidden", "Sin acceso a este grupo")
-        shared_ids = set(
-            await _shares.get_group_shared_resource_ids(group_id, "prompt")
+        items = paginate_materialized(
+            items, limit=limit, offset=offset, response=response
         )
-        items = [pr for pr in items if pr["id"] in shared_ids]
-        for pr in items:
-            pr["_shared"] = True
-            pr["_group_id"] = group_id
-    else:
-        # Prompts propios (personales o del group activo) + públicos + legacy sin owner
-        # + shares de todos los grupos del usuario.
-        group_id = ctx.group_id
-        items = [
-            pr
-            for pr in items
-            if pr.get("scope") == "public"
-            or pr.get("owner_id") is None
-            or pr.get("owner_id") == user
-            or pr.get("owner_id") == group_id
-        ]
-        own_ids = {pr["id"] for pr in items}
-        user_groups = await _groups.list_for_user(user)
-        shared_map: Dict[str, str] = {}  # resource_id -> group_id
-        for group in user_groups:
-            gid = group["id"]
-            for rid in await _shares.get_group_shared_resource_ids(gid, "prompt"):
-                if rid not in shared_map:
-                    shared_map[rid] = gid
-        for pid in set(shared_map.keys()) - own_ids:
-            pr = await _storage.get_any(pid)
-            if pr and await _groups.owner_is_active(pr.get("owner_id") or ""):
-                pr["_shared"] = True
-                pr["_group_id"] = shared_map[pid]
-                items.append(pr)
-    if not include_inactive:
-        items = [pr for pr in items if pr.get("is_active", True)]
-    items = paginar(items, limit, offset, response)
-    for pr in items:
-        _mark_origin(pr, user, ctx.group_id)
-    return items
+        return items
+    return await list_authenticated_scoped_resources(
+        _storage,
+        ctx=ctx,
+        scope=scope,
+        include_inactive=include_inactive,
+        page=OffsetParams(limit=limit, offset=offset),
+        response=response,
+        requested_group_id=group_id,
+        mark_origin=_mark_origin,
+    )
 
 
 @router.get("/{scope}/{prompt_id}")
@@ -195,9 +164,7 @@ async def save_prompt(
                 str(label).strip() for label in raw_labels if str(label).strip()
             )
         )
-        invalid_labels = [
-            label for label in labels if label not in allowed_labels
-        ]
+        invalid_labels = [label for label in labels if label not in allowed_labels]
         if invalid_labels:
             raise APIError(
                 422,

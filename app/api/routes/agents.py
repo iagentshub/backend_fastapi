@@ -2,13 +2,11 @@
 
 from __future__ import annotations
 
-import asyncio
 import json
 from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Query, Response
 
-from app.api.pagination import paginar
 from app.api.routes.auth import (
     GroupContext,
     require_group,
@@ -22,7 +20,10 @@ from app.middleware.locale import get_locale
 from app.middleware.ratelimit import RateLimiter
 from app.models.llm_orchestration import orchestration_id_from_connection
 from app.models.request_bodies import AgentPayload
+from app.pagination.materialized import paginate_materialized
+from app.pagination.models import OffsetParams
 from app.services.agent_access import agent_access
+from app.services.agent_listing import list_authenticated_agents
 from app.services.agent_presentation import apply_agent_locale
 from app.services.agent_presentation import validate_agent_scope as _check_scope
 from app.storage.agent_storage import AgentStorage
@@ -205,7 +206,7 @@ async def list_agents(
     owner_scope: str = "group",
     group_id: Optional[str] = None,
     include_inactive: bool = False,
-    limit: int = Query(0, ge=0, description="Máx. items. 0 = sin límite"),
+    limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
     response: Response = None,  # type: ignore[assignment]
     ctx: GroupContext = Depends(require_group_session),
@@ -222,105 +223,26 @@ async def list_agents(
             items = [agent for agent in items if agent.get("is_active", True)]
         if label:
             items = [a for a in items if label in (a.get("labels") or [])]
-        items = paginar(items, limit, offset, response)
+        items = paginate_materialized(
+            items, limit=limit, offset=offset, response=response
+        )
         result: List[Dict[str, Any]] = []
         for a in items:
             a = _apply_locale(a, locale)
             a["origin_type"] = compute_origin_type(a)
             result.append(a)
         return result
-    role = await get_user_role(user)
-    if group_id is not None:
-        # Filtro por grupo: se aplica siempre, incluido admin
-        if role != "admin" and not await _groups.can_access(group_id, user):
-            raise APIError(403, "forbidden", "Sin acceso a este grupo")
-        shared_ids = set(await _shares.get_group_shared_resource_ids(group_id, "agent"))
-        agents = await _agents.list_visible(scope, resource_ids=list(shared_ids))
-        for a in agents:
-            a["_shared"] = True
-            a["_group_id"] = group_id
-    else:
-        # Vista por defecto: propios + recursos del group activo + compartidos
-        # (incluye admin: la visibilidad global de admin se sirve vía /api/admin/agents,
-        # no filtrar aquí exponía agentes privados de otros usuarios sin marcar como ajenos)
-        # En group de equipo (group_id != user), owner_id puede ser el UUID del group.
-        group_id = ctx.group_id
-        user_groups = await _groups.list_for_user(user)
-
-        # Paralelizar todas las queries de shares (una por grupo) en lugar de N+1 serial
-        if user_groups:
-            group_ids = [g["id"] for g in user_groups]
-            results = await asyncio.gather(
-                *[
-                    _shares.get_group_shared_resource_ids(gid, "agent")
-                    for gid in group_ids
-                ]
-            )
-            shared_map: Dict[
-                str, str
-            ] = {}  # resource_id -> group_id (primer grupo que lo comparte)
-            for gid, rids in zip(group_ids, results):
-                for rid in rids:
-                    if rid not in shared_map:
-                        shared_map[rid] = gid
-        else:
-            shared_map = {}
-
-        # Los tres orígenes de la vista se piden a la BD en una sola consulta,
-        # en vez de traer la tabla entera y descartar en Python lo que no es de
-        # este usuario.
-        agents = await _agents.list_visible(
-            scope,
-            owner_ids=[user, group_id] if group_id != user else [user],
-            resource_ids=list(shared_map),
-        )
-        own = [
-            a
-            for a in agents
-            if a.get("owner_id") == user or a.get("owner_id") == group_id
-        ]
-        own_ids = {a["id"] for a in own}
-
-        # Paralelizar las consultas owner_is_active para agentes compartidos
-        extra_candidates = [
-            a for a in agents if a["id"] in (set(shared_map.keys()) - own_ids)
-        ]
-        if extra_candidates:
-            unique_owners = list({a.get("owner_id") or "" for a in extra_candidates})
-            active_results = await asyncio.gather(
-                *[_groups.owner_is_active(oid) for oid in unique_owners]
-            )
-            active_owners = {
-                oid for oid, ok in zip(unique_owners, active_results) if ok
-            }
-            extra = []
-            for a in extra_candidates:
-                if (a.get("owner_id") or "") in active_owners:
-                    a["_shared"] = True
-                    a["_group_id"] = shared_map[a["id"]]
-                    extra.append(a)
-        else:
-            extra = []
-
-        agents = own + extra
-    if label:
-        agents = [a for a in agents if label in (a.get("labels") or [])]
-    if not include_inactive:
-        # Ocultar recursos desactivados salvo que se pidan explícitamente.
-        # Los compartidos ajenos nunca se muestran inactivos.
-        agents = [a for a in agents if a.get("is_active", True)]
-    if ctx.group_id != user and role != "admin":
-        # Una consulta a group_members para los N agentes, no una por agente:
-        # la fila del miembro (y su JSON de permisos) es la misma para todos.
-        permitido = await _groups.permission_checker(ctx.group_id, user)
-        agents = [a for a in agents if permitido("agents", a["id"], "use")]
-    agents = paginar(agents, limit, offset, response)
-    enriched: List[Dict[str, Any]] = []
-    for a in agents:
-        a = _apply_locale(a, locale)
-        a["origin_type"] = compute_origin_type(a)
-        enriched.append(a)
-    return enriched
+    return await list_authenticated_agents(
+        _agents,
+        ctx=ctx,
+        scope=scope,
+        label=label,
+        include_inactive=include_inactive,
+        page=OffsetParams(limit=limit, offset=offset),
+        response=response,
+        requested_group_id=group_id,
+        present=lambda item: _apply_locale(item, locale),
+    )
 
 
 @router.post("")

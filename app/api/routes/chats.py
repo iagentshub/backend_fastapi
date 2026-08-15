@@ -4,11 +4,12 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, Query, Response
 
 from app.api.routes.auth import require_session
 from app.errors import APIError
 from app.models.request_bodies import ConversationBody
+from app.pagination.http import publish_cursor_page
 from app.storage.chat import ChatStorage
 from app.storage.guest import is_guest
 
@@ -28,11 +29,22 @@ async def list_recent_conversations(
 
 @router.get("/{agent_id}")
 async def list_conversations(
-    agent_id: str, user: str = Depends(require_session)
+    agent_id: str,
+    limit: int = Query(default=50, ge=1, le=100),
+    cursor: str | None = Query(default=None),
+    response: Response = None,  # type: ignore[assignment]
+    user: str = Depends(require_session),
 ) -> List[Dict[str, Any]]:
     if is_guest(user):
         return []
-    return await _chat.list_conversations(user, agent_id)
+    try:
+        page = await _chat.list_conversations_page(
+            user, agent_id, limit=limit, cursor=cursor
+        )
+    except ValueError as exc:
+        raise APIError(422, "invalid_cursor", "Cursor no válido") from exc
+    publish_cursor_page(response, page)
+    return list(page.items)
 
 
 @router.post("/{agent_id}")
@@ -50,7 +62,12 @@ async def new_conversation(
 
 @router.get("/{agent_id}/{conv_id}")
 async def get_messages(
-    agent_id: str, conv_id: str, user: str = Depends(require_session)
+    agent_id: str,
+    conv_id: str,
+    limit: int = Query(default=100, ge=1, le=200),
+    cursor: str | None = Query(default=None),
+    response: Response = None,  # type: ignore[assignment]
+    user: str = Depends(require_session),
 ) -> List[Dict[str, Any]]:
     if is_guest(user):
         return []
@@ -62,7 +79,12 @@ async def get_messages(
             "Conversación no encontrada",
             extra={"resource": "conversation"},
         )
-    return await _chat.get_messages(conv_id, user)
+    try:
+        page = await _chat.get_messages_page(conv_id, user, limit=limit, cursor=cursor)
+    except ValueError as exc:
+        raise APIError(422, "invalid_cursor", "Cursor no válido") from exc
+    publish_cursor_page(response, page)
+    return list(page.items)
 
 
 @router.delete("/{agent_id}/{conv_id}")

@@ -61,7 +61,7 @@ CREATE TABLE IF NOT EXISTS agents (
     updated_at  TEXT NOT NULL,
     PRIMARY KEY (id, owner_id)
 );
-CREATE INDEX IF NOT EXISTS idx_agents_owner ON agents(owner_id, scope, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_agents_owner ON agents(owner_id, scope, updated_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_agents_official ON agents(official_source_id);
 CREATE TABLE IF NOT EXISTS skills (
     id          TEXT NOT NULL,
@@ -79,7 +79,7 @@ CREATE TABLE IF NOT EXISTS skills (
     updated_at  TEXT NOT NULL,
     PRIMARY KEY (id, owner_id)
 );
-CREATE INDEX IF NOT EXISTS idx_skills_owner ON skills(owner_id, scope, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_skills_owner ON skills(owner_id, scope, updated_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_skills_official ON skills(official_source_id);
 CREATE TABLE IF NOT EXISTS prompts (
     id          TEXT NOT NULL,
@@ -97,7 +97,7 @@ CREATE TABLE IF NOT EXISTS prompts (
     updated_at  TEXT NOT NULL,
     PRIMARY KEY (id, owner_id)
 );
-CREATE INDEX IF NOT EXISTS idx_prompts_owner ON prompts(owner_id, scope, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_prompts_owner ON prompts(owner_id, scope, updated_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_prompts_official ON prompts(official_source_id);
 CREATE UNIQUE INDEX IF NOT EXISTS idx_prompts_alias_owner ON prompts(owner_id, alias);
 CREATE TABLE IF NOT EXISTS tools (
@@ -120,7 +120,7 @@ CREATE TABLE IF NOT EXISTS tools (
     updated_at  TEXT NOT NULL,
     PRIMARY KEY (id, owner_id)
 );
-CREATE INDEX IF NOT EXISTS idx_tools_owner ON tools(owner_id, scope, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tools_owner ON tools(owner_id, scope, updated_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_tools_official ON tools(official_source_id);
 CREATE TABLE IF NOT EXISTS memory_files (
     id          TEXT NOT NULL,
@@ -170,9 +170,9 @@ CREATE TABLE IF NOT EXISTS messages (
     created_at      TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_conv_user_agent
-    ON conversations(user_id, agent_id, updated_at DESC);
+    ON conversations(user_id, agent_id, updated_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_msg_conv
-    ON messages(conversation_id, created_at ASC);
+    ON messages(conversation_id, created_at DESC, id DESC);
 CREATE TABLE IF NOT EXISTS knowledge_items (
     id         TEXT PRIMARY KEY,
     owner_id   TEXT NOT NULL,
@@ -196,7 +196,7 @@ CREATE TABLE IF NOT EXISTS knowledge_items (
     updated_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_knowledge_owner
-    ON knowledge_items(owner_id, type, created_at DESC);
+    ON knowledge_items(owner_id, type, created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_knowledge_official
     ON knowledge_items(official_source_id);
 CREATE TABLE IF NOT EXISTS knowledge_packs (

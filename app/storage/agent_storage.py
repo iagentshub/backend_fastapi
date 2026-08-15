@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, TypedDict
 
 from app.models.agent import Agent
+from app.pagination.models import OffsetPage, OffsetParams
+from app.services.resource_visibility import VisibilityFilter
 
 # db se importa DOS veces a propósito: ver app/storage/_storage_helpers.py.
 from app.storage import db as _db
@@ -14,6 +16,10 @@ from app.storage._storage_helpers import _PUBLIC_OWNER
 from app.storage.db import AsyncConn, open_db
 from app.storage.db_migrations import _compact_resource_data
 from app.storage.resource_base import ResourceStorage
+from app.storage.scoped_resource_page import (
+    ScopedResourcePageSpec,
+    list_scoped_resource_page,
+)
 from app.storage.skill_storage import ensure_origin_label
 from app.utils import flog
 from app.utils import now_iso as _now
@@ -51,6 +57,42 @@ class AgentStorage(ResourceStorage):
 
     table = "agents"
     resource_type = "agent"
+
+    async def list_visible_page(
+        self,
+        *,
+        user: str,
+        active_group_id: str,
+        scope: str,
+        include_inactive: bool,
+        page: OffsetParams,
+        requested_group_id: str | None = None,
+        extra_filters: tuple[VisibilityFilter, ...] = (),
+    ) -> OffsetPage[Dict[str, Any]]:
+        await self._ensure_migrated()
+        spec = ScopedResourcePageSpec(
+            table=self.table,
+            columns=(
+                "resource_row.id, resource_row.owner_id, resource_row.name, "
+                "resource_row.scope, resource_row.data, resource_row.tokens_in, "
+                "resource_row.tokens_out, resource_row.is_active, "
+                "resource_row.deactivated_at, resource_row.created_at, "
+                "resource_row.updated_at"
+            ),
+            resource_type=self.resource_type,
+            decode=self._row_to_dict,
+        )
+        return await list_scoped_resource_page(
+            spec,
+            user=user,
+            active_group_id=active_group_id,
+            scope=scope,
+            include_inactive=include_inactive,
+            page=page,
+            requested_group_id=requested_group_id,
+            extra_filters=extra_filters,
+            include_public=False,
+        )
 
     def __init__(self, root_dir: Path) -> None:
         super().__init__()
@@ -208,58 +250,6 @@ class AgentStorage(ResourceStorage):
                     "is_active, deactivated_at, created_at, updated_at "
                     "FROM agents ORDER BY created_at ASC"
                 )
-        return [self._row_to_dict(r) for r in rows]
-
-    async def list_visible(
-        self,
-        scope: str = "all",
-        *,
-        owner_ids: "Optional[List[str]]" = None,
-        resource_ids: "Optional[List[str]]" = None,
-    ) -> List[Dict[str, Any]]:
-        """Solo las filas que el llamador puede llegar a ver.
-
-        ``list("all")`` traía la tabla entera —todos los agentes de todos los
-        usuarios de la instancia— para que el router descartase en Python casi
-        todo lo leído. El coste de un listado crecía con el tamaño del hub y no
-        con lo que tiene quien pregunta.
-
-        ``owner_ids`` son los propietarios visibles (el usuario y su group
-        activo) y ``resource_ids`` los agentes ajenos compartidos con él vía
-        ``resource_group_shares``. Sin ninguna de las dos condiciones no hay
-        nada que devolver, y decirlo aquí evita un ``IN ()`` vacío.
-
-        El recorte por permisos de group, por label y por ``is_active`` sigue
-        en el router: son filtros que ocurren antes de paginar y moverlos a SQL
-        sin moverlos todos dejaría huecos en las páginas.
-        """
-        await self._ensure_migrated()
-
-        condiciones: List[str] = []
-        params: List[Any] = []
-        if owner_ids:
-            marcas = ",".join("?" for _ in owner_ids)
-            condiciones.append(f"owner_id IN ({marcas})")
-            params.extend(owner_ids)
-        if resource_ids:
-            marcas = ",".join("?" for _ in resource_ids)
-            condiciones.append(f"id IN ({marcas})")
-            params.extend(resource_ids)
-        if not condiciones:
-            return []
-
-        sql = (
-            "SELECT id, owner_id, name, scope, data, tokens_in, tokens_out, "
-            "is_active, deactivated_at, created_at, updated_at FROM agents "
-            f"WHERE ({' OR '.join(condiciones)})"
-        )
-        if scope in ("public", "private"):
-            sql += " AND scope=?"
-            params.append(scope)
-        sql += " ORDER BY created_at ASC"
-
-        async with open_db() as conn:
-            rows = await conn.fetchall(sql, tuple(params))
         return [self._row_to_dict(r) for r in rows]
 
     async def get(

@@ -7,7 +7,6 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Query, Response
 
-from app.api.pagination import paginar
 from app.api.routes.auth import (
     GroupContext,
     require_group,
@@ -29,6 +28,7 @@ from app.models.llm_orchestration import orchestration_connection_id
 from app.models.request_bodies import (
     ConnectionPayload,
 )
+from app.pagination.materialized import paginate_materialized
 from app.services.connection_access import connection_access
 from app.storage.agent_storage import AgentStorage
 from app.storage.connection_storage import ConnectionStorage
@@ -226,7 +226,7 @@ async def list_connections_raw(
 async def list_connections(
     requested_group_id: Optional[str] = Query(None, alias="group_id"),
     include_inactive: bool = False,
-    limit: int = Query(0, ge=0, description="Máx. items. 0 = sin límite"),
+    limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
     response: Response = None,  # type: ignore[assignment]
     ctx: GroupContext = Depends(require_group_session),
@@ -306,7 +306,9 @@ async def list_connections(
     if ollama_raw:
         result.extend(await _ollama_conns_to_models(ollama_raw))
 
-    result = paginar(result, limit, offset, response)
+    result = paginate_materialized(
+        result, limit=limit, offset=offset, response=response
+    )
     return result
 
 

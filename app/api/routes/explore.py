@@ -14,7 +14,6 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, Query, Response
 
 import app.config.data as _cfg
-from app.api.pagination import TOTAL_HEADER
 from app.api.routes.auth import require_auth, require_session
 from app.api.routes.social import _PUBLIC_VAL, _social_limiter
 from app.config.content_languages import (
@@ -28,6 +27,7 @@ from app.models.official_source import (
     PublicOfficialPack,
     PublicOfficialPackDetail,
 )
+from app.pagination.http import TOTAL_HEADER
 from app.services.official_pack_service import OfficialPackService
 from app.storage.agent_storage import AgentStorage
 from app.storage.db import IS_PG, open_db
@@ -161,9 +161,8 @@ async def explore(
             conditions.append("(" + " OR ".join(["labels LIKE ?"] * len(label)) + ")")
             params.extend(f'%"{label_value}"%' for label_value in label)
         where = " AND ".join(conditions)
-        # El total va en cabecera (ver app/api/pagination.py). Aquí la página se
-        # recorta en SQL, así que len(rows) no sirve: hace falta su propio
-        # COUNT con las MISMAS condiciones, antes de añadir limit/offset.
+        # La página se recorta en SQL, así que el total requiere un COUNT con
+        # las mismas condiciones antes de añadir limit/offset.
         if response is not None:
             total = await conn.fetchval(
                 f"SELECT COUNT(*) FROM resource_social WHERE {where}", tuple(params)

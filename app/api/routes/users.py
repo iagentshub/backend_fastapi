@@ -9,10 +9,10 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Response
 
-from app.api.pagination import TOTAL_HEADER
 from app.api.routes.auth import require_auth
 from app.auth.auth import get_user_by_username
 from app.errors import APIError
+from app.pagination.http import TOTAL_HEADER
 from app.storage.db import open_db
 
 router = APIRouter(prefix="/api/users", tags=["users"])
@@ -71,8 +71,8 @@ async def search_users(
     username: str = Depends(require_auth),
 ) -> list[dict[str, Any]]:
     async with open_db() as conn:
-        # El total va en cabecera (ver app/api/pagination.py). La página se
-        # recorta en SQL, así que hace falta su propio COUNT con el mismo WHERE.
+        # La página se recorta en SQL, así que el total requiere un COUNT con
+        # el mismo WHERE.
         if response is not None:
             if q:
                 total = await conn.fetchval(

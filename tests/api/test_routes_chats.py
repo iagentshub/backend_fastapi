@@ -1,4 +1,5 @@
 """Tests de API para /api/chats/ — historial de conversaciones."""
+
 from __future__ import annotations
 
 import asyncio
@@ -21,6 +22,7 @@ def _make_user(username: str, email: str) -> None:
 
 # ── Fixtures ───────────────────────────────────────────────────────────────────
 
+
 @pytest.fixture()
 def alice(client, patch_data_dir):
     _make_user("alice", "alice@test.com")
@@ -35,6 +37,7 @@ def bob(client, patch_data_dir):
 
 # ── Lista de conversaciones ────────────────────────────────────────────────────
 
+
 def test_list_conversations_empty(alice):
     r = alice.get("/api/chats/agent-xyz")
     assert r.status_code == 200
@@ -47,6 +50,7 @@ def test_list_conversations_requires_auth(client):
 
 
 # ── Crear conversación ─────────────────────────────────────────────────────────
+
 
 def test_create_conversation(alice):
     r = alice.post("/api/chats/agent-abc", json={"title": "Mi chat"})
@@ -63,6 +67,32 @@ def test_list_conversations_after_create(alice):
     r = alice.get("/api/chats/agent-abc")
     assert r.status_code == 200
     assert len(r.json()) == 2
+
+
+def test_list_conversations_uses_stable_cursor(alice):
+    for title in ("Uno", "Dos", "Tres"):
+        alice.post("/api/chats/agent-abc", json={"title": title})
+
+    first = alice.get("/api/chats/agent-abc?limit=2")
+    cursor = first.headers["x-next-cursor"]
+    second = alice.get(
+        "/api/chats/agent-abc?limit=2",
+        params={"cursor": cursor},
+    )
+
+    assert first.headers["x-has-more"] == "true"
+    assert second.headers["x-has-more"] == "false"
+    assert len(first.json()) == 2
+    assert len(second.json()) == 1
+    assert {item["id"] for item in first.json()}.isdisjoint(
+        item["id"] for item in second.json()
+    )
+
+
+def test_list_conversations_rejects_invalid_cursor(alice):
+    response = alice.get("/api/chats/agent-abc?cursor=no-es-un-cursor")
+    assert response.status_code == 422
+    assert response.json()["detail"]["code"] == "invalid_cursor"
 
 
 def test_list_recent_conversations_across_agents(alice):
@@ -82,6 +112,7 @@ def test_list_recent_conversations_validates_limit(alice):
 
 
 # ── Mensajes ───────────────────────────────────────────────────────────────────
+
 
 def test_get_messages_empty(alice):
     conv = alice.post("/api/chats/agent-abc", json={"title": ""}).json()
@@ -108,6 +139,24 @@ def test_get_messages_with_content(alice, patch_data_dir):
     assert msgs[1]["role"] == "assistant"
 
 
+def test_get_messages_pages_backwards_without_changing_page_order(
+    alice, patch_data_dir
+):
+    conv = alice.post("/api/chats/agent-abc", json={"title": "Test"}).json()
+    storage = ChatStorage()
+    for content in ("Uno", "Dos", "Tres"):
+        asyncio.run(storage.add_message(conv["id"], "user", content))
+
+    first = alice.get(f"/api/chats/agent-abc/{conv['id']}?limit=2")
+    second = alice.get(
+        f"/api/chats/agent-abc/{conv['id']}",
+        params={"limit": 2, "cursor": first.headers["x-next-cursor"]},
+    )
+
+    assert [item["content"] for item in first.json()] == ["Dos", "Tres"]
+    assert [item["content"] for item in second.json()] == ["Uno"]
+
+
 def test_get_messages_includes_tokens(alice, patch_data_dir):
     """Los tokens de una respuesta sobreviven a recargar la conversación —
     no solo están disponibles en el evento SSE de la sesión activa."""
@@ -132,14 +181,10 @@ def test_list_conversations_includes_token_totals(alice, patch_data_dir):
     conv = alice.post("/api/chats/agent-abc", json={"title": "Test"}).json()
     storage = ChatStorage()
     asyncio.run(
-        storage.add_message(
-            conv["id"], "assistant", "Uno", tokens_in=10, tokens_out=4
-        )
+        storage.add_message(conv["id"], "assistant", "Uno", tokens_in=10, tokens_out=4)
     )
     asyncio.run(
-        storage.add_message(
-            conv["id"], "assistant", "Dos", tokens_in=5, tokens_out=2
-        )
+        storage.add_message(conv["id"], "assistant", "Dos", tokens_in=5, tokens_out=2)
     )
     convs = alice.get("/api/chats/agent-abc").json()
     assert len(convs) == 1
@@ -148,6 +193,7 @@ def test_list_conversations_includes_token_totals(alice, patch_data_dir):
 
 
 # ── Borrar conversación ────────────────────────────────────────────────────────
+
 
 def test_delete_conversation(alice):
     conv = alice.post("/api/chats/agent-abc", json={"title": "Borrar"}).json()
@@ -164,6 +210,7 @@ def test_delete_conversation_not_found(alice):
 
 
 # ── Aislamiento entre usuarios ─────────────────────────────────────────────────
+
 
 def test_isolation_alice_cannot_see_bob_conversations(patch_data_dir):
     """Bob crea una conversación; Alice no debe verla (clientes separados)."""
@@ -197,7 +244,9 @@ def test_isolation_alice_cannot_delete_bob_conversation(patch_data_dir):
         _make_user("del_alice", "del_alice@test.com")
         _make_user("del_bob", "del_bob@test.com")
         bob_c = _auth_client(c, "del_bob")
-        conv_id = bob_c.post("/api/chats/agent-shared", json={"title": "Chat de Bob"}).json()["id"]
+        conv_id = bob_c.post(
+            "/api/chats/agent-shared", json={"title": "Chat de Bob"}
+        ).json()["id"]
 
     with TestClient(app) as c2:
         alice_c = _auth_client(c2, "del_alice")
@@ -217,7 +266,9 @@ def test_isolation_alice_cannot_read_bob_messages(patch_data_dir):
         _make_user("msg_alice", "msg_alice@test.com")
         _make_user("msg_bob", "msg_bob@test.com")
         bob_c = _auth_client(c, "msg_bob")
-        conv_id = bob_c.post("/api/chats/agent-shared", json={"title": "Chat de Bob"}).json()["id"]
+        conv_id = bob_c.post(
+            "/api/chats/agent-shared", json={"title": "Chat de Bob"}
+        ).json()["id"]
 
     with TestClient(app) as c2:
         alice_c = _auth_client(c2, "msg_alice")

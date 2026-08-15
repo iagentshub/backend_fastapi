@@ -4,6 +4,8 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+from app.pagination.cursor import decode_cursor, encode_cursor
+from app.pagination.models import CursorPage, CursorPosition
 from app.storage.db import open_db
 from app.utils import now_iso as _now
 from app.utils.generators import generate_id
@@ -24,18 +26,40 @@ class ChatStorage:
         "GROUP BY c.id, c.user_id, c.agent_id, c.title, c.created_at, c.updated_at "
     )
 
-    async def list_conversations(
-        self, user_id: str, agent_id: str, limit: int = 50
-    ) -> List[Dict[str, Any]]:
+    async def list_conversations_page(
+        self,
+        user_id: str,
+        agent_id: str,
+        *,
+        limit: int = 50,
+        cursor: str | None = None,
+    ) -> CursorPage[Dict[str, Any]]:
+        """Página estable de conversaciones, de más reciente a más antigua."""
+        position = decode_cursor(cursor) if cursor else None
+        cursor_where = ""
+        params: list[Any] = [user_id, agent_id]
+        if position is not None:
+            cursor_where = "AND (c.updated_at < ? OR (c.updated_at = ? AND c.id < ?)) "
+            params.extend([position.created_at, position.created_at, position.item_id])
+        params.append(limit + 1)
         async with open_db() as conn:
             rows = await conn.fetchall(
                 self._CONVERSATION_TOKENS_SELECT
                 + "WHERE c.user_id = ? AND c.agent_id = ? "
+                + cursor_where
                 + self._CONVERSATION_TOKENS_GROUP_BY
-                + "ORDER BY c.updated_at DESC LIMIT ?",
-                (user_id, agent_id, limit),
+                + "ORDER BY c.updated_at DESC, c.id DESC LIMIT ?",
+                tuple(params),
             )
-            return [dict(r) for r in rows]
+        items = [dict(row) for row in rows[:limit]]
+        has_more = len(rows) > limit
+        next_cursor = None
+        if has_more and items:
+            last = items[-1]
+            next_cursor = encode_cursor(
+                CursorPosition(str(last["updated_at"]), str(last["id"]))
+            )
+        return CursorPage(items=items, next_cursor=next_cursor, has_more=has_more)
 
     async def list_recent_conversations(
         self, user_id: str, limit: int = 8
@@ -145,20 +169,45 @@ class ChatStorage:
             "created_at": now,
         }
 
-    async def get_messages(
-        self, conv_id: str, user_id: str, limit: int = 200
-    ) -> List[Dict[str, Any]]:
+    async def get_messages_page(
+        self,
+        conv_id: str,
+        user_id: str,
+        *,
+        limit: int = 100,
+        cursor: str | None = None,
+    ) -> CursorPage[Dict[str, Any]]:
+        """Carga hacia atrás y devuelve cada página en orden cronológico."""
+        position = decode_cursor(cursor) if cursor else None
+        cursor_where = ""
+        params: list[Any] = [conv_id, conv_id, user_id]
+        if position is not None:
+            cursor_where = "AND (m.created_at < ? OR (m.created_at = ? AND m.id < ?)) "
+            params.extend([position.created_at, position.created_at, position.item_id])
+        params.append(limit + 1)
         async with open_db() as conn:
             rows = await conn.fetchall(
                 "SELECT m.id, m.role, m.content, m.tokens_in, m.tokens_out, m.created_at "
-                "FROM messages m "
-                "WHERE m.conversation_id = ? "
-                "  AND EXISTS (SELECT 1 FROM conversations c "
-                "              WHERE c.id = ? AND c.user_id = ?) "
-                "ORDER BY m.created_at ASC LIMIT ?",
-                (conv_id, conv_id, user_id, limit),
+                "FROM messages m WHERE m.conversation_id = ? "
+                "AND EXISTS (SELECT 1 FROM conversations c "
+                "WHERE c.id = ? AND c.user_id = ?) "
+                + cursor_where
+                + "ORDER BY m.created_at DESC, m.id DESC LIMIT ?",
+                tuple(params),
             )
-            return [dict(r) for r in rows]
+        newest_first = [dict(row) for row in rows[:limit]]
+        has_more = len(rows) > limit
+        next_cursor = None
+        if has_more and newest_first:
+            oldest = newest_first[-1]
+            next_cursor = encode_cursor(
+                CursorPosition(str(oldest["created_at"]), str(oldest["id"]))
+            )
+        return CursorPage(
+            items=list(reversed(newest_first)),
+            next_cursor=next_cursor,
+            has_more=has_more,
+        )
 
     async def list_memory_messages(
         self,

@@ -288,7 +288,7 @@ def test_hub_sync_reports_each_knowledge_save_failure(admin_client):
     created = _create_conn(admin_client, _CONN_IAGENTSHUB)
 
     async def mock_get(base_url, path, headers):
-        if path == "/api/knowledge":
+        if path.startswith("/api/knowledge?"):
             return [{"id": "doc-fallido", "title": "Documento"}]
         return []
 

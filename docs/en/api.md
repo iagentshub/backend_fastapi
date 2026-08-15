@@ -9,6 +9,24 @@
 
 All endpoints require authentication via HTTP-only cookie (`ga_token`) unless marked **—**.
 
+## Pagination
+
+Agent, skill, prompt, tool, and Knowledge catalogs accept `limit` (1–100, 50
+by default) and `offset`. The body remains a list for compatibility;
+`X-Total-Count` reports the filtered total and `X-Has-More` reports whether a
+next page exists. Ownership, sharing, permission, active-state, and type
+filters run in SQL before `LIMIT`.
+
+Conversations and messages use `limit` and an opaque `cursor`. Responses expose
+`X-Next-Cursor` and `X-Has-More`; clients must not inspect or manufacture the
+cursor. Message pages remain chronological while older pages load backwards.
+
+Connections composes physical connections, Ollama models, and virtual
+orchestrations, while Admin Explore unifies heterogeneous types; both are
+paginated after composition with a mandatory limit. Bounded guest-session
+collections are also sliced in memory. These explicit exceptions live in
+`pagination/materialized.py`.
+
 ---
 
 ## Authentication

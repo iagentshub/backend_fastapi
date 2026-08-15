@@ -11,37 +11,18 @@ Ejecutar solo estos tests:
 Excluirlos del CI normal:
     pytest --ignore=tests/performance/
 """
+
 from __future__ import annotations
 
 import asyncio
-import json
-import shutil
 import statistics
-import tempfile
 import time
-from pathlib import Path
 from typing import List, NamedTuple
 
 import httpx
 import pytest
 
 # ── Fixtures ─────────────────────────────────────────────────────────────────
-
-
-@pytest.fixture(scope="module")
-def perf_data_dir():
-    d = Path(tempfile.mkdtemp(prefix="gaia_perf_"))
-    (d / "connections").mkdir()
-    (d / "agents").mkdir()
-    (d / "skills").mkdir()
-    (d / "memory").mkdir()
-    (d / "settings.json").write_text(
-        json.dumps({"jwt_secret": "perf-test-secret"}),
-        encoding="utf-8",
-    )
-    (d / "connections" / "connections.json").write_text("[]", encoding="utf-8")
-    yield d
-    shutil.rmtree(d, ignore_errors=True)
 
 
 @pytest.fixture(scope="module")
@@ -61,6 +42,7 @@ def perf_app(perf_data_dir):
     cfg.SETTINGS_FILE = perf_data_dir / "settings.json"
 
     import app.auth.passwords as passwords_mod
+
     passwords_mod.SETTINGS_FILE = perf_data_dir / "settings.json"
 
     db_mod.IS_PG = False
@@ -69,10 +51,12 @@ def perf_app(perf_data_dir):
     asyncio.run(db_mod.init_db(db_file))
 
     from app.api.app import create_app
+
     app = create_app()
 
     from app.auth.auth import create_token, register_user
     from app.storage.db import open_db
+
     asyncio.run(register_user("perf_admin", "pass1234", email="perf@example.com"))
 
     async def _make_admin():
@@ -113,14 +97,16 @@ def _report(label: str, results: List[RequestResult]) -> None:
     times = [r.elapsed_ms for r in results]
     n = len(times)
 
-    print(f"\n{'─'*55}")
+    print(f"\n{'─' * 55}")
     print(f"  {label}")
-    print(f"{'─'*55}")
+    print(f"{'─' * 55}")
     print(f"  Requests : {n}  OK={len(ok)}  Err={len(err)}")
     if n >= 2:
         p = statistics.quantiles(times, n=100)
-        print(f"  Avg={statistics.mean(times):.1f}ms  "
-              f"P50={p[49]:.1f}ms  P90={p[89]:.1f}ms  Max={max(times):.1f}ms")
+        print(
+            f"  Avg={statistics.mean(times):.1f}ms  "
+            f"P50={p[49]:.1f}ms  P90={p[89]:.1f}ms  Max={max(times):.1f}ms"
+        )
     for r in err[:3]:
         print(f"  !! status={r.status}  error={r.error}")
 
@@ -146,20 +132,21 @@ async def test_auth_me_todas_las_peticiones_responden(perf_app):
 
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(
-        transport=transport, base_url="http://test", cookies={"ga_token": token},
+        transport=transport,
+        base_url="http://test",
+        cookies={"ga_token": token},
     ) as client:
         await _get(client, "/api/auth/me")  # calentamiento
 
-        results = list(await asyncio.gather(
-            *[_get(client, "/api/auth/me") for _ in range(N)]
-        ))
+        results = list(
+            await asyncio.gather(*[_get(client, "/api/auth/me") for _ in range(N)])
+        )
 
     _report(f"/api/auth/me ×{N}", results)
 
     errors = [r for r in results if r.status != 200]
-    assert not errors, (
-        f"{len(errors)}/{N} peticiones fallaron: "
-        + ", ".join(f"status={r.status}" for r in errors[:5])
+    assert not errors, f"{len(errors)}/{N} peticiones fallaron: " + ", ".join(
+        f"status={r.status}" for r in errors[:5]
     )
 
     slow = [r for r in results if r.elapsed_ms > MAX_REQUEST_MS]
@@ -188,7 +175,9 @@ async def test_event_loop_no_bloqueado(perf_app):
 
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(
-        transport=transport, base_url="http://test", cookies={"ga_token": token},
+        transport=transport,
+        base_url="http://test",
+        cookies={"ga_token": token},
     ) as client:
         db_tasks = [_get(client, "/api/auth/me") for _ in range(N)]
         probe_task = _pure_async_probe()
@@ -218,7 +207,9 @@ async def test_carga_mixta_sin_errores(perf_app):
 
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(
-        transport=transport, base_url="http://test", cookies={"ga_token": token},
+        transport=transport,
+        base_url="http://test",
+        cookies={"ga_token": token},
     ) as client:
         t0 = time.perf_counter()
         tasks = (
@@ -230,8 +221,8 @@ async def test_carga_mixta_sin_errores(perf_app):
         total_ms = (time.perf_counter() - t0) * 1000
 
     me_res = results[:REPS]
-    agent_res = results[REPS: REPS * 2]
-    admin_res = results[REPS * 2:]
+    agent_res = results[REPS : REPS * 2]
+    admin_res = results[REPS * 2 :]
 
     _report(f"/api/auth/me     ×{REPS}", me_res)
     _report(f"/api/agents      ×{REPS}", agent_res)
@@ -257,13 +248,17 @@ async def test_latencia_no_degrada_entre_rafagas(perf_app):
 
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(
-        transport=transport, base_url="http://test", cookies={"ga_token": token},
+        transport=transport,
+        base_url="http://test",
+        cookies={"ga_token": token},
     ) as client:
         wave_p90s: List[float] = []
         for wave in range(WAVES):
-            results = list(await asyncio.gather(
-                *[_get(client, "/api/auth/me") for _ in range(BURST)]
-            ))
+            results = list(
+                await asyncio.gather(
+                    *[_get(client, "/api/auth/me") for _ in range(BURST)]
+                )
+            )
             times = sorted(r.elapsed_ms for r in results)
             p90 = times[int(len(times) * 0.9)]
             wave_p90s.append(p90)
@@ -272,7 +267,9 @@ async def test_latencia_no_degrada_entre_rafagas(perf_app):
             await asyncio.sleep(0.05)
 
     ratio = wave_p90s[-1] / wave_p90s[0] if wave_p90s[0] > 0 else 1.0
-    print(f"\n  P90 primera: {wave_p90s[0]:.1f}ms  última: {wave_p90s[-1]:.1f}ms  ratio={ratio:.2f}×")
+    print(
+        f"\n  P90 primera: {wave_p90s[0]:.1f}ms  última: {wave_p90s[-1]:.1f}ms  ratio={ratio:.2f}×"
+    )
 
     assert ratio < 3.0, (
         f"La latencia P90 creció {ratio:.1f}× entre ráfagas "
@@ -292,7 +289,9 @@ async def test_secuencial_vs_concurrente_informe(perf_app):
 
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(
-        transport=transport, base_url="http://test", cookies={"ga_token": token},
+        transport=transport,
+        base_url="http://test",
+        cookies={"ga_token": token},
     ) as client:
         t0 = time.perf_counter()
         seq_results: List[RequestResult] = []
@@ -301,9 +300,9 @@ async def test_secuencial_vs_concurrente_informe(perf_app):
         t_seq = (time.perf_counter() - t0) * 1000
 
         t0 = time.perf_counter()
-        con_results = list(await asyncio.gather(
-            *[_get(client, "/api/auth/me") for _ in range(N)]
-        ))
+        con_results = list(
+            await asyncio.gather(*[_get(client, "/api/auth/me") for _ in range(N)])
+        )
         t_con = (time.perf_counter() - t0) * 1000
 
     _report(f"/api/auth/me ×{N} secuencial", seq_results)
@@ -315,4 +314,6 @@ async def test_secuencial_vs_concurrente_informe(perf_app):
     print(f"  Speedup    : {speedup:.2f}×")
     print("  Nota: speedup≈1 es normal con SQLite singleton; en PostgreSQL será >1")
 
-    assert all(r.status == 200 for r in con_results), "Algunas peticiones concurrentes fallaron"
+    assert all(r.status == 200 for r in con_results), (
+        "Algunas peticiones concurrentes fallaron"
+    )

@@ -29,6 +29,7 @@ from app.models.llm_orchestration import (
     orchestration_connection_id,
     orchestration_id_from_connection,
 )
+from app.pagination.materialized import paginate_materialized
 from app.storage.db import open_db
 from app.storage.knowledge_packs import KnowledgePackStorage
 from app.storage.official_source_storage import OfficialSourceStorage
@@ -156,8 +157,9 @@ async def admin_explore(
         return str(item.get("updated_at") or item.get("created_at") or "")
 
     items.sort(key=sort_key, reverse=True)
+    page_items = paginate_materialized(items, limit=limit, offset=offset)
     return {
-        "items": items[offset : offset + limit],
+        "items": page_items,
         "total": len(items),
         "counts": counts,
         "limit": limit,

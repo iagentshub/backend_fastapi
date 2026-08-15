@@ -39,6 +39,19 @@ The `PH` helper in `app/storage/db.py` abstracts SQL dialect differences (`?` in
 
 ---
 
+## Listings and pagination
+
+`app/pagination/` owns offset/cursor pages, HTTP headers, and the cursor codec.
+`app/storage/page_query.py` executes `COUNT(*)` and `LIMIT/OFFSET` against the
+same `WHERE`; each storage selects its columns and decodes only page rows.
+`app/services/resource_visibility.py` centralizes ownership, shares, active
+groups, and permissions so access control cannot drift from pagination across
+agents, skills, prompts, tools, and Knowledge.
+
+Migration 23 adds compound indexes for stable orders (`date DESC, id DESC`) in
+SQLite and PostgreSQL. `tests/performance/test_pagination.py` verifies that a
+50-item page over 10,000 rows decodes only those 50 objects.
+
 ## Access control
 
 There are two ways to access the platform:

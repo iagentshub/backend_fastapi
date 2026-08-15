@@ -9,6 +9,25 @@
 
 Todos los endpoints requieren autenticación mediante cookie HTTP-only (`ga_token`) salvo los marcados con **—**.
 
+## Paginación
+
+Los catálogos de agentes, skills, prompts, tools y Knowledge aceptan `limit`
+(1–100, 50 por defecto) y `offset`. El cuerpo sigue siendo una lista por
+compatibilidad; `X-Total-Count` contiene el total filtrado y `X-Has-More`
+indica si existe otra página. Propiedad, compartición, permisos, estado y tipo
+se filtran en SQL antes de `LIMIT`.
+
+Conversaciones y mensajes usan `limit` y un `cursor` opaco. La respuesta
+publica `X-Next-Cursor` y `X-Has-More`; el cliente no debe interpretar ni
+fabricar el cursor. Las páginas de mensajes mantienen orden cronológico aunque
+se carguen hacia atrás.
+
+Connections compone conexiones físicas, modelos Ollama y orquestaciones
+virtuales, y Admin Explore unifica tipos heterogéneos; ambos se paginan tras la
+composición, siempre con límite obligatorio. Las sesiones guest también son
+colecciones acotadas en memoria. Estas excepciones están aisladas en
+`pagination/materialized.py`.
+
 ---
 
 ## Autenticación

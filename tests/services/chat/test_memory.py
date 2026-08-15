@@ -19,12 +19,6 @@ from tests.services.chat._helpers import (
 def _chat_storage_mock(convs: list, messages_by_conv: dict) -> MagicMock:
     storage = MagicMock()
 
-    async def _list_conversations(user_id, agent_id, limit=50):
-        return convs
-
-    async def _get_messages(conv_id, user_id, limit=200):
-        return messages_by_conv.get(conv_id, [])
-
     async def _list_memory_messages(
         user_id,
         agent_id,
@@ -40,8 +34,6 @@ def _chat_storage_mock(convs: list, messages_by_conv: dict) -> MagicMock:
             result.extend(messages_by_conv.get(conversation["id"], []))
         return result[:limit]
 
-    storage.list_conversations = _list_conversations
-    storage.get_messages = _get_messages
     storage.list_memory_messages = _list_memory_messages
     return storage
 

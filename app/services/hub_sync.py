@@ -6,6 +6,7 @@ import asyncio
 import json
 import urllib.request
 from typing import Any, Dict, Set
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from app.config.data import AGENTS_DIR, SKILLS_DIR
 from app.errors import APIError
@@ -19,6 +20,7 @@ _storage = ConnectionStorage()
 _agent_storage = AgentStorage(AGENTS_DIR)
 _skill_storage = SkillStorage(SKILLS_DIR)
 _know_storage = KnowledgeStorage()
+_REMOTE_PAGE_SIZE = 100
 
 
 async def _get_remote_json(base_url: str, path: str, headers: dict[str, str]) -> Any:
@@ -28,6 +30,37 @@ async def _get_remote_json(base_url: str, path: str, headers: dict[str, str]) ->
             return json.loads(response.read().decode("utf-8"))
 
     return await asyncio.to_thread(_read)
+
+
+async def _get_all_remote_pages(
+    base_url: str, path: str, headers: dict[str, str]
+) -> list[dict[str, Any]]:
+    """Consume listados remotos nuevos o legacy sin truncar ni ciclar."""
+    parts = urlsplit(path)
+    base_query = dict(parse_qsl(parts.query, keep_blank_values=True))
+    items: list[dict[str, Any]] = []
+    seen_pages: set[tuple[str, ...]] = set()
+    offset = 0
+    while True:
+        query = {
+            **base_query,
+            "limit": str(_REMOTE_PAGE_SIZE),
+            "offset": str(offset),
+        }
+        page_path = urlunsplit(("", "", parts.path, urlencode(query), ""))
+        payload = await _get_remote_json(base_url, page_path, headers)
+        if not isinstance(payload, list):
+            raise ValueError("El hub remoto no devolvió un listado")
+        page = [item for item in payload if isinstance(item, dict)]
+        fingerprint = tuple(str(item.get("id") or "") for item in page)
+        if fingerprint in seen_pages:
+            break
+        seen_pages.add(fingerprint)
+        items.extend(page)
+        if len(page) < _REMOTE_PAGE_SIZE:
+            break
+        offset += len(page)
+    return items
 
 
 def _safe_name(name: str, taken: Set[str], hub_label: str) -> str:
@@ -86,9 +119,12 @@ async def run_hub_sync(
     async def _get(path: str) -> Any:
         return await _get_remote_json(url, path, headers)
 
+    async def _get_all(path: str) -> list[dict[str, Any]]:
+        return await _get_all_remote_pages(url, path, headers)
+
     # ── 1. Conexiones (solo estructura, sin credenciales) ──────────────
     try:
-        remote_conns = await _get("/api/connections")
+        remote_conns = await _get_all("/api/connections")
 
         local_conns = await _storage.list(owner)
         local_conn_names: Set[str] = {c["name"] for c in local_conns}
@@ -125,7 +161,7 @@ async def run_hub_sync(
 
     # ── 2. Agentes ────────────────────────────────────────────────────
     try:
-        summaries = await _get("/api/agents?scope=private")
+        summaries = await _get_all("/api/agents?scope=private")
         local_agents = await _agent_storage.list("private")
         local_a_names: Set[str] = {a["name"] for a in local_agents}
         by_src = {a.get("_hub_source"): a for a in local_agents if a.get("_hub_source")}
@@ -169,7 +205,7 @@ async def run_hub_sync(
 
     # ── 3. Skills ────────────────────────────────────────────────────
     try:
-        remote_skills = await _get("/api/skills?scope=private")
+        remote_skills = await _get_all("/api/skills?scope=private")
         local_skills = await _skill_storage.list("private")
         local_s_names: Set[str] = {s["name"] for s in local_skills}
         by_src = {s.get("_hub_source"): s for s in local_skills if s.get("_hub_source")}
@@ -200,7 +236,7 @@ async def run_hub_sync(
 
     # ── 4. Conocimiento ───────────────────────────────────────────────
     try:
-        remote_know = await _get("/api/knowledge")
+        remote_know = await _get_all("/api/knowledge")
 
         local_know = await _know_storage.list(owner)
         local_k_titles: Set[str] = {k["title"] for k in local_know}
