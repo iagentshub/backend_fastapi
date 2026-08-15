@@ -373,6 +373,31 @@ class KnowledgeStorage(ResourceStorage):
             rows = await conn.fetchall(query, params)
             return [_coerce_active(dict(r)) for r in rows]
 
+    async def pack_locations(self, item_ids: List[str]) -> Dict[str, Dict[str, str]]:
+        """Pack al que pertenece cada ítem, en una sola consulta y sin contenido.
+
+        El catálogo necesita dos columnas por fila para pintar la procedencia.
+        Resolverlo con un ``get()`` por elemento leía la columna ``content``
+        —el documento entero— de cada resultado de la página.
+        """
+        unique_ids = list(dict.fromkeys(i for i in item_ids if i))
+        if not unique_ids:
+            return {}
+        placeholders = ",".join("?" * len(unique_ids))
+        async with open_db() as conn:
+            rows = await conn.fetchall(
+                "SELECT id, pack_id, pack_relative_path FROM knowledge_items "
+                f"WHERE id IN ({placeholders}) AND pack_id IS NOT NULL",
+                tuple(unique_ids),
+            )
+        return {
+            str(row["id"]): {
+                "pack_id": str(row["pack_id"]),
+                "pack_relative_path": str(row["pack_relative_path"] or ""),
+            }
+            for row in rows
+        }
+
     async def get(
         self, item_id: str, owner_id: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:

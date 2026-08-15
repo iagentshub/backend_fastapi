@@ -546,6 +546,18 @@ async def _pagination_indexes(conn: Any) -> None:
         await conn.execute(statement)
 
 
+async def _resource_social_page_index(conn: Any) -> None:
+    """Índice del catálogo público, la página más consultada del producto.
+
+    `idx_rsoc_public` cubre el filtro pero no el orden, así que Explorar y el
+    feed ordenaban el resultado en memoria en cada consulta.
+    """
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_rsoc_public_page ON resource_social("
+        "is_public,resource_type,updated_at DESC,stars_count DESC,resource_id)"
+    )
+
+
 POSTGRES_MIGRATIONS = (
     Migration(1, "legacy_schema_catchup", _migrate_pg, repeatable=True),
     Migration(2, "users_json_to_relational", _migrate_users_json_pg, repeatable=True),
@@ -574,6 +586,7 @@ POSTGRES_MIGRATIONS = (
         _remove_obsolete_knowledge_pack_items,
     ),
     Migration(23, "pagination_indexes", _pagination_indexes),
+    Migration(24, "resource_social_page_index", _resource_social_page_index),
 )
 
 

@@ -53,6 +53,13 @@ DESC`) en SQLite y PostgreSQL. El benchmark
 `tests/performance/test_pagination.py` verifica que una página de 50 sobre
 10.000 filas decodifica solo esos 50 objetos.
 
+El catálogo público (`resource_social`) sigue la misma regla: su orden termina
+en la clave primaria para que dos páginas nunca repitan ni pierdan una fila
+—las publicaciones de una sincronización oficial comparten `updated_at`— y la
+migración 24 añade el índice que cubre ese orden. La procedencia de los
+documentos de la página se resuelve con `KnowledgeStorage.pack_locations()`, una
+sola consulta sin la columna `content`, en vez de un `get()` por fila.
+
 ## Control de acceso
 
 Existen dos formas de acceder a la plataforma:

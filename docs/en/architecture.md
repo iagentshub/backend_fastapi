@@ -52,6 +52,13 @@ Migration 23 adds compound indexes for stable orders (`date DESC, id DESC`) in
 SQLite and PostgreSQL. `tests/performance/test_pagination.py` verifies that a
 50-item page over 10,000 rows decodes only those 50 objects.
 
+The public catalog (`resource_social`) follows the same rule: its order ends in
+the primary key so two pages never repeat or drop a row — rows published by an
+official sync share `updated_at` — and migration 24 adds the index covering that
+order. Pack provenance for the page is resolved by
+`KnowledgeStorage.pack_locations()`, a single query without the `content`
+column, instead of one `get()` per row.
+
 ## Access control
 
 There are two ways to access the platform:

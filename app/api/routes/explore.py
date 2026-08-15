@@ -176,7 +176,13 @@ async def explore(
             # Lo recién publicado debe ser descubrible aunque todavía no tenga
             # estrellas. El catálogo permite cargar páginas posteriores para
             # consultar también los recursos históricos más populares.
-            f"ORDER BY updated_at DESC, stars_count DESC "
+            #
+            # La clave primaria cierra el orden: una sincronización de contenido
+            # oficial publica cientos de filas con el mismo `updated_at`, y sin
+            # desempate único el motor puede devolver la misma fila en dos
+            # páginas y saltarse otra.
+            f"ORDER BY updated_at DESC, stars_count DESC, "
+            f"resource_type ASC, resource_id ASC, owner ASC "
             f"LIMIT ? OFFSET ?",
             tuple(params),
         )
@@ -193,12 +199,19 @@ async def explore(
         except (ValueError, TypeError):
             row["labels"] = ["private"]
         row["languages"] = language_codes_from_labels(row["labels"])
-        if row.get("resource_type") == "knowledge":
-            item = await _knowledge.get(str(row.get("resource_id") or ""))
-            if item and item.get("pack_id"):
-                row["pack_id"] = item["pack_id"]
-                row["pack_relative_path"] = item.get("pack_relative_path", "")
         rows.append(row)
+    packs = await _knowledge.pack_locations(
+        [
+            str(row.get("resource_id") or "")
+            for row in rows
+            if row.get("resource_type") == "knowledge"
+        ]
+    )
+    for row in rows:
+        location = packs.get(str(row.get("resource_id") or "")) if packs else None
+        if location is not None and row.get("resource_type") == "knowledge":
+            row["pack_id"] = location["pack_id"]
+            row["pack_relative_path"] = location["pack_relative_path"]
     await _add_owner_usernames(rows)
     return rows
 
@@ -1023,7 +1036,10 @@ async def get_feed(
             f"stars_count, tags, labels, updated_at "
             f"FROM resource_social "
             f"WHERE {where} "
-            f"ORDER BY updated_at DESC "
+            # Mismo desempate por clave primaria que el catálogo: el feed
+            # también se recorre por páginas.
+            f"ORDER BY updated_at DESC, "
+            f"resource_type ASC, resource_id ASC, owner ASC "
             f"LIMIT ? OFFSET ?",
             tuple(params),
         )
