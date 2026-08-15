@@ -181,6 +181,12 @@ CREATE TABLE IF NOT EXISTS knowledge_items (
     source     TEXT NOT NULL,
     content    TEXT NOT NULL,
     char_count INTEGER NOT NULL DEFAULT 0,
+    mime_type  TEXT NOT NULL DEFAULT '',
+    size_bytes BIGINT NOT NULL DEFAULT 0,
+    checksum   TEXT NOT NULL DEFAULT '',
+    pack_id    TEXT,
+    pack_relative_path TEXT NOT NULL DEFAULT '',
+    pack_kind  TEXT NOT NULL DEFAULT '',
     labels     TEXT NOT NULL DEFAULT '["private"]',
     is_active  @BOOL@ NOT NULL DEFAULT 1,
     deactivated_at TEXT,
@@ -193,6 +199,23 @@ CREATE INDEX IF NOT EXISTS idx_knowledge_owner
     ON knowledge_items(owner_id, type, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_knowledge_official
     ON knowledge_items(official_source_id);
+CREATE TABLE IF NOT EXISTS knowledge_packs (
+    id          TEXT PRIMARY KEY,
+    owner_id    TEXT NOT NULL,
+    name        TEXT NOT NULL,
+    description TEXT NOT NULL DEFAULT '',
+    labels      TEXT NOT NULL DEFAULT '["private"]',
+    scope       TEXT NOT NULL DEFAULT 'private',
+    source_mode TEXT NOT NULL DEFAULT 'upload',
+    last_synced_at TEXT,
+    upload_status TEXT NOT NULL DEFAULT 'ready',
+    is_active   @BOOL@ NOT NULL DEFAULT 1,
+    deactivated_at TEXT,
+    created_at  TEXT NOT NULL,
+    updated_at  TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_knowledge_packs_owner
+    ON knowledge_packs(owner_id, created_at DESC);
 -- Fuentes del contenido oficial. Lo que traen no vive aquí: se materializa
 -- como recurso normal (agents, skills, …) marcado con official_source_id, de
 -- modo que "oficial" sea solo una etiqueta y no un tipo de objeto aparte.

@@ -196,6 +196,56 @@ def test_share_knowledge_with_group(client):
     assert any(k["id"] == know["id"] and k.get("_shared") for k in items)
 
 
+def test_share_pack_grants_access_to_pack_and_individual_files(client):
+    _register("sh_pack_owner")
+    _register("sh_pack_member")
+
+    _set_cookie(client, "sh_pack_owner")
+    pack = client.post(
+        "/api/knowledge/packs",
+        data={"name": "Pack compartido", "paths": '["docs/guide.md"]'},
+        files=[("files", ("guide.md", b"# Guide", "text/markdown"))],
+    ).json()
+    group = client.post("/api/groups", json={"name": "Grupo Pack"}).json()
+    client.post(
+        f"/api/groups/{group['id']}/members",
+        json={"username": "sh_pack_member", "role": "member"},
+    )
+    shared = client.post(
+        f"/api/sharing/knowledge_pack/{pack['id']}",
+        json={"group_id": group["id"]},
+    )
+    assert shared.status_code == 200
+
+    _set_cookie(client, "sh_pack_member")
+    packs = client.get("/api/knowledge/packs").json()
+    assert any(item["id"] == pack["id"] and item.get("_shared") for item in packs)
+    items = client.get("/api/knowledge").json()
+    pack_item = next(item for item in items if item["pack_id"] == pack["id"])
+    assert pack_item["_shared_via_pack"] is True
+
+    full_pack_agent = client.post(
+        "/api/agents",
+        json={
+            "name": "Agente con pack",
+            "system_prompt": "p",
+            "model": "gpt-4o",
+            "knowledge_packs": [pack["id"]],
+        },
+    )
+    assert full_pack_agent.status_code == 200
+    individual_agent = client.post(
+        "/api/agents",
+        json={
+            "name": "Agente con archivo del pack",
+            "system_prompt": "p",
+            "model": "gpt-4o",
+            "knowledge": [pack_item["id"]],
+        },
+    )
+    assert individual_agent.status_code == 200
+
+
 def test_share_workflow_with_group(client):
     _register("sh_workflow_owner")
     _register("sh_workflow_member")

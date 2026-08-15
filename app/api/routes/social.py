@@ -21,13 +21,15 @@ from app.middleware.ratelimit import RateLimiter
 from app.models.resource_types import SOCIAL_RESOURCE_TYPES
 from app.storage.agent_storage import AgentStorage
 from app.storage.db import IS_PG, open_db
+from app.storage.groups import GroupStorage
 from app.storage.knowledge import KnowledgeStorage
+from app.storage.knowledge_packs import KnowledgePackStorage
 from app.storage.memory_storage import MemoryStorage
 from app.storage.prompt_storage import PromptStorage
 from app.storage.skill_storage import SkillStorage
 from app.storage.tool_storage import ToolStorage
 from app.storage.workflows import WorkflowStorage
-from app.utils.generators import generate_id
+from app.utils.generators import generate_date, generate_id
 from app.utils.origin import assert_resource_writable
 
 router = APIRouter(tags=["social"])
@@ -58,6 +60,8 @@ _skills_store = SkillStorage(_cfg.SKILLS_DIR)
 _prompts_store = PromptStorage()
 _tools_store = ToolStorage()
 _knowledge_store = KnowledgeStorage()
+_knowledge_packs_store = KnowledgePackStorage()
+_groups_store = GroupStorage()
 _workflows_store = WorkflowStorage()
 _memory_store = MemoryStorage(_cfg.MEMORY_DIR)
 
@@ -76,6 +80,7 @@ def _agent_public_dependency_keys(agent: Dict[str, Any]) -> set[str]:
         for kind, field_name in (
             ("skill", "skills"),
             ("knowledge", "knowledge"),
+            ("knowledge_pack", "knowledge_packs"),
             ("prompt", "prompts"),
             ("tool", "tools"),
         )
@@ -238,8 +243,7 @@ async def _inherit_workflow_agents(
                     clone_payload[field_name] = [
                         resource_id
                         for resource_id in (clone_payload.get(field_name) or [])
-                        if selected is None
-                        or f"{kind}:{resource_id}" in selected
+                        if selected is None or f"{kind}:{resource_id}" in selected
                     ]
                 clone_payload["skills"] = await _inherit_resource_ids(
                     clone_payload.get("skills") or [], "skill", target_owner_id
@@ -433,6 +437,79 @@ async def _publish_knowledge_cascade(
         await conn.commit()
 
 
+async def _publish_knowledge_pack_cascade(
+    pack_id: str, username: str, owner_ids: set[str]
+) -> None:
+    pack = await _knowledge_packs_store.get(pack_id)
+    if not pack or pack.get("owner_id") not in owner_ids:
+        return
+    labels = list(pack.get("labels") or ["private"])
+    if "public" not in labels:
+        labels.append("public")
+    async with open_db() as conn:
+        await conn.execute(
+            "UPDATE knowledge_packs SET scope='public',labels=?,updated_at=? WHERE id=?",
+            (json.dumps(labels), generate_date(), pack_id),
+        )
+        await _upsert_social(
+            conn,
+            "knowledge_pack",
+            pack_id,
+            username,
+            pack.get("name", pack_id),
+            pack.get("description", ""),
+            "Other",
+            "warn",
+            "[]",
+            _PUBLIC_VAL,
+            json.dumps(labels),
+        )
+        await conn.commit()
+    for item in pack.get("items") or []:
+        await _publish_knowledge_cascade(str(item.get("id") or ""), username, owner_ids)
+
+
+async def sync_knowledge_visibility_from_labels(
+    *,
+    resource_type: str,
+    resource_id: str,
+    username: str,
+    owner_ids: set[str],
+    is_public: bool,
+) -> None:
+    """Sincroniza Explorar con la etiqueta de visibilidad de Knowledge."""
+    if resource_type == "knowledge_pack":
+        if is_public:
+            await _publish_knowledge_pack_cascade(resource_id, username, owner_ids)
+            return
+        async with open_db() as conn:
+            await conn.execute(
+                "UPDATE knowledge_packs SET scope='private',updated_at=? WHERE id=?",
+                (generate_date(), resource_id),
+            )
+            await conn.execute(
+                "DELETE FROM resource_social WHERE ("
+                "(resource_type='knowledge_pack' AND resource_id=?) OR "
+                "(resource_type='knowledge' AND resource_id IN "
+                "(SELECT id FROM knowledge_items WHERE pack_id=?)))",
+                (resource_id, resource_id),
+            )
+            await conn.commit()
+        return
+
+    if resource_type != "knowledge":
+        raise ValueError(f"Tipo de conocimiento no soportado: {resource_type}")
+    if is_public:
+        await _publish_knowledge_cascade(resource_id, username, owner_ids)
+        return
+    async with open_db() as conn:
+        await conn.execute(
+            "DELETE FROM resource_social WHERE resource_type='knowledge' AND resource_id=?",
+            (resource_id,),
+        )
+        await conn.commit()
+
+
 async def _cascade_publish_agent(
     agent: Dict[str, Any],
     username: str,
@@ -452,6 +529,9 @@ async def _cascade_publish_agent(
     for knowledge_id in agent.get("knowledge") or []:
         if selected is None or f"knowledge:{knowledge_id}" in selected:
             await _publish_knowledge_cascade(knowledge_id, username, owner_ids)
+    for pack_id in agent.get("knowledge_packs") or []:
+        if selected is None or f"knowledge_pack:{pack_id}" in selected:
+            await _publish_knowledge_pack_cascade(pack_id, username, owner_ids)
     for prompt_id in agent.get("prompts") or []:
         if selected is None or f"prompt:{prompt_id}" in selected:
             await _publish_prompt_cascade(prompt_id, username, owner_ids)
@@ -663,6 +743,105 @@ class _ToolVisibilityBody(BaseModel):
 class _WorkflowVisibilityBody(BaseModel):
     is_public: bool
     category: str
+
+
+class _KnowledgePackVisibilityBody(BaseModel):
+    is_public: bool
+    category: str
+
+
+@router.put("/api/knowledge-packs/{pack_id}/visibility")
+async def set_knowledge_pack_visibility(
+    pack_id: str,
+    body: _KnowledgePackVisibilityBody,
+    ctx: GroupContext = Depends(require_group),
+) -> Dict[str, Any]:
+    """Publica o retira un pack y todos sus archivos como una unidad."""
+    _check_category(body.category)
+    pack = await _knowledge_packs_store.get(pack_id)
+    if not pack:
+        raise APIError(
+            404,
+            "not_found",
+            "Pack no encontrado",
+            extra={"resource": "knowledge_pack"},
+        )
+    owner_id = str(pack.get("owner_id") or "")
+    if owner_id not in {ctx.user, ctx.group_id}:
+        raise APIError(403, "forbidden", "Sin permisos sobre este pack")
+    if owner_id == ctx.group_id and not await _groups_store.has_resource_permission(
+        ctx.group_id, ctx.user, "knowledge", pack_id, "edit"
+    ):
+        raise APIError(403, "forbidden", "Sin permisos sobre este pack")
+    assert_resource_writable(pack, "knowledge_pack")
+    labels = list(pack.get("labels") or ["private"])
+    async with open_db() as conn:
+        if body.is_public:
+            await _assert_not_linked_copy(conn, "knowledge_pack", pack_id, ctx.user)
+            labels = [label for label in labels if label != "private"]
+            if "public" not in labels:
+                labels.append("public")
+            await conn.execute(
+                "UPDATE knowledge_packs SET scope='public', labels=?, updated_at=? "
+                "WHERE id=? AND owner_id=?",
+                (json.dumps(labels), generate_date(), pack_id, owner_id),
+            )
+            await _upsert_social(
+                conn,
+                "knowledge_pack",
+                pack_id,
+                ctx.user,
+                pack.get("name", pack_id),
+                pack.get("description", ""),
+                body.category,
+                "warn",
+                "[]",
+                _PUBLIC_VAL,
+                json.dumps(labels),
+            )
+            await conn.commit()
+            for item in pack.get("items") or []:
+                await _publish_knowledge_cascade(
+                    str(item.get("id") or ""),
+                    ctx.user,
+                    {ctx.user, ctx.group_id},
+                )
+        else:
+            labels = [label for label in labels if label != "public"]
+            if "private" not in labels:
+                labels.append("private")
+            await conn.execute(
+                "UPDATE knowledge_packs SET scope='private', labels=?, updated_at=? "
+                "WHERE id=? AND owner_id=?",
+                (json.dumps(labels), generate_date(), pack_id, owner_id),
+            )
+            await conn.execute(
+                "DELETE FROM resource_social WHERE ("
+                "(resource_type='knowledge_pack' AND resource_id=?) OR "
+                "(resource_type='knowledge' AND resource_id IN "
+                "(SELECT id FROM knowledge_items WHERE pack_id=?)))",
+                (pack_id, pack_id),
+            )
+            await conn.commit()
+    if not body.is_public:
+        for member in pack.get("items") or []:
+            knowledge_id = str(member.get("id") or "")
+            item = await _knowledge_store.get(knowledge_id)
+            if not item or item.get("owner_id") not in {ctx.user, ctx.group_id}:
+                continue
+            item_labels = [
+                label for label in (item.get("labels") or []) if label != "public"
+            ]
+            await _knowledge_store.save(
+                type=item.get("type", "pack_item"),
+                title=item.get("title", knowledge_id),
+                source=item.get("source", ""),
+                content=item.get("content", ""),
+                owner_id=str(item.get("owner_id") or owner_id),
+                labels=item_labels,
+                item_id=knowledge_id,
+            )
+    return {"ok": True}
 
 
 @router.put("/api/agents/{scope}/{agent_id}/visibility")

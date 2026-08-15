@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from html.parser import HTMLParser
 from typing import Any, Dict, List, Optional
@@ -113,9 +114,12 @@ def fetch_url_text(url: str) -> str:
 
 
 def extract_document_text(content_bytes: bytes, filename: str, mime: str = "") -> str:
-    """Extract text from a TXT, MD, or PDF file."""
+    """Extract text from a textual document, PDF, or supported image."""
     name_lower = (filename or "").lower()
     is_pdf = name_lower.endswith(".pdf") or "pdf" in mime.lower()
+    is_image = name_lower.endswith(
+        (".png", ".jpg", ".jpeg", ".webp", ".bmp", ".tif", ".tiff", ".heic", ".heif")
+    ) or mime.lower().startswith("image/")
 
     if is_pdf:
         import io
@@ -129,6 +133,38 @@ def extract_document_text(content_bytes: bytes, filename: str, mime: str = "") -
         reader = PdfReader(io.BytesIO(content_bytes))
         pages = [page.extract_text() or "" for page in reader.pages]
         return "\n".join(pages)[:MAX_CONTENT]
+
+    if is_image:
+        import io
+
+        try:
+            import pytesseract
+            from PIL import Image, UnidentifiedImageError
+            from pillow_heif import register_heif_opener
+        except ImportError as exc:
+            raise ValueError("OCR no instalado — reconstruye la imagen Docker") from exc
+
+        # Evita que una imagen comprimida pequena expanda a una cantidad de
+        # memoria desproporcionada durante la decodificacion.
+        Image.MAX_IMAGE_PIXELS = 40_000_000
+        register_heif_opener()
+        try:
+            with Image.open(io.BytesIO(content_bytes)) as source:
+                source.verify()
+            with Image.open(io.BytesIO(content_bytes)) as source:
+                source.load()
+                image = source.convert("RGB")
+                image.thumbnail((5000, 5000))
+        except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as exc:
+            raise ValueError("La imagen no es valida o no se puede leer") from exc
+        try:
+            return pytesseract.image_to_string(
+                image,
+                lang="spa+eng",
+                timeout=30,
+            )[:MAX_CONTENT]
+        except (RuntimeError, pytesseract.TesseractError) as exc:
+            raise ValueError("No se pudo extraer texto de la imagen") from exc
 
     for enc in ("utf-8", "latin-1", "cp1252"):
         try:
@@ -149,21 +185,22 @@ class KnowledgeStorage(ResourceStorage):
         self, owner_id: Optional[str], type: Optional[str] = None
     ) -> List[Dict[str, Any]]:
         query = (
-            "SELECT id, owner_id, type, title, source, char_count, "
-            "labels, is_active, deactivated_at, created_at, updated_at "
-            "FROM knowledge_items"
+            "SELECT k.id, k.owner_id, k.type, k.title, k.source, k.char_count, "
+            "k.mime_type, k.size_bytes, k.checksum, "
+            "k.labels, k.is_active, k.deactivated_at, k.created_at, k.updated_at, "
+            "k.pack_id, k.pack_relative_path, k.pack_kind FROM knowledge_items k"
         )
         params: list = []
         where: list = []
         if owner_id is not None:
-            where.append("owner_id = ?")
+            where.append("k.owner_id = ?")
             params.append(owner_id)
         if type:
-            where.append("type = ?")
+            where.append("k.type = ?")
             params.append(type)
         if where:
             query += " WHERE " + " AND ".join(where)
-        query += " ORDER BY created_at DESC"
+        query += " ORDER BY k.created_at DESC"
         async with open_db() as conn:
             rows = await conn.fetchall(query, params)
             return [_coerce_active(dict(r)) for r in rows]
@@ -171,12 +208,17 @@ class KnowledgeStorage(ResourceStorage):
     async def get(
         self, item_id: str, owner_id: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
-        cond, params = _owner_filter(item_id, owner_id)
+        if owner_id is not None:
+            cond, params = "k.id = ? AND k.owner_id = ?", (item_id, owner_id)
+        else:
+            cond, params = "k.id = ?", (item_id,)
         async with open_db() as conn:
             row = await conn.fetchone(
-                f"SELECT id, owner_id, type, title, source, content, char_count, "
-                f"labels, is_active, deactivated_at, created_at, updated_at "
-                f"FROM knowledge_items WHERE {cond}",
+                f"SELECT k.id, k.owner_id, k.type, k.title, k.source, k.content, k.char_count, "
+                f"k.mime_type, k.size_bytes, k.checksum, "
+                f"k.labels, k.is_active, k.deactivated_at, k.created_at, k.updated_at, "
+                f"k.pack_id, k.pack_relative_path, k.pack_kind FROM knowledge_items k "
+                f"WHERE {cond}",
                 params,
             )
             return _coerce_active(dict(row)) if row else None
@@ -190,12 +232,16 @@ class KnowledgeStorage(ResourceStorage):
         content: str,
         owner_id: str,
         labels: Optional[List[str]] = None,
+        mime_type: str = "",
+        size_bytes: int = 0,
+        checksum: Optional[str] = None,
         item_id: Optional[str] = None,
         conn: Optional[AsyncConn] = None,
         assume_new: bool = False,
     ) -> Dict[str, Any]:
         now = generate_date()
         normalized_labels = ensure_origin_label(labels or ["private"])
+        normalized_checksum = checksum or hashlib.sha256(content.encode()).hexdigest()
         item_id = item_id or generate_id(16)
         existing = None if assume_new else await self.get(item_id, owner_id)
         target = conn
@@ -210,6 +256,9 @@ class KnowledgeStorage(ResourceStorage):
                     source,
                     content,
                     normalized_labels,
+                    mime_type,
+                    size_bytes,
+                    normalized_checksum,
                     existing["created_at"] if existing else now,
                     now,
                 )
@@ -225,6 +274,9 @@ class KnowledgeStorage(ResourceStorage):
                 source,
                 content,
                 normalized_labels,
+                mime_type,
+                size_bytes,
+                normalized_checksum,
                 existing["created_at"] if existing else now,
                 now,
             )
@@ -240,6 +292,9 @@ class KnowledgeStorage(ResourceStorage):
                 "name": title,
                 "source": source,
                 "content": content,
+                "mime_type": mime_type,
+                "size_bytes": size_bytes,
+                "checksum": normalized_checksum,
                 "labels": normalized_labels,
                 "created_at": existing["created_at"] if existing else now,
                 "updated_at": now,
@@ -256,16 +311,20 @@ class KnowledgeStorage(ResourceStorage):
         source: str,
         content: str,
         labels: List[str],
+        mime_type: str,
+        size_bytes: int,
+        checksum: str,
         created_at: str,
         updated_at: str,
     ) -> None:
         await conn.execute(
             "INSERT INTO knowledge_items "
-            "(id, owner_id, type, title, source, content, char_count, labels, created_at, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
+            "(id, owner_id, type, title, source, content, char_count, mime_type, size_bytes, "
+            "checksum, labels, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
             "ON CONFLICT(id) DO UPDATE SET type=excluded.type,title=excluded.title,"
             "source=excluded.source,content=excluded.content,"
-            "char_count=excluded.char_count,labels=excluded.labels,"
+            "char_count=excluded.char_count,mime_type=excluded.mime_type,"
+            "size_bytes=excluded.size_bytes,checksum=excluded.checksum,labels=excluded.labels,"
             "updated_at=excluded.updated_at",
             (
                 item_id,
@@ -275,6 +334,9 @@ class KnowledgeStorage(ResourceStorage):
                 source,
                 content,
                 len(content),
+                mime_type,
+                size_bytes,
+                checksum,
                 json.dumps(labels, ensure_ascii=False),
                 created_at,
                 updated_at,
@@ -291,4 +353,51 @@ class KnowledgeStorage(ResourceStorage):
             await conn.execute(f"DELETE FROM knowledge_items WHERE {cond}", params)
             await conn.commit()
         await self.clear_labels(item_id)
+        return True
+
+    async def update_labels(
+        self, item_id: str, owner_id: Optional[str], labels: List[str]
+    ) -> bool:
+        cond, params = _owner_filter(item_id, owner_id)
+        async with open_db() as conn:
+            row = await conn.fetchone(
+                f"SELECT owner_id FROM knowledge_items WHERE {cond}", params
+            )
+            if row is None:
+                return False
+            await conn.execute(
+                f"UPDATE knowledge_items SET labels=?,updated_at=? WHERE {cond}",
+                (json.dumps(labels, ensure_ascii=False), generate_date(), *params),
+            )
+            await conn.commit()
+        await self.sync_labels(item_id, str(row[0]), labels)
+        return True
+
+    async def update_metadata(
+        self,
+        item_id: str,
+        owner_id: Optional[str],
+        *,
+        title: str,
+        labels: List[str],
+    ) -> bool:
+        """Update user-editable metadata without touching stored content/source."""
+        cond, params = _owner_filter(item_id, owner_id)
+        async with open_db() as conn:
+            row = await conn.fetchone(
+                f"SELECT owner_id FROM knowledge_items WHERE {cond}", params
+            )
+            if row is None:
+                return False
+            await conn.execute(
+                f"UPDATE knowledge_items SET title=?,labels=?,updated_at=? WHERE {cond}",
+                (
+                    title,
+                    json.dumps(labels, ensure_ascii=False),
+                    generate_date(),
+                    *params,
+                ),
+            )
+            await conn.commit()
+        await self.sync_labels(item_id, str(row[0]), labels)
         return True

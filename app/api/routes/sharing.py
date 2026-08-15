@@ -23,6 +23,7 @@ from app.storage.db import open_db
 from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
 from app.storage.knowledge import KnowledgeStorage
+from app.storage.knowledge_packs import KnowledgePackStorage
 from app.storage.llm_orchestrations import LLMOrchestrationStorage
 from app.storage.prompt_storage import PromptStorage
 from app.storage.skill_storage import SkillStorage
@@ -44,6 +45,7 @@ _skills_store = SkillStorage(_cfg.SKILLS_DIR)
 _prompts_store = PromptStorage()
 _tools_store = ToolStorage()
 _knowledge_store = KnowledgeStorage()
+_knowledge_packs_store = KnowledgePackStorage()
 _workflows_store = WorkflowStorage()
 _orch_store = LLMOrchestrationStorage()
 
@@ -70,6 +72,8 @@ async def _resource_record(
         return await _skills_store.get_any(resource_id)
     if resource_type == "knowledge":
         return await _knowledge_store.get(resource_id)
+    if resource_type == "knowledge_pack":
+        return await _knowledge_packs_store.get(resource_id, include_items=False)
     if resource_type == "workflow":
         return await _workflows_store.get_any(resource_id)
     if resource_type == "llm_orchestration":

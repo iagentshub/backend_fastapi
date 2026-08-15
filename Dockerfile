@@ -8,6 +8,15 @@ RUN pip install --no-cache-dir --require-hashes --prefix=/install -r requirement
 # ── Runtime stage ─────────────────────────────────────────────────────────────
 FROM python:3.12-slim
 
+# OCR local para convertir capturas y fotografias en conocimiento textual.
+# Los idiomas se limitan a los que ofrece actualmente la aplicacion.
+RUN apt-get update \
+    && apt-get install --no-install-recommends -y \
+        tesseract-ocr \
+        tesseract-ocr-eng \
+        tesseract-ocr-spa \
+    && rm -rf /var/lib/apt/lists/*
+
 # Versión de build (formato YYYYMMDDHHMMSS, UTC) — la inyecta el workflow de
 # CI vía --build-arg. "dev" en builds locales sin el arg.
 ARG GAIA_VERSION=dev

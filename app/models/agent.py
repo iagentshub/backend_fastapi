@@ -112,6 +112,7 @@ class Agent(BaseResource):
     # ── Composition ───────────────────────────────────────────────────────────
     skills: List[str] = field(default_factory=list)
     knowledge: List[str] = field(default_factory=list)
+    knowledge_packs: List[str] = field(default_factory=list)
     prompts: List[str] = field(default_factory=list)
     #: IDs de Tool asignadas al agente. Nota: no confundir con `language`
     #: arriba (idioma de export del agente) — `Tool.language` vive en un
@@ -178,6 +179,11 @@ class Agent(BaseResource):
             effort_level=str(data.get("effort_level") or "").strip() or None,
             skills=[str(s) for s in (data.get("skills") or []) if s],
             knowledge=[str(k) for k in (data.get("knowledge") or []) if k],
+            knowledge_packs=[
+                str(pack_id)
+                for pack_id in (data.get("knowledge_packs") or [])
+                if pack_id
+            ],
             prompts=[str(p) for p in (data.get("prompts") or []) if p],
             tools=[str(t) for t in (data.get("tools") or []) if t],
             public_dependencies=(
@@ -231,6 +237,7 @@ class Agent(BaseResource):
             "effort_level": self.effort_level,
             "skills": self.skills,
             "knowledge": self.knowledge,
+            "knowledge_packs": self.knowledge_packs,
             "prompts": self.prompts,
             "tools": self.tools,
             "public_dependencies": self.public_dependencies,

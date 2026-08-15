@@ -464,6 +464,7 @@ async def stream_chat(
     user_id: Optional[str] = None,
     conversation_id: Optional[str] = None,
     *,
+    knowledge_pack_storage: Any = None,
     prompt_storage: Optional[_PromptStorage] = None,
     tool_storage: Optional[_ToolStorage] = None,
     attached_knowledge: Optional[List[Dict[str, Any]]] = None,
@@ -561,8 +562,30 @@ async def stream_chat(
                 break
 
     # Knowledge injection (URLs + documents attached to the agent)
+    covered_knowledge_ids: set[str] = set()
+    if knowledge_storage is not None and knowledge_pack_storage is not None:
+        for pack_id in agent.knowledge_packs:
+            pack = await knowledge_pack_storage.get(pack_id)
+            if not pack:
+                continue
+            add_context(
+                "knowledge_pack",
+                f"\n\n## Pack de conocimiento: {pack.get('name', pack_id)}",
+            )
+            for member in pack.get("items") or []:
+                knowledge_id = str(member.get("id") or "")
+                item = await knowledge_storage.get(knowledge_id)
+                if item and item.get("content"):
+                    covered_knowledge_ids.add(knowledge_id)
+                    add_context(
+                        "knowledge_pack",
+                        f"\n\n### {member.get('relative_path', item.get('title', knowledge_id))}\n"
+                        f"{item['content']}",
+                    )
     if knowledge_storage is not None and agent.knowledge:
         for kid in agent.knowledge:
+            if kid in covered_knowledge_ids:
+                continue
             item = await knowledge_storage.get(kid)
             if item and item.get("content"):
                 add_context(

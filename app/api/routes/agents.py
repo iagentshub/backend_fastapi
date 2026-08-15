@@ -36,6 +36,7 @@ from app.storage.guest import (
     is_guest,
 )
 from app.storage.knowledge import KnowledgeStorage
+from app.storage.knowledge_packs import KnowledgePackStorage
 from app.storage.memory_storage import MemoryStorage
 from app.storage.prompt_storage import PromptStorage
 from app.storage.resource_versions import ResourceVersionStorage
@@ -61,6 +62,7 @@ _shares = GroupShareStorage()
 _groups = GroupStorage()
 _chat = ChatStorage()
 _knowledge = KnowledgeStorage()
+_knowledge_packs = KnowledgePackStorage()
 _versions = ResourceVersionStorage()
 _chat_limiter = RateLimiter(calls=RATE_CHAT_CALLS, window=RATE_CHAT_WINDOW)
 
@@ -97,19 +99,50 @@ async def _validate_resource_refs(
         item = await _knowledge.get(kid)
         if not item:
             continue
-        if not await _shares.is_accessible(
+        accessible = await _shares.is_accessible(
             _groups,
             resource_type="knowledge",
             resource_id=kid,
             owner_id=item.get("owner_id"),
             requester=user,
             requester_group=group_id,
-        ):
+        )
+        pack_id = item.get("pack_id")
+        if not accessible and pack_id:
+            pack = await _knowledge_packs.get(pack_id, include_items=False)
+            if pack:
+                accessible = await _shares.is_accessible(
+                    _groups,
+                    resource_type="knowledge_pack",
+                    resource_id=pack_id,
+                    owner_id=pack.get("owner_id"),
+                    requester=user,
+                    requester_group=group_id,
+                )
+        if not accessible:
             raise APIError(
                 403,
                 "forbidden",
                 "No tienes acceso a uno de los elementos de conocimiento indicados",
                 extra={"resource": "knowledge", "id": kid},
+            )
+    for pack_id in payload.get("knowledge_packs") or []:
+        pack = await _knowledge_packs.get(pack_id, include_items=False)
+        if not pack:
+            continue
+        if not await _shares.is_accessible(
+            _groups,
+            resource_type="knowledge_pack",
+            resource_id=pack_id,
+            owner_id=pack.get("owner_id"),
+            requester=user,
+            requester_group=group_id,
+        ):
+            raise APIError(
+                403,
+                "forbidden",
+                "No tienes acceso a uno de los packs de conocimiento indicados",
+                extra={"resource": "knowledge_pack", "id": pack_id},
             )
     for pid in payload.get("prompts") or []:
         prompt = await _prompts.get_any(pid)

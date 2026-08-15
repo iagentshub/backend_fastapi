@@ -30,9 +30,11 @@ from app.models.llm_orchestration import (
     orchestration_id_from_connection,
 )
 from app.storage.db import open_db
+from app.storage.knowledge_packs import KnowledgePackStorage
 from app.storage.official_source_storage import OfficialSourceStorage
 
 _official_sources = OfficialSourceStorage()
+_knowledge_packs = KnowledgePackStorage()
 
 _ADMIN_EXPLORE_TYPES = (
     "user",
@@ -204,6 +206,18 @@ async def admin_resource_graph(
         for kind, values in inventory.items()
         if kind not in ("user", "group")
     }
+    packs = await _knowledge_packs.list(None)
+    packs_by_id = {str(pack["id"]): pack for pack in packs}
+    async with open_db() as conn:
+        pack_member_rows = await conn.fetchall(
+            "SELECT pack_id,id AS knowledge_id,pack_relative_path AS relative_path,"
+            "pack_kind AS kind FROM knowledge_items WHERE pack_id IS NOT NULL "
+            "ORDER BY pack_id,pack_relative_path"
+        )
+    pack_members: dict[str, list[dict[str, Any]]] = {}
+    for row in pack_member_rows:
+        member = dict(row)
+        pack_members.setdefault(str(member["pack_id"]), []).append(member)
     official_sources = {
         str(item["id"]): item for item in await _official_sources.list_sources()
     }
@@ -286,6 +300,61 @@ async def admin_resource_graph(
             or kind
         )
 
+    def append_pack_members(
+        pack_id: str,
+        pack_node: str,
+        members: list[dict[str, Any]] | None = None,
+    ) -> None:
+        """Representa la jerarquía real del pack, nunca archivos planos."""
+        for member in members if members is not None else pack_members.get(pack_id, []):
+            knowledge_id = str(member.get("knowledge_id") or member.get("id") or "")
+            if not knowledge_id:
+                continue
+            relative_path = str(member.get("relative_path") or knowledge_id)
+            parts = [part for part in relative_path.split("/") if part]
+            parent_node = pack_node
+            directory_parts: list[str] = []
+            for directory_name in parts[:-1]:
+                directory_parts.append(directory_name)
+                directory_path = "/".join(directory_parts)
+                directory_node = add_node(
+                    "knowledge_directory",
+                    f"{pack_id}:{directory_path}",
+                    directory_name,
+                    directory_path,
+                )
+                add_edge(parent_node, directory_node, "contains")
+                parent_node = directory_node
+            knowledge = resources_by_type["knowledge"].get(knowledge_id)
+            knowledge_node = add_node(
+                "knowledge",
+                knowledge_id,
+                parts[-1]
+                if parts
+                else resource_label("knowledge", knowledge or member),
+                str((knowledge or {}).get("description") or member.get("kind") or ""),
+            )
+            add_edge(parent_node, knowledge_node, "contains")
+
+    def connect_pack_owner(pack: dict[str, Any]) -> str:
+        pack_id = str(pack["id"])
+        pack_node = add_node(
+            "knowledge_pack",
+            pack_id,
+            resource_label("knowledge_pack", pack),
+            str(pack.get("description") or ""),
+        )
+        owner_id = str(pack.get("owner_id") or "")
+        if owner_id in users_by_id:
+            owner = users_by_id[owner_id]
+            owner_node = add_node("user", owner_id, resource_label("user", owner))
+            add_edge(owner_node, pack_node, "owns")
+        elif owner_id in groups_by_id:
+            owner = groups_by_id[owner_id]
+            owner_node = add_node("group", owner_id, resource_label("group", owner))
+            add_edge(owner_node, pack_node, "owns")
+        return pack_node
+
     root_id = add_node(
         resource_type,
         canonical_resource_id,
@@ -294,6 +363,13 @@ async def admin_resource_graph(
     )
 
     def connect_owner(kind: str, item: dict[str, Any]) -> None:
+        if kind == "knowledge":
+            pack_id = str(item.get("pack_id") or "")
+            pack = packs_by_id.get(pack_id)
+            if pack:
+                pack_node = connect_pack_owner(pack)
+                append_pack_members(pack_id, pack_node, [item])
+                return
         owner_id = str(item.get("owner_id") or "")
         if not owner_id:
             return
@@ -310,9 +386,7 @@ async def admin_resource_graph(
         origin = source_links.get((kind, origin_id, owner_id))
         if kind == "memory" and origin is None and "::" in origin_id:
             _, _, filename = origin_id.partition("::")
-            origin = source_links.get(
-                (kind, filename.removesuffix(".md"), owner_id)
-            )
+            origin = source_links.get((kind, filename.removesuffix(".md"), owner_id))
         if origin:
             source = official_sources.get(str(origin["source_id"]))
             if source:
@@ -376,9 +450,34 @@ async def admin_resource_graph(
                     resource_label("connection", connection),
                 )
                 add_edge(agent_node, connection_node, "uses")
+        for pack_id_raw in agent.get("knowledge_packs") or []:
+            pack_id = str(pack_id_raw)
+            pack = packs_by_id.get(pack_id)
+            if not pack:
+                continue
+            pack_node = add_node(
+                "knowledge_pack",
+                pack_id,
+                resource_label("knowledge_pack", pack),
+                str(pack.get("description") or ""),
+            )
+            add_edge(agent_node, pack_node, "uses")
+            append_pack_members(pack_id, pack_node)
         for knowledge_id in agent.get("knowledge") or []:
             knowledge = resources_by_type["knowledge"].get(str(knowledge_id))
             if knowledge:
+                pack_id = str(knowledge.get("pack_id") or "")
+                pack = packs_by_id.get(pack_id)
+                if pack:
+                    pack_node = add_node(
+                        "knowledge_pack",
+                        pack_id,
+                        resource_label("knowledge_pack", pack),
+                        "Selección parcial",
+                    )
+                    add_edge(agent_node, pack_node, "uses_partial")
+                    append_pack_members(pack_id, pack_node, [knowledge])
+                    continue
                 knowledge_node = add_node(
                     "knowledge",
                     str(knowledge_id),
@@ -430,6 +529,10 @@ async def admin_resource_graph(
     if resource_type == "user":
         username = str(root.get("username") or "")
         user_id = str(root.get("id") or "")
+        for pack in packs:
+            if str(pack.get("owner_id") or "") == user_id:
+                pack_node = connect_pack_owner(pack)
+                append_pack_members(str(pack["id"]), pack_node)
         for row in member_rows:
             if str(row["username"]) != username:
                 continue
@@ -442,12 +545,18 @@ async def admin_resource_graph(
         for kind, by_id in resources_by_type.items():
             for item in by_id.values():
                 if str(item.get("owner_id") or "") == user_id:
+                    if kind == "knowledge" and item.get("pack_id"):
+                        continue
                     connect_owner(kind, item)
                     item_node = f"{kind}:{item['id']}"
                     if kind == "agent":
                         wire_agent_uses(item, item_node)
 
     if resource_type == "group":
+        for pack in packs:
+            if str(pack.get("owner_id") or "") == canonical_resource_id:
+                pack_node = connect_pack_owner(pack)
+                append_pack_members(str(pack["id"]), pack_node)
         for row in member_rows:
             if str(row["group_id"]) != canonical_resource_id:
                 continue
@@ -460,6 +569,8 @@ async def admin_resource_graph(
         for kind, by_id in resources_by_type.items():
             for item in by_id.values():
                 if str(item.get("owner_id") or "") == canonical_resource_id:
+                    if kind == "knowledge" and item.get("pack_id"):
+                        continue
                     connect_owner(kind, item)
                     item_node = f"{kind}:{item['id']}"
                     if kind == "agent":
@@ -469,6 +580,25 @@ async def admin_resource_graph(
         kind = str(row["resource_type"])
         item_id = str(row["resource_id"])
         group_id = str(row["group_id"])
+        if kind == "knowledge_pack":
+            pack = packs_by_id.get(item_id)
+            group = groups_by_id.get(group_id)
+            if (
+                pack
+                and group
+                and resource_type == "group"
+                and canonical_resource_id == group_id
+            ):
+                group_node = add_node("group", group_id, resource_label("group", group))
+                pack_node = add_node(
+                    "knowledge_pack",
+                    item_id,
+                    resource_label("knowledge_pack", pack),
+                    str(pack.get("description") or ""),
+                )
+                add_edge(group_node, pack_node, "shared", dashed=True)
+                append_pack_members(item_id, pack_node)
+            continue
         if kind not in resources_by_type or item_id not in resources_by_type[kind]:
             continue
         if not (
@@ -530,7 +660,19 @@ async def admin_resource_graph(
                 agent_node = add_node(
                     "agent", str(agent["id"]), resource_label("agent", agent)
                 )
-                add_edge(agent_node, root_id, "uses")
+                pack_id = str(root.get("pack_id") or "")
+                pack = packs_by_id.get(pack_id)
+                if resource_type == "knowledge" and pack:
+                    pack_node = add_node(
+                        "knowledge_pack",
+                        pack_id,
+                        resource_label("knowledge_pack", pack),
+                        "Selección parcial",
+                    )
+                    add_edge(agent_node, pack_node, "uses_partial")
+                    append_pack_members(pack_id, pack_node, [root])
+                else:
+                    add_edge(agent_node, root_id, "uses")
 
     if resource_type == "llm_orchestration":
         connection_ids = {

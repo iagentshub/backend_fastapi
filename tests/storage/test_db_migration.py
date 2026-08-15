@@ -8,6 +8,7 @@ Caso concreto: stripe_customer_id en users (commit de Stripe billing).
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from pathlib import Path
@@ -62,9 +63,7 @@ async def test_add_sqlite_column_is_idempotent(tmp_path):
     async with aiosqlite.connect(tmp_path / "columns.db") as conn:
         await conn.execute("CREATE TABLE sample (id TEXT PRIMARY KEY)")
 
-        assert await migration_mod._add_sqlite_column(
-            conn, "sample", "label", "TEXT"
-        )
+        assert await migration_mod._add_sqlite_column(conn, "sample", "label", "TEXT")
         assert not await migration_mod._add_sqlite_column(
             conn, "sample", "label", "TEXT"
         )
@@ -160,6 +159,52 @@ async def test_pre_migrate_ok_when_column_already_exists(tmp_path):
         await conn.commit()
 
 
+async def test_migrate_existing_knowledge_table_adds_checksum_before_its_index(
+    tmp_path,
+):
+    """Una DB anterior a checksum debe arrancar y completar la migración 19."""
+    import app.storage.db as db_mod
+    from app.storage.schema import SCHEMA_SQLITE
+
+    db = tmp_path / "pre-checksum.db"
+    legacy_schema = SCHEMA_SQLITE.replace(
+        "    checksum   TEXT NOT NULL DEFAULT '',\n", ""
+    )
+    conn = sqlite3.connect(str(db))
+    conn.executescript(legacy_schema)
+    conn.execute(
+        "INSERT INTO knowledge_items "
+        "(id,owner_id,type,title,source,content,created_at,updated_at) "
+        "VALUES (?,?,?,?,?,?,?,?)",
+        (
+            "legacy-knowledge",
+            "alice",
+            "text",
+            "Legacy",
+            "",
+            "contenido anterior",
+            "2026-01-01T00:00:00Z",
+            "2026-01-01T00:00:00Z",
+        ),
+    )
+    conn.commit()
+    conn.close()
+
+    await db_mod.migrate_schema(db)
+
+    migrated = sqlite3.connect(str(db))
+    columns = {row[1] for row in migrated.execute("PRAGMA table_info(knowledge_items)")}
+    checksum = migrated.execute(
+        "SELECT checksum FROM knowledge_items WHERE id='legacy-knowledge'"
+    ).fetchone()[0]
+    indexes = {row[1] for row in migrated.execute("PRAGMA index_list(knowledge_items)")}
+    migrated.close()
+
+    assert "checksum" in columns
+    assert checksum == hashlib.sha256(b"contenido anterior").hexdigest()
+    assert "idx_knowledge_checksum" in indexes
+
+
 async def test_migration_removes_legacy_resource_folders(tmp_path):
     """The removed folder model and its catalog metadata do not survive upgrade."""
     import app.storage.db as db_mod
@@ -247,9 +292,9 @@ async def test_migration_mirrors_legacy_agent_language_into_labels(tmp_path):
 
     migrated = sqlite3.connect(str(db))
     stored = json.loads(
-        migrated.execute(
-            "SELECT data FROM agents WHERE id='legacy-agent'"
-        ).fetchone()[0]
+        migrated.execute("SELECT data FROM agents WHERE id='legacy-agent'").fetchone()[
+            0
+        ]
     )
     indexed = migrated.execute(
         "SELECT COUNT(*) FROM resource_labels "
@@ -392,9 +437,7 @@ async def test_legacy_group_tables_keep_their_data(tmp_path):
     member_columns = {
         row[1] for row in migrated.execute("PRAGMA table_info(group_members)")
     }
-    group_row = migrated.execute(
-        "SELECT id, name, created_by FROM groups"
-    ).fetchone()
+    group_row = migrated.execute("SELECT id, name, created_by FROM groups").fetchone()
     member_row = migrated.execute(
         "SELECT group_id, username, role FROM group_members"
     ).fetchone()

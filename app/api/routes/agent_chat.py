@@ -33,6 +33,7 @@ from app.storage.guest import (
     is_guest,
 )
 from app.storage.knowledge import KnowledgeStorage
+from app.storage.knowledge_packs import KnowledgePackStorage
 from app.storage.memory_storage import MemoryStorage
 from app.storage.prompt_storage import PromptStorage
 from app.storage.skill_storage import SkillStorage
@@ -50,6 +51,7 @@ _memory = MemoryStorage(MEMORY_DIR)
 _groups = GroupStorage()
 _chat = ChatStorage()
 _knowledge = KnowledgeStorage()
+_knowledge_packs = KnowledgePackStorage()
 _chat_limiter = RateLimiter(calls=RATE_CHAT_CALLS, window=RATE_CHAT_WINDOW)
 
 
@@ -114,7 +116,7 @@ async def chat(
                     group_id, user, "knowledge", kid, "view"
                 ):
                     item = await _knowledge.get(kid, owner_id=None)
-            if item and item.get("is_active", True):
+            if item:
                 attached_knowledge.append(item)
 
     # Toda selección es un connection_id. Las orquestaciones se resuelven como
@@ -232,6 +234,7 @@ async def chat(
                 _chat,
                 history_user_id,
                 conversation_id or None,
+                knowledge_pack_storage=None if is_guest(user) else _knowledge_packs,
                 prompt_storage=None if is_guest(user) else _prompts,
                 tool_storage=None if is_guest(user) else _tools,
                 attached_knowledge=attached_knowledge,
@@ -248,6 +251,7 @@ async def chat(
                 _chat,
                 history_user_id,
                 conversation_id or None,
+                knowledge_pack_storage=None if is_guest(user) else _knowledge_packs,
                 prompt_storage=_prompts,
                 tool_storage=_tools,
                 attached_knowledge=attached_knowledge,

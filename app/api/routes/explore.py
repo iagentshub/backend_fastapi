@@ -34,6 +34,7 @@ from app.storage.db import IS_PG, open_db
 from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
 from app.storage.knowledge import KnowledgeStorage
+from app.storage.knowledge_packs import KnowledgePackStorage
 from app.storage.prompt_storage import PromptStorage
 from app.storage.skill_storage import SkillStorage
 from app.storage.tool_storage import ToolStorage
@@ -51,6 +52,7 @@ _skills = SkillStorage(_cfg.SKILLS_DIR)
 _prompts = PromptStorage()
 _tools = ToolStorage()
 _knowledge = KnowledgeStorage()
+_knowledge_packs = KnowledgePackStorage()
 _workflows = WorkflowStorage()
 _shares = GroupShareStorage()
 _groups = GroupStorage()
@@ -84,6 +86,7 @@ async def explore(
     limit: int = Query(40, ge=1, le=100),
     offset: int = Query(0, ge=0),
     include_official: bool = True,
+    pack_mode: Optional[bool] = None,
     response: Response = None,  # type: ignore[assignment]
     # Abierto al invitado: solo devuelve filas is_public y el usuario únicamente
     # sirve para excluir lo propio. Es el catálogo público, y la superficie que
@@ -107,9 +110,20 @@ async def explore(
                 "AND source_link.resource_id=resource_social.resource_id "
                 "AND source_link.resource_owner_id=resource_social.owner)"
             )
+        if pack_mode is True:
+            conditions.append(
+                "NOT (resource_type='knowledge' AND EXISTS ("
+                "SELECT 1 FROM knowledge_items ki "
+                "WHERE ki.id=resource_social.resource_id AND ki.pack_id IS NOT NULL))"
+            )
+        elif pack_mode is False:
+            conditions.append("resource_type != 'knowledge_pack'")
         if type and type != "all":
-            conditions.append("resource_type = ?")
-            params.append(type)
+            if type == "knowledge" and pack_mode is True:
+                conditions.append("resource_type IN ('knowledge','knowledge_pack')")
+            else:
+                conditions.append("resource_type = ?")
+                params.append(type)
         if category:
             conditions.append("category = ?")
             params.append(category)
@@ -180,6 +194,11 @@ async def explore(
         except (ValueError, TypeError):
             row["labels"] = ["private"]
         row["languages"] = language_codes_from_labels(row["labels"])
+        if row.get("resource_type") == "knowledge":
+            item = await _knowledge.get(str(row.get("resource_id") or ""))
+            if item and item.get("pack_id"):
+                row["pack_id"] = item["pack_id"]
+                row["pack_relative_path"] = item.get("pack_relative_path", "")
         rows.append(row)
     await _add_owner_usernames(rows)
     return rows
@@ -439,6 +458,13 @@ async def explore_preview(
             base["source"] = item.get("source", "")
             base["char_count"] = item.get("char_count", 0)
 
+    elif resource_type == "knowledge_pack":
+        pack = await _knowledge_packs.get(resource_id)
+        if pack:
+            base["file_count"] = pack.get("file_count", 0)
+            base["size_bytes"] = pack.get("size_bytes", 0)
+            base["items"] = pack.get("items", [])
+
     elif resource_type == "workflow":
         workflow = await _workflows.get_any(resource_id)
         if workflow:
@@ -457,6 +483,66 @@ async def explore_preview(
     return base
 
 
+def _append_pack_members_to_graph(
+    *,
+    pack_id: str,
+    pack_node_id: str,
+    members: List[Dict[str, Any]],
+    nodes: List[Dict[str, Any]],
+    edges: List[Dict[str, Any]],
+    seen: set[str],
+) -> None:
+    """Añade la jerarquía real del directorio: pack -> carpetas -> archivos."""
+    for member in members:
+        member_id = str(member.get("id") or "")
+        if not member_id:
+            continue
+        relative_path = str(member.get("relative_path") or member_id)
+        parts = [part for part in relative_path.split("/") if part]
+        parent_id = pack_node_id
+        directory_parts: List[str] = []
+        for directory_name in parts[:-1]:
+            directory_parts.append(directory_name)
+            directory_path = "/".join(directory_parts)
+            directory_id = f"knowledge_pack_directory:{pack_id}:{directory_path}"
+            if directory_id not in seen:
+                seen.add(directory_id)
+                nodes.append(
+                    {
+                        "id": directory_id,
+                        "label": directory_name,
+                        "type": "knowledge_directory",
+                        "description": directory_path,
+                    }
+                )
+                edges.append(
+                    {
+                        "source_id": parent_id,
+                        "target_id": directory_id,
+                        "relation": "contains",
+                    }
+                )
+            parent_id = directory_id
+        member_node_id = f"knowledge:{member_id}"
+        if member_node_id not in seen:
+            seen.add(member_node_id)
+            nodes.append(
+                {
+                    "id": member_node_id,
+                    "label": parts[-1] if parts else relative_path,
+                    "type": "knowledge",
+                    "description": member.get("kind", ""),
+                }
+            )
+            edges.append(
+                {
+                    "source_id": parent_id,
+                    "target_id": member_node_id,
+                    "relation": "contains",
+                }
+            )
+
+
 async def _public_agent_graph_parts(
     agent: Dict[str, Any], source_node_id: str
 ) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
@@ -469,6 +555,7 @@ async def _public_agent_graph_parts(
     )
     references = (
         ("skill", agent.get("skills") or []),
+        ("knowledge_pack", agent.get("knowledge_packs") or []),
         ("knowledge", agent.get("knowledge") or []),
         ("prompt", agent.get("prompts") or []),
         ("tool", agent.get("tools") or []),
@@ -493,6 +580,40 @@ async def _public_agent_graph_parts(
                 if not row:
                     continue
                 node_id = f"{kind}:{child_id}"
+                parent_id = source_node_id
+                if kind == "knowledge":
+                    item = await _knowledge.get(child_id)
+                    pack_id = str((item or {}).get("pack_id") or "")
+                    if pack_id:
+                        pack = await _knowledge_packs.get(pack_id, include_items=False)
+                        pack_node_id = f"knowledge_pack:{pack_id}"
+                        if pack and pack_node_id not in seen:
+                            seen.add(pack_node_id)
+                            nodes.append(
+                                {
+                                    "id": pack_node_id,
+                                    "label": pack.get("name", pack_id),
+                                    "type": "knowledge_pack",
+                                    "description": "Selección parcial",
+                                }
+                            )
+                            edges.append(
+                                {
+                                    "source_id": source_node_id,
+                                    "target_id": pack_node_id,
+                                    "relation": "uses_partial",
+                                }
+                            )
+                        parent_id = pack_node_id
+                        _append_pack_members_to_graph(
+                            pack_id=pack_id,
+                            pack_node_id=pack_node_id,
+                            members=[item] if item else [],
+                            nodes=nodes,
+                            edges=edges,
+                            seen=seen,
+                        )
+                        continue
                 if node_id not in seen:
                     seen.add(node_id)
                     nodes.append(
@@ -505,11 +626,21 @@ async def _public_agent_graph_parts(
                     )
                 edges.append(
                     {
-                        "source_id": source_node_id,
+                        "source_id": parent_id,
                         "target_id": node_id,
                         "relation": "uses",
                     }
                 )
+                if kind == "knowledge_pack":
+                    pack = await _knowledge_packs.get(child_id)
+                    _append_pack_members_to_graph(
+                        pack_id=child_id,
+                        pack_node_id=node_id,
+                        members=(pack or {}).get("items") or [],
+                        nodes=nodes,
+                        edges=edges,
+                        seen=seen,
+                    )
     memory_file = str(agent.get("memory_file") or "").strip()
     if (
         agent.get("use_memory")
@@ -542,7 +673,7 @@ async def explore_resource_graph(
     _: str = Depends(require_session),
 ) -> Dict[str, Any]:
     """Grafo público de agentes y orquestaciones visibles en Explore."""
-    if resource_type not in {"agent", "workflow"}:
+    if resource_type not in {"agent", "workflow", "knowledge_pack"}:
         raise APIError(
             422,
             "invalid_field",
@@ -575,7 +706,17 @@ async def explore_resource_graph(
     ]
     edges: List[Dict[str, Any]] = []
 
-    if resource_type == "agent":
+    if resource_type == "knowledge_pack":
+        pack = await _knowledge_packs.get(resource_id)
+        _append_pack_members_to_graph(
+            pack_id=resource_id,
+            pack_node_id=root_id,
+            members=(pack or {}).get("items") or [],
+            nodes=nodes,
+            edges=edges,
+            seen={root_id},
+        )
+    elif resource_type == "agent":
         agent = await _agents.get(resource_id)
         if agent:
             child_nodes, child_edges = await _public_agent_graph_parts(agent, root_id)

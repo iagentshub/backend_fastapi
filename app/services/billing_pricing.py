@@ -1,14 +1,24 @@
-"""Fórmula de precios — réplica exacta de frontend/pages/pricing/pricing.js.
+"""Fórmula de precios — fuente de verdad del importe a cobrar.
 
-El backend es la única fuente de verdad del monto a cobrar: nunca se acepta
-un importe calculado por el cliente. Cualquier cambio en las constantes de
-pricing.js debe reflejarse aquí también.
+El backend nunca acepta un importe calculado por el cliente: lo recalcula
+aquí a partir de tier, asientos e intervalo.
+
+Estas constantes están DUPLICADAS en la calculadora pública del frontend
+(frontend_react/src/routes/public/pricing-model.ts), que las necesita en
+cliente para poder prerenderizarse. Si divergen, el precio anunciado deja
+de ser el precio cobrado, y nada lo detecta: cualquier cambio aquí obliga
+a tocar también ese fichero.
+
+La referencia anterior de esta nota (frontend/pages/pricing/pricing.js) era
+del frontend vanilla ya retirado; apuntaba a un fichero inexistente, así que
+la garantía de sincronía que prometía no existía.
 """
+
 from __future__ import annotations
 
 DEV_PRICE = 9.0
 BIZ_START = 7.50
-FLOOR = DEV_PRICE * 0.50          # 4.50
+FLOOR = DEV_PRICE * 0.50  # 4.50
 ENT_THRESHOLD = 100
 SH_MONTHLY = 400.0
 MONTHS_ANNUAL = 10
@@ -42,7 +52,9 @@ def validate_plan(tier: str, seats: int) -> None:
         raise InvalidPlanError(f"tier no soporta self-serve: {tier}")
 
 
-def compute_total_cents(tier: str, seats: int, interval: str, self_hosted: bool) -> dict:
+def compute_total_cents(
+    tier: str, seats: int, interval: str, self_hosted: bool
+) -> dict:
     """Calcula el monto recurrente total en céntimos, más el desglose."""
     if interval not in VALID_INTERVALS:
         raise InvalidPlanError(f"interval inválido: {interval}")

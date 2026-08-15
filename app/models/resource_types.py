@@ -13,6 +13,7 @@ RESOURCE_TYPES: frozenset[str] = frozenset(
         "skill",
         "connection",
         "knowledge",
+        "knowledge_pack",
         "workflow",
         "llm_orchestration",
         "prompt",
@@ -22,7 +23,7 @@ RESOURCE_TYPES: frozenset[str] = frozenset(
 
 # Tipos con presencia social (star/publicación) — las conexiones no se publican
 SOCIAL_RESOURCE_TYPES: frozenset[str] = frozenset(
-    {"agent", "skill", "knowledge", "workflow", "prompt", "tool"}
+    {"agent", "skill", "knowledge", "knowledge_pack", "workflow", "prompt", "tool"}
 )
 
 # Alias legacy aceptados por compatibilidad con clientes existentes
@@ -32,6 +33,7 @@ ALIASES: dict[str, str] = {
     "connections": "connection",
     "url": "knowledge",
     "document": "knowledge",
+    "knowledge_packs": "knowledge_pack",
     "workflows": "workflow",
     "llm_orchestrations": "llm_orchestration",
     "prompts": "prompt",

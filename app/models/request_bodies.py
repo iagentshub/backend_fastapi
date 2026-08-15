@@ -109,6 +109,39 @@ class KnowledgeUrlBody(RequestBody):
     labels: list[Any] | None = None
 
 
+class LabelsBody(RequestBody):
+    labels: list[Any] | None = None
+
+
+class KnowledgeEditBody(RequestBody):
+    name: str | None = None
+    labels: list[Any] | None = None
+
+
+class KnowledgePackEditBody(KnowledgeEditBody):
+    description: str | None = None
+
+
+class KnowledgePackUploadSessionBody(RequestBody):
+    name: str | None = None
+    description: str | None = None
+    labels: list[Any] | None = None
+    source_mode: str | None = "upload"
+    total_files: int | None = None
+
+
+class KnowledgePackManifestFile(RequestBody):
+    relative_path: str
+    size_bytes: int = 0
+    checksum: str
+    mime_type: str = ""
+    modified_at: int | None = None
+
+
+class KnowledgePackManifestBody(RequestBody):
+    files: list[KnowledgePackManifestFile] = Field(default_factory=list)
+
+
 class MemoryBody(RequestBody):
     content: str | None = None
 

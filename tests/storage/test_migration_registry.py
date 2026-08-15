@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import sqlite3
 
 import aiosqlite
@@ -70,6 +71,164 @@ async def test_repeatable_migration_runs_again_but_is_recorded_once(tmp_path):
 
     assert calls == ["repair", "repair"]
     assert count == 1
+
+
+async def test_knowledge_checksum_migration_backfills_objects_and_pack_bytes(tmp_path):
+    from app.storage.migrations.sqlite import _knowledge_item_checksums
+
+    async with aiosqlite.connect(tmp_path / "knowledge-checksum.db") as conn:
+        conn.row_factory = sqlite3.Row
+        await conn.executescript("""
+            CREATE TABLE knowledge_items (
+                id TEXT PRIMARY KEY,
+                content TEXT NOT NULL
+            );
+            CREATE TABLE knowledge_pack_items (
+                pack_id TEXT NOT NULL,
+                knowledge_id TEXT NOT NULL,
+                relative_path TEXT NOT NULL,
+                kind TEXT NOT NULL,
+                checksum TEXT NOT NULL DEFAULT ''
+            );
+            INSERT INTO knowledge_items VALUES ('text-1', 'contenido normal');
+            INSERT INTO knowledge_items VALUES ('file-1', 'texto extraido');
+            INSERT INTO knowledge_pack_items VALUES (
+                'pack-1', 'file-1', 'scripts/run.sh', 'script', 'raw-sha256'
+            );
+        """)
+
+        await _knowledge_item_checksums(conn)
+        await _knowledge_item_checksums(conn)
+        rows = await conn.execute_fetchall(
+            "SELECT id,checksum FROM knowledge_items ORDER BY id"
+        )
+        indexes = await conn.execute_fetchall("PRAGMA index_list(knowledge_items)")
+
+    checksums = {str(row["id"]): str(row["checksum"]) for row in rows}
+    assert checksums == {
+        "file-1": "raw-sha256",
+        "text-1": hashlib.sha256(b"contenido normal").hexdigest(),
+    }
+    assert "idx_knowledge_checksum" in {str(row[1]) for row in indexes}
+
+
+async def test_knowledge_checksum_migration_does_not_require_legacy_pack_table(
+    tmp_path,
+):
+    from app.storage.migrations.sqlite import _knowledge_item_checksums
+
+    async with aiosqlite.connect(tmp_path / "knowledge-checksum-direct.db") as conn:
+        conn.row_factory = sqlite3.Row
+        await conn.executescript("""
+            CREATE TABLE knowledge_items (
+                id TEXT PRIMARY KEY,
+                content TEXT NOT NULL
+            );
+            INSERT INTO knowledge_items VALUES ('text-1', 'contenido normal');
+        """)
+
+        await _knowledge_item_checksums(conn)
+        row = (
+            await conn.execute_fetchall(
+                "SELECT checksum FROM knowledge_items WHERE id='text-1'"
+            )
+        )[0]
+
+    assert str(row[0]) == hashlib.sha256(b"contenido normal").hexdigest()
+
+
+async def test_pack_migration_does_not_create_obsolete_membership_table(tmp_path):
+    from app.storage.migrations.sqlite import _knowledge_packs
+
+    async with aiosqlite.connect(tmp_path / "knowledge-pack-direct.db") as conn:
+        conn.row_factory = sqlite3.Row
+        await _knowledge_packs(conn)
+        tables = {
+            str(row[0])
+            for row in await conn.execute_fetchall(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+
+    assert "knowledge_packs" in tables
+    assert "knowledge_pack_items" not in tables
+
+
+async def test_pack_membership_migration_moves_relation_to_knowledge_item(tmp_path):
+    from app.storage.migrations.sqlite import _knowledge_items_pack_membership
+
+    async with aiosqlite.connect(tmp_path / "pack-membership.db") as conn:
+        conn.row_factory = sqlite3.Row
+        await conn.executescript("""
+            CREATE TABLE knowledge_items (
+                id TEXT PRIMARY KEY,
+                content TEXT NOT NULL
+            );
+            CREATE TABLE knowledge_pack_items (
+                pack_id TEXT NOT NULL,
+                knowledge_id TEXT NOT NULL,
+                relative_path TEXT NOT NULL,
+                kind TEXT NOT NULL
+            );
+            INSERT INTO knowledge_items VALUES ('file-1', 'echo ok');
+            INSERT INTO knowledge_pack_items VALUES (
+                'pack-1', 'file-1', 'scripts/run.sh', 'script'
+            );
+        """)
+
+        await _knowledge_items_pack_membership(conn)
+        await _knowledge_items_pack_membership(conn)
+        row = (
+            await conn.execute_fetchall(
+                "SELECT pack_id,pack_relative_path,pack_kind "
+                "FROM knowledge_items WHERE id='file-1'"
+            )
+        )[0]
+        tables = {
+            str(item[0])
+            for item in await conn.execute_fetchall(
+                "SELECT name FROM sqlite_master WHERE type='table'"
+            )
+        }
+
+    assert tuple(row) == ("pack-1", "scripts/run.sh", "script")
+    assert "knowledge_pack_items" not in tables
+
+
+async def test_knowledge_metadata_repair_recovers_catalogued_values(tmp_path):
+    from app.storage.migrations.sqlite import _knowledge_item_metadata_repair
+
+    async with aiosqlite.connect(tmp_path / "knowledge-metadata.db") as conn:
+        conn.row_factory = sqlite3.Row
+        await conn.executescript("""
+            CREATE TABLE knowledge_items (
+                id TEXT PRIMARY KEY,
+                source TEXT NOT NULL,
+                content TEXT NOT NULL,
+                mime_type TEXT NOT NULL DEFAULT '',
+                size_bytes INTEGER NOT NULL DEFAULT 0
+            );
+            INSERT INTO knowledge_items VALUES (
+                'image-1', 'photos/image.jpeg',
+                'Tipo: image/jpeg\nTamano: 1234 bytes', '', 0
+            );
+            INSERT INTO knowledge_items VALUES (
+                'pdf-1', 'docs/manual.pdf', 'texto extraído', '', 0
+            );
+        """)
+
+        await _knowledge_item_metadata_repair(conn)
+        await _knowledge_item_metadata_repair(conn)
+        rows = await conn.execute_fetchall(
+            "SELECT id,mime_type,size_bytes FROM knowledge_items ORDER BY id"
+        )
+        indexes = await conn.execute_fetchall("PRAGMA index_list(knowledge_items)")
+
+    assert [tuple(row) for row in rows] == [
+        ("image-1", "image/jpeg", 1234),
+        ("pdf-1", "application/pdf", 0),
+    ]
+    assert "idx_knowledge_mime_type" in {str(row[1]) for row in indexes}
 
 
 async def test_official_published_components_column_is_added_on_old_dbs(tmp_path):

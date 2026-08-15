@@ -1,5 +1,8 @@
 """Tests de KnowledgeStorage: CRUD, filtrado por tipo, aislamiento por owner."""
+
 from __future__ import annotations
+
+import hashlib
 
 import pytest
 
@@ -29,6 +32,7 @@ _DOC_ITEM = dict(
 
 
 # ── list ──────────────────────────────────────────────────────────────────────
+
 
 async def test_list_empty(storage):
     assert await storage.list("user1") == []
@@ -72,6 +76,7 @@ async def test_list_admin_sees_all(storage):
 
 # ── save ──────────────────────────────────────────────────────────────────────
 
+
 async def test_save_returns_item_with_id(storage):
     item = await storage.save(**_URL_ITEM)
     assert "id" in item
@@ -92,7 +97,20 @@ async def test_save_char_count_matches_content(storage):
     assert item["char_count"] == 500
 
 
+async def test_save_persists_content_checksum_and_accepts_original_object_hash(storage):
+    generated = await storage.save(**_URL_ITEM)
+    assert (
+        generated["checksum"]
+        == hashlib.sha256(_URL_ITEM["content"].encode()).hexdigest()
+    )
+
+    original_hash = hashlib.sha256(b"bytes originales").hexdigest()
+    supplied = await storage.save(**_DOC_ITEM, checksum=original_hash)
+    assert supplied["checksum"] == original_hash
+
+
 # ── get ───────────────────────────────────────────────────────────────────────
+
 
 async def test_get_existing_item(storage):
     saved = await storage.save(**_URL_ITEM)
@@ -119,6 +137,7 @@ async def test_get_without_owner_finds_any(storage):
 
 # ── delete ────────────────────────────────────────────────────────────────────
 
+
 async def test_delete_existing_item(storage):
     saved = await storage.save(**_URL_ITEM)
     assert await storage.delete(saved["id"], owner_id="user1") is True
@@ -143,6 +162,7 @@ async def test_delete_admin_no_owner(storage):
 
 # ── extract_document_text ─────────────────────────────────────────────────────
 
+
 def test_extract_txt_utf8():
     text = extract_document_text(b"Hola mundo", "file.txt")
     assert text == "Hola mundo"
@@ -164,6 +184,7 @@ def test_extract_txt_latin1():
 def test_extract_pdf_missing_dep():
     """Si pypdf no está instalado, debe lanzar ValueError descriptivo."""
     import importlib
+
     pypdf_available = importlib.util.find_spec("pypdf") is not None
     if pypdf_available:
         pytest.skip("pypdf instalado — no se puede simular ausencia")
