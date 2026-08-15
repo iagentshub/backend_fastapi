@@ -62,12 +62,17 @@ def test_token_firmado_con_otro_secreto_no_cuela():
     """
     from datetime import datetime, timedelta, timezone
 
-    from jose import jwt
+    import jwt
 
     ahora = datetime.now(timezone.utc)
     ajeno = jwt.encode(
-        {"sub": "admin", "gid": "admin", "iat": ahora, "exp": ahora + timedelta(hours=1)},
-        "un-secreto-completamente-otro",
+        {
+            "sub": "admin",
+            "gid": "admin",
+            "iat": ahora,
+            "exp": ahora + timedelta(hours=1),
+        },
+        "un-secreto-completamente-otro-y-suficientemente-largo",
         algorithm="HS256",
     )
     assert RequestLoggerMiddleware._username_for_log(_request({"ga_token": ajeno})) == (

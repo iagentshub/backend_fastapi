@@ -1,9 +1,10 @@
 fastapi>=0.111.0
 uvicorn[standard]>=0.30.0
-python-jose[cryptography]>=3.3.0
+PyJWT>=2.10.0
 # Directa, no transitiva: app/storage/crypto.py importa cryptography.fernet para
-# cifrar las API keys de proveedor. Llegaba solo como extra de python-jose, así
-# que quitar ese extra rompía el cifrado sin que nada lo avisara.
+# cifrar las API keys de proveedor. Antes llegaba además como extra de
+# python-jose; al migrar a PyJWT (que no la arrastra para HS256) esta línea
+# pasó de ser una salvaguarda a ser la ÚNICA razón por la que está instalada.
 cryptography>=42.0.0
 bcrypt>=4.0.0
 python-multipart>=0.0.9

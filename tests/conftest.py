@@ -51,7 +51,7 @@ def tmp_data_dir():
     (d / "skills").mkdir()
     (d / "memory").mkdir()
     (d / "settings.json").write_text(
-        json.dumps({"jwt_secret": "test-secret-key-for-tests-only"}),
+        json.dumps({"jwt_secret": "test-secret-key-for-tests-only-min-32-bytes-long"}),
         encoding="utf-8",
     )
     (d / "connections" / "connections.json").write_text("[]", encoding="utf-8")
@@ -74,7 +74,7 @@ def patch_data_dir(tmp_data_dir, tmp_path, monkeypatch):
     monkeypatch.setenv("DATABASE_URL", "")
     monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_data_dir))
     (tmp_data_dir / "settings.json").write_text(
-        json.dumps({"jwt_secret": "test-secret-key-for-tests-only"}),
+        json.dumps({"jwt_secret": "test-secret-key-for-tests-only-min-32-bytes-long"}),
         encoding="utf-8",
     )
 

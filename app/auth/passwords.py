@@ -7,16 +7,19 @@ import hashlib
 import json
 import os
 from datetime import datetime, timedelta, timezone
-from typing import Optional
+from typing import NamedTuple, Optional
 
 import bcrypt as _bcrypt
-from jose import JWTError, jwt
+import jwt
+from jwt import PyJWTError
 
 import app.config.session as _session
 from app.config.data import SETTINGS_FILE
 from app.config.session import (
     JWT_ALGORITHM,
+    JWT_AUDIENCE,
     JWT_EXPIRE_HOURS,
+    JWT_ISSUER,
     JWT_SECRET_ENV,
     JWT_UNSAFE_SECRETS,
 )
@@ -30,7 +33,16 @@ def _load_settings() -> dict:
     return {}
 
 
+# RFC 7518 §3.2: para HS256 la clave debe tener al menos el tamaño del hash,
+# 32 bytes. Por debajo, la firma es más débil de lo que su nombre promete.
+_MIN_SECRET_BYTES = 32
+
+# El aviso se emite una vez por proceso: _secret() se llama en cada petición.
+_secreto_corto_avisado = False
+
+
 def _secret() -> str:
+    global _secreto_corto_avisado
     env_val = os.environ.get(JWT_SECRET_ENV)
     secret = env_val or _load_settings().get("jwt_secret", "")
     if secret in JWT_UNSAFE_SECRETS:
@@ -38,6 +50,19 @@ def _secret() -> str:
             f"JWT secret no configurado. "
             f"Define la variable de entorno {JWT_SECRET_ENV} o establece "
             f"'jwt_secret' en data/settings.json antes de arrancar."
+        )
+    if len(secret.encode("utf-8")) < _MIN_SECRET_BYTES and not _secreto_corto_avisado:
+        # Avisa, no aborta: un secreto corto que ya está en uso firma todas las
+        # sesiones vivas y cifra las API keys guardadas, así que fallar aquí
+        # dejaría la instalación inarrancable en vez de mejorarla. python-jose
+        # no decía nada de esto; PyJWT sí, y por eso se ve ahora.
+        _secreto_corto_avisado = True
+        from app.utils import flog
+
+        flog.warning(
+            f"[auth] {JWT_SECRET_ENV} tiene {len(secret.encode('utf-8'))} bytes; "
+            f"RFC 7518 recomienda al menos {_MIN_SECRET_BYTES} para HS256. "
+            "Genera uno más largo y rota cuando puedas."
         )
     return secret
 
@@ -89,69 +114,85 @@ def create_token(username: str, group_id: Optional[str] = None) -> str:
         "gid": group_id or username,  # group personal = username
         "iat": now,  # A2: issued-at para invalidación por cambio de contraseña
         "exp": expire,
+        "iss": JWT_ISSUER,
+        "aud": JWT_AUDIENCE,
     }
     return jwt.encode(payload, _secret(), algorithm=JWT_ALGORITHM)
 
 
-def decode_token(token: str) -> Optional[str]:
-    """Return the username or None if the token is invalid/expired."""
+def _claims(token: str) -> Optional[dict]:
+    """Payload de un token verificado, o None si no es de fiar.
+
+    Un único punto para verificar firma, expiración y procedencia; antes las
+    cuatro funciones de abajo repetían el mismo `try/except` y cada una podía
+    quedarse atrás al cambiar las reglas.
+
+    ``iss``/``aud`` se validan solo cuando el token los trae. Se empezaron a
+    emitir con la migración a PyJWT, así que exigirlos habría invalidado de
+    golpe todas las sesiones abiertas. Pasadas ``JWT_EXPIRE_HOURS`` desde el
+    despliegue no queda ningún token sin ellos y se pueden volver obligatorios
+    (pasando ``issuer=``/``audience=`` a ``jwt.decode`` y quitando estas dos
+    comprobaciones).
+    """
     try:
-        data = jwt.decode(token, _secret(), algorithms=[JWT_ALGORITHM])
-        return data.get("sub")
-    except JWTError:
+        # verify_aud=False porque la comprobación se hace abajo, tolerando su
+        # ausencia; PyJWT, si se le pasa `audience`, exige que el claim exista.
+        data = jwt.decode(
+            token,
+            _secret(),
+            algorithms=[JWT_ALGORITHM],
+            options={"verify_aud": False},
+        )
+    except PyJWTError:
         return None
+    emisor = data.get("iss")
+    if emisor is not None and emisor != JWT_ISSUER:
+        return None
+    audiencia = data.get("aud")
+    if audiencia is not None and audiencia != JWT_AUDIENCE:
+        return None
+    return data
 
 
-def decode_token_with_iat(token: str) -> tuple[Optional[str], Optional[float]]:
-    """Return (username, iat_epoch) o (None, None) si el token es inválido.
+def _iat_epoch(data: dict) -> Optional[float]:
+    """`iat` como epoch float. PyJWT lo devuelve numérico; jose daba datetime."""
+    iat = data.get("iat")
+    if isinstance(iat, datetime):
+        return iat.timestamp()
+    return float(iat) if iat is not None else None
 
-    El campo ``iat`` (issued-at) se usa en ``require_auth`` para invalidar
-    sesiones cuyo token fue emitido antes de un cambio de contraseña.
+
+class TokenClaims(NamedTuple):
+    """Lo que un token dice de quien lo presenta, ya verificado.
+
+    Sustituye a las cuatro `decode_*` que devolvían tuplas de distinto tamaño
+    (username; +iat; +group_id; los tres) y repetían el mismo cuerpo. Dos de
+    ellas no tenían un solo llamador fuera de los tests.
     """
-    try:
-        data = jwt.decode(token, _secret(), algorithms=[JWT_ALGORITHM])
-        iat = data.get("iat")
-        # python-jose puede devolver iat como datetime o como int; normalizamos a float
-        if isinstance(iat, datetime):
-            iat = iat.timestamp()
-        elif iat is not None:
-            iat = float(iat)
-        return data.get("sub"), iat
-    except JWTError:
-        return None, None
+
+    username: str
+    group_id: str
+    iat: Optional[float]
 
 
-def decode_group_token(token: str) -> tuple[Optional[str], Optional[str]]:
-    """Return (username, group_id). group_id defaults to username if not present."""
-    try:
-        data = jwt.decode(token, _secret(), algorithms=[JWT_ALGORITHM])
-        username = data.get("sub")
-        legacy_group_claim = "w" + "id"
-        group_id = data.get("gid") or data.get(legacy_group_claim) or username
-        return username, group_id
-    except JWTError:
-        return None, None
+def decode_claims(token: str) -> Optional[TokenClaims]:
+    """Claims verificados del token, o None si no es de fiar.
 
-
-def decode_group_token_full(
-    token: str,
-) -> tuple[Optional[str], Optional[str], Optional[float]]:
-    """Return (username, group_id, iat_epoch).
-
-    Versión extendida de ``decode_group_token`` que también extrae el campo
-    ``iat`` (issued-at) necesario para invalidar sesiones tras cambio de
-    contraseña (C1).
+    `group_id` cae al nombre de usuario cuando el token no lo trae: el group
+    personal de cada usuario es él mismo.
     """
-    try:
-        data = jwt.decode(token, _secret(), algorithms=[JWT_ALGORITHM])
-        username = data.get("sub")
-        legacy_group_claim = "w" + "id"
-        group_id = data.get("gid") or data.get(legacy_group_claim) or username
-        iat = data.get("iat")
-        if isinstance(iat, datetime):
-            iat = iat.timestamp()
-        elif iat is not None:
-            iat = float(iat)
-        return username, group_id, iat
-    except JWTError:
-        return None, None, None
+    data = _claims(token)
+    if not data:
+        return None
+    username = data.get("sub")
+    if not username:
+        return None
+    legacy_group_claim = "w" + "id"
+    group_id = data.get("gid") or data.get(legacy_group_claim) or username
+    return TokenClaims(username, group_id, _iat_epoch(data))
+
+
+def decode_token(token: str) -> Optional[str]:
+    """El nombre de usuario, o None si el token es inválido o ha expirado."""
+    claims = decode_claims(token)
+    return claims.username if claims else None

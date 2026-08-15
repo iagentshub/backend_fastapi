@@ -62,29 +62,26 @@ def test_decode_token_empty():
     assert decode_token("") is None
 
 
-# ── decode_group_token — token inválido ────────────────────────────────────
+# ── decode_claims — token inválido ─────────────────────────────────────────
 
-def test_decode_group_token_invalid():
-    from app.auth.auth import decode_group_token
-    user, group = decode_group_token("garbage.token.here")
-    assert user is None
-    assert group is None
+def test_decode_claims_invalid():
+    from app.auth.auth import decode_claims
+    assert decode_claims("garbage.token.here") is None
 
 
-def test_decode_group_token_valid(patch_data_dir):
-    from app.auth.auth import create_token, decode_group_token
-    token = create_token("alice", "group-123")
-    user, group = decode_group_token(token)
-    assert user == "alice"
-    assert group == "group-123"
+def test_decode_claims_valid(patch_data_dir):
+    from app.auth.auth import create_token, decode_claims
+    claims = decode_claims(create_token("alice", "group-123"))
+    assert claims.username == "alice"
+    assert claims.group_id == "group-123"
+    assert claims.iat is not None
 
 
-def test_decode_group_token_defaults_to_username(patch_data_dir):
-    from app.auth.auth import create_token, decode_group_token
-    token = create_token("bob")
-    user, group = decode_group_token(token)
-    assert user == "bob"
-    assert group == "bob"
+def test_decode_claims_group_defaults_to_username(patch_data_dir):
+    from app.auth.auth import create_token, decode_claims
+    claims = decode_claims(create_token("bob"))
+    assert claims.username == "bob"
+    assert claims.group_id == "bob"
 
 
 # ── admin_update_user ──────────────────────────────────────────────────────────

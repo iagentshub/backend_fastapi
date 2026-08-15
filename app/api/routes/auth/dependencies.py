@@ -144,13 +144,13 @@ async def _identify(
         created = _parse_ts(pat.get("created_at"))
         return pat["username"], created.timestamp() if created else None, None
 
-    from app.auth.passwords import decode_group_token_full
+    from app.auth.passwords import decode_claims
 
     if ga_token:
-        username, gid, token_iat = decode_group_token_full(ga_token)
-        if not username:
+        claims = decode_claims(ga_token)
+        if not claims:
             raise APIError(401, "invalid_token", "Token inválido o expirado")
-        return username, token_iat, gid
+        return claims.username, claims.iat, claims.group_id
 
     raise APIError(401, "not_authenticated", "No autenticado")
 

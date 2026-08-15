@@ -5,6 +5,14 @@ import os
 
 JWT_SECRET_ENV   = "GAIA_AGENTS_SECRET"
 JWT_ALGORITHM    = "HS256"
+
+# Procedencia del token. No aportan nada mientras el secreto se use para una
+# sola cosa, pero son la defensa estándar contra reutilizar un token emitido
+# por otro sistema que comparta secreto (p. ej. si en el futuro se firma algo
+# más con la misma clave). Se emiten desde la migración a PyJWT; la validación
+# es tolerante con los tokens anteriores, que no los llevan.
+JWT_ISSUER       = "iagentshub"
+JWT_AUDIENCE     = "iagentshub-api"
 JWT_EXPIRE_HOURS = int(os.getenv("GAIA_JWT_EXPIRE_HOURS", "12"))
 JWT_MAX_AGE_SECONDS = JWT_EXPIRE_HOURS * 60 * 60
 

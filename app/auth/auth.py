@@ -17,13 +17,12 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
 
 from app.auth.passwords import (  # noqa: F401 - re-exportadas para compat
+    TokenClaims,
     _hash_token,
     _secret,
     create_token,
-    decode_group_token,
-    decode_group_token_full,
+    decode_claims,
     decode_token,
-    decode_token_with_iat,
     hash_password,
     hash_password_async,
     verify_password,
