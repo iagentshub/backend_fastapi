@@ -20,6 +20,7 @@ from app.models.request_bodies import AgentChatBody
 from app.services.agent_access import agent_access
 from app.services.agent_presentation import apply_agent_locale
 from app.services.chat import stream_chat
+from app.services.llm_executor import try_acquire_llm_lease
 from app.services.llm_routing import stream_orchestrated_chat
 from app.storage.agent_storage import AgentStorage
 from app.storage.chat import ChatStorage
@@ -216,6 +217,20 @@ async def chat(
                     "No tienes permiso para usar una conexión de la orquestación",
                 )
 
+    # Reservar antes de crear StreamingResponse permite responder con un 429
+    # real. Si se esperase a iterar el generador, las cabeceras SSE ya serían 200.
+    llm_lease = try_acquire_llm_lease()
+    if llm_lease is None:
+        raise APIError(
+            429,
+            "llm_capacity_exceeded",
+            (
+                "El servidor está atendiendo el máximo de conversaciones "
+                "simultáneas. Inténtalo de nuevo en unos segundos."
+            ),
+            headers={"Retry-After": "5"},
+        )
+
     from starlette.background import BackgroundTask
 
     done_event: List[dict] = []
@@ -223,51 +238,58 @@ async def chat(
     history_user_id = None if is_guest(user) else user
 
     async def _gen():
-        streamer = (
-            stream_chat(
-                a,
-                conn,
-                history,
-                _skills,
-                memory_store,
-                knowledge_store,
-                _chat,
-                history_user_id,
-                conversation_id or None,
-                knowledge_pack_storage=None if is_guest(user) else _knowledge_packs,
-                prompt_storage=None if is_guest(user) else _prompts,
-                tool_storage=None if is_guest(user) else _tools,
-                attached_knowledge=attached_knowledge,
+        try:
+            streamer = (
+                stream_chat(
+                    a,
+                    conn,
+                    history,
+                    _skills,
+                    memory_store,
+                    knowledge_store,
+                    _chat,
+                    history_user_id,
+                    conversation_id or None,
+                    knowledge_pack_storage=None if is_guest(user) else _knowledge_packs,
+                    prompt_storage=None if is_guest(user) else _prompts,
+                    tool_storage=None if is_guest(user) else _tools,
+                    attached_knowledge=attached_knowledge,
+                    llm_lease=llm_lease,
+                )
+                if orchestration is None
+                else stream_orchestrated_chat(
+                    a,
+                    orchestration,
+                    orchestration_connections,
+                    history,
+                    _skills,
+                    memory_store,
+                    knowledge_store,
+                    _chat,
+                    history_user_id,
+                    conversation_id or None,
+                    knowledge_pack_storage=None if is_guest(user) else _knowledge_packs,
+                    prompt_storage=_prompts,
+                    tool_storage=_tools,
+                    attached_knowledge=attached_knowledge,
+                    llm_lease=llm_lease,
+                )
             )
-            if orchestration is None
-            else stream_orchestrated_chat(
-                a,
-                orchestration,
-                orchestration_connections,
-                history,
-                _skills,
-                memory_store,
-                knowledge_store,
-                _chat,
-                history_user_id,
-                conversation_id or None,
-                knowledge_pack_storage=None if is_guest(user) else _knowledge_packs,
-                prompt_storage=_prompts,
-                tool_storage=_tools,
-                attached_knowledge=attached_knowledge,
-            )
-        )
-        async for chunk in streamer:
-            yield chunk
-            if chunk.startswith("data: "):
-                try:
-                    ev = json.loads(chunk[6:].strip())
-                    if ev.get("type") == "done" or (
-                        ev.get("type") == "error" and ev.get("usage_by_connection")
-                    ):
-                        done_event.append(ev)
-                except (json.JSONDecodeError, AttributeError) as exc:
-                    flog.warning(f"[agents] Evento SSE inválido para {agent_id}: {exc}")
+            async for chunk in streamer:
+                yield chunk
+                if chunk.startswith("data: "):
+                    try:
+                        ev = json.loads(chunk[6:].strip())
+                        if ev.get("type") == "done" or (
+                            ev.get("type") == "error" and ev.get("usage_by_connection")
+                        ):
+                            done_event.append(ev)
+                    except (json.JSONDecodeError, AttributeError) as exc:
+                        flog.warning(
+                            f"[agents] Evento SSE inválido para {agent_id}: {exc}"
+                        )
+        finally:
+            llm_lease.release_if_unused()
 
     async def _on_done():
         if not done_event:

@@ -20,6 +20,36 @@ Toda la configuración se realiza mediante variables de entorno. Estas se establ
 | Puerto y host | Dónde escucha el servidor. |
 | Orígenes permitidos | Dominios desde los que se permite el acceso a la API. |
 | Duración de sesión | Tiempo en horas que una sesión permanece activa. |
+| Concurrencia LLM | Número máximo de llamadas simultáneas a proveedores por worker. |
+| Escritura de logs | Tamaño de lote e intervalo de volcado del registro de actividad. |
+
+## Escritura de logs
+
+Los registros se escriben en la base de datos **por lotes**, no uno a uno: se
+agrupan y se vuelcan en una sola transacción cuando se llena el lote o cuando
+vence el intervalo, lo que ocurra antes.
+
+| Variable | Por defecto | Descripción |
+|---|---|---|
+| `GAIA_LOG_BATCH_SIZE` | `50` | Registros por transacción. `1` restaura la escritura inmediata. |
+| `GAIA_LOG_FLUSH_INTERVAL` | `1.0` | Segundos máximos que un registro puede esperar en memoria. |
+
+Los mensajes de nivel `ERROR` se escriben siempre al instante, sin esperar al
+lote. El visor de `/api/admin/logs` fuerza el volcado antes de consultar, así que
+muestra siempre la actividad completa.
+
+Baja `GAIA_LOG_BATCH_SIZE` solo si necesitas durabilidad estricta de cada línea:
+con el valor por defecto, una caída abrupta del proceso puede perder como mucho
+el último segundo de logs de diagnóstico.
+
+## Concurrencia LLM
+
+`GAIA_LLM_MAX_THREADS` controla el executor dedicado al streaming con proveedores
+LLM. El valor predeterminado es `16` por worker. Al alcanzar el límite, los chats
+nuevos reciben HTTP 429 con `Retry-After` en lugar de ocupar el executor general o
+crecer en una cola sin límite. Auméntalo solo después de medir memoria, descriptores
+de fichero y límites de los proveedores.
+
 ## Secreto de sesión
 
 Debe generarse de forma aleatoria antes del primer arranque y no cambiarse mientras haya sesiones activas. Si no se configura, el sistema usa un valor almacenado en los datos de la plataforma — aceptable en desarrollo, no en producción.

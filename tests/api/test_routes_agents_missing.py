@@ -478,6 +478,23 @@ def test_chat_streams_sse_response(admin_client):
     assert "text/event-stream" in r.headers.get("content-type", "")
 
 
+def test_chat_capacity_exhausted_returns_429_before_sse(admin_client):
+    conn = _create_connection(admin_client)
+    agent = _create_agent(
+        admin_client, {"name": "Busy Stream Agent", "connection_id": conn["id"]}
+    )
+
+    with patch("app.api.routes.agent_chat.try_acquire_llm_lease", return_value=None):
+        response = admin_client.post(
+            f"/api/agents/{agent['id']}/chat",
+            json={"messages": [{"role": "user", "content": "Hola"}]},
+        )
+
+    assert response.status_code == 429
+    assert response.headers["retry-after"] == "5"
+    assert response.json()["detail"]["code"] == "llm_capacity_exceeded"
+
+
 def test_chat_malformed_sse_event_warns_and_continues(admin_client):
     conn = _create_connection(admin_client)
     agent = _create_agent(

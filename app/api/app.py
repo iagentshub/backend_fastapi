@@ -55,6 +55,7 @@ from app.middleware.licenses import LicenseGateMiddleware
 from app.middleware.locale import LocaleMiddleware
 from app.middleware.request_logging import RequestLoggerMiddleware
 from app.middleware.security import SecurityHeadersMiddleware
+from app.services.llm_executor import shutdown_llm_executor
 from app.services.workflow_run_executor import (
     stop_workflow_runs,
     workflow_run_maintenance_loop,
@@ -111,6 +112,7 @@ async def _lifespan(app: FastAPI):
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
         await stop_workflow_runs()
+        shutdown_llm_executor()
         await close_db_pool()
         flog.info("iAgents Hub detenido")
 

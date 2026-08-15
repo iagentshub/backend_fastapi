@@ -3,11 +3,12 @@
 from __future__ import annotations
 
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from app.services.chat import _do_claude_stream, stream_chat
+from app.services.llm_executor import LLMCapacityError
 from tests.services.chat._helpers import (
     _make_agent,
     _make_conn,
@@ -67,6 +68,30 @@ async def test_openai_done_event_includes_tokens():
     done_event = next(e for e in events if '"type": "done"' in e)
     data = json.loads(done_event.removeprefix("data: ").strip())
     assert data["tokens"] == {"in": 10, "out": 5}
+
+
+async def test_capacity_exhausted_emite_error_sse_controlado():
+    agent = _make_agent("openai")
+    conn = _make_conn("openai")
+
+    with (
+        patch("app.services.chat._assert_provider_url"),
+        patch(
+            "app.services.chat.run_llm_blocking",
+            new=AsyncMock(side_effect=LLMCapacityError("sin cupo")),
+        ),
+    ):
+        events = [
+            event
+            async for event in stream_chat(
+                agent, conn, [{"role": "user", "content": "Hi"}], _skill_storage()
+            )
+        ]
+
+    error = next(event for event in events if '"type": "error"' in event)
+    data = json.loads(error.removeprefix("data: ").strip())
+    assert data["code"] == "llm_capacity_exceeded"
+    assert "máximo de conversaciones" in data["message"]
 
 
 def _sse_claude_response(
@@ -276,7 +301,9 @@ async def test_ollama_emite_cada_trozo_segun_llega():
     assert emitidos == ["Hol", "a m", "und", "o"]
 
     done_event = next(e for e in events if '"type": "done"' in e)
-    assert json.loads(done_event.removeprefix("data: ").strip())["reply"] == "Hola mundo"
+    assert (
+        json.loads(done_event.removeprefix("data: ").strip())["reply"] == "Hola mundo"
+    )
 
 
 async def test_openai_usage_chunk_with_empty_choices():

@@ -20,6 +20,36 @@ All configuration is done through environment variables. These are set by the de
 | Port and host | Where the server listens. |
 | Allowed origins | Domains permitted to access the API. |
 | Session duration | How long in hours a session remains active. |
+| LLM concurrency | Maximum simultaneous provider calls per worker. |
+| Log writes | Batch size and flush interval for the activity log. |
+
+## Log writes
+
+Log records are written to the database **in batches**, not one by one: they are
+grouped and flushed in a single transaction when the batch fills up or when the
+interval elapses, whichever comes first.
+
+| Variable | Default | Description |
+|---|---|---|
+| `GAIA_LOG_BATCH_SIZE` | `50` | Records per transaction. `1` restores immediate writes. |
+| `GAIA_LOG_FLUSH_INTERVAL` | `1.0` | Maximum seconds a record may wait in memory. |
+
+`ERROR` level messages are always written immediately, without waiting for the
+batch. The `/api/admin/logs` viewer forces a flush before querying, so it always
+shows complete activity.
+
+Lower `GAIA_LOG_BATCH_SIZE` only if you need strict per-line durability: with the
+default, an abrupt process crash may lose at most the last second of diagnostic
+logs.
+
+## LLM concurrency
+
+`GAIA_LLM_MAX_THREADS` controls the dedicated executor used for LLM provider
+streaming. It defaults to `16` per worker. Once the limit is reached, new chats
+receive HTTP 429 with `Retry-After` instead of occupying the general executor or
+growing an unbounded queue. Increase it only after measuring memory, file
+descriptors, and provider limits.
+
 ## Session secret
 
 Must be generated randomly before the first startup and not changed while sessions are active. If not configured, the system uses a value stored in the platform data — acceptable in development, not in production.
