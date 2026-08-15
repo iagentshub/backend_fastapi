@@ -33,6 +33,11 @@ vence el intervalo, lo que ocurra antes.
 |---|---|---|
 | `GAIA_LOG_BATCH_SIZE` | `50` | Registros por transacción. `1` restaura la escritura inmediata. |
 | `GAIA_LOG_FLUSH_INTERVAL` | `1.0` | Segundos máximos que un registro puede esperar en memoria. |
+| `GAIA_LOG_HEALTH` | *(desactivado)* | Ponlo a `1` para volver a registrar los health checks correctos. |
+
+Las sondas de vida (`/api/health`) **no se registran cuando responden bien**: el
+`HEALTHCHECK` del contenedor las dispara cada 30 s y con varios workers llenaban
+la tabla de líneas idénticas. Si el health check **falla**, sí se registra.
 
 Los mensajes de nivel `ERROR` se escriben siempre al instante, sin esperar al
 lote. El visor de `/api/admin/logs` fuerza el volcado antes de consultar, así que

@@ -33,6 +33,11 @@ interval elapses, whichever comes first.
 |---|---|---|
 | `GAIA_LOG_BATCH_SIZE` | `50` | Records per transaction. `1` restores immediate writes. |
 | `GAIA_LOG_FLUSH_INTERVAL` | `1.0` | Maximum seconds a record may wait in memory. |
+| `GAIA_LOG_HEALTH` | *(disabled)* | Set to `1` to log successful health checks again. |
+
+Liveness probes (`/api/health`) are **not logged when they succeed**: the
+container `HEALTHCHECK` fires every 30 s and, with several workers, they filled
+the table with identical lines. Failing health checks *are* logged.
 
 `ERROR` level messages are always written immediately, without waiting for the
 batch. The `/api/admin/logs` viewer forces a flush before querying, so it always

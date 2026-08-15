@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import csv
 import io
 import json
@@ -76,6 +77,11 @@ async def list_logs(
     _: str = Depends(require_admin),
 ) -> dict:
     """Logs filtrados y paginados."""
+    # La escritura en app_logs es por lotes (ver app/utils/flog.py), así que sin
+    # esto el visor omitiría hasta el último segundo de actividad — justo lo que
+    # busca quien abre el panel para ver qué acaba de pasar. Va en un hilo
+    # porque el volcado es síncrono y no puede bloquear el event loop.
+    await asyncio.to_thread(flog.flush)
     where, params = _build_where(date_from, date_to, ip, username, level, source, q)
     async with open_db() as conn:
         total = (

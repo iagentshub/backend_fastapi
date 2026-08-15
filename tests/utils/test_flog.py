@@ -225,6 +225,7 @@ def test_db_handler_inserta_fila(tmp_path):
             source="BE",
         )
     )
+    h.flush()  # la escritura es por lotes: sin esto sigue en el buffer
     conn = sqlite3.connect(str(db))
     rows = conn.execute("SELECT level, summary, ip, username FROM app_logs").fetchall()
     conn.close()
@@ -241,6 +242,7 @@ def test_db_handler_fecha_y_hora(tmp_path):
     db = tmp_path / "logs.sqlite3"
     h = _DBHandler(db)
     h.emit(_make_record(logging.INFO, "ts test", ip="-", username="-"))
+    h.flush()
     conn = sqlite3.connect(str(db))
     row = conn.execute("SELECT date, time, ts FROM app_logs").fetchone()
     conn.close()
@@ -254,6 +256,7 @@ def test_db_handler_multiples_entradas(tmp_path):
     h = _DBHandler(db)
     for i in range(5):
         h.emit(_make_record(logging.INFO, f"entrada {i}", ip="-", username="-"))
+    h.flush()
     conn = sqlite3.connect(str(db))
     count = conn.execute("SELECT COUNT(*) FROM app_logs").fetchone()[0]
     conn.close()
@@ -287,6 +290,7 @@ def test_db_handler_source_por_defecto_be(tmp_path):
     h = _DBHandler(db)
     record = logging.LogRecord("flog", logging.INFO, "", 0, "msg", (), None)
     h.emit(record)
+    h.flush()
     conn = sqlite3.connect(str(db))
     row = conn.execute("SELECT source FROM app_logs").fetchone()
     conn.close()
@@ -297,8 +301,10 @@ def test_db_handler_reutiliza_la_conexion(tmp_path):
     """Una sola conexión para todos los registros, no una por emit."""
     h = _DBHandler(tmp_path / "logs.sqlite3")
     h.emit(_make_record(logging.INFO, "uno"))
+    h.flush()
     primera = h._conn
     h.emit(_make_record(logging.INFO, "dos"))
+    h.flush()
     assert h._conn is primera is not None
 
 
@@ -307,10 +313,13 @@ def test_db_handler_reconecta_si_la_conexion_muere(tmp_path):
     db = tmp_path / "logs.sqlite3"
     h = _DBHandler(db)
     h.emit(_make_record(logging.INFO, "antes"))
+    h.flush()
 
     h._conn.close()  # simula PG caído o fichero retirado bajo los pies
-    h.emit(_make_record(logging.INFO, "durante"))  # falla y tira la conexión
-    h.emit(_make_record(logging.INFO, "despues"))  # reconecta y escribe
+    h.emit(_make_record(logging.INFO, "durante"))
+    h.flush()  # falla, reconecta y reintenta el lote
+    h.emit(_make_record(logging.INFO, "despues"))
+    h.flush()
 
     conn = sqlite3.connect(str(db))
     resumenes = [r[0] for r in conn.execute("SELECT summary FROM app_logs")]
@@ -322,10 +331,12 @@ def test_db_handler_no_ejecuta_ddl_por_registro(tmp_path):
     """El esquema se crea en _init_schema, no en cada emit (era 4 DDL por request)."""
     h = _DBHandler(tmp_path / "logs.sqlite3")
     h.emit(_make_record(logging.INFO, "primero"))
+    h.flush()
 
     ejecutadas: list[str] = []
     h._conn.set_trace_callback(ejecutadas.append)
     h.emit(_make_record(logging.INFO, "segundo"))
+    h.flush()
     h._conn.set_trace_callback(None)
 
     assert ejecutadas, "el trace no capturó nada: el test no está probando nada"
@@ -360,6 +371,7 @@ def test_el_camino_completo_cola_a_bd_conserva_los_campos(tmp_path):
         )
     finally:
         listener.stop()  # vacía la cola antes de devolver el control
+        h.close()  # y close() vuelca el buffer del handler
 
     conn = sqlite3.connect(str(db))
     row = conn.execute(
@@ -372,6 +384,198 @@ def test_el_camino_completo_cola_a_bd_conserva_los_campos(tmp_path):
     assert row[2] == "andres"
     assert row[3] == "FE"
     assert row[4] == "WARNING"
+
+
+# ── Escritura por lotes ────────────────────────────────────────────────────────
+
+
+def _filas(db) -> list[str]:
+    conn = sqlite3.connect(str(db))
+    try:
+        return [r[0] for r in conn.execute("SELECT summary FROM app_logs ORDER BY ts")]
+    finally:
+        conn.close()
+
+
+def test_lote_no_escribe_hasta_completarse(tmp_path):
+    """El punto entero de la mejora: N registros no son N transacciones."""
+    db = tmp_path / "logs.sqlite3"
+    h = _DBHandler(db, batch_size=3, flush_interval=0)
+    h.emit(_make_record(logging.INFO, "uno"))
+    h.emit(_make_record(logging.INFO, "dos"))
+    assert _filas(db) == [], "escribió antes de completar el lote"
+
+
+def test_lote_escribe_al_completarse(tmp_path):
+    db = tmp_path / "logs.sqlite3"
+    h = _DBHandler(db, batch_size=3, flush_interval=0)
+    for i in range(3):
+        h.emit(_make_record(logging.INFO, f"n{i}"))
+    assert _filas(db) == ["n0", "n1", "n2"]
+
+
+def test_lote_conserva_orden_y_contenido(tmp_path):
+    """executemany no debe reordenar ni mezclar campos entre filas."""
+    db = tmp_path / "logs.sqlite3"
+    h = _DBHandler(db, batch_size=10, flush_interval=0)
+    for i in range(10):
+        h.emit(_make_record(logging.INFO, f"linea {i}", ip=f"10.0.0.{i}", username=f"u{i}"))
+    conn = sqlite3.connect(str(db))
+    filas = conn.execute("SELECT summary, ip, username FROM app_logs ORDER BY ts").fetchall()
+    conn.close()
+    assert len(filas) == 10
+    for i, (resumen, ip, usuario) in enumerate(filas):
+        assert resumen == f"linea {i}"
+        assert ip == f"10.0.0.{i}"
+        assert usuario == f"u{i}"
+
+
+def test_un_solo_commit_por_lote(tmp_path):
+    """Cinco registros, un COMMIT. Antes eran cinco."""
+    db = tmp_path / "logs.sqlite3"
+    h = _DBHandler(db, batch_size=5, flush_interval=0)
+    h.emit(_make_record(logging.INFO, "calienta"))  # abre la conexión
+    h.flush()
+
+    ejecutadas: list[str] = []
+    h._conn.set_trace_callback(ejecutadas.append)
+    for i in range(5):
+        h.emit(_make_record(logging.INFO, f"x{i}"))
+    h._conn.set_trace_callback(None)
+
+    commits = [sql for sql in ejecutadas if "COMMIT" in sql.upper()]
+    assert len(commits) == 1, f"esperaba 1 commit para 5 registros, hubo {len(commits)}"
+
+
+def test_error_no_espera_al_lote(tmp_path):
+    """Un ERROR es lo que alguien va a buscar ya, y puede preceder a una caída."""
+    db = tmp_path / "logs.sqlite3"
+    h = _DBHandler(db, batch_size=100, flush_interval=0)
+    h.emit(_make_record(logging.INFO, "rutina"))
+    assert _filas(db) == [], "el INFO no debería haber forzado la escritura"
+    h.emit(_make_record(logging.ERROR, "algo explotó"))
+    assert _filas(db) == ["rutina", "algo explotó"]
+
+
+def test_close_vuelca_lo_pendiente(tmp_path):
+    """Al salir del proceso, el buffer suele tener el traceback que lo explica."""
+    db = tmp_path / "logs.sqlite3"
+    h = _DBHandler(db, batch_size=100, flush_interval=0)
+    h.emit(_make_record(logging.INFO, "ultimo aliento"))
+    h.close()
+    assert _filas(db) == ["ultimo aliento"]
+
+
+def test_flush_periodico_escribe_sin_intervencion(tmp_path):
+    """Un registro suelto no puede quedarse en memoria esperando tráfico."""
+    import time as _time
+
+    db = tmp_path / "logs.sqlite3"
+    h = _DBHandler(db, batch_size=100, flush_interval=0.05)
+    try:
+        h.emit(_make_record(logging.INFO, "solitario"))
+        limite = _time.monotonic() + 3
+        while not _filas(db) and _time.monotonic() < limite:
+            _time.sleep(0.02)
+        assert _filas(db) == ["solitario"], "el hilo de volcado no escribió"
+    finally:
+        h.close()
+
+
+def test_buffer_no_crece_sin_limite(tmp_path, monkeypatch):
+    """Con la BD caída, el logger no se come la memoria del proceso."""
+    import app.config.logging as cfg
+
+    monkeypatch.setattr(cfg, "LOG_MAX_BUFFER", 10)
+    db = tmp_path / "logs.sqlite3"
+    h = _DBHandler(db, batch_size=1000, flush_interval=0)
+    for i in range(50):
+        h.emit(_make_record(logging.INFO, f"r{i}"))
+    assert len(h._buffer) <= 10
+    assert h._descartados == 40
+
+
+def test_batch_size_1_escribe_inmediato(tmp_path):
+    """La vía de escape para quien quiera durabilidad estricta."""
+    db = tmp_path / "logs.sqlite3"
+    h = _DBHandler(db, batch_size=1, flush_interval=0)
+    h.emit(_make_record(logging.INFO, "al momento"))
+    assert _filas(db) == ["al momento"]
+
+
+def test_batch_size_1_no_arranca_hilo(tmp_path):
+    """Sin lotes no hay nada que volcar periódicamente: el hilo sobra."""
+    h = _DBHandler(tmp_path / "logs.sqlite3", batch_size=1, flush_interval=1.0)
+    assert h._flusher is None
+
+
+def test_registro_malformado_no_tumba_el_lote(tmp_path):
+    """Un mensaje con args mal emparejados no puede perder los demás."""
+    db = tmp_path / "logs.sqlite3"
+    h = _DBHandler(db, batch_size=10, flush_interval=0)
+    h.emit(_make_record(logging.INFO, "bueno 1"))
+    malo = logging.LogRecord("flog", logging.INFO, "", 0, "%d y %d", (1,), None)
+    h.handleError = lambda record: None  # silencia el aviso a stderr
+    h.emit(malo)
+    h.emit(_make_record(logging.INFO, "bueno 2"))
+    h.flush()
+    assert _filas(db) == ["bueno 1", "bueno 2"]
+
+
+# ── Resolución de niveles (app/config/logging.py) ──────────────────────────────
+
+
+def test_nivel_ok_unico_en_config_y_flog():
+    """Un solo sitio define el 25: la config. flog solo le pone nombre."""
+    import app.config.logging as cfg
+
+    assert flog_mod._OK == cfg.LOG_LEVEL_OK == 25
+    assert logging.getLevelName(cfg.LOG_LEVEL_OK) == "OK"
+
+
+def test_resuelve_el_nivel_ok_propio_del_proyecto():
+    """`logging.getLevelName("OK")` no serviría: flog registra el nombre
+    DESPUÉS de importar la config. El mapa propio no depende de ese orden."""
+    import app.config.logging as cfg
+
+    assert cfg.LOG_LEVEL_NAMES["OK"] == 25
+
+
+@pytest.mark.parametrize(
+    "nombre,esperado",
+    [
+        ("ERROR", logging.ERROR),
+        ("error", logging.ERROR),
+        ("  Warning  ", logging.WARNING),
+        ("WARN", logging.WARNING),
+        ("CRITICAL", logging.CRITICAL),
+        ("DEBUG", logging.DEBUG),
+    ],
+)
+def test_nombres_de_nivel_admitidos(nombre, esperado):
+    import app.config.logging as cfg
+
+    assert cfg.LOG_LEVEL_NAMES.get(nombre.strip().upper(), logging.ERROR) == esperado
+
+
+def test_nivel_mal_escrito_cae_a_error():
+    """Un typo en la variable no puede dejar los errores esperando en el buffer."""
+    import app.config.logging as cfg
+
+    assert cfg.LOG_LEVEL_NAMES.get("ERORR", logging.ERROR) == logging.ERROR
+
+
+def test_nivel_inmediato_configurable(tmp_path, monkeypatch):
+    """Bajarlo a WARNING hace que los avisos tampoco esperen al lote."""
+    import app.config.logging as cfg
+
+    monkeypatch.setattr(cfg, "LOG_IMMEDIATE_LEVEL", logging.WARNING)
+    db = tmp_path / "logs.sqlite3"
+    h = _DBHandler(db, batch_size=100, flush_interval=0)
+    h.emit(_make_record(logging.INFO, "rutina"))
+    assert _filas(db) == []
+    h.emit(_make_record(logging.WARNING, "aviso"))
+    assert _filas(db) == ["rutina", "aviso"]
 
 
 # ── log_db_path ────────────────────────────────────────────────────────────────
