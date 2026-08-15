@@ -7,6 +7,7 @@ from typing import Any, AsyncGenerator, Dict, List, Optional
 
 from app.models.agent import Agent
 from app.services.chat import stream_chat
+from app.services.llm_executor import LLMLease
 from app.utils import flog
 
 
@@ -102,6 +103,7 @@ async def _rank(
     orchestration: Dict[str, Any],
     connections: Dict[str, Dict[str, Any]],
     history: List[Dict[str, Any]],
+    llm_lease: LLMLease | None = None,
 ) -> tuple[List[str], Dict[str, str], Dict[str, Dict[str, int]], str | None]:
     configured = [str(item["connection_id"]) for item in orchestration["candidates"]]
     router_id = str(orchestration.get("router_connection_id") or "")
@@ -133,6 +135,7 @@ async def _rank(
                 }
             ],
             None,
+            llm_lease=llm_lease,
         ):
             event = _event(frame)
             if not event:
@@ -173,6 +176,7 @@ async def stream_orchestrated_chat(
     prompt_storage: Any = None,
     tool_storage: Any = None,
     attached_knowledge: Optional[List[Dict[str, Any]]] = None,
+    llm_lease: LLMLease | None = None,
 ) -> AsyncGenerator[str, None]:
     if not isinstance(agent, Agent):
         agent = Agent.from_dict(agent)
@@ -184,7 +188,7 @@ async def stream_orchestrated_chat(
     reasons: Dict[str, str] = {}
     if orchestration.get("mode") == "balanced":
         ranking, reasons, router_usage, router_error = await _rank(
-            agent, orchestration, connections, history
+            agent, orchestration, connections, history, llm_lease
         )
         usage_by_connection.update(router_usage)
         if router_error:
@@ -283,6 +287,7 @@ async def stream_orchestrated_chat(
                 prompt_storage=prompt_storage,
                 tool_storage=tool_storage,
                 attached_knowledge=attached_knowledge,
+                llm_lease=llm_lease,
             ):
                 event = _event(frame)
                 if event and event.get("type") == "token":

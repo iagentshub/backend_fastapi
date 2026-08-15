@@ -31,6 +31,11 @@ from app.config.providers import (
     PROVIDER_DEFAULT_MODELS,
 )
 from app.config.security import PRIVATE_HOST_PREFIXES, assert_safe_url
+from app.services.llm_executor import (
+    LLMCapacityError,
+    LLMLease,
+    run_llm_blocking,
+)
 from app.utils import flog
 from app.utils.safe_http import safe_urlopen
 
@@ -138,6 +143,7 @@ async def _stream_tokens(
     out: "list[tuple[str, int, int]]",
     fn: Callable[..., "tuple[str, int, int]"],
     *args: Any,
+    llm_lease: LLMLease | None = None,
 ) -> AsyncGenerator[str, None]:
     """Corre ``fn`` (bloqueante, urllib) en un hilo y va emitiendo su SSE.
 
@@ -156,7 +162,9 @@ async def _stream_tokens(
     def _on_token(token: str) -> None:
         loop.call_soon_threadsafe(token_queue.put_nowait, token)
 
-    provider_task = asyncio.create_task(asyncio.to_thread(fn, *args, _on_token))
+    provider_task = asyncio.create_task(
+        run_llm_blocking(fn, *args, _on_token, lease=llm_lease)
+    )
     last_heartbeat = loop.time()
     while not provider_task.done() or not token_queue.empty():
         try:
@@ -468,6 +476,7 @@ async def stream_chat(
     prompt_storage: Optional[_PromptStorage] = None,
     tool_storage: Optional[_ToolStorage] = None,
     attached_knowledge: Optional[List[Dict[str, Any]]] = None,
+    llm_lease: LLMLease | None = None,
 ) -> AsyncGenerator[str, None]:
     # asyncio estaba diferido aquí dentro. Es stdlib: no había ciclo que
     # romper, y _stream_tokens lo necesita a nivel de módulo.
@@ -727,7 +736,13 @@ async def stream_chat(
             # el cliente recibe actividad y el proxy no corta por inactividad.
             out: "list[tuple[str, int, int]]" = []
             async for frame in _stream_tokens(
-                out, _do_openai_stream_with_dns_retry, url, headers, payload, timeout
+                out,
+                _do_openai_stream_with_dns_retry,
+                url,
+                headers,
+                payload,
+                timeout,
+                llm_lease=llm_lease,
             ):
                 yield frame
             reply, tok_in, tok_out = out[0]
@@ -755,7 +770,13 @@ async def stream_chat(
             }
             out = []
             async for frame in _stream_tokens(
-                out, _do_claude_stream, url, headers, payload, timeout
+                out,
+                _do_claude_stream,
+                url,
+                headers,
+                payload,
+                timeout,
+                llm_lease=llm_lease,
             ):
                 yield frame
             reply, tok_in, tok_out = out[0]
@@ -776,7 +797,13 @@ async def stream_chat(
             ollama_api_key = str(conn.get("api_key") or "")
             out = []
             async for frame in _stream_tokens(
-                out, _do_ollama_call, host, payload_o, timeout, ollama_api_key
+                out,
+                _do_ollama_call,
+                host,
+                payload_o,
+                timeout,
+                ollama_api_key,
+                llm_lease=llm_lease,
             ):
                 yield frame
             reply, tok_in, tok_out = out[0]
@@ -794,6 +821,21 @@ async def stream_chat(
             {"type": "done", "reply": reply, "tokens": {"in": tok_in, "out": tok_out}}
         )
 
+    except LLMCapacityError:
+        flog.warning(
+            f"[chat] Capacidad LLM agotada ({conn_type})",
+            username=user_id or "-",
+        )
+        yield _sse(
+            {
+                "type": "error",
+                "code": "llm_capacity_exceeded",
+                "message": (
+                    "El servidor está atendiendo el máximo de conversaciones "
+                    "simultáneas. Inténtalo de nuevo en unos segundos."
+                ),
+            }
+        )
     except UnsafeProviderURL as exc:
         # La URL la escribió el propio usuario en su conexión: decírselo no
         # filtra nada y es la única forma de que sepa qué arreglar.
