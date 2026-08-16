@@ -44,23 +44,11 @@ class RateLimiter:
     ) -> None:
         if calls <= 0 or window <= 0:
             raise ValueError("calls y window deben ser mayores que cero")
-        # El contador vive en memoria del proceso y uvicorn arranca WORKERS
-        # procesos independientes, así que el límite efectivo era el declarado
-        # multiplicado por WORKERS (con el default de 4: 5 intentos de login
-        # se convertían en 20). Se reparte la cuota entre ellos.
-        #
-        # El reparto se redondea hacia ARRIBA, no hacia abajo: con calls=5 y 4
-        # workers, `5 // 4 = 1` dejaba un solo intento por proceso, así que
-        # quien se equivocaba una vez de contraseña y reintentaba sobre la misma
-        # conexión keep-alive recibía un 429 con Retry-After: 300. Afectaba a
-        # login, registro, alta de invitado y recuperación de contraseña, los
-        # cuatro con límite 5. Pasarse un poco del límite declarado (8 en el
-        # cluster en vez de 5) es preferible a bloquear al usuario legítimo.
-        #
-        # ponytail: sigue siendo por proceso y se pierde al reiniciar. Si el
-        # límite tiene que ser EXACTO —para el login probablemente deba serlo—
-        # el contador tiene que salir del proceso (Redis/BD), que es otra
-        # conversación.
+        # La cuota se reparte entre los WORKERS procesos y se redondea hacia
+        # ARRIBA: pasarse un poco del límite declarado es preferible a dejar un
+        # solo intento por proceso y bloquear al usuario legítimo.
+        # ponytail: sigue siendo por proceso y se pierde al reiniciar.
+        # Ver docs/adr/001-estado-en-memoria-con-multiples-workers.md
         if shared and not name:
             raise ValueError("Los limiters compartidos requieren un nombre estable")
         self._calls = calls if shared else max(_MIN_CALLS, math.ceil(calls / _WORKERS))

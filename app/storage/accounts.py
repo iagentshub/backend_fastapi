@@ -42,7 +42,8 @@ class AccountStorage:
                     d["provider"] = p.stem
                     await self.save(d, owner_id="admin")
                     p.rename(p.with_suffix(".migrated"))
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001
+                    # Migración fichero a fichero: uno corrupto no para el resto.
                     flog.warning(f"[accounts] Migración de {p.name} fallida: {exc}")
 
     async def _upsert_with_conn(

@@ -17,6 +17,9 @@ from __future__ import annotations
 import base64
 import hashlib
 
+from cryptography.exceptions import InvalidSignature
+from cryptography.fernet import InvalidToken
+
 from app.utils import flog
 
 _PREFIX = "enc:"
@@ -51,6 +54,10 @@ def decrypt(value: str) -> str:
         return value
     try:
         return _get_fernet().decrypt(value[len(_PREFIX):].encode("utf-8")).decode("utf-8")
-    except Exception as exc:
+    except (InvalidToken, InvalidSignature, ValueError, TypeError) as exc:
+        # Clave de cifrado rotada, valor manipulado o dato que no es un token
+        # Fernet. Se devuelve el valor tal cual —el llamante verá una API key
+        # que no funciona en vez de un 500— pero queda registrado: sin esto,
+        # "mis conexiones dejaron de autenticar" no lleva a GAIA_AGENTS_SECRET.
         flog.warning(f"[crypto] Fallo al descifrar API key: {exc}")
         return value

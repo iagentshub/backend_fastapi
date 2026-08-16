@@ -77,7 +77,9 @@ async def _gdpr_purge_loop() -> None:
             n = await purge_expired_deletions()
             if n:
                 flog.ok(f"[gdpr] {n} cuenta(s) eliminadas definitivamente")
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
+            # Bucle de fondo: si esta ronda falla, la siguiente reintenta en
+            # 6 h. Ancho a propósito — dejar morir la tarea sería peor.
             flog.error(f"[gdpr] Error en purga automática: {exc}")
 
 
@@ -89,7 +91,8 @@ async def _log_purge_loop() -> None:
             from app.api.routes.logs import purge_old_logs
 
             await purge_old_logs()
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
+            # Ver _gdpr_purge_loop: la tarea no puede morir por una ronda.
             flog.error(f"[logs] Error en purga automática: {exc}")
 
 
@@ -269,7 +272,9 @@ def create_app() -> FastAPI:
             async with open_db() as conn:
                 await conn.fetchval("SELECT 1")
             db_ok = True
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
+            # /api/health tiene que responder siempre, incluso con la BD rota:
+            # ese es justo el caso que informa.
             db_ok = False
             # El fallo no dejaba rastro: except pelado y ni una línea de log.
             flog.error(f"[health] la BD no responde: {exc}")

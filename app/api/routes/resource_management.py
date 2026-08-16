@@ -448,7 +448,9 @@ async def run_saved_workflow(
                     yield ": keep-alive\n\n"
                     continue
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
+            # El SSE ya empezó a emitir, así que el handler global de app.py
+            # no puede intervenir: el fallo se convierte en trama de error.
             event = workflow_error_event(exc, context="workflow")
             yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
 

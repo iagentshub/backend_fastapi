@@ -73,7 +73,9 @@ async def get_tree(_: str = Depends(require_admin)) -> dict:
         return _build_tree(stdout.decode().splitlines())
     except asyncio.TimeoutError:
         raise APIError(504, "upstream_error", "Timeout descubriendo tests")
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
+        # Descubrimiento de tests vía subproceso: se traduce a un 500 con el
+        # motivo. Es una ruta solo-admin, así que str(exc) no se filtra fuera.
         raise APIError(500, "internal_error", str(exc))
 
 
@@ -441,7 +443,8 @@ async def _execute_run(run_id: str, target: str) -> None:
         _push_history()
         flog.info(f"[centinel] run finalizado id={run_id[:8]} rc={proc.returncode}")
 
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
+        # Ver probe.py: el fallo se registra y pasa a ser estado del run.
         flog.error(f"[centinel] error en run {run_id[:8]}: {exc}")
         _run["status"] = "error"
         _run["finished_at"] = time.time()

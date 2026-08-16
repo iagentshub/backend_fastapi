@@ -13,7 +13,7 @@ from app.services.resource_visibility import VisibilityFilter
 # db se importa DOS veces a propósito: ver app/storage/_storage_helpers.py.
 from app.storage import db as _db
 from app.storage._storage_helpers import _PUBLIC_OWNER
-from app.storage.db import AsyncConn, open_db
+from app.storage.db import DB_ERRORS, AsyncConn, open_db
 from app.storage.db_migrations import _compact_resource_data
 from app.storage.resource_base import ResourceStorage
 from app.storage.scoped_resource_page import (
@@ -107,7 +107,12 @@ class AgentStorage(ResourceStorage):
                 count = await conn.fetchval("SELECT COUNT(*) FROM agents")
                 if count:
                     return
-            except Exception:
+            except DB_ERRORS as exc:
+                # Se llega aquí cuando la tabla aún no existe (arranque previo a
+                # la migración de esquema). Cualquier otro fallo de BD también
+                # aborta la migración legacy, pero deja rastro: sin él, "no se
+                # migraron mis agentes" no tiene por dónde empezar a mirarse.
+                flog.debug(f"[agents] Migración legacy omitida: {exc}")
                 return
             for scope, default_owner in [
                 ("public", _PUBLIC_OWNER),
@@ -127,7 +132,11 @@ class AgentStorage(ResourceStorage):
                             else (data.get("owner_id") or default_owner)
                         )
                         await self._upsert(conn, agent_id, owner, scope, data)
-                    except Exception as exc:
+                    except Exception as exc:  # noqa: BLE001
+                        # Ancho a propósito: se migra fichero a fichero y un
+                        # config.json corrupto no puede llevarse por delante los
+                        # agentes que sí son legibles. Queda registrado con la
+                        # ruta, que es lo que hace falta para arreglarlo a mano.
                         flog.warning(f"[agents] Migración fallida {p}: {exc}")
             await conn.commit()
 

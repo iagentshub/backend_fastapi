@@ -103,7 +103,9 @@ def _do_stress_request(
         elapsed_s = time.monotonic() - t0
         error_detail = f"HTTP {r.status_code}" if r.status_code >= 500 else None
         return elapsed_s, r.status_code, error_detail
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
+        # Esta función mide una petición: el tipo del fallo ES el resultado
+        # que se reporta (error_detail), por eso no se registra aparte.
         elapsed_s = time.monotonic() - t0
         error_detail = type(exc).__name__ + (f": {exc}" if str(exc) else "")
         return elapsed_s, None, error_detail
@@ -475,7 +477,8 @@ async def _execute_stress(run_id: str, cfg: StressRequest) -> None:
             f"[centinel-stress] finalizado id={run_id[:8]} total={request_count} err={error_count}"
         )
 
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
+        # Ver probe.py: el fallo se registra y pasa a ser estado del run.
         flog.error(f"[centinel-stress] error id={run_id[:8]}: {exc}")
         _stress["status"] = "error"
         _stress["finished_at"] = time.time()

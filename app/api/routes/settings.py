@@ -89,7 +89,9 @@ async def _get_prefs(user_id: str) -> dict:
         return {}
     try:
         return json.loads(row["preferences"])
-    except Exception as exc:
+    except (json.JSONDecodeError, TypeError) as exc:
+        # La columna no es JSON válido. Ya se registra con el usuario afectado,
+        # y caer a {} solo le devuelve las preferencias por defecto.
         flog.warning(f"[settings] Preferencias corruptas para {user_id}: {exc}")
         return {}
 
@@ -303,7 +305,7 @@ _PLATFORM_DEFAULTS: dict = {
     "oauth_apple_enabled": True,
     "oauth_microsoft_enabled": True,
     # A diferencia de los tres anteriores, GitHub sí tiene una integración
-    # real (Device Flow, ver app/auth/github_oauth.py) — este toggle solo
+    # real (Device Flow, ver app/auth/github_device_flow.py) — este toggle solo
     # decide si el admin quiere OFRECER el botón; la capacidad real (¿hay
     # GITHUB_OAUTH_CLIENT_ID configurado?) se sigue comprobando aparte en
     # GET /platform/public, así que apagar esto nunca puede "fingir" que el
@@ -339,7 +341,15 @@ def _read_platform_cfg() -> dict:
 
     try:
         raw = _json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
-    except Exception:
+    except FileNotFoundError:
+        # Instalación nueva: aún no se ha guardado nada. Silencio correcto.
+        raw = {}
+    except (OSError, ValueError) as exc:
+        # El fichero existe pero no se puede leer o no es JSON válido. Caer a
+        # los defaults es lo correcto —el servidor tiene que arrancar—, pero
+        # sin registro nadie relaciona "la plataforma perdió su configuración"
+        # con un settings.json corrupto.
+        flog.error(f"[settings] {SETTINGS_FILE} ilegible, se usan defaults: {exc}")
         raw = {}
     cfg = dict(_PLATFORM_DEFAULTS)
     for k in _PLATFORM_DEFAULTS:
@@ -355,8 +365,20 @@ def _write_platform_cfg(cfg: dict) -> None:
 
     try:
         existing = _json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
-    except Exception:
+    except FileNotFoundError:
+        # Primera escritura: no hay nada que conservar.
         existing = {}
+    except (OSError, ValueError) as exc:
+        # Aquí NO se cae a {}: este camino continúa escribiendo el fichero, así
+        # que tratar un settings.json corrupto como vacío lo sobrescribiría
+        # entero y perdería en silencio todas las claves que no vengan en `cfg`.
+        # Mejor un 500 en el guardado, que es reparable, que una pérdida muda.
+        raise APIError(
+            500,
+            "settings_file_unreadable",
+            "La configuración de plataforma existe pero no se puede leer; "
+            "guardar ahora la sobrescribiría. Revisa el fichero en el servidor.",
+        ) from exc
     existing.update(cfg)
     SETTINGS_FILE.write_text(
         _json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8"

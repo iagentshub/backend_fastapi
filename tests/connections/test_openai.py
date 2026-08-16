@@ -43,7 +43,7 @@ def test_test_auth_error():
 
 
 def test_test_connection_error():
-    with patch("app.connections.base.safe_urlopen", side_effect=Exception("timeout")):
+    with patch("app.connections.base.safe_urlopen", side_effect=OSError("timeout")):
         result = OpenAIProvider.test({"api_key": "sk-fake"})
     assert result.ok is False
     assert "timeout" in result.detail

@@ -134,7 +134,7 @@ class _DBHandler(logging.Handler):
         while not self._stop.wait(interval):
             try:
                 self.flush()
-            except Exception:  # pragma: no cover - defensa del hilo
+            except Exception:  # noqa: S110, BLE001  # pragma: no cover
                 # Nunca dejar morir el hilo de volcado: si esta ronda falla, la
                 # siguiente reintenta. flush() ya reporta por handleError.
                 pass
@@ -200,7 +200,7 @@ class _DBHandler(logging.Handler):
                 # asyncpg: cerrar es una corrutina y hay que ejecutarla en el
                 # loop del logger, no en el hilo que llama.
                 self._run_pg(self._conn.close(), timeout=5)  # type: ignore[attr-defined]
-        except Exception:
+        except Exception:  # noqa: S110, BLE001
             # ponytail: silencio deliberado. Aquí se llega porque la conexión ya
             # falló; que cerrarla también falle no aporta nada, y logear desde el
             # handler de logs es la forma de montar una recursión. El finally
@@ -262,7 +262,7 @@ class _DBHandler(logging.Handler):
         filas, self._buffer = self._buffer, []
         try:
             self._write(filas)
-        except Exception:
+        except Exception:  # noqa: BLE001
             # Conexión rota (fichero borrado, PG caído): tirarla y reintentar
             # una vez sobre una nueva. Antes cada registro se perdía en el
             # primer fallo; ahora el lote entero sobrevive a una reconexión,
@@ -270,7 +270,7 @@ class _DBHandler(logging.Handler):
             self._drop_conn()
             try:
                 self._write(filas)
-            except Exception:
+            except Exception:  # noqa: BLE001
                 self._drop_conn()
                 if self._last_record is not None:
                     self.handleError(self._last_record)
@@ -283,7 +283,7 @@ class _DBHandler(logging.Handler):
     def emit(self, record: logging.LogRecord) -> None:
         try:
             fila = self._row(record)
-        except Exception:
+        except Exception:  # noqa: BLE001
             # Formatear el mensaje puede fallar (args mal emparejados). Que un
             # registro malformado no se lleve por delante el lote entero.
             self.handleError(record)
@@ -324,7 +324,7 @@ class _DBHandler(logging.Handler):
             if self._loop_thread is not None:
                 self._loop_thread.join(timeout=2)
             loop.close()
-        except Exception:
+        except Exception:  # noqa: S110, BLE001
             # Cerrando el proceso: que el loop del logger no se resista no
             # puede impedir la salida.
             pass
@@ -347,7 +347,7 @@ def log_db_path() -> Path | None:
     """
     try:
         from app.config.data import DB_FILE
-    except Exception:
+    except Exception:  # noqa: BLE001
         # Si la configuración aún no se puede importar, el handler de stdout
         # sigue funcionando: quedarse sin logs en BD es mejor que no arrancar.
         return None

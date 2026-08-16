@@ -15,17 +15,9 @@ def main() -> None:
     workers = WORKERS
 
     if workers > 1 and os.getenv("GAIA_GUEST_DEMO", "1") == "1":
-        # Las sesiones de invitado viven en un dict de proceso
-        # (app/storage/guest.py), no en la BD que sí comparten los workers. Sin
-        # afinidad de sesión en el proxy, las peticiones del mismo invitado
-        # caen en workers distintos: `get_session` crea una vacía y el agente
-        # que acababa de crear desaparece. El tope MAX_SESSIONS también es por
-        # proceso, así que el límite real es workers × MAX_SESSIONS.
-        #
-        # El fallo era silencioso y solo se veía en producción; al menos ahora
-        # queda dicho en el arranque. La solución de fondo —persistir la sesión
-        # de invitado en la BD— cambia su contrato de demo efímera y obliga a
-        # contemplarla en el borrado RGPD: es una decisión de producto.
+        # El invitado pierde su trabajo entre peticiones y el tope real es
+        # workers × MAX_SESSIONS. Aviso, no arreglo.
+        # Ver docs/adr/001-estado-en-memoria-con-multiples-workers.md
         from app.storage.guest import MAX_SESSIONS
         from app.utils import flog
 
@@ -37,10 +29,9 @@ def main() -> None:
         )
 
     if workers > 1:
-        # Migrar el esquema una sola vez en el proceso maestro, antes de que
-        # uvicorn lance los workers: cada worker es un proceso independiente
-        # que ejecuta su propio lifespan, y sin esto competirían por crear
-        # las mismas tablas/índices en paralelo contra una DB recién creada.
+        # Una sola vez en el proceso maestro: si no, los workers competirían por
+        # crear las mismas tablas/índices contra una DB recién creada.
+        # Ver docs/adr/001-estado-en-memoria-con-multiples-workers.md
         asyncio.run(migrate_schema(_cfg.DB_FILE))
         os.environ["GAIA_SCHEMA_MIGRATED"] = "1"
 

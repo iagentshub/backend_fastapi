@@ -109,7 +109,11 @@ def fetch_url_text(url: str) -> str:
         parser = _TextParser()
         try:
             parser.feed(raw.decode(charset, errors="replace"))
-        except Exception:
+        except LookupError:
+            # El charset anunciado en el Content-Type no existe en Python
+            # (`errors="replace"` ya descarta el UnicodeDecodeError). Se reintenta
+            # en UTF-8, que es lo que sirve la web moderna. No se registra: pasa
+            # con cabeceras mal escritas y el reintento resuelve el caso.
             parser.feed(raw.decode("utf-8", errors="replace"))
         return parser.text()[:MAX_CONTENT]
 

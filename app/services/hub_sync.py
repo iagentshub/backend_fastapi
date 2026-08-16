@@ -98,7 +98,10 @@ async def run_hub_sync(
 
     try:
         token = _login(url, username, password)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
+        # Ancho a propósito: `_login` habla con un hub remoto arbitrario y puede
+        # fallar por red, TLS, JSON o credenciales. No es un silencio — el
+        # motivo se traduce a un 502 con `reason` para el usuario.
         raise APIError(
             502,
             "hub_auth_error",
@@ -156,7 +159,10 @@ async def run_hub_sync(
                 conns_created += 1
         result["connections"] += conns_created
         result["updated"] += conns_updated
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
+        # Ancho a propósito: cada bloque sincroniza un tipo de recurso y el
+        # fallo de uno no debe impedir los otros tres. No es un silencio —
+        # el motivo se acumula en result["errors"], que viaja al usuario.
         result["errors"].append(f"conexiones: {e}")
 
     # ── 2. Agentes ────────────────────────────────────────────────────
@@ -171,7 +177,12 @@ async def run_hub_sync(
             src_key = f"{conn_id}:{ra_id}"
             try:
                 ra = await _get(f"/api/agents/{ra_id}")
-            except Exception:
+            except Exception as exc:  # noqa: BLE001
+                # Un agente que no se puede traer no debe abortar la sincronía
+                # de los demás, pero sí tiene que aparecer en el parte: sin
+                # esto, el usuario ve "3 agentes sincronizados" de 5 y no hay
+                # nada que explique los otros dos.
+                result["errors"].append(f"agente {ra_id}: {exc}")
                 continue
 
             data = {
@@ -200,7 +211,10 @@ async def run_hub_sync(
                 local_a_names.add(name)
                 await _agent_storage.save(data, "private", owner_id=owner)
                 result["agents"] += 1
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
+        # Ancho a propósito: cada bloque sincroniza un tipo de recurso y el
+        # fallo de uno no debe impedir los otros tres. No es un silencio —
+        # el motivo se acumula en result["errors"], que viaja al usuario.
         result["errors"].append(f"agentes: {e}")
 
     # ── 3. Skills ────────────────────────────────────────────────────
@@ -231,7 +245,10 @@ async def run_hub_sync(
                 local_s_names.add(name)
                 await _skill_storage.save("private", data, owner_id=owner)
                 result["skills"] += 1
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
+        # Ancho a propósito: cada bloque sincroniza un tipo de recurso y el
+        # fallo de uno no debe impedir los otros tres. No es un silencio —
+        # el motivo se acumula en result["errors"], que viaja al usuario.
         result["errors"].append(f"skills: {e}")
 
     # ── 4. Conocimiento ───────────────────────────────────────────────
@@ -264,11 +281,15 @@ async def run_hub_sync(
                     owner_id=owner,
                 )
                 know_created += 1
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001 — el motivo va a result["errors"], que se devuelve al usuario;
+            # ancho a propósito: el fallo de un recurso no debe parar los demás.
                 result["errors"].append(f"conocimiento {rk_id}: {exc}")
         result["knowledge"] += know_created
         result["updated"] += know_updated
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001
+        # Ancho a propósito: cada bloque sincroniza un tipo de recurso y el
+        # fallo de uno no debe impedir los otros tres. No es un silencio —
+        # el motivo se acumula en result["errors"], que viaja al usuario.
         result["errors"].append(f"conocimiento: {e}")
 
     result["ok"] = not result["errors"]

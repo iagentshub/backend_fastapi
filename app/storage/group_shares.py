@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Dict, List, Optional
 
-from app.storage.db import IS_PG, open_db
+from app.storage.db import open_db
 from app.utils import now_iso as _now
 
 if TYPE_CHECKING:
@@ -23,28 +23,52 @@ class GroupShareStorage:
         resource_id: str,
         group_id: str,
         shared_by: str,
+        via_cascade: bool = False,
     ) -> bool:
-        """Concede acceso de uso a TODO el group, sin mover ni copiar el recurso."""
+        """Concede acceso de uso a TODO el group, sin mover ni copiar el recurso.
+
+        ``via_cascade`` marca lo que llega arrastrado por un agente o una
+        orquestación, para poder retirarlo cuando se retire quien lo trajo. Una
+        compartición hecha a mano gana siempre: si el recurso ya venía de una
+        cascada y el usuario lo comparte explícitamente, deja de ser
+        dependencia y sobrevive a la marcha del agente. Al revés no —una
+        cascada no degrada a dependencia lo que ya era explícito.
+        """
         now = _now()
+        # El motor decide si conserva la marca previa; los dos casos se
+        # resuelven en el mismo UPSERT para no leer antes de escribir.
+        conflicto = (
+            "ON CONFLICT (resource_type, resource_id, group_id) DO UPDATE SET "
+            "shared_by = EXCLUDED.shared_by, shared_at = EXCLUDED.shared_at, "
+            "via_cascade = CASE WHEN EXCLUDED.via_cascade = 0 THEN 0 "
+            "ELSE resource_group_shares.via_cascade END"
+        )
         async with open_db() as conn:
-            if IS_PG:
-                await conn.execute(
-                    "INSERT INTO resource_group_shares "
-                    "(resource_type, resource_id, group_id, shared_by, shared_at) "
-                    "VALUES (?, ?, ?, ?, ?) "
-                    "ON CONFLICT (resource_type, resource_id, group_id) DO UPDATE "
-                    "SET shared_by = EXCLUDED.shared_by, shared_at = EXCLUDED.shared_at",
-                    (resource_type, resource_id, group_id, shared_by, now),
-                )
-            else:
-                await conn.execute(
-                    "INSERT OR REPLACE INTO resource_group_shares "
-                    "(resource_type, resource_id, group_id, shared_by, shared_at) "
-                    "VALUES (?, ?, ?, ?, ?)",
-                    (resource_type, resource_id, group_id, shared_by, now),
-                )
+            await conn.execute(
+                "INSERT INTO resource_group_shares "
+                "(resource_type, resource_id, group_id, shared_by, shared_at, "
+                "via_cascade) VALUES (?, ?, ?, ?, ?, ?) " + conflicto,
+                (
+                    resource_type,
+                    resource_id,
+                    group_id,
+                    shared_by,
+                    now,
+                    1 if via_cascade else 0,
+                ),
+            )
             await conn.commit()
             return True
+
+    async def cascaded_resources(self, group_id: str) -> List[tuple[str, str]]:
+        """Pares (tipo, id) que el grupo solo ve porque los arrastró otro recurso."""
+        async with open_db() as conn:
+            rows = await conn.fetchall(
+                "SELECT resource_type, resource_id FROM resource_group_shares "
+                "WHERE group_id = ? AND via_cascade = 1",
+                (group_id,),
+            )
+            return [(str(row[0]), str(row[1])) for row in rows]
 
     async def unshare_from_group(
         self, resource_type: str, resource_id: str, group_id: str

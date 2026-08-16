@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 # db se importa DOS veces a propósito: ver app/storage/_storage_helpers.py.
 from app.storage import db as _db
 from app.storage.crypto import decrypt, encrypt
-from app.storage.db import open_db
+from app.storage.db import DB_ERRORS, open_db
 from app.storage.db_migrations import _compact_resource_data
 from app.storage.resource_base import ResourceStorage
 from app.utils import flog
@@ -46,7 +46,10 @@ class ConnectionStorage(ResourceStorage):
                 count = await conn.fetchval("SELECT COUNT(*) FROM connections")
                 if count:
                     return
-            except Exception:
+            except DB_ERRORS as exc:
+                # Tabla aún inexistente (arranque previo a la migración de
+                # esquema) o BD caída. Ver agent_storage para el razonamiento.
+                flog.debug(f"[storage] Migración legacy omitida: {exc}")
                 return
             old = DATA_DIR / "connections" / "connections.json"
             if not old.exists():
@@ -57,7 +60,11 @@ class ConnectionStorage(ResourceStorage):
                     await self._upsert(conn, item)
                 await conn.commit()
                 old.rename(old.with_suffix(".migrated"))
-            except Exception as exc:
+            except (json.JSONDecodeError, OSError, *DB_ERRORS) as exc:
+                # A diferencia de agents/skills/memory, aquí no hay migración
+                # fichero a fichero: es un único connections.json, así que un
+                # fallo deja la migración entera sin hacer. No se renombra a
+                # .migrated, de modo que el siguiente arranque lo reintenta.
                 flog.warning(f"[storage] Migración de connections.json fallida: {exc}")
 
     async def _upsert(

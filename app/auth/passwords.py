@@ -94,7 +94,11 @@ async def hash_password_async(plain: str) -> str:
 def verify_password(plain: str, hashed: str) -> bool:
     try:
         return _bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
-    except Exception:
+    except (ValueError, TypeError):
+        # Hash malformado o vacío (usuario sin contraseña local: los de GitHub
+        # tienen password_hash NULL). Es un "no coincide", no un error, y por eso
+        # NO se registra: este camino se recorre en cada intento de login fallido
+        # y logearlo convertiría un ataque de fuerza bruta en ruido en los logs.
         return False
 
 

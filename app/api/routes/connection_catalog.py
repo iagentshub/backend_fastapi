@@ -35,5 +35,7 @@ async def ollama_models(
         data = await asyncio.to_thread(OllamaProvider._fetch_tags, host, api_key)
         models = [m["name"] for m in (data.get("models") or []) if m.get("name")]
         return {"models": models}
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
+        # El motivo se devuelve en la respuesta ({'models': [], 'error': …}),
+        # que es justo lo que el diálogo de conexión muestra al usuario.
         return {"models": [], "error": str(exc)}

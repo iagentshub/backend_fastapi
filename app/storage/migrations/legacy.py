@@ -476,7 +476,8 @@ async def _pre_migrate_sqlite(conn: Any) -> None:
                 await conn.execute(f"ALTER TABLE {table} ADD COLUMN {col} {defn}")
                 await conn.commit()
                 flog.info(f"[db] pre-migración: {table}.{col} añadida")
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
+                # Migración idempotente: se reintenta en el siguiente arranque.
                 flog.warning(f"[db] pre-migración {table}.{col} fallida: {exc}")
 
 
@@ -605,7 +606,8 @@ async def _migrate_sqlite(conn: Any) -> None:
             try:
                 await conn.execute(f"ALTER TABLE users ADD COLUMN {col} {definition}")
                 await conn.commit()
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
+                # Migración idempotente: se reintenta en el siguiente arranque.
                 flog.warning(f"[db] No se pudo añadir columna {col}: {exc}")
 
     # IDs internos estables: username queda reservado para presentación/búsqueda.
@@ -679,7 +681,8 @@ async def _migrate_sqlite(conn: Any) -> None:
             try:
                 await conn.execute(f"ALTER TABLE users ADD COLUMN {col} {definition}")
                 await conn.commit()
-            except Exception as exc:
+            except Exception as exc:  # noqa: BLE001
+                # Migración idempotente: se reintenta en el siguiente arranque.
                 flog.warning(f"[db] No se pudo añadir columna {col}: {exc}")
 
     if "user_follows" not in existing_tables:
@@ -962,7 +965,8 @@ async def _migrate_users_json_sqlite(conn: Any) -> None:
             )
         await conn.commit()
         users_json.rename(users_json.with_suffix(".migrated"))
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
+        # users.json no se renombra a .migrated si falla: se reintenta.
         flog.warning(f"[db] Importación users.json (SQLite) fallida: {exc}")
 
 
@@ -1399,5 +1403,6 @@ async def _migrate_users_json_pg(conn: Any) -> None:
                 u.get("created_at") or datetime.now(timezone.utc).isoformat(),
             )
         users_json.rename(users_json.with_suffix(".migrated"))
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
+        # users.json no se renombra a .migrated si falla: se reintenta.
         flog.warning(f"[db] Importación users.json (PG) fallida: {exc}")

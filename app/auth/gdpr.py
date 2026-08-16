@@ -79,7 +79,7 @@ def _purge_user_files(username: str) -> None:
                 try:
                     if _json.loads(cfg.read_text()).get("owner_id") == username:
                         _shutil.rmtree(item_dir, ignore_errors=True)
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001
                     # Esto es un borrado por GDPR: un config.json ilegible dejaba
                     # atrás el agente de un usuario que pidió que se le borrara,
                     # y sin rastro de que había pasado. Se sigue con el resto de
@@ -171,7 +171,9 @@ async def purge_expired_deletions() -> int:
     for username in usernames:
         try:
             await purge_user_data(username)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
+            # Purga por lotes: que un usuario falle no puede dejar sin borrar
+            # a los demás que también lo pidieron.
             flog.error(f"[gdpr] No se pudo purgar {username}: {exc}")
 
     return len(usernames)

@@ -42,6 +42,7 @@ from app.storage.skill_storage import (
     SKILL_LABELS,
     ensure_origin_label,
 )
+from app.utils import flog
 from app.utils.generators import generate_id
 from app.utils.origin import assert_resource_writable
 
@@ -640,7 +641,16 @@ async def upload_document(
                 filename,
                 file.content_type or "",
             )
-        except Exception:
+        except Exception as exc:  # noqa: BLE001
+            # Ancho a propósito: extract_document_text envuelve parsers de
+            # terceros (PDF, ofimática, OCR) y un fichero raro no puede tumbar
+            # la subida. Lo que no puede es no dejar rastro: sin esto el
+            # usuario sube un PDF, recibe la ficha catalogada en vez del texto
+            # y no hay forma de saber por qué.
+            flog.warning(
+                f"[knowledge] Extracción fallida de {filename} "
+                f"({file.content_type}): {exc}"
+            )
             content = ""
     if not content.strip() or "\x00" in content:
         content = _catalogued_file_content(
@@ -852,7 +862,16 @@ async def upload_pack(
                     relative_path,
                     upload.content_type or "",
                 )
-            except Exception:
+            except Exception as exc:  # noqa: BLE001
+                # Ancho a propósito: extract_document_text envuelve parsers de
+                # terceros (PDF, ofimática, OCR) y un fichero raro no puede tumbar
+                # la subida. Lo que no puede es no dejar rastro: sin esto el
+                # usuario sube un PDF, recibe la ficha catalogada en vez del texto
+                # y no hay forma de saber por qué.
+                flog.warning(
+                    f"[knowledge] Extracción fallida de {relative_path} "
+                    f"({upload.content_type}): {exc}"
+                )
                 content = ""
         if not content.strip() or "\x00" in content:
             content = _catalogued_file_content(
@@ -1020,7 +1039,16 @@ async def upload_pack_session_file(
                 content = await asyncio.to_thread(
                     extract_document_text, raw, path, mime_type
                 )
-            except Exception:
+            except Exception as exc:  # noqa: BLE001
+                # Ancho a propósito: extract_document_text envuelve parsers de
+                # terceros (PDF, ofimática, OCR) y un fichero raro no puede tumbar
+                # la subida. Lo que no puede es no dejar rastro: sin esto el
+                # usuario sube un PDF, recibe la ficha catalogada en vez del texto
+                # y no hay forma de saber por qué.
+                flog.warning(
+                    f"[knowledge] Extracción fallida de {path} "
+                    f"({mime_type}): {exc}"
+                )
                 content = ""
         if not content.strip() or "\x00" in content:
             content = _catalogued_file_content(path, mime_type, size)
@@ -1306,7 +1334,16 @@ async def sync_pack(
                         relative_path,
                         mime_type,
                     )
-                except Exception:
+                except Exception as exc:  # noqa: BLE001
+                    # Ancho a propósito: extract_document_text envuelve parsers de
+                    # terceros (PDF, ofimática, OCR) y un fichero raro no puede tumbar
+                    # la subida. Lo que no puede es no dejar rastro: sin esto el
+                    # usuario sube un PDF, recibe la ficha catalogada en vez del texto
+                    # y no hay forma de saber por qué.
+                    flog.warning(
+                        f"[knowledge] Extracción fallida de {relative_path} "
+                        f"({mime_type}): {exc}"
+                    )
                     content = ""
             if not content.strip() or "\x00" in content:
                 content = _catalogued_file_content(relative_path, mime_type, size)

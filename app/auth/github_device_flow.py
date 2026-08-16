@@ -2,6 +2,11 @@
 (`app/api/routes/auth.py`) y la vinculación de una cuenta de proveedor
 (`app/api/routes/accounts.py`). Requiere una GitHub OAuth App propia (Device
 Flow habilitado) configurada vía `GITHUB_OAUTH_CLIENT_ID`.
+
+Este módulo solo habla con GitHub: pide el código, sondea la autorización y
+devuelve la identidad. Convertir esa identidad en una fila de `users` es de
+``app.auth.github_user_link``, y son dos pasos distintos a propósito — el de
+`accounts.py` vincula una cuenta de proveedor sin crear ningún usuario.
 """
 from __future__ import annotations
 
@@ -10,6 +15,7 @@ from typing import Any, Dict
 import httpx
 
 from app.errors import APIError
+from app.utils import flog
 
 
 def _require_client_id() -> str:
@@ -93,7 +99,12 @@ async def fetch_github_identity(access_token: str) -> Dict[str, Any]:
             emails = r2.json()
             primary = next((e for e in emails if e.get("primary")), None)
             email = (primary or (emails[0] if emails else {})).get("email")
-        except Exception:
+        except (httpx.HTTPError, ValueError, AttributeError) as exc:
+            # Sin `user:email` en los scopes GitHub devuelve 403 aquí, y sin
+            # correo el alta cae al `@users.noreply.github.com` de
+            # github_user_link. Es aceptable, pero "todos mis usuarios de GitHub
+            # tienen correo noreply" necesita este rastro para diagnosticarse.
+            flog.debug(f"[github] Sin correo del perfil: {exc}")
             email = None
 
     return {

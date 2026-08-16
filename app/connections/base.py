@@ -45,7 +45,10 @@ class BaseProvider:
         body = e.read().decode("utf-8", errors="replace")
         try:
             return json.loads(body).get("error", {}).get("message", body)
-        except Exception:
+        except (json.JSONDecodeError, AttributeError):
+            # El cuerpo del error no es JSON, o es JSON pero no un objeto con la
+            # forma {"error": {"message": …}} — cada proveedor responde a su
+            # manera. Se devuelve el cuerpo crudo recortado.
             return body[:200]
 
     @classmethod
@@ -64,7 +67,11 @@ class BaseProvider:
             return TestResult(True, f"OK — {count} modelos disponibles")
         except urllib.error.HTTPError as e:
             return TestResult(False, "Error de autenticación", cls._http_error_msg(e))
-        except Exception as e:
+        except (OSError, ValueError) as e:
+            # OSError cubre URLError, timeouts y fallos de socket/DNS; ValueError
+            # cubre el JSONDecodeError de una respuesta que no es JSON. El
+            # mensaje viaja al usuario en TestResult.detail, así que esto no es
+            # un silencio: es el resultado que se muestra al probar la conexión.
             return TestResult(False, "Error de conexión", str(e))
 
     @classmethod

@@ -14,7 +14,7 @@ from app.pagination.models import OffsetPage, OffsetParams
 # db se importa DOS veces a propósito: ver app/storage/_storage_helpers.py.
 from app.storage import db as _db
 from app.storage._storage_helpers import _PUBLIC_OWNER, _slug
-from app.storage.db import AsyncConn, open_db
+from app.storage.db import DB_ERRORS, AsyncConn, open_db
 from app.storage.db_migrations import _compact_resource_data
 from app.storage.resource_base import ResourceStorage
 from app.storage.scoped_resource_page import (
@@ -159,7 +159,10 @@ class SkillStorage(ResourceStorage):
                 count = await conn.fetchval("SELECT COUNT(*) FROM skills")
                 if count:
                     return
-            except Exception:
+            except DB_ERRORS as exc:
+                # Tabla aún inexistente (arranque previo a la migración de
+                # esquema) o BD caída. Ver agent_storage para el razonamiento.
+                flog.debug(f"[skills] Migración legacy omitida: {exc}")
                 return
             for scope, default_owner in [
                 ("public", _PUBLIC_OWNER),
@@ -181,7 +184,9 @@ class SkillStorage(ResourceStorage):
                             else (meta.get("owner_id") or default_owner)
                         )
                         await self._upsert(conn, skill_id, owner, scope, meta)
-                    except Exception as exc:
+                    except Exception as exc:  # noqa: BLE001
+                        # Ancho a propósito: un YAML corrupto no puede parar la
+                        # migración del resto. Ver agent_storage.
                         flog.warning(f"[skills] Migración fallida {p}: {exc}")
             await conn.commit()
 

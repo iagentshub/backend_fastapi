@@ -35,6 +35,34 @@ IS_PG: bool = bool(DATABASE_URL)
 # Placeholder for parameterised queries — always use ? (AsyncConn translates to $N for PG)
 PH: str = "?"
 
+
+def _db_error_types() -> tuple[type[BaseException], ...]:
+    """Excepciones que puede lanzar el driver activo, para capturar un fallo de
+    BD sin recurrir a ``except Exception``.
+
+    Los dos drivers se prueban por separado: en SQLite `asyncpg` puede no estar
+    instalado, y al revés. Importar aquí y no arriba evita que un backend
+    obligue a tener el driver del otro.
+    """
+    tipos: list[type[BaseException]] = []
+    try:
+        import sqlite3
+
+        tipos.append(sqlite3.Error)
+    except ImportError:  # pragma: no cover - sqlite3 es de la stdlib
+        pass
+    try:
+        import asyncpg
+
+        tipos.append(asyncpg.PostgresError)
+    except ImportError:  # pragma: no cover - solo en despliegues sin PG
+        pass
+    return tuple(tipos)
+
+
+# Tupla lista para `except DB_ERRORS:`. Se calcula una vez al importar.
+DB_ERRORS: tuple[type[BaseException], ...] = _db_error_types()
+
 # ── Async connection layer ─────────────────────────────────────────────────────
 
 _pg_pool: Any = None

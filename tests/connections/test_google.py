@@ -29,6 +29,6 @@ def test_test_success():
 
 
 def test_test_connection_error():
-    with patch("app.connections.google.safe_urlopen", side_effect=Exception("timeout")):
+    with patch("app.connections.google.safe_urlopen", side_effect=OSError("timeout")):
         result = GoogleProvider.test({"api_key": "AIza-fake"})
     assert result.ok is False

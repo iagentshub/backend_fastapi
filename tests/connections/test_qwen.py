@@ -28,6 +28,6 @@ def test_test_success():
 
 
 def test_test_connection_error():
-    with patch("app.connections.base.safe_urlopen", side_effect=Exception("timeout")):
+    with patch("app.connections.base.safe_urlopen", side_effect=OSError("timeout")):
         result = QwenProvider.test({"api_key": "fake-key"})
     assert result.ok is False

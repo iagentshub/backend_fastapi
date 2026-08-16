@@ -17,3 +17,4 @@ El servicio central de iAgentsHub. Gestiona agentes, skills, memoria y conexione
 - [Datos](data.md) — qué almacena y dónde
 - [Despliegue](deployment.md) — cómo ponerlo en marcha
 - [Calidad de código](ci.md) — verificación automática antes del commit y en GitHub
+- [Decisiones de arquitectura (ADR)](../adr/) — por qué el código es como es; solo en español, es documentación interna

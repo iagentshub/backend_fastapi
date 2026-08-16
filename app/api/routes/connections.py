@@ -32,7 +32,7 @@ from app.pagination.materialized import paginate_materialized
 from app.services.connection_access import connection_access
 from app.storage.agent_storage import AgentStorage
 from app.storage.connection_storage import ConnectionStorage
-from app.storage.db import IS_PG, open_db
+from app.storage.db import DB_ERRORS, IS_PG, open_db
 from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
 from app.storage.guest import get_session, is_guest
@@ -152,9 +152,17 @@ def _fetch_ollama_models(host: str, api_key: str = "") -> List[str]:
             return []
         try:
             data = OllamaProvider._fetch_tags(alt, api_key)
-        except Exception:
+        except (OSError, ValueError) as exc:
+            flog.warning(f"[ollama] Sin catálogo de modelos en {alt}: {exc}")
             return []
-    except Exception:
+    except ValueError as exc:
+        # Dos cosas caen aquí y conviene no confundirlas al leer el log: el
+        # ValueError de assert_safe_url (host bloqueado por SSRF) y el
+        # JSONDecodeError de una respuesta que no es JSON. El OSError de red se
+        # trata arriba, en la rama del host alternativo.
+        # La lista vacía es indistinguible de "no hay modelos" en la UI, así que
+        # el motivo real solo existe si se registra.
+        flog.warning(f"[ollama] Catálogo no obtenido de {host}: {exc}")
         return []
     return [m["name"] for m in (data.get("models") or []) if m.get("name")]
 
@@ -438,7 +446,11 @@ async def get_tokens_daily(
                     "WHERE owner_id = ? AND day >= ? GROUP BY day ORDER BY day ASC",
                     (group_id, cutoff),
                 )
-        except Exception:
+        except DB_ERRORS as exc:
+            # El backfill de token_daily es oportunista: si falla, la gráfica
+            # sale vacía pero la página carga. Sin registro, "mi consumo aparece
+            # a cero" no tiene diagnóstico posible.
+            flog.warning(f"[connections] Backfill de token_daily fallido: {exc}")
             rows = []
 
     return [{"day": r[0], "tokens": r[1]} for r in rows]

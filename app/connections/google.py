@@ -42,5 +42,8 @@ class GoogleProvider(BaseProvider):
             return TestResult(True, f"OK — {count} modelos disponibles")
         except urllib.error.HTTPError as e:
             return TestResult(False, f"HTTP {e.code}", cls._http_error_msg(e))
-        except Exception as e:
+        except (OSError, ValueError) as e:
+            # OSError cubre URLError, timeouts y fallos de socket/DNS;
+            # ValueError, el JSONDecodeError de una respuesta que no es JSON.
+            # El mensaje viaja al usuario en TestResult.detail.
             return TestResult(False, "Error de conexión", str(e))

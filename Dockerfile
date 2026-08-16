@@ -32,14 +32,9 @@ COPY --from=builder /install /usr/local
 # Copiar código fuente (data/ queda fuera gracias a .dockerignore)
 COPY . .
 
-# Usuario sin privilegios. El contenedor SIGUE arrancando como root a
-# propósito: el entrypoint necesita ceder /data antes de bajar privilegios,
-# porque en una instalación ya existente ese volumen es de root. Ver
-# docker-entrypoint.sh para el detalle.
-# El sed y el chmod no sobran: el repo se clona también en Windows, que con
-# core.autocrlf deja el fichero con CRLF —el shebang queda "#!/bin/sh\r" y el
-# contenedor muere con "no such file or directory" señalando un intérprete que
-# sí existe— y no conserva el bit de ejecución.
+# Usuario sin privilegios, pero el contenedor SIGUE arrancando como root a
+# propósito. El sed y el chmod tampoco sobran: defienden del clon hecho en
+# Windows. Ver docs/adr/002-el-contenedor-arranca-como-root.md
 RUN useradd --system --create-home --uid 1000 gaia \
     && sed -i 's/\r$//' /app/docker-entrypoint.sh \
     && chmod +x /app/docker-entrypoint.sh \
@@ -50,19 +45,13 @@ EXPOSE 8765
 # Producción: sin reload automático
 ENV GAIA_RELOAD=false
 
-# Sin esto, DATA_DIR cae a su valor por defecto —hermano del repo, que dentro
-# del contenedor es /iAgents— y la imagen escribe fuera del volumen: los datos
-# se pierden al recrear el contenedor, sin un solo error. Los composes ya lo
-# fijaban, así que solo se notaba al arrancar la imagen a mano; y no se notaba
-# nada mientras el proceso era root, porque podía crear /iAgents sin quejarse.
+# Sin esto la imagen escribe fuera del volumen y los datos se pierden al
+# recrear el contenedor, sin un solo error.
+# Ver docs/adr/003-gaia-data-dir-y-healthcheck.md
 ENV GAIA_DATA_DIR=/data
 
-# /api/health devuelve 503 cuando la BD no responde, pero sin HEALTHCHECK el
-# endpoint existía y nadie lo consultaba desde la infraestructura.
-#
-# start-period generoso a propósito: en un arranque limpio el backend migra el
-# esquema entero antes de responder, y con uno corto Docker lo reiniciaría en
-# bucle justo durante esa migración.
+# start-period generoso a propósito: un arranque limpio migra el esquema entero
+# antes de responder. Ver docs/adr/003-gaia-data-dir-y-healthcheck.md
 HEALTHCHECK --interval=30s --timeout=5s --start-period=60s --retries=3 \
   CMD python -c "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://127.0.0.1:8765/api/health', timeout=4).status == 200 else 1)"
 

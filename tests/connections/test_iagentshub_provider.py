@@ -140,7 +140,7 @@ def test_test_value_error_from_login():
 
 def test_test_generic_connection_error():
     """Excepción genérica (timeout, DNS) → error de conexión."""
-    with patch("app.connections.iagentshub._login", side_effect=Exception("connection refused")):
+    with patch("app.connections.iagentshub._login", side_effect=OSError("connection refused")):
         result = IAgentsHubProvider.test(
             {"url": "https://hub.example.com", "username": "alice", "api_key": "pw"}
         )

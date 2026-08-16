@@ -10,7 +10,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Request, Response
 
-from app.auth.oauth_github import get_or_create_github_user
+from app.auth.github_user_link import get_or_create_github_user
 from app.auth.passwords import create_token
 from app.config.session import JWT_MAX_AGE_SECONDS, SECURE_COOKIES
 from app.errors import APIError
@@ -41,7 +41,7 @@ async def github_login_device_code(
     """Inicia sesión con GitHub (Device Flow) — sin sesión previa, a
     diferencia de `/api/accounts/github/device-code` (que vincula una cuenta
     proveedor para un usuario ya logueado)."""
-    from app.auth.github_oauth import request_device_code
+    from app.auth.github_device_flow import request_device_code
 
     return await request_device_code(scope="read:user user:email")
 
@@ -56,7 +56,7 @@ async def github_login_device_token(
     """Sondea el Device Flow iniciado con `/github/device-code`. Si ya se
     autorizó, resuelve (o crea) el usuario local ligado a esa identidad de
     GitHub y abre sesión — mismo mecanismo de cookie que `/login`."""
-    from app.auth.github_oauth import fetch_github_identity, poll_device_token
+    from app.auth.github_device_flow import fetch_github_identity, poll_device_token
 
     body = body.payload()
     device_code = str(body.get("device_code") or "").strip()

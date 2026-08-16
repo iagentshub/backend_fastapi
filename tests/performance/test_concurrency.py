@@ -87,7 +87,8 @@ async def _get(client: httpx.AsyncClient, url: str) -> RequestResult:
     try:
         r = await client.get(url)
         return RequestResult(r.status_code, (time.perf_counter() - t0) * 1000, None)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
+        # El fallo ES la medición: se reporta como RequestResult(status=0).
         return RequestResult(0, (time.perf_counter() - t0) * 1000, str(exc))
 
 

@@ -79,5 +79,8 @@ class IAgentsHubProvider(BaseProvider):
             return TestResult(False, f"HTTP {e.code}", body)
         except ValueError as e:
             return TestResult(False, str(e))
-        except Exception as e:
+        except (OSError, ValueError) as e:
+            # OSError cubre URLError, timeouts y fallos de socket/DNS;
+            # ValueError, el JSONDecodeError de una respuesta que no es JSON.
+            # El mensaje viaja al usuario en TestResult.detail.
             return TestResult(False, "Error de conexión", str(e))

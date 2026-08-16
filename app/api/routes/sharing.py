@@ -7,7 +7,7 @@ donde duplicar el secreto sería un riesgo de seguridad.
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 from fastapi import APIRouter, Depends, Request
 
@@ -185,7 +185,9 @@ async def _cascade_share_agent(
         # ALTO-5: no exponer skills ajenas — solo las del usuario que comparte
         if skill.get("owner_id") not in _owner_ids:
             continue
-        await _shares.share_with_group("skill", skill_id, group_id, shared_by)
+        await _shares.share_with_group(
+            "skill", skill_id, group_id, shared_by, via_cascade=True
+        )
         cascaded.append(skill_id)
 
     for know_id in agent.get("knowledge") or []:
@@ -195,7 +197,9 @@ async def _cascade_share_agent(
         # A1: no exponer knowledge ajeno — solo los items del usuario que comparte
         if item.get("owner_id") not in _owner_ids:
             continue
-        await _shares.share_with_group("knowledge", know_id, group_id, shared_by)
+        await _shares.share_with_group(
+            "knowledge", know_id, group_id, shared_by, via_cascade=True
+        )
         cascaded.append(know_id)
 
     for prompt_id in agent.get("prompts") or []:
@@ -208,10 +212,120 @@ async def _cascade_share_agent(
         # No exponer prompts ajenos — solo los del usuario que comparte
         if prompt.get("owner_id") not in _owner_ids:
             continue
-        await _shares.share_with_group("prompt", prompt_id, group_id, shared_by)
+        await _shares.share_with_group(
+            "prompt", prompt_id, group_id, shared_by, via_cascade=True
+        )
         cascaded.append(prompt_id)
 
     return cascaded
+
+
+async def _agent_dependencies(agent_id: str) -> List[Tuple[str, str]]:
+    """Pares (tipo, id) que un agente necesita para funcionar."""
+    agent = await _agents_store.get(agent_id)
+    if not agent:
+        return []
+    return [
+        *(("skill", str(i)) for i in agent.get("skills") or []),
+        *(("knowledge", str(i)) for i in agent.get("knowledge") or []),
+        *(("prompt", str(i)) for i in agent.get("prompts") or []),
+    ]
+
+
+async def _dependencies_still_needed(
+    group_id: str, skip_agent_id: str = ""
+) -> Set[Tuple[str, str]]:
+    """Dependencias que otro recurso del grupo sigue necesitando.
+
+    Retirar una skill que otro agente compartido usa dejaría a ese agente sin
+    ella, así que el residuo se limpia salvo lo que siga en uso. Cuenta también
+    lo que alcanzan las orquestaciones compartidas a través de sus agentes.
+    """
+    agent_ids = set(await _shares.get_group_shared_resource_ids(group_id, "agent"))
+    for workflow_id in await _shares.get_group_shared_resource_ids(
+        group_id, "workflow"
+    ):
+        workflow = await _workflows_store.get_any(workflow_id)
+        for node in (workflow or {}).get("definition", {}).get("nodes", []):
+            agent_ids.add(str(node.get("agent_id") or ""))
+    agent_ids -= {skip_agent_id, ""}
+
+    needed: Set[Tuple[str, str]] = set()
+    for agent_id in agent_ids:
+        needed.update(await _agent_dependencies(agent_id))
+    return needed
+
+
+async def _cascade_unshare_agent(
+    agent_id: str, group_id: str
+) -> Tuple[List[str], List[str]]:
+    """Retira lo que el agente arrastró al compartirse.
+
+    Devuelve (retirados, conservados). Se conserva lo que el usuario compartió
+    por su cuenta —no lleva la marca de cascada— y lo que otro recurso
+    compartido del grupo sigue necesitando.
+    """
+    dependencies = await _agent_dependencies(agent_id)
+    if not dependencies:
+        return [], []
+    cascaded = set(await _shares.cascaded_resources(group_id))
+    still_needed = await _dependencies_still_needed(group_id, skip_agent_id=agent_id)
+
+    removed: List[str] = []
+    kept: List[str] = []
+    for dependency in dependencies:
+        resource_type, resource_id = dependency
+        if dependency not in cascaded:
+            continue
+        if dependency in still_needed:
+            kept.append(resource_id)
+            continue
+        if await _shares.unshare_from_group(resource_type, resource_id, group_id):
+            removed.append(resource_id)
+    return removed, kept
+
+
+async def _cascade_unshare_workflow(
+    workflow_id: str, group_id: str
+) -> Tuple[List[str], List[str]]:
+    """Retira los agentes que arrastró la orquestación, y con ellos sus dependencias."""
+    workflow = await _workflows_store.get_any(workflow_id)
+    if not workflow:
+        return [], []
+    cascaded = set(await _shares.cascaded_resources(group_id))
+    removed: List[str] = []
+    kept: List[str] = []
+    for node in workflow.get("definition", {}).get("nodes", []):
+        agent_id = str(node.get("agent_id") or "")
+        if not agent_id or agent_id in removed or agent_id in kept:
+            continue
+        if ("agent", agent_id) not in cascaded:
+            continue
+        # Otra orquestación compartida puede seguir apoyándose en este agente.
+        if await _agent_still_shared_elsewhere(agent_id, group_id, workflow_id):
+            kept.append(agent_id)
+            continue
+        if await _shares.unshare_from_group("agent", agent_id, group_id):
+            removed.append(agent_id)
+        agent_removed, agent_kept = await _cascade_unshare_agent(agent_id, group_id)
+        removed.extend(agent_removed)
+        kept.extend(agent_kept)
+    return removed, kept
+
+
+async def _agent_still_shared_elsewhere(
+    agent_id: str, group_id: str, skip_workflow_id: str
+) -> bool:
+    for workflow_id in await _shares.get_group_shared_resource_ids(
+        group_id, "workflow"
+    ):
+        if workflow_id == skip_workflow_id:
+            continue
+        workflow = await _workflows_store.get_any(workflow_id)
+        for node in (workflow or {}).get("definition", {}).get("nodes", []):
+            if str(node.get("agent_id") or "") == agent_id:
+                return True
+    return False
 
 
 async def _cascade_share_workflow(
@@ -237,7 +351,9 @@ async def _cascade_share_workflow(
         agent = await _agents_store.get(agent_id)
         if not agent or str(agent.get("owner_id") or "") not in allowed_owners:
             continue
-        await _shares.share_with_group("agent", agent_id, group_id, shared_by)
+        await _shares.share_with_group(
+            "agent", agent_id, group_id, shared_by, via_cascade=True
+        )
         cascaded.append(agent_id)
         cascaded.extend(
             await _cascade_share_agent(agent_id, group_id, shared_by, shared_by_group)
@@ -332,4 +448,15 @@ async def unshare_resource_from_group(
             )
 
     await _shares.unshare_from_group(resource_type, resource_id, group_id)
-    return {"ok": True}
+
+    # Lo que entró con el recurso sale con él: sin esto, el usuario cree haber
+    # revocado el acceso —el agente ya no aparece— mientras sus skills y sus
+    # documentos siguen visibles para todo el grupo.
+    removed: List[str] = []
+    kept: List[str] = []
+    if resource_type == "agent":
+        removed, kept = await _cascade_unshare_agent(resource_id, group_id)
+    elif resource_type == "workflow":
+        removed, kept = await _cascade_unshare_workflow(resource_id, group_id)
+
+    return {"ok": True, "uncascaded": removed, "kept": kept}

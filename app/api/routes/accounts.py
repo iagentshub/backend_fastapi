@@ -227,7 +227,7 @@ async def github_device_code(
     Token a mano, visita `verification_uri`, introduce `user_code` y autoriza
     — el cliente sondea `/github/device-token` hasta que esté listo. Para el
     login de la app (sin sesión previa) ver `app/api/routes/auth.py`."""
-    from app.auth.github_oauth import request_device_code
+    from app.auth.github_device_flow import request_device_code
 
     return await request_device_code(scope="read:user")
 
@@ -240,7 +240,7 @@ async def github_device_token(
 ) -> Dict[str, Any]:
     """Sondea si el usuario ya autorizó el Device Flow iniciado con
     `/github/device-code`; devuelve el access_token en cuanto esté listo."""
-    from app.auth.github_oauth import poll_device_token
+    from app.auth.github_device_flow import poll_device_token
 
     body = body.payload()
     device_code = str(body.get("device_code") or "").strip()

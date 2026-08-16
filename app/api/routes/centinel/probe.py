@@ -272,7 +272,9 @@ async def _execute_probe(cfg: ProbeRequest) -> None:
 
         _persist_probe_state()
 
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
+        # El probe ejecuta carga arbitraria: cualquier fallo se refleja como
+        # estado 'error' del propio probe, ya persistido y registrado.
         _probe["status"] = "error"
         _probe["error"] = str(exc)
         _persist_probe_state()

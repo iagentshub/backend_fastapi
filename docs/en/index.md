@@ -17,3 +17,4 @@ The core service of iAgentsHub. Manages agents, skills, memory, and AI provider 
 - [Data](data.md) — what it stores and where
 - [Deployment](deployment.md) — how to get it running
 - [Code Quality](ci.md) — automated checks before committing and on GitHub
+- [Architecture Decision Records](../adr/) — why the code is the way it is (Spanish only: internal engineering docs)

@@ -1,7 +1,7 @@
 """Auth: gestión de usuarios (DB-backed) y bootstrap del admin inicial.
 
 El hashing de contraseñas y el JWT viven en ``app.auth.passwords``; la
-identidad OAuth de GitHub en ``app.auth.oauth_github``; el borrado RGPD en
+identidad OAuth de GitHub en ``app.auth.github_user_link``; el borrado RGPD en
 ``app.auth.gdpr``; el vínculo con Stripe en ``app.services.billing_link``.
 Este módulo re-exporta lo de ``passwords`` para no romper a los ~70 callers
 existentes que hacían ``from app.auth.auth import hash_password, ...`` — los
@@ -399,7 +399,7 @@ async def ensure_admin_user() -> None:
                         stored_pass.encode(), _row["password_hash"].encode()
                     ):
                         reset_mode = True  # hash mismatch → regenerate
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
             # No se escala: si la comprobación falla se deja reset_mode como
             # está y el arranque continúa con la contraseña que ya hubiera.
             # Pero se registra — un bcrypt que revienta aquí es la diferencia

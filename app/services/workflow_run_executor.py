@@ -92,13 +92,18 @@ async def _drive(
             error="Ejecución interrumpida porque el worker se detuvo",
         )
         raise
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
+        # Un nodo de workflow ejecuta lo que el usuario haya configurado, así
+        # que aquí cae cualquier cosa. Se convierte en evento de fallo y se
+        # persiste con el run marcado como 'failed': no se pierde nada.
         event = workflow_error_event(exc, context="workflow-run")
         message = str(event["message"])
         try:
             await _storage.append_event(run_id, event)
             await _storage.set_status(run_id, "failed", error=message)
-        except Exception as persist_exc:
+        except Exception as persist_exc:  # noqa: BLE001
+            # Último recurso: si ni siquiera se puede escribir el fallo en BD,
+            # queda al menos en el log del proceso.
             flog.error(
                 f"[workflow-run] No se pudo persistir el fallo de {run_id}: {persist_exc}"
             )

@@ -121,7 +121,10 @@ def _send_smtp(to: str, subject: str, html: str) -> None:
             server.sendmail(msg["From"], [to], msg.as_string())
             server.quit()
             flog.ok("[email] Mensaje enviado")
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
+            # smtplib lanza una familia amplia (SMTP*, socket, SSL). Se
+            # registra SOLO el tipo a propósito: str(exc) de un fallo de login
+            # SMTP puede incluir el usuario y parte de la credencial.
             flog.warning(f"[email] Error SMTP: {type(exc).__name__}")
 
     _SMTP_EXECUTOR.submit(_send)

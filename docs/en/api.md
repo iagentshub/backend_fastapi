@@ -260,6 +260,8 @@ Valid values for `{type}`: `agent`, `skill`, `connection`, `knowledge`.
 
 Resources shared with the user appear in the standard listing endpoints (`/api/skills`, `/api/agents`, etc.) with `_shared: true`. Recipients can use them but cannot edit or redistribute them.
 
+Sharing an agent cascades to its private skills, prompts, and knowledge — the `POST` returns them in `cascaded` — and **revoking it revokes them too**: the `DELETE` responds with `uncascaded` (no longer shared) and `kept`. Anything the user shared on its own is kept, as is anything another shared agent or orchestration in the same group still needs: removing it would leave that resource without a dependency. Orchestrations behave the same way with the agents they brought in.
+
 ---
 
 ## Connections

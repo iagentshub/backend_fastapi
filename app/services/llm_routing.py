@@ -149,7 +149,9 @@ async def _rank(
                 }
             elif event.get("type") == "error":
                 error = str(event.get("message") or "Error del router")
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
+        # El router LLM ejecuta código de proveedor arbitrario. No es un
+        # silencio: `error` se devuelve en la tupla y acaba en la respuesta.
         error = str(exc)
     if error:
         return [], {}, usage, error
@@ -320,7 +322,9 @@ async def stream_orchestrated_chat(
                     completed = True
                 elif not event:
                     yield frame
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
+            # Red de seguridad del stream: ya se registra con exc_info y se
+            # traduce a un error terminal genérico para el cliente.
             terminal_error = "Error interno al ejecutar la conexión LLM."
             terminal_error_code = "internal_error"
             flog.error(

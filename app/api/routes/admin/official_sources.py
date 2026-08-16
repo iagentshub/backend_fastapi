@@ -31,6 +31,7 @@ from app.storage.official_source_storage import (
     OFFICIAL_RESOURCE_TABLES,
     OfficialSourceStorage,
 )
+from app.utils import flog
 
 _storage = OfficialSourceStorage()
 _importer = OfficialSourceImporter(_storage)
@@ -242,7 +243,15 @@ async def admin_inspect_official_source_stream(
                 )
             except (GitHubImportError, ValueError) as exc:
                 await queue.put({"type": "error", "message": str(exc)})
-            except Exception:
+            except Exception as exc:  # noqa: BLE001
+                # Al usuario se le da un mensaje genérico a propósito (el
+                # análisis de un repo ajeno puede filtrar rutas o tokens en
+                # str(exc)), pero el motivo real tiene que quedar en el log o
+                # "no se pudo completar" no es diagnosticable.
+                flog.error(
+                    f"[official-sources] Análisis fallido: "
+                    f"{type(exc).__name__}: {exc}"
+                )
                 await queue.put(
                     {
                         "type": "error",

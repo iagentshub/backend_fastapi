@@ -626,6 +626,22 @@ async def _resource_social_page_index(conn: Any) -> None:
     )
 
 
+async def _group_share_cascade_flag(conn: Any) -> None:
+    """Distingue lo compartido a mano de lo que arrastró un agente.
+
+    Sin esta marca, retirar un agente no puede saber qué dependencias vinieron
+    con él: o no retira nada —el acceso se queda vivo— o retira también lo que
+    el usuario había compartido por su cuenta antes.
+    """
+    cursor = await conn.execute("PRAGMA table_info(resource_group_shares)")
+    columns = {row[1] for row in await cursor.fetchall()}
+    if "via_cascade" not in columns:
+        await conn.execute(
+            "ALTER TABLE resource_group_shares "
+            "ADD COLUMN via_cascade INTEGER NOT NULL DEFAULT 0"
+        )
+
+
 SQLITE_MIGRATIONS = (
     Migration(1, "legacy_schema_catchup", _migrate_sqlite, repeatable=True),
     Migration(
@@ -657,6 +673,7 @@ SQLITE_MIGRATIONS = (
     ),
     Migration(23, "pagination_indexes", _pagination_indexes),
     Migration(24, "resource_social_page_index", _resource_social_page_index),
+    Migration(25, "group_share_cascade_flag", _group_share_cascade_flag),
 )
 
 

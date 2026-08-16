@@ -14,7 +14,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.api.routes.auth import require_admin
-from app.storage.db import open_db
+from app.storage.db import DB_ERRORS, open_db
 from app.utils import flog
 from app.utils.net import client_ip as _client_ip
 
@@ -212,7 +212,13 @@ async def purge_old_logs(retention_days: Optional[int] = None) -> int:
                 )
             prefs = json.loads(row["preferences"]) if row and row["preferences"] else {}
             retention_days = int(prefs.get("log_retention_days", 30))
-        except Exception:
+        except (*DB_ERRORS, json.JSONDecodeError, TypeError, ValueError) as exc:
+            # Este valor decide cuántos días de logs se BORRAN. Caer a 30 en
+            # silencio significa purgar con una retención que el administrador
+            # no configuró y no tiene forma de saber que no se aplicó.
+            flog.error(
+                f"[logs] Retención configurada ilegible, se usan 30 días: {exc}"
+            )
             retention_days = 30
 
     cutoff = (datetime.now() - timedelta(days=retention_days)).strftime("%Y-%m-%d")

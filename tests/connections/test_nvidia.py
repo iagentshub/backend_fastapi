@@ -64,7 +64,7 @@ def test_test_auth_error():
 
 
 def test_test_connection_error():
-    with patch("app.connections.nvidia.safe_urlopen", side_effect=Exception("timeout")):
+    with patch("app.connections.nvidia.safe_urlopen", side_effect=OSError("timeout")):
         result = NvidiaProvider.test({"api_key": "nvapi-fake"})
     assert result.ok is False
     assert "timeout" in result.detail

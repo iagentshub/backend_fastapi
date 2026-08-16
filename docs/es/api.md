@@ -266,6 +266,8 @@ Tipos válidos para `{type}`: `agent`, `skill`, `connection`, `knowledge`.
 
 Los recursos compartidos con el usuario aparecen en los listados normales (`/api/skills`, `/api/agents`, etc.) con el campo `_shared: true`. El receptor puede usarlos pero no editarlos ni redistribuirlos.
 
+Compartir un agente arrastra sus skills, prompts y knowledge privados —el `POST` los devuelve en `cascaded`— y **retirarlo los retira**: el `DELETE` responde con `uncascaded` (lo que ha dejado de estar compartido) y `kept` (lo que se conserva). Se conserva lo que el usuario compartió por su cuenta y lo que otro agente u orquestación compartido del mismo grupo sigue necesitando: retirarlo dejaría a ese otro recurso sin una dependencia. Una orquestación se comporta igual con los agentes que arrastró.
+
 ---
 
 ## Conexiones

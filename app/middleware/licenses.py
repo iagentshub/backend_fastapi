@@ -11,6 +11,7 @@ from app.auth.auth import decode_token, get_user_by_identity, get_user_role
 from app.config.data import SETTINGS_FILE
 from app.storage.billing import BillingStorage
 from app.storage.guest import is_guest
+from app.utils import flog
 
 _PROTECTED_PREFIXES = (
     "/api/agents",
@@ -47,8 +48,16 @@ def _billing_enabled() -> bool:
         try:
             data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
             _cache = bool(data.get("billing_enabled", False))
-        except Exception:
-            return False  # sin settings legibles: puerta cerrada, y sin cachearlo
+        except FileNotFoundError:
+            # Instalación sin settings.json: billing desactivado. Caso normal,
+            # no se registra ni se cachea (el fichero puede aparecer después).
+            return False
+        except (OSError, ValueError, AttributeError) as exc:
+            # Puerta cerrada, y sin cachearlo. Aquí sí se registra: esto es una
+            # puerta de cobro, y "a todo el mundo le funciona gratis" tiene que
+            # poder rastrearse hasta un settings.json ilegible.
+            flog.error(f"[licenses] Settings ilegibles, billing desactivado: {exc}")
+            return False
     return _cache
 
 

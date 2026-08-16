@@ -53,9 +53,11 @@ class OllamaProvider(BaseProvider):
                 data = cls._fetch_tags(alt, api_key)
             except urllib.error.HTTPError as e:
                 return TestResult(False, f"HTTP {e.code}", str(e))
-            except Exception as e:
+            except (OSError, ValueError) as e:
                 return TestResult(False, "Sin conexión al servidor Ollama", str(e))
-        except Exception as e:
+        except ValueError as e:
+            # OSError ya se trató arriba (rama del host alternativo); aquí solo
+            # queda el JSONDecodeError de una respuesta que no es JSON.
             return TestResult(False, "Sin conexión al servidor Ollama", str(e))
         models = data.get("models") or []
         names = ", ".join(m.get("name", "?") for m in models[:5])

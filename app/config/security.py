@@ -36,8 +36,11 @@ def assert_safe_url(url: str) -> None:
     """
     try:
         parsed = urlparse(url)
-    except Exception:
-        raise ValueError(f"URL inválida: {url!r}")
+    except ValueError as exc:
+        # urlparse solo lanza ValueError (p. ej. IPv6 mal formado). Se traduce
+        # al ValueError propio de esta función para que el llamante tenga un
+        # único tipo que capturar.
+        raise ValueError(f"URL inválida: {url!r}") from exc
 
     if parsed.scheme not in ("http", "https"):
         raise ValueError("Solo se permiten URLs http/https")

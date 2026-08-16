@@ -53,5 +53,7 @@ class SSHProvider(BaseProvider):
             return TestResult(True, f"OK — Puerto {port} accesible en {host}", detail)
         except socket.timeout:
             return TestResult(False, f"Timeout conectando a {host}:{port}")
-        except Exception as e:
+        except OSError as e:
+            # Fallo de socket, DNS o rechazo de conexión. El motivo viaja al
+            # usuario en TestResult.detail, así que no se pierde nada.
             return TestResult(False, "No se puede conectar", str(e))

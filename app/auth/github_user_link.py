@@ -1,4 +1,8 @@
-"""Resolución de usuarios locales ligados a una identidad de GitHub OAuth."""
+"""Resolución de usuarios locales ligados a una identidad de GitHub OAuth.
+
+Recibe la identidad que ya trajo ``app.auth.github_device_flow`` y la traduce a
+una fila de `users`. No habla con GitHub en ningún momento.
+"""
 
 from __future__ import annotations
 

@@ -91,12 +91,16 @@ class NvidiaProvider(BaseProvider):
                     or json.loads(body).get("message")
                     or body[:200]
                 )
-            except Exception:
+            except (json.JSONDecodeError, AttributeError):
+                # Cuerpo de error que no es JSON, o que lo es pero no un objeto.
                 msg = body[:200]
             return TestResult(
                 False, f"HTTP {e.code}", msg
             )  # nvidia usa "detail", no "error.message"
-        except Exception as e:
+        except (OSError, ValueError) as e:
+            # OSError cubre URLError, timeouts y fallos de socket/DNS;
+            # ValueError, el JSONDecodeError de una respuesta que no es JSON.
+            # El mensaje viaja al usuario en TestResult.detail.
             return TestResult(False, "Error de conexión", str(e))
 
     @classmethod
@@ -115,5 +119,8 @@ class NvidiaProvider(BaseProvider):
                 data = json.loads(r.read())
             ids = {m.get("id") for m in (data.get("data") or [])}
             return model in ids
-        except Exception:
+        except (OSError, ValueError, AttributeError):
+            # None es el "no se pudo comprobar" documentado arriba: la
+            # credencial ya se validó, así que un /models que no responde (red,
+            # JSON inesperado) no debe marcar la conexión como rota.
             return None

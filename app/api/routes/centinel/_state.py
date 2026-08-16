@@ -191,7 +191,9 @@ def _with_state_lock(action: Callable[[], Any]) -> Any:
 def _read_centinel_state() -> dict:
     try:
         return _with_state_lock(_read_centinel_state_unlocked)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
+        # Estado compartido entre workers vía fichero con flock: si no se
+        # puede leer se sigue con estado vacío, ya registrado.
         flog.warning(f"[centinel] no se pudo leer estado compartido: {exc}")
         return {}
 
@@ -199,7 +201,9 @@ def _read_centinel_state() -> dict:
 def _write_centinel_state(data: dict) -> None:
     try:
         _with_state_lock(lambda: _write_centinel_state_unlocked(data))
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
+        # Ver _read_centinel_state: perder una escritura de estado degrada
+        # el panel, no el servicio.
         flog.warning(f"[centinel] no se pudo persistir estado compartido: {exc}")
 
 
@@ -215,7 +219,8 @@ def _update_centinel_state(mutator: Callable[[dict], None]) -> dict:
 
     try:
         _with_state_lock(update)
-    except Exception as exc:
+    except Exception as exc:  # noqa: BLE001
+        # Ver _read_centinel_state.
         flog.warning(f"[centinel] no se pudo actualizar estado compartido: {exc}")
     return result
 

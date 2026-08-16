@@ -73,7 +73,9 @@ async def export_agent(
             item = await knowledge_store.get(knowledge_id)
             if item:
                 resolved_knowledge.append(item)
-        except Exception as exc:
+        except Exception as exc:  # noqa: BLE001
+            # El export no debe caerse por un item de knowledge ilegible: se
+            # omite ese, se registra cuál, y el resto del agente se exporta.
             flog.warning(
                 f"[agents] Knowledge {knowledge_id} omitido del export {agent_id}: {exc}"
             )

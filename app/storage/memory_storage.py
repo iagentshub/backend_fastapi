@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 
 # db se importa DOS veces a propósito: ver app/storage/_storage_helpers.py.
 from app.storage import db as _db
-from app.storage.db import AsyncConn, open_db
+from app.storage.db import DB_ERRORS, AsyncConn, open_db
 from app.storage.migration import LegacyMigrationStorage
 from app.utils import flog
 from app.utils import now_iso as _now
@@ -36,7 +36,10 @@ class MemoryStorage(LegacyMigrationStorage):
                 count = await conn.fetchval("SELECT COUNT(*) FROM memory_files")
                 if count:
                     return
-            except Exception:
+            except DB_ERRORS as exc:
+                # Tabla aún inexistente (arranque previo a la migración de
+                # esquema) o BD caída. Ver agent_storage para el razonamiento.
+                flog.debug(f"[memory] Migración legacy omitida: {exc}")
                 return
             now = _now()
             for p in sorted(self._root_dir.glob("*.md")):
@@ -48,7 +51,9 @@ class MemoryStorage(LegacyMigrationStorage):
                         "VALUES (?, ?, ?, ?)",
                         (mem_id, "admin", content, now),
                     )
-                except Exception as exc:
+                except Exception as exc:  # noqa: BLE001
+                    # Ancho a propósito: un .md ilegible no puede parar la
+                    # migración del resto. Ver agent_storage.
                     flog.warning(f"[memory] Migración fallida {p}: {exc}")
             await conn.commit()
 

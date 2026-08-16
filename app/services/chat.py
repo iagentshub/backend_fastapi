@@ -36,6 +36,7 @@ from app.services.llm_executor import (
     LLMLease,
     run_llm_blocking,
 )
+from app.storage.db import DB_ERRORS
 from app.utils import flog
 from app.utils.safe_http import safe_urlopen
 
@@ -243,7 +244,10 @@ def _do_openai_stream(
                 break
             try:
                 obj = json.loads(chunk)
-            except Exception:
+            except json.JSONDecodeError:
+                # Trama SSE que no es JSON (keep-alive del proveedor, línea
+                # partida). Se descarta sin registrar: esto corre una vez por
+                # token y logearlo llenaría el fichero de logs con cada chat.
                 continue
             choices = obj.get("choices") or []
             if choices:
@@ -658,7 +662,14 @@ async def stream_chat(
                 limit=200,
                 chars_per_message=2_000,
             )
-        except Exception:
+        except DB_ERRORS as exc:
+            # Sin memoria el agente responde igual, solo que sin recordar la
+            # conversación anterior — y eso, sin registro, se lee como "el
+            # agente se ha vuelto tonto" y no como un fallo de BD.
+            flog.warning(
+                f"[chat] Memoria no recuperada para {agent.id}: {exc}",
+                username=user_id or "-",
+            )
             memory_messages = []
         past_lines: List[str] = []
         past_tokens = 0
@@ -883,10 +894,13 @@ async def stream_chat(
                 "message": "No se pudo contactar con el proveedor.",
             }
         )
-    except Exception as exc:
-        # str(exc) puede llevar rutas, hosts internos o trozos de SQL. El resto
-        # de la API ya se protege así en app.py:131-175; el SSE se saltaba esa
-        # red porque la respuesta ya había empezado a emitirse.
+    except Exception as exc:  # noqa: BLE001
+        # Red de seguridad final del stream, deliberadamente ancha: una vez que
+        # el SSE empezó a emitir, el handler global de app.py ya no puede
+        # intervenir, así que cualquier fallo tiene que convertirse aquí en una
+        # trama de error o el cliente se queda colgado.
+        # str(exc) puede llevar rutas, hosts internos o trozos de SQL, y por eso
+        # solo se registra en el log, nunca se envía al cliente.
         flog.error(
             f"[chat] Error no controlado: {type(exc).__name__}: {exc}",
             username=user_id or "-",
