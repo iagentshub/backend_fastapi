@@ -23,8 +23,8 @@ DELETE /api/connections/{conn_id}
 DELETE /api/groups/{group_id}
 DELETE /api/groups/{group_id}/invitations/{inv_id}
 DELETE /api/groups/{group_id}/members/{username}
-DELETE /api/knowledge/packs/{pack_id}
 DELETE /api/knowledge/packs/upload-sessions/{pack_id}
+DELETE /api/knowledge/packs/{pack_id}
 DELETE /api/knowledge/{item_id}
 DELETE /api/llm-orchestrations/{item_id}
 DELETE /api/memory/{filename}
@@ -46,6 +46,7 @@ GET /api/admin/centinel/stress/status
 GET /api/admin/centinel/stress/stream/{run_id}
 GET /api/admin/centinel/tree
 GET /api/admin/check-update
+GET /api/admin/config-audit
 GET /api/admin/connections
 GET /api/admin/explore
 GET /api/admin/groups

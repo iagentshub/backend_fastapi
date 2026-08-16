@@ -49,6 +49,7 @@ from app.auth.auth import ensure_admin_user
 from app.auth.gdpr import purge_expired_deletions
 from app.config import data as _cfg
 from app.config.cors import CORS_ORIGINS
+from app.config.startup_checks import assert_config_ok, log_startup_report
 from app.middleware.body_limit import BodySizeLimitMiddleware
 from app.middleware.licenses import LicenseGateMiddleware
 from app.middleware.locale import LocaleMiddleware
@@ -98,6 +99,14 @@ async def _log_purge_loop() -> None:
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
+    # Antes que la BD: si la configuración se contradice (verificación por email
+    # sin SMTP, cobro activo sin claves de Stripe) el arranque tiene que decirlo
+    # aquí y no cuando falle el primer registro. Con GAIA_STRICT_CONFIG además
+    # aborta; sin él solo avisa, para no dejar inarrancable una instalación que
+    # hoy funciona degradada.
+    _checks = log_startup_report()
+    assert_config_ok(_checks)
+
     await init_db(_cfg.DB_FILE)
     await ensure_admin_user()
     tasks = (

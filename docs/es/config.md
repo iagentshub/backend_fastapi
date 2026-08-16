@@ -23,6 +23,33 @@ Toda la configuración se realiza mediante variables de entorno. Estas se establ
 | Concurrencia LLM | Número máximo de llamadas simultáneas a proveedores por worker. |
 | Escritura de logs | Tamaño de lote e intervalo de volcado del registro de actividad. |
 
+## Auditoría de configuración al arrancar
+
+Una variable que falta no rompe nada: apaga una función. Sin `GAIA_SMTP_HOST` los
+correos de verificación no salen, y con un typo en `STRIPE_WEBHOOK_SECRET` el
+servidor arranca igual y simplemente no cobra. Para que eso deje de pasar en
+silencio, el arranque audita la configuración y escribe en el log **qué función
+queda desactivada y por qué variable**.
+
+Hay dos niveles:
+
+| Nivel | Significado | Ejemplo |
+|---|---|---|
+| Aviso | Una función queda desactivada porque le falta configuración. Puede ser deliberado. | Sin `GAIA_SMTP_HOST` no se envía correo. |
+| Error | La configuración se contradice: algo está activado y no puede funcionar. | Verificación de email activa sin servidor SMTP: nadie llega a poder entrar. |
+
+| Variable | Por defecto | Descripción |
+|---|---|---|
+| `GAIA_STRICT_CONFIG` | *(desactivado)* | Ponlo a `true` para que los **errores** impidan el arranque en vez de solo avisar. |
+
+Por defecto los errores no abortan: endurecerlo dejaría inarrancable una
+instalación que hoy funciona degradada. En un despliegue de producción, activa
+`GAIA_STRICT_CONFIG=true` una vez y el propio arranque avisa para siempre.
+
+El mismo informe está en el panel de administración, en **Configuración →
+Diagnóstico de configuración**, y en `GET /api/admin/config-audit`. Solo muestra
+**nombres** de variable, nunca sus valores.
+
 ## Escritura de logs
 
 Los registros se escriben en la base de datos **por lotes**, no uno a uno: se

@@ -11,6 +11,7 @@ from fastapi import Depends, Query
 from app.api.routes.admin._router import admin_router
 from app.api.routes.auth import require_admin
 from app.config.data import AGENTS_DIR as _AGENTS_DIR
+from app.config.startup_checks import report as config_report
 from app.errors import APIError
 from app.storage.db import IS_PG, open_db
 from app.utils import flog
@@ -207,6 +208,17 @@ def _server_health() -> dict[str, Any]:
         flog.debug(f"[admin] Métrica de CPU no disponible: {exc}")
 
     return health
+
+
+@admin_router.get("/config-audit")
+async def admin_config_audit(_: str = Depends(require_admin)) -> dict[str, Any]:
+    """Qué funciones quedan desactivadas y por qué variable.
+
+    Devuelve nombres de variable, nunca sus valores: el objetivo es que un
+    despliegue con un typo en `STRIPE_WEBHOOK_SECRET` se vea desde el panel,
+    no exponer secretos a quien tenga una sesión de admin abierta.
+    """
+    return config_report()
 
 
 @admin_router.get("/stats")

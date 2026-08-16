@@ -14,6 +14,33 @@ def test_admin_stats(admin_client):
     assert "users" in stats or isinstance(stats, dict)
 
 
+# ── Auditoría de configuración ────────────────────────────────────────────────
+
+
+def test_config_audit_lista_las_funciones_degradadas(admin_client):
+    r = admin_client.get("/api/admin/config-audit")
+    assert r.status_code == 200
+    informe = r.json()
+    assert {"strict", "errors", "warnings", "checks"} <= set(informe)
+    claves = {c["key"] for c in informe["checks"]}
+    assert {"billing", "smtp", "email_verify", "jwt_secret"} <= claves
+    for check in informe["checks"]:
+        assert check["severity"] in ("ok", "warning", "error")
+
+
+def test_config_audit_no_expone_valores(admin_client, monkeypatch):
+    """El informe lo ve cualquier admin: nombres de variable, nunca secretos."""
+    import app.config.billing as billing_cfg
+
+    monkeypatch.setattr(billing_cfg, "STRIPE_SECRET_KEY", "sk_live_no_debe_salir")
+    r = admin_client.get("/api/admin/config-audit")
+    assert "sk_live_no_debe_salir" not in r.text
+
+
+def test_config_audit_exige_admin(client):
+    assert client.get("/api/admin/config-audit").status_code in (401, 403)
+
+
 def _insert_log(
     db_path,
     *,

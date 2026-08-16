@@ -33,9 +33,12 @@ import os
 from dataclasses import dataclass
 from typing import Literal
 
+# Los módulos se importan enteros, no sus símbolos: `DATA_DIR` y compañía se
+# resuelven al importar, y los tests (y el propio panel de admin, que puede
+# reescribir settings.json en caliente) necesitan ver el valor de ahora.
 import app.config.billing as _billing
+import app.config.data as _data
 import app.config.session as _session
-from app.config.data import DATA_DIR, SETTINGS_FILE
 
 Severity = Literal["ok", "warning", "error"]
 
@@ -79,7 +82,7 @@ def _platform_settings() -> dict:
     este módulo: se trata como «sin overrides» y el resto de checks siguen.
     """
     try:
-        data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+        data = json.loads(_data.SETTINGS_FILE.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         return {}
     return data if isinstance(data, dict) else {}
@@ -385,7 +388,7 @@ def _check_secure_cookies() -> ConfigCheck:
 
 
 def _check_data_dir() -> ConfigCheck:
-    existing = DATA_DIR
+    existing = _data.DATA_DIR
     while not existing.exists() and existing != existing.parent:
         existing = existing.parent
     if not os.access(existing, os.W_OK):
@@ -481,7 +484,8 @@ def assert_config_ok(checks: list[ConfigCheck] | None = None) -> None:
     if not errores:
         return
     detalle = "\n".join(
-        f"  - {c.feature}: {c.detail} ({', '.join(c.variables) or '—'})" for c in errores
+        f"  - {c.feature}: {c.detail} ({', '.join(c.variables) or '—'})"
+        for c in errores
     )
     raise ConfigError(
         f"{_STRICT_ENV} está activo y la configuración tiene "

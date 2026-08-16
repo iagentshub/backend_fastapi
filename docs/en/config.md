@@ -23,6 +23,33 @@ All configuration is done through environment variables. These are set by the de
 | LLM concurrency | Maximum simultaneous provider calls per worker. |
 | Log writes | Batch size and flush interval for the activity log. |
 
+## Startup configuration audit
+
+A missing variable breaks nothing: it turns a feature off. Without
+`GAIA_SMTP_HOST` verification emails never leave, and with a typo in
+`STRIPE_WEBHOOK_SECRET` the server starts just fine and simply never charges. So
+that this stops happening quietly, startup audits the configuration and logs
+**which feature is disabled and because of which variable**.
+
+There are two levels:
+
+| Level | Meaning | Example |
+|---|---|---|
+| Warning | A feature is off because configuration is missing. May well be deliberate. | No `GAIA_SMTP_HOST`, so no email is sent. |
+| Error | The configuration contradicts itself: something is enabled that cannot work. | Email verification on with no SMTP server: nobody ever gets in. |
+
+| Variable | Default | Description |
+|---|---|---|
+| `GAIA_STRICT_CONFIG` | *(off)* | Set to `true` so **errors** abort startup instead of only warning. |
+
+Errors do not abort by default: tightening that would leave an installation that
+works today —degraded— unable to start. In a production deployment, set
+`GAIA_STRICT_CONFIG=true` once and startup warns you forever.
+
+The same report lives in the admin panel under **Configuration → Configuration
+diagnostics**, and in `GET /api/admin/config-audit`. It shows variable **names**
+only, never their values.
+
 ## Log writes
 
 Log records are written to the database **in batches**, not one by one: they are
