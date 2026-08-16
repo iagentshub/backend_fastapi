@@ -146,9 +146,11 @@ class _DBHandler(logging.Handler):
             conn.execute("PRAGMA journal_mode=WAL")
             conn.executescript(_log_schema())
             conn.close()
-        except Exception:
-            # Sin tabla de logs el proceso arranca igual: el handler de stdout
-            # sigue funcionando y cada emit reintentará la conexión.
+        except Exception:  # noqa: BLE001
+            # Ancho a propósito: es el logger arrancando. Cualquier fallo aquí
+            # —fichero bloqueado, disco lleno, esquema a medias— no puede tumbar
+            # el proceso. Sin tabla de logs el proceso arranca igual: el handler
+            # de stdout sigue funcionando y cada emit reintentará la conexión.
             logging.getLogger(__name__).warning(
                 "flog: no se pudo inicializar app_logs en %s", self._db, exc_info=True
             )
