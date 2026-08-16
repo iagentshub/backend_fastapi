@@ -13,7 +13,7 @@ from app.auth.auth import (
     get_user_by_username,
     get_user_role,
 )
-from app.config.session import JWT_MAX_AGE_SECONDS, SECURE_COOKIES
+from app.auth.cookies import set_session_cookies
 from app.errors import APIError
 from app.models.request_bodies import StatusBody, UsernameBody
 from app.storage.groups import GroupStorage
@@ -578,14 +578,7 @@ async def switch_group(
     # Cambio al group personal propio: siempre permitido
     if group_id == username:
         token = create_token(username, group_id=username)
-        response.set_cookie(
-            "ga_token",
-            token,
-            httponly=True,
-            samesite="lax",
-            secure=SECURE_COOKIES,
-            max_age=JWT_MAX_AGE_SECONDS,
-        )
+        set_session_cookies(response, token)
         return {"ok": True, "group_id": group_id}
 
     # Group de equipo: debe estar activo y el usuario debe ser miembro
@@ -595,12 +588,5 @@ async def switch_group(
     if not await _groups.is_member(group_id, username):
         raise APIError(403, "not_a_member", "No eres miembro de este grupo")
     token = create_token(username, group_id=group_id)
-    response.set_cookie(
-        "ga_token",
-        token,
-        httponly=True,
-        samesite="lax",
-        secure=SECURE_COOKIES,
-        max_age=JWT_MAX_AGE_SECONDS,
-    )
+    set_session_cookies(response, token)
     return {"ok": True, "group_id": group_id}

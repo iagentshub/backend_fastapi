@@ -51,6 +51,7 @@ from app.config import data as _cfg
 from app.config.cors import CORS_ORIGINS
 from app.config.startup_checks import assert_config_ok, log_startup_report
 from app.middleware.body_limit import BodySizeLimitMiddleware
+from app.middleware.csrf import CsrfMiddleware
 from app.middleware.licenses import LicenseGateMiddleware
 from app.middleware.locale import LocaleMiddleware
 from app.middleware.request_logging import RequestLoggerMiddleware
@@ -150,6 +151,9 @@ def create_app() -> FastAPI:
     app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(LocaleMiddleware)
     app.add_middleware(LicenseGateMiddleware)
+    # Antes que CORSMiddleware, que al añadirse el último envuelve a todos: así
+    # el preflight OPTIONS lo resuelve CORS y no llega a la puerta anti-CSRF.
+    app.add_middleware(CsrfMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=CORS_ORIGINS,

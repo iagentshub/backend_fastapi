@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
+import hmac
 import json
 import os
 from datetime import datetime, timedelta, timezone
@@ -122,6 +124,36 @@ def create_token(username: str, group_id: Optional[str] = None) -> str:
         "aud": JWT_AUDIENCE,
     }
     return jwt.encode(payload, _secret(), algorithm=JWT_ALGORITHM)
+
+
+def derive_csrf_token(ga_token: str) -> str:
+    """Token anti-CSRF de una sesión: HMAC del JWT con el secreto de firma.
+
+    Derivado en vez de aleatorio-y-guardado, por tres razones que se pagan
+    solas: no hay estado que expirar (muere con el JWT del que sale), el
+    servidor puede reemitir la cookie en cualquier respuesta sin consultar
+    nada, y —lo que importa— resiste el *cookie tossing*.
+
+    Ese último es el punto ciego del double-submit clásico: un subdominio
+    comprometido puede sobreescribir la cookie del token Y mandar el mismo
+    valor en la cabecera, y un servidor que se limite a comparar las dos lo da
+    por bueno. Aquí se recalcula desde el `ga_token` de la víctima, así que un
+    valor inyectado no cuadra.
+
+    El token no es una credencial: quien lo tenga sin la cookie de sesión no
+    puede hacer nada con él, y del HMAC no se vuelve al JWT.
+    """
+    digest = hmac.new(
+        _secret().encode("utf-8"), ga_token.encode("utf-8"), hashlib.sha256
+    ).digest()
+    return base64.urlsafe_b64encode(digest).rstrip(b"=").decode("ascii")
+
+
+def csrf_token_matches(ga_token: str, candidate: str) -> bool:
+    """Comparación en tiempo constante del token recibido con el esperado."""
+    if not ga_token or not candidate:
+        return False
+    return hmac.compare_digest(derive_csrf_token(ga_token), candidate)
 
 
 def _claims(token: str) -> Optional[dict]:

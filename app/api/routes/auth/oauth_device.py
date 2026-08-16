@@ -10,9 +10,9 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Request, Response
 
+from app.auth.cookies import set_session_cookies
 from app.auth.github_user_link import get_or_create_github_user
 from app.auth.passwords import create_token
-from app.config.session import JWT_MAX_AGE_SECONDS, SECURE_COOKIES
 from app.errors import APIError
 from app.middleware.ratelimit import RateLimiter
 from app.models.request_bodies import DeviceCodeBody
@@ -86,12 +86,5 @@ async def github_login_device_token(
 
     token = create_token(user["id"])
     flog.ok(f"[login] OK vía GitHub usuario={user['username']}", ip=_client_ip(request))
-    response.set_cookie(
-        "ga_token",
-        token,
-        httponly=True,
-        samesite="lax",
-        secure=SECURE_COOKIES,
-        max_age=JWT_MAX_AGE_SECONDS,
-    )
+    set_session_cookies(response, token)
     return {"ok": True, "pending": False, "username": user["username"]}

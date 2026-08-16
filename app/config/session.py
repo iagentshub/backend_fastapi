@@ -66,6 +66,35 @@ SECURE_COOKIES: bool = (
     or os.getenv("GAIA_SECURE_COOKIES", "").lower() == "true"
 )
 
+# ── Anti-CSRF ─────────────────────────────────────────────────────────────────
+# Dos capas independientes sobre la cookie de sesión. Ver docs/adr/006-csrf-en-
+# dos-capas.md: `SameSite=Lax` era la única defensa, vive en el navegador del
+# visitante y no cubre un subdominio comprometido, que para el navegador es
+# «el mismo sitio».
+#
+# Cada capa tiene su interruptor porque protegen cosas distintas y porque un
+# despliegue puede necesitar bajar una sin tocar la otra:
+#
+#   enforce → rechaza con 403
+#   log     → deja pasar y registra el rechazo que habría hecho
+#   off     → no mira nada
+#
+# Las dos salen en `enforce`. La del token exige que el cliente mande la
+# cabecera, así que el backend NO puede llegar a producción antes que React y
+# Flutter: con un bundle cacheado que aún no la manda, toda mutación es un 403.
+# `log` es la salida si eso pasa —registra sin bloquear— y no hace falta
+# redesplegar para usarla, basta la variable de entorno.
+CSRF_MODES: frozenset[str] = frozenset({"enforce", "log", "off"})
+CSRF_ORIGIN_CHECK: str = os.getenv("GAIA_CSRF_ORIGIN_CHECK", "enforce").lower()
+CSRF_TOKEN_CHECK: str = os.getenv("GAIA_CSRF_TOKEN_CHECK", "enforce").lower()
+
+CSRF_COOKIE = "ga_csrf"
+CSRF_HEADER = "x-csrf-token"
+
+# TRACE no lo sirve Starlette, pero está en la lista por lo mismo que OPTIONS:
+# la definición de «método seguro» es la de RFC 9110, no la de nuestras rutas.
+SAFE_METHODS: frozenset[str] = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
+
 # ── SMTP (para verificación de email y recuperación de contraseña) ────────────
 # Funciona con cualquier servidor SMTP: Postfix propio, Exchange, Gmail, etc.
 # Deja GAIA_SMTP_HOST vacío para deshabilitar (los tokens se loguean en consola).

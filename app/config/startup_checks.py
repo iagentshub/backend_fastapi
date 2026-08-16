@@ -307,6 +307,64 @@ def _check_registration_mode() -> ConfigCheck:
     )
 
 
+_CSRF_VARS = ("GAIA_CSRF_ORIGIN_CHECK", "GAIA_CSRF_TOKEN_CHECK")
+
+
+def _check_csrf() -> ConfigCheck:
+    modos = {
+        "GAIA_CSRF_ORIGIN_CHECK": _session.CSRF_ORIGIN_CHECK,
+        "GAIA_CSRF_TOKEN_CHECK": _session.CSRF_TOKEN_CHECK,
+    }
+    invalidos = tuple(
+        var for var, modo in modos.items() if modo not in _session.CSRF_MODES
+    )
+    if invalidos:
+        return ConfigCheck(
+            key="csrf",
+            feature="Protección anti-CSRF",
+            severity="error",
+            detail=(
+                f"Modo desconocido; se esperaba {', '.join(sorted(_session.CSRF_MODES))}. "
+                "Un valor no reconocido no activa nada: la sesión vuelve a "
+                "depender solo de SameSite=Lax sin decirlo."
+            ),
+            variables=invalidos,
+        )
+    apagados = tuple(var for var, modo in modos.items() if modo == "off")
+    if apagados:
+        return ConfigCheck(
+            key="csrf",
+            feature="Protección anti-CSRF",
+            severity="warning",
+            detail=(
+                "Comprobación desactivada. La única defensa contra CSRF vuelve "
+                "a ser SameSite=Lax, que no cubre un subdominio comprometido."
+            ),
+            variables=apagados,
+        )
+    en_log = tuple(var for var, modo in modos.items() if modo == "log")
+    if en_log:
+        return ConfigCheck(
+            key="csrf",
+            feature="Protección anti-CSRF",
+            severity="warning",
+            detail=(
+                "En modo log: los rechazos se registran pero no bloquean. Es la "
+                "válvula de escape para diagnosticar, no un estado en el que "
+                "quedarse: mientras dure, la protección está anotando, no "
+                "protegiendo."
+            ),
+            variables=en_log,
+        )
+    return ConfigCheck(
+        key="csrf",
+        feature="Protección anti-CSRF",
+        severity="ok",
+        detail="Origen y token verificados en cada petición con efectos.",
+        variables=_CSRF_VARS,
+    )
+
+
 def _check_github_oauth() -> ConfigCheck:
     from app.config.providers import GITHUB_OAUTH_CLIENT_ID
 
@@ -426,6 +484,7 @@ def run_checks() -> list[ConfigCheck]:
         _check_billing(settings),
         _check_selfhosted_prices(settings),
         _check_registration_mode(),
+        _check_csrf(),
         _check_github_oauth(),
         _check_trusted_proxies(),
         _check_secure_cookies(),

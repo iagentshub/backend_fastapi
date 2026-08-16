@@ -25,11 +25,11 @@ from app.auth.auth import (
     verify_email_token,
     verify_password_async,
 )
+from app.auth.cookies import clear_session_cookies, set_session_cookies
 from app.auth.passwords import create_token
 from app.config.content_languages import CONTENT_LANGUAGE_SET
 from app.config.session import (
     EMAIL_VERIFY_ENABLED,
-    JWT_MAX_AGE_SECONDS,
     RATE_FORGOT_CALLS,
     RATE_FORGOT_WINDOW,
     RATE_GUEST_CALLS,
@@ -39,7 +39,6 @@ from app.config.session import (
     REGISTER_MAX,
     REGISTER_WINDOW,
     REGISTRATION_MODE,
-    SECURE_COOKIES,
 )
 from app.errors import APIError
 from app.middleware.locale import get_locale
@@ -212,14 +211,7 @@ async def register(
     if not user:
         raise APIError(500, "user_creation_failed", "No se pudo crear la sesión")
     token = create_token(user["id"])
-    response.set_cookie(
-        "ga_token",
-        token,
-        httponly=True,
-        samesite="lax",
-        secure=SECURE_COOKIES,
-        max_age=JWT_MAX_AGE_SECONDS,
-    )
+    set_session_cookies(response, token)
     return {"ok": True, "email": email, "pending_verification": False}
 
 
@@ -268,14 +260,7 @@ async def login(
         ip=_ip,
         username=user["username"],
     )
-    response.set_cookie(
-        "ga_token",
-        token,
-        httponly=True,
-        samesite="lax",
-        secure=SECURE_COOKIES,
-        max_age=JWT_MAX_AGE_SECONDS,
-    )
+    set_session_cookies(response, token)
     return {"ok": True, "username": user["username"]}
 
 
@@ -294,14 +279,7 @@ async def verify_email(token: str, response: Response) -> dict[str, Any]:
             404, "not_found", "Usuario no encontrado", extra={"resource": "user"}
         )
     auth_token = create_token(user["id"])
-    response.set_cookie(
-        "ga_token",
-        auth_token,
-        httponly=True,
-        samesite="lax",
-        secure=SECURE_COOKIES,
-        max_age=JWT_MAX_AGE_SECONDS,
-    )
+    set_session_cookies(response, auth_token)
     return {"ok": True, "username": username}
 
 
@@ -314,20 +292,13 @@ async def guest_login(
 
     guest_id = new_guest_id()
     token = create_token(guest_id)
-    response.set_cookie(
-        "ga_token",
-        token,
-        httponly=True,
-        samesite="lax",
-        secure=SECURE_COOKIES,
-        max_age=JWT_MAX_AGE_SECONDS,
-    )
+    set_session_cookies(response, token)
     return {"ok": True, "username": guest_id}
 
 
 @router.post("/logout")
 async def logout(response: Response) -> dict[str, Any]:
-    response.delete_cookie("ga_token")
+    clear_session_cookies(response)
     return {"ok": True}
 
 

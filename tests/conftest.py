@@ -166,7 +166,12 @@ def patch_data_dir(tmp_data_dir, tmp_path, monkeypatch):
 
     # Forzar SECURE_COOKIES=False: con Secure=True las cookies no se almacenan
     # en el TestClient (HTTP), lo que provoca 401 en todas las llamadas siguientes.
-    monkeypatch.setattr(auth_routes, "SECURE_COOKIES", False)
+    # Vive en app.auth.cookies desde que la sesión pasó a ser dos cookies (la de
+    # sesión y su token anti-CSRF) y las emite un único helper; los ocho handlers
+    # que llamaban a set_cookie ya no importan el valor.
+    import app.auth.cookies as cookies_mod
+
+    monkeypatch.setattr(cookies_mod, "SECURE_COOKIES", False)
 
     # licenses.py importa SETTINGS_FILE por valor, igual que auth.py (ver arriba).
     # El binding se fija cuando se importa el módulo: si algo lo importa durante
@@ -189,6 +194,53 @@ def patch_data_dir(tmp_data_dir, tmp_path, monkeypatch):
     asyncio.run(db_mod.close_db_pool())
     db_mod._sqlite_path = old_sqlite_path
     db_mod._pg_pool = old_pg_pool
+
+
+def _echo_csrf_cookie(request) -> None:
+    """Manda `X-CSRF-Token`, que es lo que hacen React y Flutter.
+
+    Se **deriva del `ga_token` de la petición** en vez de copiar la cookie
+    `ga_csrf`, y eso no es un atajo: el valor es el mismo —el servidor emite
+    `derive_csrf_token(ga_token)`— y así da igual cómo haya montado la sesión
+    el test. 43 ficheros inyectan el JWT con `client.cookies.set("ga_token",
+    …)` sin pasar por `/login`, así que nunca llegan a tener la cookie.
+
+    No pisa una cabecera ya puesta: los tests del middleware necesitan mandar
+    un token deliberadamente malo.
+    """
+    if "x-csrf-token" in request.headers:
+        return
+    # El MISMO parser que usa Starlette, no uno propio: varios tests acaban con
+    # dos cookies `ga_token` en el jar (una puesta a mano sin dominio y otra que
+    # llegó por Set-Cookie con dominio), y ahí importa cuál gana. Starlette se
+    # queda con la última; un bucle escrito aquí cogía la primera y el token
+    # salía firmado con un JWT que el servidor no estaba mirando.
+    from starlette.requests import cookie_parser
+
+    ga_token = cookie_parser(request.headers.get("cookie", "")).get("ga_token")
+    if ga_token:
+        from app.auth.passwords import derive_csrf_token
+
+        request.headers["x-csrf-token"] = derive_csrf_token(ga_token)
+
+
+@pytest.fixture(autouse=True)
+def csrf_en_todo_testclient(monkeypatch):
+    """Instala el hook en CUALQUIER TestClient, no solo en el del fixture.
+
+    Se parchea el constructor en vez de añadirlo cliente a cliente porque una
+    docena de tests montan el suyo (`TestClient(client.app)`) para hablar como
+    un segundo usuario. Hacerlo uno a uno deja el fallo esperando al siguiente
+    que lo haga: sin la cabecera, sus mutaciones son 403 y el mensaje no dice
+    nada de CSRF, solo que la petición no llegó.
+    """
+    original = TestClient.__init__
+
+    def init(self, *args, **kwargs):
+        original(self, *args, **kwargs)
+        self.event_hooks["request"].append(_echo_csrf_cookie)
+
+    monkeypatch.setattr(TestClient, "__init__", init)
 
 
 @pytest.fixture()
@@ -220,6 +272,11 @@ def admin_client(client, patch_data_dir):
     asyncio.run(_setup())
     token = create_token("testadmin")
     client.cookies.set("ga_token", token)
+    # La sesión son dos cookies: este cliente se salta /login, así que la
+    # segunda hay que derivarla igual que lo haría set_session_cookies.
+    from app.auth.passwords import derive_csrf_token
+
+    client.cookies.set("ga_csrf", derive_csrf_token(token))
     return client
 
 

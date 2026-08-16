@@ -19,7 +19,7 @@ from app.auth.auth import (
     hash_password_async,
     list_users,
 )
-from app.config.session import JWT_MAX_AGE_SECONDS, SECURE_COOKIES
+from app.auth.cookies import set_session_cookies
 from app.errors import APIError
 from app.models.request_bodies import AdminUserCreateBody, AdminUserPatchBody
 from app.services.email import send_account_status_email
@@ -255,14 +255,7 @@ async def admin_impersonate(
     token = create_token(target_user["id"])
 
     # Establecer la cookie del nuevo token
-    response.set_cookie(
-        "ga_token",
-        token,
-        httponly=True,
-        samesite="lax",
-        secure=SECURE_COOKIES,
-        max_age=JWT_MAX_AGE_SECONDS,
-    )
+    set_session_cookies(response, token)
 
     flog.ok(f"[admin] Token de impersonación creado exitosamente para {username!r}")
     return {"ok": True, "username": username}
