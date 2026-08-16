@@ -29,6 +29,7 @@ Donde se movió un bloque, queda en el código una línea `# Ver docs/adr/NNN-�
 | [002](002-el-contenedor-arranca-como-root.md) | El contenedor arranca como root y baja privilegios en el entrypoint |
 | [003](003-gaia-data-dir-y-healthcheck.md) | `GAIA_DATA_DIR` fijado en la imagen y HEALTHCHECK con arranque largo |
 | [004](004-explorar-esconde-lo-que-ya-tienes.md) | Explorar enseña lo que no tienes, y el estado vive en el servidor |
+| [005](005-carga-diferida-en-flutter-web.md) | La web no descarga admin, workflows ni el checkout hasta que se entra |
 
 ## Plantilla
 
