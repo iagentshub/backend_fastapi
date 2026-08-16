@@ -28,6 +28,7 @@ Donde se movió un bloque, queda en el código una línea `# Ver docs/adr/NNN-�
 | [001](001-estado-en-memoria-con-multiples-workers.md) | Estado en memoria con múltiples workers — sesiones de invitado y reparto del rate limit |
 | [002](002-el-contenedor-arranca-como-root.md) | El contenedor arranca como root y baja privilegios en el entrypoint |
 | [003](003-gaia-data-dir-y-healthcheck.md) | `GAIA_DATA_DIR` fijado en la imagen y HEALTHCHECK con arranque largo |
+| [004](004-explorar-esconde-lo-que-ya-tienes.md) | Explorar enseña lo que no tienes, y el estado vive en el servidor |
 
 ## Plantilla
 

@@ -27,7 +27,7 @@ from app.models.official_source import (
     PublicOfficialPack,
     PublicOfficialPackDetail,
 )
-from app.pagination.http import TOTAL_HEADER
+from app.pagination.http import LINKED_HEADER, TOTAL_HEADER
 from app.services.official_pack_service import OfficialPackService
 from app.storage.agent_storage import AgentStorage
 from app.storage.db import IS_PG, open_db
@@ -58,6 +58,38 @@ _shares = GroupShareStorage()
 _groups = GroupStorage()
 _official_packs = OfficialPackService()
 
+# Relación entre el catálogo y lo que el usuario ya tiene enlazado.
+# `all` es el valor por defecto porque es el comportamiento que la ruta tuvo
+# siempre: quien no envíe el parámetro sigue viendo el catálogo entero. Es el
+# cliente el que decide que descubrir significa "lo que todavía no tengo".
+# Ver docs/adr/004-explorar-esconde-lo-que-ya-tienes.md
+RELATION_MODES = ("all", "new", "linked")
+
+# Una fila del catálogo ya la tengo si existe una copia mía apuntando a ella.
+# Correlacionada a propósito, y con las cuatro columnas en el orden de
+# `idx_rsoc_link_origin` (owner, linked_to_user, linked_to_id, resource_type):
+# así el índice parcial la resuelve entera en vez de degradar a un rango por
+# owner.
+_LINKED_BY_REQUESTER = (
+    "EXISTS (SELECT 1 FROM resource_social mine "
+    "WHERE mine.owner = ? "
+    "AND mine.linked_to_user = resource_social.owner "
+    "AND mine.linked_to_id = resource_social.resource_id "
+    "AND mine.resource_type = resource_social.resource_type)"
+)
+
+
+def _validate_relation(relation: Optional[str]) -> str:
+    value = (relation or "all").strip().lower()
+    if value not in RELATION_MODES:
+        raise APIError(
+            422,
+            "invalid_field",
+            "Modo de relación no soportado",
+            extra={"field": "relation", "invalid": [relation]},
+        )
+    return value
+
 
 async def _add_owner_usernames(rows: List[Dict[str, Any]]) -> None:
     """Attach the public username while keeping the internal owner id intact."""
@@ -87,12 +119,14 @@ async def explore(
     offset: int = Query(0, ge=0),
     include_official: bool = True,
     pack_mode: Optional[bool] = None,
+    relation: Optional[str] = None,
     response: Response = None,  # type: ignore[assignment]
     # Abierto al invitado: solo devuelve filas is_public y el usuario únicamente
     # sirve para excluir lo propio. Es el catálogo público, y la superficie que
     # tiene sentido enseñar en el demo.
     username: str = Depends(require_session),
 ) -> List[Dict[str, Any]]:
+    relation_mode = _validate_relation(relation)
     async with open_db() as conn:
         # Lo propio no se enseña en el catálogo… salvo el contenido oficial:
         # vive en la cuenta del admin que sincroniza la fuente, pero es del
@@ -160,6 +194,16 @@ async def explore(
             # Coincide con cualquiera de las etiquetas seleccionadas (OR)
             conditions.append("(" + " OR ".join(["labels LIKE ?"] * len(label)) + ")")
             params.extend(f'%"{label_value}"%' for label_value in label)
+        # La relación se añade la última para poder rehacer el mismo WHERE con
+        # la condición contraria sin recolocar marcadores.
+        base_where = " AND ".join(conditions)
+        base_params = list(params)
+        if relation_mode == "new":
+            conditions.append(f"NOT {_LINKED_BY_REQUESTER}")
+            params.append(username)
+        elif relation_mode == "linked":
+            conditions.append(_LINKED_BY_REQUESTER)
+            params.append(username)
         where = " AND ".join(conditions)
         # La página se recorta en SQL, así que el total requiere un COUNT con
         # las mismas condiciones antes de añadir limit/offset.
@@ -168,10 +212,26 @@ async def explore(
                 f"SELECT COUNT(*) FROM resource_social WHERE {where}", tuple(params)
             )
             response.headers[TOTAL_HEADER] = str(total or 0)
-        params.extend([limit, offset])
+            # Un catálogo vacío porque el usuario ya lo tiene todo no es lo
+            # mismo que una búsqueda sin resultados, y el cliente no puede
+            # distinguirlos sin preguntar otra vez. Solo se paga cuando no hay
+            # nada que devolver.
+            if relation_mode == "new" and not total and not offset:
+                already = await conn.fetchval(
+                    f"SELECT COUNT(*) FROM resource_social "
+                    f"WHERE {base_where} AND {_LINKED_BY_REQUESTER}",
+                    tuple([*base_params, username]),
+                )
+                response.headers[LINKED_HEADER] = str(already or 0)
+        # El estado viaja en cada fila, no solo en el filtro: en `relation=all`
+        # conviven las dos y la tarjeta necesita saber cuál está mirando. El
+        # parámetro del SELECT va antes que los del WHERE porque la sustitución
+        # de marcadores es posicional.
+        page_params = [username, *params, limit, offset]
         raw = await conn.fetchall(
             f"SELECT resource_type, resource_id, owner, name, description, category, "
-            f"stars_count, linked_to_user, linked_to_id, trial_missing_deps, tags, labels, verified "
+            f"stars_count, linked_to_user, linked_to_id, trial_missing_deps, tags, labels, verified, "
+            f"{_LINKED_BY_REQUESTER} AS linked_by_me "
             f"FROM resource_social WHERE {where} "
             # Lo recién publicado debe ser descubrible aunque todavía no tenga
             # estrellas. El catálogo permite cargar páginas posteriores para
@@ -184,7 +244,7 @@ async def explore(
             f"ORDER BY updated_at DESC, stars_count DESC, "
             f"resource_type ASC, resource_id ASC, owner ASC "
             f"LIMIT ? OFFSET ?",
-            tuple(params),
+            tuple(page_params),
         )
 
     rows = []
@@ -199,6 +259,9 @@ async def explore(
         except (ValueError, TypeError):
             row["labels"] = ["private"]
         row["languages"] = language_codes_from_labels(row["labels"])
+        # SQLite devuelve 0/1 y PostgreSQL un boolean: el cliente recibe siempre
+        # un booleano JSON.
+        row["linked_by_me"] = bool(row.get("linked_by_me"))
         rows.append(row)
     packs = await _knowledge.pack_locations(
         [
@@ -224,8 +287,10 @@ async def explore_official_packs(
     tag: Optional[str] = None,
     label: Optional[List[str]] = Query(None),
     language: Optional[List[str]] = Query(None),
+    relation: Optional[str] = None,
     username: str = Depends(require_session),
 ) -> List[PublicOfficialPack]:
+    relation_mode = _validate_relation(relation)
     normalized_languages = [
         str(value).strip().lower() for value in (language or []) if str(value).strip()
     ]
@@ -247,6 +312,7 @@ async def explore_official_packs(
         tag=tag or "",
         labels=label,
         languages=normalized_languages,
+        relation=relation_mode,
     )
 
 

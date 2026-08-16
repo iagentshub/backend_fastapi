@@ -150,6 +150,7 @@ class OfficialPackService:
         tag: str = "",
         labels: Optional[list[str]] = None,
         languages: Optional[list[str]] = None,
+        relation: str = "all",
     ) -> list[PublicOfficialPack]:
         rows = await self._public_rows()
         by_source: dict[str, list[dict[str, Any]]] = defaultdict(list)
@@ -196,6 +197,13 @@ class OfficialPackService:
                 if linked_count
                 else "none"
             )
+            # Un pack a medias no está "ya tenido": todavía quedan componentes
+            # por descubrir, así que sigue en el catálogo. Solo desaparece de
+            # ahí cuando ya no queda nada nuevo dentro.
+            if relation == "new" and state == "complete":
+                continue
+            if relation == "linked" and state == "none":
+                continue
             packs.append(
                 PublicOfficialPack(
                     source_id=source_id,

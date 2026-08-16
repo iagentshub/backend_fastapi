@@ -51,12 +51,34 @@ Registration accepts `username`, `email`, and `password`. Login accepts `identif
 | `GET` | `/api/explore/{resource_type}/{resource_id}/preview` | Preview a public resource |
 
 `GET /api/explore` accepts `type`, `category`, `q`, `tag`, repeated `label`,
-repeated `language`, `limit`, and `offset`. Supported content languages are
-`es`, `en`, `fr`, `de`, `pt`, `it`, `zh`, `ja`, and `ar`. Selected languages
-are combined with OR, while the language group is combined with category and
-labels using AND. For example, `?language=es&label=production` returns Spanish
-resources that are also in production. Every result includes `labels` and
-`languages`.
+repeated `language`, `relation`, `limit`, and `offset`. Supported content
+languages are `es`, `en`, `fr`, `de`, `pt`, `it`, `zh`, `ja`, and `ar`. Selected
+languages are combined with OR, while the language group is combined with
+category and labels using AND. For example, `?language=es&label=production`
+returns Spanish resources that are also in production. Every result includes
+`labels`, `languages`, and `linked_by_me`.
+
+`relation` filters by what the user has already linked:
+
+| Value | Returns |
+|---|---|
+| `all` (default) | The whole catalog |
+| `new` | Only what the user has **not** linked yet |
+| `linked` | Only what the user already has a linked copy of |
+
+Any other value returns `422` with `code: invalid_field`. The default is `all`
+so clients that omit the parameter keep seeing what they saw before; the app
+asks for `new`, because discovering means seeing what you do not have.
+
+When `relation=new` leaves the first page empty, the response adds an
+`X-Linked-Count` header with how many results were left out for being already
+linked. It tells "nothing found" apart from "you already have it all" without a
+second request, and it is only computed in that case.
+
+`GET /api/explore/official-packs` takes the same `relation`. A pack only counts
+as linked when **all** of its components are (`link_state: complete`); a partial
+one shows up in both modes, because it still holds resources the user does not
+have.
 
 ---
 

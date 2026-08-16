@@ -52,12 +52,34 @@ El registro recibe `username`, `email` y `password`. El login recibe `identifier
 | `GET` | `/api/explore/{resource_type}/{resource_id}/preview` | Vista previa de un recurso público |
 
 `GET /api/explore` admite `type`, `category`, `q`, `tag`, `label` repetido,
-`language` repetido, `limit` y `offset`. Los idiomas de contenido soportados son
-`es`, `en`, `fr`, `de`, `pt`, `it`, `zh`, `ja` y `ar`. Los idiomas seleccionados
-se combinan entre sí con OR, pero el grupo de idioma se combina con categoría y
-labels mediante AND. Por ejemplo, `?language=es&label=production` devuelve
-recursos en español que además estén en producción. Cada resultado incluye
-`labels` y `languages`.
+`language` repetido, `relation`, `limit` y `offset`. Los idiomas de contenido
+soportados son `es`, `en`, `fr`, `de`, `pt`, `it`, `zh`, `ja` y `ar`. Los
+idiomas seleccionados se combinan entre sí con OR, pero el grupo de idioma se
+combina con categoría y labels mediante AND. Por ejemplo,
+`?language=es&label=production` devuelve recursos en español que además estén en
+producción. Cada resultado incluye `labels`, `languages` y `linked_by_me`.
+
+`relation` filtra por lo que el usuario ya tiene enlazado:
+
+| Valor | Devuelve |
+|---|---|
+| `all` (por defecto) | El catálogo entero |
+| `new` | Solo lo que el usuario **no** ha enlazado todavía |
+| `linked` | Solo aquello de lo que ya tiene una copia enlazada |
+
+Cualquier otro valor devuelve `422` con `code: invalid_field`. El valor por
+defecto es `all` para no cambiar lo que ven los clientes que no envían el
+parámetro; la app pide `new`, porque descubrir es ver lo que no se tiene.
+
+Cuando `relation=new` deja la primera página vacía, la respuesta añade la
+cabecera `X-Linked-Count` con cuántos resultados quedaron fuera por estar ya
+enlazados. Permite distinguir «no hay nada» de «ya lo tienes todo» sin una
+segunda petición, y solo se calcula en ese caso.
+
+`GET /api/explore/official-packs` acepta el mismo `relation`. Un pack cuenta
+como enlazado solo cuando lo están **todos** sus componentes (`link_state:
+complete`); uno a medias (`partial`) aparece en los dos modos, porque todavía
+tiene recursos que el usuario no tiene.
 
 ---
 
