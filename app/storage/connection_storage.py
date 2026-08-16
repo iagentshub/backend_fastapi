@@ -7,7 +7,12 @@ from typing import Any, Dict, List, Optional
 
 # db se importa DOS veces a propósito: ver app/storage/_storage_helpers.py.
 from app.storage import db as _db
-from app.storage.crypto import decrypt, encrypt
+from app.storage.crypto import (
+    UNREADABLE_FIELDS,
+    UNREADABLE_FLAG,
+    decrypt_fields,
+    encrypt,
+)
 from app.storage.db import DB_ERRORS, open_db
 from app.storage.db_migrations import _compact_resource_data
 from app.storage.resource_base import ResourceStorage
@@ -127,9 +132,7 @@ class ConnectionStorage(ResourceStorage):
 
     def _row_to_dict(self, row: Any) -> Dict[str, Any]:
         d: Dict[str, Any] = json.loads(row["data"])
-        for field in _ENCRYPTED_FIELDS:
-            if d.get(field):
-                d[field] = decrypt(d[field])
+        decrypt_fields(d, _ENCRYPTED_FIELDS)
         d.update(
             {
                 "id": row["id"],
@@ -204,6 +207,22 @@ class ConnectionStorage(ResourceStorage):
             )
         return row[0] if row else None
 
+    async def _stored_encrypted(self, conn_id: str, owner_id: str) -> Dict[str, str]:
+        """Campos cifrados tal como están en la BD, sin descifrar."""
+        async with open_db() as conn:
+            row = await conn.fetchone(
+                "SELECT data FROM connections WHERE id = ? AND owner_id = ?",
+                (conn_id, owner_id),
+            )
+        if not row:
+            return {}
+        data = json.loads(row["data"])
+        return {
+            field: str(data.get(field) or "")
+            for field in _ENCRYPTED_FIELDS
+            if data.get(field)
+        }
+
     async def save(
         self, payload: Dict[str, Any], owner_id: str = "admin"
     ) -> Dict[str, Any]:
@@ -211,7 +230,18 @@ class ConnectionStorage(ResourceStorage):
         conn_id = str(payload.get("id") or "").strip() or generate_id()
         payload["id"] = conn_id
         payload["name"] = _display_name(payload, conn_id)
+        # Marcas de lectura: las pone _row_to_dict, nunca el cliente.
+        payload.pop(UNREADABLE_FIELDS, None)
+        payload.pop(UNREADABLE_FLAG, None)
         existing = await self.get(conn_id, owner_id)
+        # Campos que no se pudieron descifrar y que esta edición no reemplaza:
+        # se conservan cifrados tal cual. Vaciarlos destruiría una credencial
+        # que vuelve a ser legible en cuanto se restaura el secreto correcto.
+        keep_encrypted = {
+            field
+            for field in ((existing or {}).get(UNREADABLE_FIELDS) or ())
+            if not payload.get(field)
+        }
         if existing:
             payload["created_at"] = existing.get("created_at", _now())
             # Conservar campos cifrados si no se envían nuevos
@@ -238,9 +268,14 @@ class ConnectionStorage(ResourceStorage):
         payload.setdefault("icon", "")
         payload.setdefault("labels", ["private"])
         stored = dict(payload)
+        ciphertexts = (
+            await self._stored_encrypted(conn_id, owner_id) if keep_encrypted else {}
+        )
         for field in _ENCRYPTED_FIELDS:
             if stored.get(field):
                 stored[field] = encrypt(stored[field])
+            elif field in keep_encrypted:
+                stored[field] = ciphertexts.get(field, "")
         async with open_db() as conn:
             await self._upsert(conn, stored, owner_id)
             await conn.commit()

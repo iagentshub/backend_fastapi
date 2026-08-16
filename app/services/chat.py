@@ -36,6 +36,7 @@ from app.services.llm_executor import (
     LLMLease,
     run_llm_blocking,
 )
+from app.storage.crypto import UNREADABLE_FLAG
 from app.storage.db import DB_ERRORS
 from app.utils import flog
 from app.utils.safe_http import safe_urlopen
@@ -490,6 +491,25 @@ async def stream_chat(
         agent = Agent.from_dict(agent)
 
     conn_type = str(conn.get("type") or "").lower()
+    if conn.get(UNREADABLE_FLAG):
+        # La credencial guardada no se pudo descifrar. Antes se enviaba el
+        # ciphertext al proveedor y el usuario recibía un 401 ajeno que no
+        # explicaba nada; el problema es local y tiene arreglo local.
+        flog.warning(
+            f"[chat] Credencial ilegible en la conexión {conn.get('id')}",
+            username=user_id or "-",
+        )
+        yield _sse(
+            {
+                "type": "error",
+                "code": "credential_unreadable",
+                "message": (
+                    "La credencial guardada en esta conexión no se puede leer. "
+                    "Vuelve a introducirla."
+                ),
+            }
+        )
+        return
     api_key = str(conn.get("api_key") or "")
     # Model: connection → agent → provider default
     model = str(

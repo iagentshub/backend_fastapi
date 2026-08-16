@@ -11,6 +11,7 @@ from app.auth.auth import get_user_role
 from app.errors import APIError
 from app.middleware.ratelimit import RateLimiter
 from app.services.connection_access import connection_access
+from app.services.credentials import assert_readable
 from app.services.hub_sync import run_hub_sync
 from app.services.provider_models import fetch_provider_models
 from app.storage.connection_storage import ConnectionStorage
@@ -94,6 +95,7 @@ async def import_models(
             extra={"type": conn_type},
         )
 
+    assert_readable(conn)
     api_key = conn.get("api_key", "")
     host = conn.get("host", "") or conn.get("url", "")
     models = await fetch_provider_models(account_key, api_key, host)

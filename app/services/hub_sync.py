@@ -10,6 +10,7 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from app.config.data import AGENTS_DIR, SKILLS_DIR
 from app.errors import APIError
+from app.services.credentials import assert_readable
 from app.storage.agent_storage import AgentStorage
 from app.storage.connection_storage import ConnectionStorage
 from app.storage.knowledge import KnowledgeStorage
@@ -81,6 +82,7 @@ async def run_hub_sync(
     """Lógica de sincronización con un hub remoto, reutilizable tanto desde la
     ruta `/{conn_id}/hub-sync` (conexión tipo iagentshub) como desde
     `accounts.sync_account` (cuenta de proveedor tipo iagentshub)."""
+    assert_readable(conn)
     url = (conn.get("url") or "").rstrip("/")
     username = conn.get("username") or ""
     password = conn.get("api_key") or ""

@@ -60,3 +60,5 @@ de fichero y límites de los proveedores.
 Debe generarse de forma aleatoria antes del primer arranque y no cambiarse mientras haya sesiones activas. Si no se configura, el sistema usa un valor almacenado en los datos de la plataforma — aceptable en desarrollo, no en producción.
 
 Este secreto también actúa como clave maestra para cifrar las API keys almacenadas en la base de datos (derivada mediante PBKDF2-SHA256). **Cambiarlo después de haber guardado API keys hará que esas claves sean ilegibles** — los usuarios tendrán que volver a introducir sus credenciales.
+
+Cuando eso ocurre, el fallo se ve: el recurso afectado se devuelve con `credentials_unreadable: true` (y `unreadable_fields` con los campos concretos), el cliente lo marca como *requiere atención* en el listado, y cualquier acción que fuese a usar la credencial —chat, test, importar modelos, sincronizar— responde con el código `credential_unreadable` en vez de mandar el valor cifrado al proveedor. El valor cifrado se conserva intacto: si se restaura el secreto correcto, las claves vuelven a leerse solas.

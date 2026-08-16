@@ -12,6 +12,7 @@ from app.config.data import AGENTS_DIR, SKILLS_DIR
 from app.errors import APIError
 from app.middleware.ratelimit import RateLimiter
 from app.models.request_bodies import AccountBody, AccountSyncBody, DeviceCodeBody
+from app.services.credentials import assert_readable
 from app.services.provider_models import fetch_provider_models as _fetch_models
 from app.storage.accounts import AccountStorage, _mask
 from app.storage.agent_storage import AgentStorage
@@ -328,8 +329,14 @@ async def test_account(
         api_key = str(payload.get("api_key") or "").strip() or account.get(
             "api_key", ""
         )
+        if not api_key:
+            assert_readable(account)
         return await _test_hub_login(url, username, api_key)
     api_key = str(payload.get("api_key") or "").strip() or account.get("api_key", "")
+    # Sin clave nueva en el body, la prueba usaría la guardada: si no se pudo
+    # descifrar, el fallo es local y se dice, no se manda vacía al proveedor.
+    if not api_key:
+        assert_readable(account)
     host = str(payload.get("host") or "").strip() or account.get("host", "")
     models = await _fetch_models(account["provider"], api_key, host)
     return {"ok": True, "models": models, "models_count": len(models)}
@@ -358,6 +365,8 @@ async def sync_account(
         raise APIError(
             404, "not_found", "Cuenta no vinculada", extra={"resource": "account"}
         )
+
+    assert_readable(account)
 
     provider = account["provider"]
     if provider == _HUB_PROVIDER:

@@ -20,6 +20,7 @@ from app.errors import APIError
 from app.middleware.ratelimit import RateLimiter
 from app.models.request_bodies import ConnectionTestsBody
 from app.services.connection_access import connection_access
+from app.services.credentials import is_unreadable, test_failure
 from app.storage.connection_storage import ConnectionStorage
 from app.storage.guest import get_session, is_guest
 
@@ -60,6 +61,8 @@ async def test_all_connections(
     async def _test_one(conn: Dict[str, Any]) -> Dict[str, Any]:
         import time as _time
 
+        if is_unreadable(conn):
+            return {"id": conn["id"], "latency_ms": None, **test_failure(conn)}
         provider = get_provider(conn.get("type") or "")
         if not provider:
             return {
@@ -104,6 +107,8 @@ async def test_connection(
         raise APIError(
             404, "not_found", "Conexión no encontrada", extra={"resource": "connection"}
         )
+    if is_unreadable(conn):
+        return test_failure(conn)
     provider = get_provider(conn.get("type") or "")
     if not provider:
         return {

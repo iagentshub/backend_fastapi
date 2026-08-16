@@ -60,3 +60,5 @@ descriptors, and provider limits.
 Must be generated randomly before the first startup and not changed while sessions are active. If not configured, the system uses a value stored in the platform data — acceptable in development, not in production.
 
 This secret also serves as the master key for encrypting API keys stored in the database (derived via PBKDF2-SHA256). **Changing it after API keys have been saved will make those keys unreadable** — users will need to re-enter their credentials.
+
+When that happens the failure is visible: the affected resource is returned with `credentials_unreadable: true` (plus `unreadable_fields` listing the exact fields), the client flags it as *needs attention* in the listing, and any action that would have used the credential — chat, test, model import, sync — responds with the `credential_unreadable` code instead of sending the encrypted value to the provider. The ciphertext is kept intact: restore the correct secret and the keys become readable again on their own.
