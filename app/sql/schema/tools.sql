@@ -21,4 +21,5 @@ CREATE TABLE IF NOT EXISTS tools (
     PRIMARY KEY (id, owner_id)
 );
 CREATE INDEX IF NOT EXISTS idx_tools_owner ON tools(owner_id, scope, updated_at DESC, id DESC);
-CREATE INDEX IF NOT EXISTS idx_tools_official ON tools(official_source_id);
+-- Sin índice para official_source_id: mismo caso que prompts.sql. Lo retira la
+-- migración 29.

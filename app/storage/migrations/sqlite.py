@@ -683,6 +683,40 @@ async def _drop_redundant_indexes(conn: Any) -> None:
         await conn.execute(f"DROP INDEX IF EXISTS {indice}")
 
 
+async def _unused_indexes_audit(conn: Any) -> None:
+    """Retira tres índices que ninguna consulta elige.
+
+    Pasadas las 457 secciones de app/sql/queries/ por EXPLAIN QUERY PLAN,
+    estos tres no aparecen en ningún plan: `stripe_customer_id` solo se
+    escribe —toda lectura de subscriptions entra por username o por el UNIQUE
+    de stripe_subscription_id— y `official_source_id` es trazabilidad de solo
+    escritura, porque el recorrido por fuente entra por resource_source_links.
+    Se quedan los de agents y skills, que su count_all sí elige como covering
+    para contar filas; prompts y tools no tienen count_all.
+
+    Aquí solo se borra. El índice que faltaba —expires_at en
+    official_import_drafts, por donde entran count_expired_drafts y
+    delete_expired_drafts— se declara en app/sql/schema/ y nada más hay que
+    hacer: migrate_schema ejecuta el esquema completo, con sus CREATE INDEX IF
+    NOT EXISTS, justo antes de llegar aquí. Una ausencia es lo único que el
+    esquema no sabe expresar, y por eso los DROP sí necesitan migración.
+
+    (El de source_id de esa misma tabla no se retira aunque ninguna consulta lo
+    elija: sostiene la cascada de su FOREIGN KEY, y PostgreSQL no indexa las
+    claves foráneas por su cuenta.)
+
+    El barrido por EXPLAIN no ve el SQL que se arma en Python: los dos índices
+    de app_logs quedaron fuera de él y sí se usan en cada carga del visor
+    (ver la migración 26, que los midió). Por eso esta migración no los toca.
+    """
+    for indice in (
+        "idx_subscriptions_customer",
+        "idx_prompts_official",
+        "idx_tools_official",
+    ):
+        await conn.execute(f"DROP INDEX IF EXISTS {indice}")
+
+
 # Las seis tablas que el borrado RGPD no nombraba: se añadieron con cada recurso
 # nuevo y nadie volvió a la rutina de purgado. Como ninguna declara REFERENCES
 # users, la base de datos tampoco las arrastró, así que en las instalaciones ya
@@ -756,6 +790,7 @@ SQLITE_MIGRATIONS = (
     Migration(26, "app_logs_index_diet", _app_logs_index_diet),
     Migration(27, "drop_redundant_indexes", _drop_redundant_indexes),
     Migration(28, "gdpr_orphan_resources", _gdpr_orphan_resources),
+    Migration(29, "unused_indexes_audit", _unused_indexes_audit),
 )
 
 

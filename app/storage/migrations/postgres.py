@@ -620,6 +620,29 @@ async def _drop_redundant_indexes(conn: Any) -> None:
         await conn.execute(f"DROP INDEX IF EXISTS {indice}")
 
 
+async def _unused_indexes_audit(conn: Any) -> None:
+    """Retira tres índices que ninguna consulta elige.
+
+    Gemela de la migración 29 de SQLite; el razonamiento completo está allí.
+    Aquí importa especialmente conservar idx_official_drafts_source: PostgreSQL
+    no indexa las claves foráneas por su cuenta, así que sin él cada borrado en
+    official_sources recorre entera la tabla de borradores por la cascada.
+
+    El índice que faltaba (expires_at) lo crea el esquema, que migrate_schema
+    ejecuta justo antes que estas migraciones; aquí solo se borra.
+
+    El barrido por EXPLAIN que detectó estos tres solo ve el SQL estático de
+    app/sql/queries/, y además se ejecutó contra SQLite: los planes de
+    PostgreSQL siguen sin medirse contra una instancia real.
+    """
+    for indice in (
+        "idx_subscriptions_customer",
+        "idx_prompts_official",
+        "idx_tools_official",
+    ):
+        await conn.execute(f"DROP INDEX IF EXISTS {indice}")
+
+
 # Ver el mismo bloque en sqlite.py: las seis tablas que el borrado RGPD no
 # nombraba, y los dos dueños que no son cuentas y nunca estarán en `users`.
 _TABLAS_CON_HUÉRFANOS = (
@@ -682,6 +705,7 @@ POSTGRES_MIGRATIONS = (
     Migration(26, "app_logs_index_diet", _app_logs_index_diet),
     Migration(27, "drop_redundant_indexes", _drop_redundant_indexes),
     Migration(28, "gdpr_orphan_resources", _gdpr_orphan_resources),
+    Migration(29, "unused_indexes_audit", _unused_indexes_audit),
 )
 
 

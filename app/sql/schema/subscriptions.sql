@@ -15,4 +15,7 @@ CREATE TABLE IF NOT EXISTS subscriptions (
     updated_at             TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_subscriptions_username ON subscriptions(username);
-CREATE INDEX IF NOT EXISTS idx_subscriptions_customer ON subscriptions(stripe_customer_id);
+-- Sin índice para stripe_customer_id: la columna solo se escribe. Toda lectura de
+-- subscriptions entra por username o por el UNIQUE de stripe_subscription_id, así
+-- que el índice pagaba escrituras sin servir a ninguna consulta. Lo retira la
+-- migración 29.
