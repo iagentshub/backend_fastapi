@@ -1,12 +1,28 @@
-data/
-.git/
-__pycache__/
-*.pyc
-*.pyo
-*.pyd
-*.egg-info
-dist/
-build/
-.env
-.venv/
-venv/
+# Lista blanca, no lista negra: el Dockerfile hace COPY . . y lo que no esté
+# aquí no entra en la imagen. Con la lista negra anterior entraban tests/
+# (14 MB, más que app/), docs/, rtests.py, los caches de pytest y ruff y
+# cualquier fichero suelto de la copia de trabajo. El COPY del código es la
+# última capa y cambia en cada build, así que ese peso lo volvía a descargar
+# cada instalación en cada actualización.
+#
+# Los cuatro de abajo son todo lo que el contenedor necesita: se comprobó que
+# ni app/ ni main.py leen nada fuera de app/ en runtime — las menciones a
+# docs/ son comentarios «Ver docs/adr/…» y BASE_DIR solo deriva el data dir,
+# que en Docker viene de GAIA_DATA_DIR.
+#
+# El `*` deja el propio Dockerfile fuera del contexto y eso es correcto:
+# BuildKit lo transfiere aparte. Un builder anterior a BuildKit fallaría, pero
+# ruidosamente y al primer intento.
+
+*
+
+!app
+!main.py
+!docker-entrypoint.sh
+!requirements.lock
+
+# Reexclusiones dentro de la lista blanca: app/ arrastra sus caches desde la
+# copia de trabajo local.
+**/__pycache__
+**/*.py[cod]
+**/.DS_Store

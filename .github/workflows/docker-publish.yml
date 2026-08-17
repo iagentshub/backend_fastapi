@@ -111,6 +111,10 @@ jobs:
           cp $D/Dockerfile.unified build-ctx/Dockerfile
           cp $D/supervisord.conf build-ctx/supervisord.conf
           cp $D/entrypoint-unified.sh build-ctx/entrypoint-unified.sh
+          # Docker solo lee el .dockerignore de la raíz del contexto, así que
+          # el de este repo no aplica aquí. Sin este, el COPY backend/ se
+          # lleva tests/, docs/ y el .git del checkout a la imagen.
+          cp $D/dockerignore.unified build-ctx/.dockerignore
 
       - name: Generar versión de build
         id: version
