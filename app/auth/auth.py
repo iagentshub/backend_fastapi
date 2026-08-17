@@ -42,6 +42,7 @@ from app.config.session import EMAIL_VERIFY_ENABLED
 from app.sql import sql
 from app.storage.db import IS_PG, open_db
 from app.storage.guest import is_guest
+from app.storage.sessions import REASON_ACCOUNT_DISABLED, REASON_PASSWORD
 from app.utils import flog
 from app.utils.generators import generate_date, generate_id
 from app.utils.validation import is_valid_username, normalize_username
@@ -198,11 +199,22 @@ async def consume_reset_token(token: str, new_password: str) -> bool:
 
 
 async def _touch_password_changed_at(conn: Any, username: str) -> None:
-    """Marca el instante de cambio de contraseña para invalidar tokens anteriores (A2)."""
+    """Marca el instante de cambio de contraseña para invalidar tokens anteriores (A2).
+
+    Y revoca las sesiones abiertas por lo mismo. `password_changed_at` solo
+    invalida el access, que se contrasta contra él en cada request; el refresh
+    no pasa por ahí, así que sin esto una sesión robada sobreviviría al cambio
+    de contraseña sin más que renovarse — justo la sesión que el usuario está
+    intentando cerrar cuando cambia la contraseña.
+    """
     now = generate_date()
     await conn.execute(
         sql("queries/auth:set_password_changed_at"),
         (now, username, normalize_username(username)),
+    )
+    await conn.execute(
+        sql("queries/sessions:revoke_sessions_by_identity"),
+        (now, REASON_PASSWORD, username, normalize_username(username)),
     )
     await _clear_temp_admin_pass(conn, username)
 
@@ -308,6 +320,22 @@ async def admin_update_user(username: str, **fields) -> bool:
             + " WHERE username = ?",
             [c[1] for c in clauses] + [username],
         )
+        # Desactivar una cuenta corta sus sesiones ahora, no cuando caduque la
+        # caché de 60 s de _get_user_auth_state — y, sobre todo, se lleva por
+        # delante el refresh, que esa caché no mira. El cambio de rol no revoca:
+        # el rol se lee de la fila de usuario en cada request (con esa misma
+        # caché), así que ya se aplica solo, y expulsar a alguien por darle
+        # permisos sería desconcertante.
+        if fields.get("is_active") in (0, False):
+            await conn.execute(
+                sql("queries/sessions:revoke_sessions_by_identity"),
+                (
+                    generate_date(),
+                    REASON_ACCOUNT_DISABLED,
+                    username,
+                    normalize_username(username),
+                ),
+            )
         await conn.commit()
         return True
 

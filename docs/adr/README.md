@@ -32,6 +32,7 @@ Donde se movió un bloque, queda en el código una línea `# Ver docs/adr/NNN-�
 | [005](005-carga-diferida-en-flutter-web.md) | La web no descarga admin, workflows ni el checkout hasta que se entra |
 | [006](006-csrf-en-dos-capas.md) | Anti-CSRF en dos capas: `Origin` verificado y token derivado del JWT |
 | [007](007-sql-en-ficheros.md) | El SQL estático vive en `app/sql/` y se pide por identificador |
+| [008](008-sesiones-revocables.md) | Sesiones revocables — access corto, refresh rotatorio y una tabla que manda |
 
 ## Plantilla
 

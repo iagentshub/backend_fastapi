@@ -106,3 +106,11 @@ SELECT follower, following, created_at
 FROM user_follows
 WHERE follower = ? OR following = ?
 ORDER BY created_at;
+
+-- Sin los hashes del refresh: son credenciales vivas, no datos que exportar.
+-- La IP y el user-agent sí van, que es lo que hace la fila un dato personal.
+-- name: sessions
+SELECT id, created_at, last_seen_at, expires_at, revoked_at, revoked_reason, ip, user_agent
+FROM sessions
+WHERE user_id = ?
+ORDER BY created_at DESC;

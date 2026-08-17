@@ -13,7 +13,28 @@ JWT_ALGORITHM    = "HS256"
 # es tolerante con los tokens anteriores, que no los llevan.
 JWT_ISSUER       = "iagentshub"
 JWT_AUDIENCE     = "iagentshub-api"
+
+# ── Access token y refresh ────────────────────────────────────────────────────
+# El access token dura minutos y el refresh horas. Ver docs/adr/008-sesiones-
+# revocables.md: antes había un solo token de 12 h que no se podía revocar, así
+# que la ventana de uno robado era esas 12 h completas y «cerrar sesión» solo
+# borraba cookies.
+#
+# GAIA_JWT_EXPIRE_HOURS conserva su nombre y su default, pero ahora mide la vida
+# de la SESIÓN (el refresh), no la del access: una instalación que ya lo tuviera
+# puesto sigue teniendo sesiones de la duración que pidió, y gana el access
+# corto sin tocar nada. La rotación mueve esa caducidad hacia delante en cada
+# refresh, así que son horas de inactividad, no desde el login.
 JWT_EXPIRE_HOURS = int(os.getenv("GAIA_JWT_EXPIRE_HOURS", "12"))
+REFRESH_EXPIRE_HOURS = JWT_EXPIRE_HOURS
+ACCESS_EXPIRE_MINUTES = max(1, int(os.getenv("GAIA_ACCESS_EXPIRE_MINUTES", "30")))
+ACCESS_MAX_AGE_SECONDS = ACCESS_EXPIRE_MINUTES * 60
+
+# La cookie del access vive lo que la sesión, no lo que el access: si el
+# navegador la borrase al expirar el JWT, la request llegaría sin credencial
+# ninguna y el 401 sería indistinguible de «nunca entró». Con la cookie presente
+# el backend responde `token_expired` y el cliente sabe que le toca refrescar.
+# Quien impone la caducidad es el `exp` del JWT, que el navegador no puede tocar.
 JWT_MAX_AGE_SECONDS = JWT_EXPIRE_HOURS * 60 * 60
 
 JWT_UNSAFE_SECRETS: frozenset[str] = frozenset({
@@ -91,6 +112,14 @@ CSRF_TOKEN_CHECK: str = os.getenv("GAIA_CSRF_TOKEN_CHECK", "enforce").lower()
 CSRF_COOKIE = "ga_csrf"
 CSRF_HEADER = "x-csrf-token"
 
+# La cookie del refresh se acota al prefijo de la ruta que la canjea: es la
+# credencial de largo recorrido de la sesión y no tiene por qué viajar en las
+# otras ~450 rutas. `clear_session_cookies` la borra con este mismo path — un
+# `delete_cookie` con path distinto no borra nada y la sesión parecería cerrada
+# sin estarlo.
+REFRESH_COOKIE = "ga_refresh"
+REFRESH_COOKIE_PATH = "/api/auth"
+
 # TRACE no lo sirve Starlette, pero está en la lista por lo mismo que OPTIONS:
 # la definición de «método seguro» es la de RFC 9110, no la de nuestras rutas.
 SAFE_METHODS: frozenset[str] = frozenset({"GET", "HEAD", "OPTIONS", "TRACE"})
@@ -129,6 +158,11 @@ RATE_FORGOT_WINDOW = int(os.getenv("GAIA_RATE_FORGOT_WINDOW", "3600"))  # por ho
 # pero limitamos igualmente para prevenir DoS sobre la BD
 RATE_RESET_CALLS  = int(os.getenv("GAIA_RATE_RESET_CALLS",  "10"))
 RATE_RESET_WINDOW = int(os.getenv("GAIA_RATE_RESET_WINDOW", "300"))
+# Canje del refresh: un cliente legítimo renueva una vez cada
+# ACCESS_EXPIRE_MINUTES, pero varias pestañas pueden coincidir tras despertar
+# el equipo, así que el cupo es holgado. RateLimiter divide entre GAIA_WORKERS.
+RATE_REFRESH_CALLS  = int(os.getenv("GAIA_RATE_REFRESH_CALLS",  "60"))
+RATE_REFRESH_WINDOW = int(os.getenv("GAIA_RATE_REFRESH_WINDOW", "300"))
 RATE_MAX_IPS      = int(os.getenv("GAIA_RATE_MAX_IPS",      "10000"))  # IPs simultáneas en memoria
 BODY_MAX_BYTES    = int(os.getenv("GAIA_BODY_MAX_BYTES",   str(2 * 1024 * 1024)))  # tamaño máximo de request
 

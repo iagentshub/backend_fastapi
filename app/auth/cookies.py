@@ -19,14 +19,23 @@ from app.auth.passwords import derive_csrf_token
 from app.config.session import (
     CSRF_COOKIE,
     JWT_MAX_AGE_SECONDS,
+    REFRESH_COOKIE,
+    REFRESH_COOKIE_PATH,
     SECURE_COOKIES,
 )
 
 SESSION_COOKIE = "ga_token"
 
 
-def set_session_cookies(response: Response, token: str) -> None:
-    """Emite la cookie de sesión y su token anti-CSRF derivado."""
+def set_session_cookies(
+    response: Response, token: str, refresh: str | None = None
+) -> None:
+    """Emite la cookie de sesión, su token anti-CSRF derivado y el refresh.
+
+    `refresh` solo se pasa cuando hay uno nuevo que entregar: al abrir sesión y
+    al rotarlo. Cambiar de grupo reemite el access con el mismo `sid` y no toca
+    el refresh, porque no es una sesión nueva.
+    """
     response.set_cookie(
         SESSION_COOKIE,
         token,
@@ -46,9 +55,25 @@ def set_session_cookies(response: Response, token: str) -> None:
         secure=SECURE_COOKIES,
         max_age=JWT_MAX_AGE_SECONDS,
     )
+    if refresh is not None:
+        response.set_cookie(
+            REFRESH_COOKIE,
+            refresh,
+            httponly=True,
+            samesite="lax",
+            secure=SECURE_COOKIES,
+            max_age=JWT_MAX_AGE_SECONDS,
+            path=REFRESH_COOKIE_PATH,
+        )
 
 
 def clear_session_cookies(response: Response) -> None:
-    """Cierra la sesión: las dos cookies se van juntas."""
+    """Cierra la sesión: las tres cookies se van juntas.
+
+    El refresh se borra con el mismo `path` con el que se puso: `delete_cookie`
+    con otro path no borra nada y dejaría al cliente con la credencial que
+    reabre la sesión que acaba de cerrar.
+    """
     response.delete_cookie(SESSION_COOKIE)
     response.delete_cookie(CSRF_COOKIE)
+    response.delete_cookie(REFRESH_COOKIE, path=REFRESH_COOKIE_PATH)

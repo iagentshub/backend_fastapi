@@ -13,13 +13,12 @@ from app.api.routes.auth.login import _public_base_url
 from app.auth.auth import (
     admin_set_password,
     admin_update_user,
-    create_token,
     delete_user,
     get_user_by_username,
     hash_password_async,
     list_users,
 )
-from app.auth.cookies import set_session_cookies
+from app.auth.sessions import open_session
 from app.errors import APIError
 from app.models.request_bodies import AdminUserCreateBody, AdminUserPatchBody
 from app.services.email import send_account_status_email
@@ -225,6 +224,7 @@ async def admin_delete_user(
 @admin_router.post("/impersonate/{username}")
 async def admin_impersonate(
     username: str,
+    request: Request,
     response: Response,
     admin: str = Depends(require_admin),
 ) -> dict[str, Any]:
@@ -247,12 +247,10 @@ async def admin_impersonate(
     # N3: registrar la impersonación para auditoría de seguridad
     flog.warning(f"[admin] IMPERSONACIÓN: admin={admin!r} → usuario={username!r}")
 
-    # Crear token para el group personal del usuario impersonado
-    # (group_id=username por defecto)
-    token = create_token(target_user["id"])
-
-    # Establecer la cookie del nuevo token
-    set_session_cookies(response, token)
+    # Sesión nueva para el usuario impersonado, en su group personal
+    # (group_id=username por defecto). Es una sesión propia y revocable: sale
+    # en la lista del impersonado y cerrarla corta la impersonación.
+    await open_session(response, target_user["id"], request)
 
     flog.ok(f"[admin] Token de impersonación creado exitosamente para {username!r}")
     return {"ok": True, "username": username}

@@ -16,6 +16,8 @@ DELETE /api/admin/tools/{item_id}
 DELETE /api/admin/users/{username}
 DELETE /api/admin/workflows/{workflow_id}
 DELETE /api/agents/{agent_id}
+DELETE /api/auth/sessions
+DELETE /api/auth/sessions/{session_id}
 DELETE /api/auth/tokens/{token_id}
 DELETE /api/billing/licenses/{username}
 DELETE /api/chats/{agent_id}/{conv_id}
@@ -78,6 +80,7 @@ GET /api/agents/{agent_id}/preferences
 GET /api/auth/me
 GET /api/auth/me/deletion-status
 GET /api/auth/me/export
+GET /api/auth/sessions
 GET /api/auth/tokens
 GET /api/auth/verify
 GET /api/auth/vscode/start
@@ -184,6 +187,7 @@ POST /api/auth/logout
 POST /api/auth/me/avatar
 POST /api/auth/me/cancel-deletion
 POST /api/auth/me/request-deletion
+POST /api/auth/refresh
 POST /api/auth/register
 POST /api/auth/reset-password
 POST /api/auth/tokens

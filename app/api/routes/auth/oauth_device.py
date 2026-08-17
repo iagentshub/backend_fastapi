@@ -10,9 +10,8 @@ from typing import Any
 
 from fastapi import APIRouter, Depends, Request, Response
 
-from app.auth.cookies import set_session_cookies
 from app.auth.github_user_link import get_or_create_github_user
-from app.auth.passwords import create_token
+from app.auth.sessions import open_session
 from app.errors import APIError
 from app.middleware.ratelimit import RateLimiter
 from app.models.request_bodies import DeviceCodeBody
@@ -84,7 +83,6 @@ async def github_login_device_token(
     if not user.get("is_active", 1):
         raise APIError(403, "account_disabled", "Cuenta desactivada")
 
-    token = create_token(user["id"])
+    await open_session(response, user["id"], request)
     flog.ok(f"[login] OK vía GitHub usuario={user['username']}", ip=_client_ip(request))
-    set_session_cookies(response, token)
     return {"ok": True, "pending": False, "username": user["username"]}

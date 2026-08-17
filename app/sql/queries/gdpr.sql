@@ -122,6 +122,10 @@ WHERE username = ?;
 DELETE FROM groups
 WHERE created_by = ?;
 
+-- name: delete_sessions
+DELETE FROM sessions
+WHERE user_id = ?;
+
 -- name: delete_user
 DELETE FROM users
 WHERE id = ?;

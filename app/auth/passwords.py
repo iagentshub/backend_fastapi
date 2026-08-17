@@ -18,9 +18,9 @@ from jwt import PyJWTError
 import app.config.session as _session
 from app.config.data import SETTINGS_FILE
 from app.config.session import (
+    ACCESS_EXPIRE_MINUTES,
     JWT_ALGORITHM,
     JWT_AUDIENCE,
-    JWT_EXPIRE_HOURS,
     JWT_ISSUER,
     JWT_SECRET_ENV,
     JWT_UNSAFE_SECRETS,
@@ -112,9 +112,21 @@ async def verify_password_async(plain: str, hashed: str) -> bool:
 # ── JWT ────────────────────────────────────────────────────────────────────────
 
 
-def create_token(username: str, group_id: Optional[str] = None) -> str:
+def create_token(
+    username: str,
+    group_id: Optional[str] = None,
+    session_id: Optional[str] = None,
+) -> str:
+    """Access token de una sesión.
+
+    `session_id` va en el claim `sid` y es lo que hace la sesión revocable: sin
+    él el token vale por sí solo hasta agotar su `exp`, con él cada request lo
+    contrasta con la tabla `sessions`. Es opcional únicamente porque hay tests
+    que emiten tokens sueltos; todo emisor de producción pasa por
+    `app.auth.sessions.open_session`, que siempre lo rellena.
+    """
     now = datetime.now(timezone.utc)
-    expire = now + timedelta(hours=JWT_EXPIRE_HOURS)
+    expire = now + timedelta(minutes=ACCESS_EXPIRE_MINUTES)
     payload = {
         "sub": username,
         "gid": group_id or username,  # group personal = username
@@ -123,6 +135,8 @@ def create_token(username: str, group_id: Optional[str] = None) -> str:
         "iss": JWT_ISSUER,
         "aud": JWT_AUDIENCE,
     }
+    if session_id:
+        payload["sid"] = session_id
     return jwt.encode(payload, _secret(), algorithm=JWT_ALGORITHM)
 
 
@@ -156,7 +170,7 @@ def csrf_token_matches(ga_token: str, candidate: str) -> bool:
     return hmac.compare_digest(derive_csrf_token(ga_token), candidate)
 
 
-def _claims(token: str) -> Optional[dict]:
+def _claims(token: str, allow_expired: bool = False) -> Optional[dict]:
     """Payload de un token verificado, o None si no es de fiar.
 
     Un único punto para verificar firma, expiración y procedencia; antes las
@@ -177,7 +191,7 @@ def _claims(token: str) -> Optional[dict]:
             token,
             _secret(),
             algorithms=[JWT_ALGORITHM],
-            options={"verify_aud": False},
+            options={"verify_aud": False, "verify_exp": not allow_expired},
         )
     except PyJWTError:
         return None
@@ -209,15 +223,26 @@ class TokenClaims(NamedTuple):
     username: str
     group_id: str
     iat: Optional[float]
+    session_id: Optional[str]
 
 
-def decode_claims(token: str) -> Optional[TokenClaims]:
+def decode_claims(token: str, allow_expired: bool = False) -> Optional[TokenClaims]:
     """Claims verificados del token, o None si no es de fiar.
+
+    `allow_expired` acepta un access caducado siempre que la firma sea válida.
+    Lo usa el canje del refresh, que necesita del access viejo solo el grupo
+    activo: quien autoriza ahí es el refresh, y la pertenencia al grupo se
+    revalida después en `_resolve_group`. Ninguna ruta autenticada lo pasa.
 
     `group_id` cae al nombre de usuario cuando el token no lo trae: el group
     personal de cada usuario es él mismo.
+
+    `session_id` es None en los tokens emitidos antes de que existieran las
+    sesiones revocables. Quien lo consume decide qué hacer con esa ausencia
+    (ver `_identify`); aquí no se rechaza porque el token está firmado y sigue
+    siendo auténtico.
     """
-    data = _claims(token)
+    data = _claims(token, allow_expired=allow_expired)
     if not data:
         return None
     username = data.get("sub")
@@ -225,7 +250,7 @@ def decode_claims(token: str) -> Optional[TokenClaims]:
         return None
     legacy_group_claim = "w" + "id"
     group_id = data.get("gid") or data.get(legacy_group_claim) or username
-    return TokenClaims(username, group_id, _iat_epoch(data))
+    return TokenClaims(username, group_id, _iat_epoch(data), data.get("sid"))
 
 
 def decode_token(token: str) -> Optional[str]:

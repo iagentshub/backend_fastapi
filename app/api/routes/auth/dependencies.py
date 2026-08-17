@@ -25,12 +25,14 @@ from app.errors import APIError
 from app.middleware.ratelimit import RateLimiter
 from app.storage.groups import GroupStorage as _GroupStorage
 from app.storage.guest import is_guest
+from app.storage.sessions import SessionStorage as _SessionStorage
 from app.storage.tokens import TokenStorage as _TokenStorage
 from app.storage.tokens import parse_ts as _parse_ts
 from app.utils.net import client_ip as _client_ip
 
 _groups = _GroupStorage()
 _tokens = _TokenStorage()
+_sessions = _SessionStorage()
 
 # Compartido entre login.py, pat_tokens.py y vscode_oauth.py a propósito: los
 # tres son superficie de fuerza bruta de credenciales y comparten el mismo
@@ -150,9 +152,32 @@ async def _identify(
         claims = decode_claims(ga_token)
         if not claims:
             raise APIError(401, "invalid_token", "Token inválido o expirado")
+        await _assert_session_live(claims.session_id)
         return claims.username, claims.iat, claims.group_id
 
     raise APIError(401, "not_authenticated", "No autenticado")
+
+
+async def _assert_session_live(session_id: Optional[str]) -> None:
+    """La sesión del token sigue abierta, o 401.
+
+    Una consulta por request autenticado con cookie, deliberadamente sin caché:
+    cachear el estado revocado devolvería el retraso que esto viene a quitar —
+    «he cerrado sesión» tiene que ser inmediato, y con varios workers una caché
+    por proceso lo haría inmediato solo en el que atendió el logout.
+
+    `session_id` a None son los tokens emitidos antes de que la tabla existiera.
+    Se aceptan: están firmados y son auténticos, y rechazarlos habría echado de
+    golpe a todos los usuarios con sesión abierta en el despliegue. La ventana
+    se cierra sola —esos tokens caducan— y a partir de ahí esta rama se puede
+    convertir en un 401 (`token_sin_sesion`).
+    """
+    if session_id is None:
+        return
+    if not await _sessions.is_live(session_id):
+        raise APIError(
+            401, "session_revoked", "Sesión cerrada o revocada. Vuelve a entrar."
+        )
 
 
 async def _assert_account_ok(username: str, issued_at: Optional[float]) -> str:

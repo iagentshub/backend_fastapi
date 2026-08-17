@@ -81,6 +81,7 @@ TABLAS: tuple[str, ...] = (
     "rate_limit_windows",
     "user_agent_preferences",
     "personal_access_tokens",
+    "sessions",
     "vscode_auth_codes",
     "resource_versions",
     "agent_workflows",

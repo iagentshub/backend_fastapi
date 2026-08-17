@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 from typing import Any
 
-from fastapi import APIRouter, Depends, Request, Response
+from fastapi import APIRouter, Cookie, Depends, Request, Response
 from pydantic import BaseModel, Field
 
 from app.api.routes.auth.dependencies import (
@@ -13,6 +13,7 @@ from app.api.routes.auth.dependencies import (
     _login_limiter,
     require_auth,
     require_group_session,
+    require_session,
 )
 from app.auth.auth import (
     consume_reset_token,
@@ -26,7 +27,8 @@ from app.auth.auth import (
     verify_password_async,
 )
 from app.auth.cookies import clear_session_cookies, set_session_cookies
-from app.auth.passwords import create_token
+from app.auth.passwords import create_token, decode_claims
+from app.auth.sessions import open_session
 from app.config.content_languages import CONTENT_LANGUAGE_SET
 from app.config.session import (
     EMAIL_VERIFY_ENABLED,
@@ -34,6 +36,8 @@ from app.config.session import (
     RATE_FORGOT_WINDOW,
     RATE_GUEST_CALLS,
     RATE_GUEST_WINDOW,
+    RATE_REFRESH_CALLS,
+    RATE_REFRESH_WINDOW,
     RATE_RESET_CALLS,
     RATE_RESET_WINDOW,
     REGISTER_MAX,
@@ -46,11 +50,20 @@ from app.middleware.ratelimit import RateLimiter
 from app.services.email import send_reset_email, send_verification_email
 from app.sql import sql
 from app.storage.db import open_db
+from app.storage.sessions import (
+    REASON_LOGOUT,
+    REASON_LOGOUT_ALL,
+    REASON_MANUAL,
+    RefreshReuse,
+    SessionStorage,
+)
 from app.utils import flog
 from app.utils.net import client_ip as _client_ip
 from app.utils.validation import is_valid_email, is_valid_username, normalize_username
 
 router = APIRouter()
+
+_sessions = SessionStorage()
 
 
 class RegisterBody(BaseModel):
@@ -133,6 +146,18 @@ _guest_limiter = RateLimiter(
     name="auth-guest",
 )
 
+# El canje del refresh es superficie de fuerza bruta como el login: quien tenga
+# un refresh robado y caducado, o quiera adivinar uno, lo intenta aquí. El cupo
+# es más alto que el de login porque un cliente legítimo renueva de verdad —una
+# vez cada ACCESS_EXPIRE_MINUTES, y varias pestañas pueden coincidir.
+_refresh_limiter = RateLimiter(
+    calls=RATE_REFRESH_CALLS,
+    window=RATE_REFRESH_WINDOW,
+    key_func=_client_ip,
+    shared=True,
+    name="auth-refresh",
+)
+
 
 @router.post("/register")
 async def register(
@@ -211,8 +236,7 @@ async def register(
     user = await get_user_by_username(username)
     if not user:
         raise APIError(500, "user_creation_failed", "No se pudo crear la sesión")
-    token = create_token(user["id"])
-    set_session_cookies(response, token)
+    await open_session(response, user["id"], request)
     return {"ok": True, "email": email, "pending_verification": False}
 
 
@@ -255,18 +279,20 @@ async def login(
             "Cuenta pendiente de verificación. Revisa tu correo.",
         )
 
-    token = create_token(user["id"])
+    await _sessions.purge_expired()
+    await open_session(response, user["id"], request)
     flog.ok(
         f"[login] OK usuario={user['username']}",
         ip=_ip,
         username=user["username"],
     )
-    set_session_cookies(response, token)
     return {"ok": True, "username": user["username"]}
 
 
 @router.get("/verify")
-async def verify_email(token: str, response: Response) -> dict[str, Any]:
+async def verify_email(
+    token: str, request: Request, response: Response
+) -> dict[str, Any]:
     username = await verify_email_token(token)
     if not username:
         raise APIError(
@@ -279,27 +305,130 @@ async def verify_email(token: str, response: Response) -> dict[str, Any]:
         raise APIError(
             404, "not_found", "Usuario no encontrado", extra={"resource": "user"}
         )
-    auth_token = create_token(user["id"])
-    set_session_cookies(response, auth_token)
+    await open_session(response, user["id"], request)
     return {"ok": True, "username": username}
 
 
 @router.post("/guest")
 async def guest_login(
+    request: Request,
     response: Response,
     _rl: None = Depends(_guest_limiter),
 ) -> dict[str, Any]:
     from app.storage.guest import new_guest_id
 
     guest_id = new_guest_id()
-    token = create_token(guest_id)
-    set_session_cookies(response, token)
+    await open_session(response, guest_id, request)
     return {"ok": True, "username": guest_id}
 
 
 @router.post("/logout")
-async def logout(response: Response) -> dict[str, Any]:
+async def logout(
+    response: Response,
+    ga_token: str | None = Cookie(default=None),
+) -> dict[str, Any]:
+    """Cierra la sesión de verdad: revoca la fila, luego borra las cookies.
+
+    Sin `require_auth` a propósito. Cerrar sesión tiene que funcionar también
+    cuando el access ya ha caducado, que es justo cuando el usuario más lo
+    intenta; exigir una credencial viva dejaría la fila abierta y el refresh
+    utilizable. Quien no traiga cookie no revoca nada y se le contesta igual.
+    """
+    if ga_token:
+        claims = decode_claims(ga_token, allow_expired=True)
+        if claims and claims.session_id:
+            await _sessions.revoke(claims.session_id, REASON_LOGOUT)
     clear_session_cookies(response)
+    return {"ok": True}
+
+
+@router.post("/refresh")
+async def refresh_session(
+    request: Request,
+    response: Response,
+    ga_token: str | None = Cookie(default=None),
+    ga_refresh: str | None = Cookie(default=None),
+    _rl: None = Depends(_refresh_limiter),
+) -> dict[str, Any]:
+    """Canjea el refresh por un access nuevo, rotando el refresh.
+
+    El grupo activo se recupera del access caducado —lo único que se le pide, y
+    `_resolve_group` revalida después la pertenencia—; sin eso, cada renovación
+    devolvería al usuario a su espacio personal a media sesión.
+    """
+    if not ga_refresh:
+        clear_session_cookies(response)
+        raise APIError(401, "not_authenticated", "No autenticado")
+
+    try:
+        renovada = await _sessions.rotate(ga_refresh)
+    except RefreshReuse:
+        # Dos clientes con el mismo refresh: uno de los dos lo robó y no hay
+        # forma de saber cuál. La sesión ya ha caído dentro de rotate().
+        flog.warning("[auth] refresh reutilizado: sesión revocada", ip=_client_ip(request))
+        clear_session_cookies(response)
+        raise APIError(
+            401, "session_revoked", "Sesión cerrada o revocada. Vuelve a entrar."
+        ) from None
+
+    if not renovada:
+        clear_session_cookies(response)
+        raise APIError(401, "invalid_token", "Token inválido o expirado")
+
+    session_id, user_id, nuevo_refresh = renovada
+    group_id: str | None = None
+    if ga_token:
+        claims = decode_claims(ga_token, allow_expired=True)
+        if claims and claims.username == user_id:
+            group_id = claims.group_id
+    token = create_token(user_id, group_id=group_id, session_id=session_id)
+    set_session_cookies(response, token, refresh=nuevo_refresh)
+    return {"ok": True}
+
+
+@router.get("/sessions")
+async def list_sessions(
+    user_id: str = Depends(require_session),
+    ga_token: str | None = Cookie(default=None),
+) -> dict[str, Any]:
+    """Sesiones abiertas del usuario, con la actual marcada."""
+    claims = decode_claims(ga_token) if ga_token else None
+    actual = claims.session_id if claims else None
+    return {"sessions": await _sessions.list_for_user(user_id, current_id=actual)}
+
+
+@router.delete("/sessions/{session_id}")
+async def revoke_session(
+    session_id: str,
+    user_id: str = Depends(require_session),
+) -> dict[str, Any]:
+    """Cierra una sesión concreta del usuario, incluida la propia."""
+    if not await _sessions.revoke_owned(session_id, user_id, REASON_MANUAL):
+        raise APIError(
+            404, "not_found", "Sesión no encontrada", extra={"resource": "session"}
+        )
+    return {"ok": True}
+
+
+@router.delete("/sessions")
+async def revoke_other_sessions(
+    response: Response,
+    user_id: str = Depends(require_session),
+    ga_token: str | None = Cookie(default=None),
+) -> dict[str, Any]:
+    """Cierra las demás sesiones del usuario y conserva la actual.
+
+    Conservarla es lo que hace la acción usable: si cerrase también la propia,
+    quien sospecha de un acceso ajeno tendría que volver a entrar justo cuando
+    está intentando echar al otro.
+    """
+    claims = decode_claims(ga_token) if ga_token else None
+    actual = claims.session_id if claims else None
+    if actual:
+        await _sessions.revoke_others(user_id, actual, REASON_LOGOUT_ALL)
+    else:
+        await _sessions.revoke_all(user_id, REASON_LOGOUT_ALL)
+        clear_session_cookies(response)
     return {"ok": True}
 
 

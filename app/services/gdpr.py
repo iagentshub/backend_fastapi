@@ -28,6 +28,7 @@ _RESOURCE_FILES = (
     ("knowledge_packs.json", "queries/gdpr_export:knowledge_packs"),
     ("memory.json", "queries/gdpr_export:memory_files"),
     ("stars.json", "queries/gdpr_export:stars"),
+    ("sessions.json", "queries/gdpr_export:sessions"),
 )
 
 

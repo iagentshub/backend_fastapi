@@ -2,18 +2,18 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List
+from typing import Any, Dict, List, Optional
 
-from fastapi import APIRouter, Depends, Response
+from fastapi import APIRouter, Cookie, Depends, Response
 
 from app.api.routes.auth import GroupContext, require_auth, require_group
 from app.auth.auth import (
-    create_token,
     get_user_by_id,
     get_user_by_username,
     get_user_role,
 )
-from app.auth.cookies import set_session_cookies
+from app.auth.passwords import decode_claims
+from app.auth.sessions import reissue_access
 from app.errors import APIError
 from app.models.request_bodies import StatusBody, UsernameBody
 from app.storage.groups import GroupStorage
@@ -563,11 +563,25 @@ async def transfer_group_ownership(
 # ── Cambio de group activo ─────────────────────────────────────────────────
 
 
+def _session_id(ga_token: Optional[str]) -> Optional[str]:
+    """Sesión a la que pertenece la cookie, para reemitir su access.
+
+    Cambiar de grupo no abre una sesión nueva: solo cambia el claim `gid`. Si
+    aquí se emitiera una sesión aparte, la lista del perfil acumularía una fila
+    por cada cambio de grupo y ninguna de ellas sería la que el usuario cerró.
+    """
+    if not ga_token:
+        return None
+    claims = decode_claims(ga_token)
+    return claims.session_id if claims else None
+
+
 @router.post("/switch/{group_id}")
 async def switch_group(
     group_id: str,
     response: Response,
     username: str = Depends(require_auth),
+    ga_token: Optional[str] = Cookie(default=None),
 ) -> Dict[str, Any]:
     """Cambia el group activo del usuario y emite un nuevo token.
 
@@ -577,8 +591,7 @@ async def switch_group(
 
     # Cambio al group personal propio: siempre permitido
     if group_id == username:
-        token = create_token(username, group_id=username)
-        set_session_cookies(response, token)
+        reissue_access(response, username, _session_id(ga_token), group_id=username)
         return {"ok": True, "group_id": group_id}
 
     # Group de equipo: debe estar activo y el usuario debe ser miembro
@@ -587,6 +600,5 @@ async def switch_group(
         raise APIError(403, "group_unavailable", "Grupo no disponible o desactivado")
     if not await _groups.is_member(group_id, username):
         raise APIError(403, "not_a_member", "No eres miembro de este grupo")
-    token = create_token(username, group_id=group_id)
-    set_session_cookies(response, token)
+    reissue_access(response, username, _session_id(ga_token), group_id=group_id)
     return {"ok": True, "group_id": group_id}
