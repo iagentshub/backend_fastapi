@@ -87,7 +87,7 @@ async def admin_metadata_table_data(
             for r in await conn.fetchall(
                 "SELECT name FROM sqlite_master WHERE type='table'"
                 if not IS_PG
-                else "SELECT tablename FROM pg_stat_user_tables"
+                else "SELECT relname FROM pg_stat_user_tables"
             )
         }
         if table_name not in valid:

@@ -123,11 +123,27 @@ justo lo que se olvida.
 
 `tests/storage/test_sql_contra_motores.py` da el otro nivel de garantía:
 **prepara** cada consulta contra una base con el esquema real, lo que valida
-sintaxis, tablas y columnas sin ejecutar nada. En SQLite corre siempre (428 de
-las 440 secciones; las otras 12 son de PostgreSQL). Contra PostgreSQL usa
-`prepare()` de asyncpg y se salta entero sin `GAIA_TEST_PG_DSN`, igual que
-`test_flog_postgres.py`. **Mientras nadie lo ejecute con una base real, esas 12
-consultas siguen sin haberse probado jamás.**
+sintaxis, tablas y columnas sin ejecutar nada. En SQLite corre siempre; contra
+PostgreSQL usa `prepare()` de asyncpg y se salta sin `GAIA_TEST_PG_DSN`, igual
+que `test_flog_postgres.py`.
+
+**Se ejecutó contra un PostgreSQL 16 real** —esquema, las 26 migraciones y el
+catálogo entero— y encontró tres cosas que nadie había visto porque la suite
+corre en SQLite:
+
+- **La migración 12 estaba copiada de `sqlite.py` sin traducir**: `fetchall`,
+  `fetchone` y marcadores `?` sobre la conexión asyncpg en crudo, que no tiene
+  esos métodos. Reventaba con `AttributeError`, así que **ninguna instalación
+  nueva sobre PostgreSQL llegaba a arrancar**. La cubre ahora
+  `tests/storage/test_migraciones_pg_traducidas.py`, que rechaza esos tres
+  patrones sin necesitar una base.
+- **`pg_table_stats` leía `tablename` de `pg_stat_user_tables`**, columna que
+  se llama `relname` (`tablename` es de `pg_tables`): el panel de tablas del
+  admin fallaba entero en PostgreSQL.
+- Un comentario con un `;` dentro partía en dos el `CREATE TABLE` de `skills`,
+  porque `migrate_schema` trocea el DDL de PostgreSQL por `;`. Lo vigilan dos
+  tests nuevos en `test_schema_dialectos.py`: ningún comentario del esquema
+  lleva `;`, y cada trozo del DDL troceado es una sentencia completa.
 
 `tests/storage/test_schema_usage.py`, que comprueba que ninguna tabla declarada
 se queda sin consumidor, tuvo que aprender a leer los `.sql`: buscar la tabla

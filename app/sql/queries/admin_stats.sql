@@ -1,11 +1,15 @@
 -- Consultas de app/api/routes/admin/stats.py.
 
+-- La columna de pg_stat_user_tables es `relname`; `tablename` es de pg_tables.
+-- Estuvo escrita como `tablename` y el panel de tablas fallaba entero en
+-- PostgreSQL con 'column "tablename" does not exist'. Nadie lo vio porque la
+-- suite corre en SQLite y esta consulta solo se ejecuta en el otro motor.
 -- name: pg_table_stats
 -- engine: pg
-SELECT tablename AS name, (
+SELECT relname AS name, (
 SELECT COUNT(*)
 FROM information_schema.columns
-WHERE table_name=tablename AND table_schema='public') AS col_count, COALESCE(n_live_tup, 0) AS rows, pg_total_relation_size(quote_ident(tablename)) AS size_bytes
+WHERE table_name=relname AND table_schema='public') AS col_count, COALESCE(n_live_tup, 0) AS rows, pg_total_relation_size(quote_ident(relname)) AS size_bytes
 FROM pg_stat_user_tables
 ORDER BY n_live_tup DESC;
 

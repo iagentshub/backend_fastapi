@@ -9,7 +9,7 @@ CREATE TABLE IF NOT EXISTS agent_workflows (
     is_active   @BOOL@ NOT NULL DEFAULT 1,
     deactivated_at TEXT,
     official_source_id    TEXT,
-    -- Trazabilidad de solo escritura; se lee por
+    -- Trazabilidad de solo escritura. La lectura viva es
     -- resource_source_links.component_key. Ver agents.sql.
     official_component_id TEXT,
     created_at  TEXT NOT NULL,

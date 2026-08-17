@@ -106,6 +106,7 @@ def test_todas_las_consultas_preparan_en_postgres():
     import asyncpg
 
     from app.storage.db import AsyncConn
+    from app.storage.migrations.postgres import run_postgres_migrations
 
     traducir = AsyncConn(None, True)._pg_sql
 
@@ -113,9 +114,14 @@ def test_todas_las_consultas_preparan_en_postgres():
         conn = await asyncpg.connect(DSN)
         rotas: list[str] = []
         try:
+            # Esquema base + migraciones: varias tablas (resource_social,
+            # resource_labels, user_follows…) y columnas nacen en la secuencia
+            # de migraciones, no en el DDL, y sin ellas medio catálogo no
+            # resuelve.
             for sentencia in schema_for("pg").split(";"):
                 if sentencia.strip():
                     await conn.execute(sentencia)
+            await run_postgres_migrations(conn)
             for identificador, cuerpo in _catalogo():
                 if _motor(identificador, cuerpo) == "sqlite":
                     continue

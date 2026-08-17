@@ -15,6 +15,7 @@ import re
 
 import pytest
 
+from app.sql import SQL_DIR
 from app.storage.schema import SCHEMA_PG, SCHEMA_SQLITE, schema_for
 
 
@@ -81,6 +82,46 @@ def test_el_ddl_de_pg_se_puede_partir_por_punto_y_coma():
     for sentencia in SCHEMA_PG.split(";"):
         assert sentencia.count("'") % 2 == 0, (
             f"comillas desparejadas tras partir por ';': {sentencia[:120]!r}"
+        )
+
+
+def test_ningun_comentario_del_esquema_lleva_punto_y_coma():
+    """Un ';' dentro de un `--` parte la sentencia siguiente por la mitad.
+
+    Pasó de verdad: un comentario que decía "trazabilidad de solo escritura; se
+    lee por…" cortó el CREATE TABLE de `skills` en dos, y PostgreSQL abortaba
+    el arranque con "syntax error at end of input". La suite no lo vio porque
+    en SQLite el DDL se aplica con `executescript`, que no parte nada; solo
+    apareció al aplicar el esquema contra una base PostgreSQL real.
+    """
+    culpables = [
+        f"{ruta.name}:{numero}: {linea.strip()}"
+        for ruta in sorted((SQL_DIR / "schema").glob("*.sql"))
+        for numero, linea in enumerate(ruta.read_text(encoding="utf-8").splitlines(), 1)
+        if linea.strip().startswith("--") and ";" in linea
+    ]
+    assert culpables == [], f"Comentarios con ';' en el esquema: {culpables}"
+
+
+def test_cada_sentencia_del_ddl_de_pg_esta_completa():
+    """Tras partir por ';', cada trozo tiene que ser una sentencia entera.
+
+    Los paréntesis desbalanceados son la señal de que el corte cayó dentro de
+    un CREATE TABLE, que es como se manifestó el fallo de arriba.
+    """
+    for sentencia in SCHEMA_PG.split(";"):
+        util = "\n".join(
+            linea
+            for linea in sentencia.splitlines()
+            if not linea.strip().startswith("--")
+        ).strip()
+        if not util:
+            continue
+        assert util.count("(") == util.count(")"), (
+            f"sentencia cortada por la mitad: {util[:120]!r}"
+        )
+        assert re.match(r"(?i)^(CREATE|ALTER|DROP|INSERT|UPDATE|DELETE)\b", util), (
+            f"trozo que no empieza por una sentencia: {util[:120]!r}"
         )
 
 

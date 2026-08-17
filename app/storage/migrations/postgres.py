@@ -312,7 +312,13 @@ async def _connection_provider_accounts(conn: Any) -> None:
     await conn.execute(
         "ALTER TABLE connections ADD COLUMN IF NOT EXISTS provider_account_id TEXT"
     )
-    rows = await conn.fetchall(
+    # Esta función llegó copiada de sqlite.py sin traducir: llamaba a
+    # `fetchall`/`fetchone` —que asyncpg no tiene— con marcadores `?` y una
+    # tupla de parámetros. Aquí la conexión es la de asyncpg en crudo (ver
+    # db.py::migrate_schema), no el envoltorio AsyncConn, así que reventaba con
+    # AttributeError y dejaba sin arrancar cualquier instalación nueva sobre
+    # PostgreSQL. Lo destapó preparar el catálogo contra una base real.
+    rows = await conn.fetch(
         "SELECT id,owner_id,data FROM connections WHERE provider_account_id IS NULL"
     )
     for row in rows:
@@ -323,14 +329,16 @@ async def _connection_provider_accounts(conn: Any) -> None:
         account_id = str(payload.get("_account_id") or "").strip()
         if not account_id:
             continue
-        account = await conn.fetchone(
-            "SELECT 1 FROM accounts WHERE id=? AND owner_id=?",
-            (account_id, row["owner_id"]),
+        account = await conn.fetchrow(
+            "SELECT 1 FROM accounts WHERE id=$1 AND owner_id=$2",
+            account_id,
+            row["owner_id"],
         )
         if account:
             await conn.execute(
-                "UPDATE connections SET provider_account_id=? WHERE id=?",
-                (account_id, row["id"]),
+                "UPDATE connections SET provider_account_id=$1 WHERE id=$2",
+                account_id,
+                row["id"],
             )
     await conn.execute(
         "CREATE INDEX IF NOT EXISTS idx_connections_provider_account "
