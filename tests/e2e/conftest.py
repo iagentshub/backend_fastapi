@@ -104,6 +104,12 @@ def auth_client(live_server):
     with httpx.Client(base_url=base, follow_redirects=True) as client:
         r = client.post("/api/auth/login", json={"email": admin_email, "password": password})
         assert r.status_code == 200, f"Login failed: {r.text}"
+        # CsrfMiddleware exige X-CSRF-Token en toda mutación autenticada por
+        # cookie; React y Flutter la leen de `ga_csrf` (no HttpOnly) y la
+        # reenvían así, así que este cliente hace lo mismo una sola vez.
+        csrf = client.cookies.get("ga_csrf")
+        assert csrf, "login no emitió la cookie ga_csrf"
+        client.headers["X-CSRF-Token"] = csrf
         yield client
 
 
