@@ -620,6 +620,34 @@ async def _drop_redundant_indexes(conn: Any) -> None:
         await conn.execute(f"DROP INDEX IF EXISTS {indice}")
 
 
+# Ver el mismo bloque en sqlite.py: las seis tablas que el borrado RGPD no
+# nombraba, y los dos dueños que no son cuentas y nunca estarán en `users`.
+_TABLAS_CON_HUÉRFANOS = (
+    ("prompts", "owner_id"),
+    ("tools", "owner_id"),
+    ("memory_files", "owner_id"),
+    ("knowledge_packs", "owner_id"),
+    ("resource_versions", "owner_id"),
+    ("resource_source_links", "resource_owner_id"),
+)
+_DUEÑOS_SIN_CUENTA = ("__public__", "admin")
+
+
+async def _gdpr_orphan_resources(conn: Any) -> None:
+    """Limpia lo que el borrado RGPD dejó atrás antes de conocer estas tablas."""
+    total = await conn.fetchval("SELECT COUNT(*) FROM users")
+    if not total:
+        # Instalación recién creada: sin usuarios, "no está en users" es cierto
+        # para todo y esto vaciaría las tablas en vez de limpiarlas.
+        return
+    for tabla, columna in _TABLAS_CON_HUÉRFANOS:
+        await conn.execute(
+            f"DELETE FROM {tabla} "
+            f"WHERE {columna} NOT IN (SELECT id FROM users) "
+            f"AND {columna} <> ALL($1::text[])",
+            list(_DUEÑOS_SIN_CUENTA),
+        )
+
 
 POSTGRES_MIGRATIONS = (
     Migration(1, "legacy_schema_catchup", _migrate_pg, repeatable=True),
@@ -653,6 +681,7 @@ POSTGRES_MIGRATIONS = (
     Migration(25, "group_share_cascade_flag", _group_share_cascade_flag),
     Migration(26, "app_logs_index_diet", _app_logs_index_diet),
     Migration(27, "drop_redundant_indexes", _drop_redundant_indexes),
+    Migration(28, "gdpr_orphan_resources", _gdpr_orphan_resources),
 )
 
 

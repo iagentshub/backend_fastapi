@@ -48,3 +48,61 @@ WHERE wm.username = ?;
 SELECT provider, linked_at
 FROM accounts
 WHERE owner_id = ?;
+
+-- Los recursos salen de sus tablas, no de disco: agentes y skills viven en la
+-- base de datos desde la migración a ResourceStorage, y leerlos del antiguo
+-- AGENTS_DIR devolvía una lista vacía sin error ninguno.
+
+-- name: agents
+SELECT *
+FROM agents
+WHERE owner_id = ?
+ORDER BY created_at;
+
+-- name: skills
+SELECT *
+FROM skills
+WHERE owner_id = ?
+ORDER BY created_at;
+
+-- name: prompts
+SELECT *
+FROM prompts
+WHERE owner_id = ?
+ORDER BY created_at;
+
+-- name: tools
+SELECT *
+FROM tools
+WHERE owner_id = ?
+ORDER BY created_at;
+
+-- name: workflows
+SELECT *
+FROM agent_workflows
+WHERE owner_id = ?
+ORDER BY created_at;
+
+-- name: knowledge_packs
+SELECT *
+FROM knowledge_packs
+WHERE owner_id = ?
+ORDER BY created_at;
+
+-- name: memory_files
+SELECT *
+FROM memory_files
+WHERE owner_id = ?
+ORDER BY updated_at;
+
+-- name: stars
+SELECT resource_type, resource_id, created_at
+FROM resource_stars
+WHERE username = ?
+ORDER BY created_at;
+
+-- name: follows
+SELECT follower, following, created_at
+FROM user_follows
+WHERE follower = ? OR following = ?
+ORDER BY created_at;

@@ -197,6 +197,102 @@ async def test_purge_elimina_miembros_del_group(patch_data_dir):
     assert await group.get(created["id"]) is not None
 
 
+async def test_purge_elimina_los_recursos_añadidos_después_del_borrado(patch_data_dir):
+    """Prompts, tools, memoria y packs no tienen REFERENCES users: si el DELETE
+    no los nombra, se quedan con un owner_id que ya no apunta a nadie."""
+    from app.config.data import AGENTS_DIR, MEMORY_DIR, SKILLS_DIR
+    from app.storage.agent_storage import AgentStorage
+    from app.storage.db import open_db
+    from app.storage.memory_storage import MemoryStorage
+    from app.storage.prompt_storage import PromptStorage
+    from app.storage.tool_storage import ToolStorage
+
+    await _make_user("purge_recursos")
+    owner = await _user_id("purge_recursos")
+
+    await AgentStorage(AGENTS_DIR).save({"name": "Agente"}, owner_id=owner)
+    await PromptStorage().save(
+        "private", {"name": "P", "alias": "purgealias", "content": "x"},
+        owner_id=owner,
+    )
+    await ToolStorage().save(
+        "private", {"name": "T", "language": "python", "content": "x"},
+        owner_id=owner,
+    )
+    await MemoryStorage(MEMORY_DIR).save("notas", "contenido", owner_id=owner)
+    async with open_db() as conn:
+        await conn.execute(
+            "INSERT INTO knowledge_packs (id, owner_id, name, created_at, updated_at) "
+            "VALUES (?, ?, 'Pack', 'now', 'now')",
+            ("pack-purge", owner),
+        )
+        await conn.execute(
+            "INSERT INTO resource_versions "
+            "(id, resource_type, resource_id, owner_id, version, snapshot, "
+            "created_by, created_at) "
+            "VALUES (?, 'agent', 'a1', ?, 1, '{}', ?, 'now')",
+            ("ver-purge", owner, owner),
+        )
+        # El enlace declara REFERENCES official_sources: la fuente tiene que
+        # existir antes, y sobrevive al usuario (es catálogo de administración).
+        await conn.execute(
+            "INSERT INTO official_sources "
+            "(id, name, repository_url, created_at, updated_at) "
+            "VALUES ('src', 'Fuente', 'https://example.test/r', 'now', 'now')"
+        )
+        await conn.execute(
+            "INSERT INTO resource_source_links "
+            "(source_id, component_key, resource_type, resource_id, "
+            "resource_owner_id, created_at, updated_at) "
+            "VALUES ('src', 'comp', 'agent', 'a1', ?, 'now', 'now')",
+            (owner,),
+        )
+        await conn.commit()
+
+    await purge_user_data("purge_recursos")
+
+    async with open_db() as conn:
+        for tabla, columna in (
+            ("agents", "owner_id"),
+            ("skills", "owner_id"),
+            ("prompts", "owner_id"),
+            ("tools", "owner_id"),
+            ("memory_files", "owner_id"),
+            ("knowledge_packs", "owner_id"),
+            ("resource_versions", "owner_id"),
+            ("resource_source_links", "resource_owner_id"),
+        ):
+            assert not await conn.fetchval(
+                f"SELECT 1 FROM {tabla} WHERE {columna} = ?", (owner,)
+            ), f"{tabla} conserva filas del usuario borrado"
+
+    assert SKILLS_DIR is not None  # el directorio legacy no interviene ya
+
+
+async def test_purge_no_toca_los_recursos_de_otro_usuario(patch_data_dir):
+    from app.storage.prompt_storage import PromptStorage
+
+    await _make_user("purge_res_victima")
+    await _make_user("purge_res_testigo")
+    testigo = await _user_id("purge_res_testigo")
+    await PromptStorage().save(
+        "private", {"name": "P", "alias": "testigoalias", "content": "x"},
+        owner_id=testigo,
+    )
+    await PromptStorage().save(
+        "private", {"name": "P", "alias": "victimaalias", "content": "x"},
+        owner_id=await _user_id("purge_res_victima"),
+    )
+
+    await purge_user_data("purge_res_victima")
+
+    from app.storage.db import open_db
+    async with open_db() as conn:
+        assert await conn.fetchval(
+            "SELECT 1 FROM prompts WHERE owner_id = ?", (testigo,)
+        )
+
+
 async def test_purge_elimina_agents_del_filesystem(patch_data_dir, tmp_path, monkeypatch):
     import json
     agents_dir = tmp_path / "agents_purge"

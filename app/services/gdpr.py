@@ -5,10 +5,30 @@ import io
 import json
 import zipfile
 
-from app.config.data import AGENTS_DIR, SKILLS_DIR
 from app.sql import sql
 from app.storage.db import open_db
 from app.utils import flog
+
+# Columnas que la base de datos guarda como texto JSON. Sin deserializarlas, el
+# ZIP del artículo 20 entrega el agente como una cadena escapada dentro de otra:
+# formalmente son los datos, pero no son portables a ningún sitio.
+_JSON_COLUMNS = ("data", "definition", "labels")
+
+# Un fichero del ZIP por consulta. El orden es el del ZIP y el nombre es el que
+# ve el usuario; la consulta toma siempre el id de usuario como único parámetro.
+# Los identificadores van enteros y literales: la guarda de secciones huérfanas
+# los busca por su forma en el código, y uno compuesto con un f-string daría por
+# muerta la consulta.
+_RESOURCE_FILES = (
+    ("agents.json", "queries/gdpr_export:agents"),
+    ("skills.json", "queries/gdpr_export:skills"),
+    ("prompts.json", "queries/gdpr_export:prompts"),
+    ("tools.json", "queries/gdpr_export:tools"),
+    ("workflows.json", "queries/gdpr_export:workflows"),
+    ("knowledge_packs.json", "queries/gdpr_export:knowledge_packs"),
+    ("memory.json", "queries/gdpr_export:memory_files"),
+    ("stars.json", "queries/gdpr_export:stars"),
+)
 
 
 async def export_user_data(username: str) -> io.BytesIO:
@@ -104,33 +124,46 @@ async def export_user_data(username: str) -> io.BytesIO:
                 json.dumps([dict(r) for r in rows], ensure_ascii=False, indent=2),
             )
 
-        # 8. Agentes (ficheros)
-        agents = _collect_file_owned(AGENTS_DIR, user_id)
-        zf.writestr("agents.json", json.dumps(agents, ensure_ascii=False, indent=2))
+            # 8. Recursos propios: agentes, skills, prompts, tools, workflows,
+            #    packs de knowledge, memoria de los agentes y favoritos.
+            for filename, query in _RESOURCE_FILES:
+                rows = await conn.fetchall(sql(query), (user_id,))
+                zf.writestr(
+                    filename,
+                    json.dumps(
+                        [_decode_row(r) for r in rows], ensure_ascii=False, indent=2
+                    ),
+                )
 
-        # 9. Skills (ficheros)
-        skills = _collect_file_owned(SKILLS_DIR, user_id)
-        zf.writestr("skills.json", json.dumps(skills, ensure_ascii=False, indent=2))
+            # 9. Seguimientos, en las dos direcciones: a quién sigue y quién le
+            #    sigue son datos suyos por igual.
+            rows = await conn.fetchall(
+                sql("queries/gdpr_export:follows"), (user_id, user_id)
+            )
+            zf.writestr(
+                "follows.json",
+                json.dumps([dict(r) for r in rows], ensure_ascii=False, indent=2),
+            )
 
     flog.ok(f"[gdpr] Exportación generada para {username}")
     buf.seek(0)
     return buf
 
 
-def _collect_file_owned(base_dir, username: str) -> list:
-    items = []
-    for scope in ("private", "public"):
-        scope_dir = base_dir / scope
-        if not scope_dir.exists():
+def _decode_row(row) -> dict:
+    """Fila a dict, deserializando las columnas que guardan JSON como texto."""
+    item = dict(row)
+    for column in _JSON_COLUMNS:
+        value = item.get(column)
+        if not isinstance(value, str):
             continue
-        for item_dir in scope_dir.iterdir():
-            cfg = item_dir / "config.json"
-            if not cfg.exists():
-                continue
-            try:
-                data = json.loads(cfg.read_text(encoding="utf-8"))
-                if data.get("owner_id") == username:
-                    items.append(data)
-            except (OSError, UnicodeError, json.JSONDecodeError, TypeError) as exc:
-                flog.warning(f"[gdpr] Configuración omitida del export {cfg}: {exc}")
-    return items
+        try:
+            item[column] = json.loads(value)
+        except (json.JSONDecodeError, TypeError) as exc:
+            # Se conserva el texto crudo: es el dato del usuario y el artículo 20
+            # obliga a entregarlo, aunque no se pueda normalizar.
+            flog.warning(
+                f"[gdpr] Columna {column} no normalizada en "
+                f"{item.get('id', '?')}: {exc}"
+            )
+    return item

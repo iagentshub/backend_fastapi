@@ -68,7 +68,16 @@ async def cancel_user_deletion(token: str) -> bool:
 
 
 def _purge_user_files(username: str) -> None:
-    """Borra ficheros del usuario del filesystem. Síncrono — llamar desde asyncio.to_thread."""
+    """Borra restos legacy en disco. Síncrono — llamar desde asyncio.to_thread.
+
+    Agentes y skills viven en sus tablas desde la migración a `ResourceStorage`,
+    y el borrado de verdad es el de `purge_user_data`. Esto solo alcanza a las
+    instalaciones que vienen de la época de ficheros: `_migrate_legacy_data`
+    copió los `config.json` a la base de datos pero no los borró del disco, así
+    que ahí siguen. En una instalación nueva estos directorios no existen y la
+    función no hace nada — que es exactamente por lo que la exportación no podía
+    seguir leyendo de aquí.
+    """
     for base_dir in (AGENTS_DIR, SKILLS_DIR):
         for scope_dir in (base_dir / "private", base_dir / "public"):
             if not scope_dir.exists():
@@ -106,10 +115,28 @@ async def purge_user_data(username: str) -> None:
                 await conn.execute(
                     sql("queries/gdpr:delete_conversations"), (user_id,)
                 )
+                # La trazabilidad y el historial van antes que los recursos: son
+                # lo que los describe, y ninguna de las dos tablas declara
+                # REFERENCES, así que nadie las arrastra en cascada.
+                await conn.execute(
+                    sql("queries/gdpr:delete_resource_source_links"), (user_id,)
+                )
+                await conn.execute(
+                    sql("queries/gdpr:delete_resource_versions"),
+                    (user_id, user_id),
+                )
                 await conn.execute(sql("queries/gdpr:delete_agents"), (user_id,))
                 await conn.execute(sql("queries/gdpr:delete_skills"), (user_id,))
+                await conn.execute(sql("queries/gdpr:delete_prompts"), (user_id,))
+                await conn.execute(sql("queries/gdpr:delete_tools"), (user_id,))
+                await conn.execute(
+                    sql("queries/gdpr:delete_memory_files"), (user_id,)
+                )
                 await conn.execute(
                     sql("queries/gdpr:delete_knowledge_items"), (user_id,)
+                )
+                await conn.execute(
+                    sql("queries/gdpr:delete_knowledge_packs"), (user_id,)
                 )
                 await conn.execute(
                     sql("queries/gdpr:delete_connections"), (user_id,)

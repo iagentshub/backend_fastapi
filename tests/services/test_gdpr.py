@@ -1,4 +1,10 @@
-"""Tests del servicio GDPR: export_user_data y _collect_file_owned."""
+"""Tests del servicio GDPR: export_user_data.
+
+Los tests de aquí afirman **contenido**, no presencia. Comprobar que
+`agents.json` está en el ZIP no distinguía una exportación correcta de una
+vacía, y eso es exactamente lo que pasaba: los recursos se leían de
+`AGENTS_DIR`, un directorio que no existe desde que viven en la base de datos.
+"""
 from __future__ import annotations
 
 import io
@@ -7,18 +13,14 @@ import zipfile
 
 import pytest
 
-import app.config.data as _cfg
 from app.auth.auth import register_user
-from app.services.gdpr import _collect_file_owned, export_user_data
+from app.services.gdpr import export_user_data
 
-# ── Fixture: parcha gdpr.DB_FILE con la BD de test ───────────────────────────
 
 @pytest.fixture(autouse=True)
-def patch_gdpr_db(patch_data_dir, monkeypatch):
-    import app.services.gdpr as gdpr_mod
-    # gdpr.py uses open_db() — no DB_FILE to patch; just patch dir paths
-    monkeypatch.setattr(gdpr_mod, "AGENTS_DIR", _cfg.AGENTS_DIR)
-    monkeypatch.setattr(gdpr_mod, "SKILLS_DIR", _cfg.SKILLS_DIR)
+def patch_gdpr_db(patch_data_dir):
+    """Toda la exportación sale de open_db(); basta con aislar el DATA_DIR."""
+    return patch_data_dir
 
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -86,7 +88,9 @@ async def test_export_contiene_ficheros_requeridos(patch_gdpr_db):
     names = _zip_names(buf)
     for expected in ("profile.json", "connections.json", "knowledge.json",
                      "token_usage.json", "groups.json", "accounts.json",
-                     "agents.json", "skills.json"):
+                     "agents.json", "skills.json", "prompts.json", "tools.json",
+                     "workflows.json", "knowledge_packs.json", "memory.json",
+                     "stars.json", "follows.json"):
         assert expected in names, f"Falta {expected} en el ZIP"
 
 
@@ -180,58 +184,106 @@ async def test_export_groups_no_incluye_los_ajenos(patch_gdpr_db):
     assert groups == []
 
 
-# ── _collect_file_owned ───────────────────────────────────────────────────────
+# ── Recursos: el ZIP entrega contenido, no ficheros vacíos ────────────────────
 
-def test_collect_file_owned_devuelve_vacios_si_no_hay_dir(tmp_path):
-    result = _collect_file_owned(tmp_path / "no-existe", "any_user")
-    assert result == []
+async def _crear_recursos(username: str) -> dict:
+    """Un recurso de cada tipo para el usuario. Devuelve {tipo: recurso}."""
+    from app.config.data import AGENTS_DIR, MEMORY_DIR, SKILLS_DIR
+    from app.storage.agent_storage import AgentStorage
+    from app.storage.memory_storage import MemoryStorage
+    from app.storage.prompt_storage import PromptStorage
+    from app.storage.skill_storage import SkillStorage
+    from app.storage.tool_storage import ToolStorage
+    from app.storage.workflows import WorkflowStorage
 
-
-def test_collect_file_owned_devuelve_items_del_owner(tmp_path):
-    private = tmp_path / "private"
-    private.mkdir()
-    item = private / "item-1"
-    item.mkdir()
-    (item / "config.json").write_text(
-        json.dumps({"id": "item-1", "owner_id": "usuario_a"}), encoding="utf-8"
-    )
-    result = _collect_file_owned(tmp_path, "usuario_a")
-    assert len(result) == 1
-    assert result[0]["id"] == "item-1"
-
-
-def test_collect_file_owned_ignora_otros_owners(tmp_path):
-    private = tmp_path / "private"
-    private.mkdir()
-    item = private / "item-otro"
-    item.mkdir()
-    (item / "config.json").write_text(
-        json.dumps({"id": "item-otro", "owner_id": "otro_usuario"}), encoding="utf-8"
-    )
-    result = _collect_file_owned(tmp_path, "usuario_a")
-    assert result == []
-
-
-def test_collect_file_owned_incluye_private_y_public(tmp_path):
-    for scope in ("private", "public"):
-        d = tmp_path / scope / f"item-{scope}"
-        d.mkdir(parents=True)
-        (d / "config.json").write_text(
-            json.dumps({"id": f"item-{scope}", "owner_id": "multiowner"}), encoding="utf-8"
-        )
-    result = _collect_file_owned(tmp_path, "multiowner")
-    assert len(result) == 2
+    owner = await _user_id(username)
+    return {
+        "agent": await AgentStorage(AGENTS_DIR).save(
+            {"name": "Agente exportable"}, owner_id=owner
+        ),
+        "skill": await SkillStorage(SKILLS_DIR).save(
+            "private", {"name": "Skill exportable", "content": "x"}, owner_id=owner
+        ),
+        "prompt": await PromptStorage().save(
+            "private",
+            {"name": "Prompt exportable", "alias": "expalias", "content": "hola"},
+            owner_id=owner,
+        ),
+        "tool": await ToolStorage().save(
+            "private",
+            {"name": "Tool exportable", "language": "python", "content": "print(1)"},
+            owner_id=owner,
+        ),
+        "workflow": await WorkflowStorage().save(
+            owner,
+            {"name": "Workflow exportable", "definition": {"nodes": [], "edges": []}},
+        ),
+        "memory": await MemoryStorage(MEMORY_DIR).save(
+            "recuerdos", "lo que dijo el usuario", owner_id=owner
+        ),
+    }
 
 
-def test_collect_file_owned_ignora_json_invalido_y_avisa(tmp_path, monkeypatch):
+async def test_export_agents_json_contiene_el_agente(patch_gdpr_db):
+    await _make_user("exp_res_agent")
+    creados = await _crear_recursos("exp_res_agent")
+    buf = await export_user_data("exp_res_agent")
+    agents = json.loads(_zip_read(buf, "agents.json"))
+    assert [a["id"] for a in agents] == [creados["agent"]["id"]]
+    assert agents[0]["name"] == "Agente exportable"
+
+
+async def test_export_entrega_todos_los_tipos_de_recurso(patch_gdpr_db):
+    await _make_user("exp_res_todos")
+    await _crear_recursos("exp_res_todos")
+    buf = await export_user_data("exp_res_todos")
+    for fichero in ("agents.json", "skills.json", "prompts.json", "tools.json",
+                    "workflows.json", "memory.json"):
+        contenido = json.loads(_zip_read(buf, fichero))
+        assert contenido, f"{fichero} llegó vacío"
+
+
+async def test_export_no_incluye_recursos_de_otro_usuario(patch_gdpr_db):
+    await _make_user("exp_res_mio")
+    await _make_user("exp_res_ajeno")
+    await _crear_recursos("exp_res_ajeno")
+    buf = await export_user_data("exp_res_mio")
+    for fichero in ("agents.json", "skills.json", "prompts.json", "tools.json",
+                    "workflows.json", "memory.json"):
+        assert json.loads(_zip_read(buf, fichero)) == []
+
+
+async def test_export_deserializa_el_blob_del_recurso(patch_gdpr_db):
+    """`data` es JSON guardado como texto: sin deserializar, el ZIP entrega
+    una cadena escapada dentro de otra y no es portable a ningún sitio."""
+    await _make_user("exp_res_blob")
+    await _crear_recursos("exp_res_blob")
+    buf = await export_user_data("exp_res_blob")
+    agent = json.loads(_zip_read(buf, "agents.json"))[0]
+    assert isinstance(agent["data"], dict)
+    # El nombre vive en su columna, no en el blob: la fila entera es lo que
+    # reconstruye el recurso, y por eso se exporta con todas sus columnas.
+    assert agent["name"] == "Agente exportable"
+    assert agent["data"]["agent_type"] == "generic"
+
+
+async def test_export_blob_ilegible_se_conserva_y_avisa(patch_gdpr_db, monkeypatch):
     import app.services.gdpr as gdpr_mod
+    from app.storage.db import open_db
 
-    private = tmp_path / "private" / "bad-item"
-    private.mkdir(parents=True)
-    (private / "config.json").write_text("no-es-json", encoding="utf-8")
+    await _make_user("exp_res_roto")
+    creados = await _crear_recursos("exp_res_roto")
+    async with open_db() as conn:
+        await conn.execute(
+            "UPDATE agents SET data=? WHERE id=?",
+            ("no-es-json", creados["agent"]["id"]),
+        )
+        await conn.commit()
+
     warnings = []
     monkeypatch.setattr(gdpr_mod.flog, "warning", warnings.append)
 
-    result = _collect_file_owned(tmp_path, "anyuser")
-    assert result == []
-    assert any("Configuración omitida" in message for message in warnings)
+    buf = await export_user_data("exp_res_roto")
+    agent = json.loads(_zip_read(buf, "agents.json"))[0]
+    assert agent["data"] == "no-es-json"
+    assert any("no normalizada" in message for message in warnings)

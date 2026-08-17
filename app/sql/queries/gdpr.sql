@@ -43,6 +43,30 @@ WHERE owner_id = ?;
 DELETE FROM knowledge_items
 WHERE owner_id = ?;
 
+-- name: delete_knowledge_packs
+DELETE FROM knowledge_packs
+WHERE owner_id = ?;
+
+-- name: delete_prompts
+DELETE FROM prompts
+WHERE owner_id = ?;
+
+-- name: delete_tools
+DELETE FROM tools
+WHERE owner_id = ?;
+
+-- name: delete_memory_files
+DELETE FROM memory_files
+WHERE owner_id = ?;
+
+-- name: delete_resource_versions
+DELETE FROM resource_versions
+WHERE owner_id = ? OR created_by = ?;
+
+-- name: delete_resource_source_links
+DELETE FROM resource_source_links
+WHERE resource_owner_id = ?;
+
 -- name: delete_connections
 DELETE FROM connections
 WHERE owner_id = ?;
