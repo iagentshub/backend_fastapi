@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, Optional
 
+from app.sql import sql
 from app.storage.db import open_db
 from app.utils.generators import generate_date
 
@@ -15,8 +16,7 @@ class LLMOrchestrationBindingStorage:
     ) -> Optional[Dict[str, Any]]:
         async with open_db() as conn:
             row = await conn.fetchone(
-                "SELECT * FROM llm_orchestration_bindings "
-                "WHERE orchestration_id=? AND user_id=?",
+                sql("queries/llm_orchestration_bindings:get_binding"),
                 (orchestration_id, user_id),
             )
         if not row:
@@ -33,11 +33,7 @@ class LLMOrchestrationBindingStorage:
         created_at = existing["created_at"] if existing else now
         async with open_db() as conn:
             await conn.execute(
-                "INSERT INTO llm_orchestration_bindings "
-                "(orchestration_id, user_id, definition, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?) "
-                "ON CONFLICT(orchestration_id, user_id) DO UPDATE SET "
-                "definition=excluded.definition, updated_at=excluded.updated_at",
+                sql("queries/llm_orchestration_bindings:upsert_binding"),
                 (
                     orchestration_id,
                     user_id,
@@ -58,7 +54,7 @@ class LLMOrchestrationBindingStorage:
     async def delete_for_orchestration(self, orchestration_id: str) -> None:
         async with open_db() as conn:
             await conn.execute(
-                "DELETE FROM llm_orchestration_bindings WHERE orchestration_id=?",
+                sql("queries/llm_orchestration_bindings:delete_by_orchestration"),
                 (orchestration_id,),
             )
             await conn.commit()

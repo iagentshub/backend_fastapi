@@ -6,6 +6,8 @@ import re
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+from app.sql import sql
+
 # db se importa DOS veces a propósito: ver app/storage/_storage_helpers.py.
 from app.storage import db as _db
 from app.storage.db import DB_ERRORS, AsyncConn, open_db
@@ -33,7 +35,7 @@ class MemoryStorage(LegacyMigrationStorage):
 
         async with open_db() as conn:
             try:
-                count = await conn.fetchval("SELECT COUNT(*) FROM memory_files")
+                count = await conn.fetchval(sql("queries/memory_files:count_all"))
                 if count:
                     return
             except DB_ERRORS as exc:
@@ -47,8 +49,11 @@ class MemoryStorage(LegacyMigrationStorage):
                     content = p.read_text(encoding="utf-8")
                     mem_id = p.stem
                     await conn.execute(
-                        "INSERT OR IGNORE INTO memory_files (id, owner_id, content, updated_at) "
-                        "VALUES (?, ?, ?, ?)",
+                        sql(
+                            "queries/memory_files:insert_ignore_pg"
+                            if _db.IS_PG
+                            else "queries/memory_files:insert_ignore_sqlite"
+                        ),
                         (mem_id, "admin", content, now),
                     )
                 except Exception as exc:  # noqa: BLE001
@@ -64,8 +69,7 @@ class MemoryStorage(LegacyMigrationStorage):
 
         async with open_db() as conn:
             rows = await conn.fetchall(
-                "SELECT id, content, updated_at FROM memory_files "
-                "WHERE owner_id=? ORDER BY updated_at DESC",
+                sql("queries/memory_files:list_by_owner"),
                 (owner_id,),
             )
         return [
@@ -84,7 +88,7 @@ class MemoryStorage(LegacyMigrationStorage):
 
         async with open_db() as conn:
             row = await conn.fetchone(
-                "SELECT content FROM memory_files WHERE id=? AND owner_id=?",
+                sql("queries/memory_files:content_of"),
                 (mem_id, owner_id),
             )
         return row["content"] if row else None
@@ -104,13 +108,12 @@ class MemoryStorage(LegacyMigrationStorage):
         async def write(target: AsyncConn) -> None:
             if _db.IS_PG:
                 await target.execute(
-                    "INSERT INTO memory_files (id, owner_id, content, updated_at) VALUES (?, ?, ?, ?) "
-                    "ON CONFLICT (id, owner_id) DO UPDATE SET content=EXCLUDED.content, updated_at=EXCLUDED.updated_at",
+                    sql("queries/memory_files:upsert_pg"),
                     (mem_id, owner_id, content, now),
                 )
             else:
                 await target.execute(
-                    "INSERT OR REPLACE INTO memory_files (id, owner_id, content, updated_at) VALUES (?, ?, ?, ?)",
+                    sql("queries/memory_files:upsert_sqlite"),
                     (mem_id, owner_id, content, now),
                 )
 
@@ -133,13 +136,13 @@ class MemoryStorage(LegacyMigrationStorage):
 
         async with open_db() as conn:
             row = await conn.fetchone(
-                "SELECT id FROM memory_files WHERE id=? AND owner_id=?",
+                sql("queries/memory_files:exists"),
                 (mem_id, owner_id),
             )
             if not row:
                 return False
             await conn.execute(
-                "DELETE FROM memory_files WHERE id=? AND owner_id=?", (mem_id, owner_id)
+                sql("queries/memory_files:delete"), (mem_id, owner_id)
             )
             await conn.commit()
         return True

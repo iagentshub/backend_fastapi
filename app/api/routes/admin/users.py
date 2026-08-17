@@ -23,6 +23,7 @@ from app.auth.cookies import set_session_cookies
 from app.errors import APIError
 from app.models.request_bodies import AdminUserCreateBody, AdminUserPatchBody
 from app.services.email import send_account_status_email
+from app.sql import sql
 from app.storage.db import open_db
 from app.utils import flog
 from app.utils.generators import generate_id
@@ -40,8 +41,7 @@ async def admin_list_users(
     users = await list_users()
     async with open_db() as conn:
         token_rows = await conn.fetchall(
-            "SELECT owner_id, COALESCE(SUM(tokens_in), 0), COALESCE(SUM(tokens_out), 0) "
-            "FROM connections GROUP BY owner_id"
+            sql("queries/admin_users:tokens_per_owner")
         )
     token_map = {r[0]: {"tokens_in": r[1], "tokens_out": r[2]} for r in token_rows}
     for u in users:
@@ -167,7 +167,7 @@ async def admin_create_user(
     password_hash = await hash_password_async(password)
     try:
         async with open_db() as conn, conn.transaction():
-            if await conn.fetchone("SELECT 1 FROM users WHERE email = ?", (email,)):
+            if await conn.fetchone(sql("queries/admin_users:email_exists"), (email,)):
                 raise APIError(
                     409,
                     "already_exists",
@@ -175,7 +175,7 @@ async def admin_create_user(
                     extra={"resource": "email"},
                 )
             if await conn.fetchone(
-                "SELECT 1 FROM users WHERE username = ?", (username,)
+                sql("queries/admin_users:username_exists"), (username,)
             ):
                 raise APIError(
                     409,
@@ -184,10 +184,7 @@ async def admin_create_user(
                     extra={"resource": "user"},
                 )
             await conn.execute(
-                "INSERT INTO users "
-                "(id, username, email, password_hash, display_name, role, "
-                "is_active, is_verified, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                sql("queries/admin_users:insert_user"),
                 (
                     generate_id(32),
                     username,

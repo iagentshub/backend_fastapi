@@ -6,6 +6,7 @@ import json
 import zipfile
 
 from app.config.data import AGENTS_DIR, SKILLS_DIR
+from app.sql import sql
 from app.storage.db import open_db
 from app.utils import flog
 
@@ -17,15 +18,14 @@ async def export_user_data(username: str) -> io.BytesIO:
     with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
         async with open_db() as conn:
             identity = await conn.fetchone(
-                "SELECT id FROM users WHERE id = ? OR username = ?",
+                sql("queries/gdpr_export:user_exists"),
                 (username, username),
             )
             user_id = identity["id"] if identity else username
 
             # 1. Perfil (sin password_hash)
             row = await conn.fetchone(
-                "SELECT username, email, display_name, birth_date, gender, country, "
-                "phone, role, created_at, preferences FROM users WHERE id = ?",
+                sql("queries/gdpr_export:profile"),
                 (user_id,),
             )
             if row:
@@ -40,7 +40,7 @@ async def export_user_data(username: str) -> io.BytesIO:
                 zf.writestr("profile.json", json.dumps(profile, ensure_ascii=False, indent=2))
 
             # 2. Conexiones (con API keys cifradas — son datos del usuario)
-            rows = await conn.fetchall("SELECT * FROM connections WHERE owner_id = ?", (user_id,))
+            rows = await conn.fetchall(sql("queries/gdpr_export:connections"), (user_id,))
             connections = []
             for r in rows:
                 c = dict(r)
@@ -56,18 +56,18 @@ async def export_user_data(username: str) -> io.BytesIO:
             zf.writestr("connections.json", json.dumps(connections, ensure_ascii=False, indent=2))
 
             # 3. Knowledge (documentos y URLs)
-            rows = await conn.fetchall("SELECT * FROM knowledge_items WHERE owner_id = ?", (user_id,))
+            rows = await conn.fetchall(sql("queries/gdpr_export:knowledge_items"), (user_id,))
             zf.writestr("knowledge.json", json.dumps([dict(r) for r in rows], ensure_ascii=False, indent=2))
 
             # 4. Conversaciones + mensajes (un fichero por conversación)
             convs = await conn.fetchall(
-                "SELECT * FROM conversations WHERE user_id = ? ORDER BY updated_at DESC",
+                sql("queries/gdpr_export:conversations"),
                 (user_id,),
             )
             for conv in convs:
                 conv_dict = dict(conv)
                 msgs = await conn.fetchall(
-                    "SELECT * FROM messages WHERE conversation_id = ? ORDER BY created_at ASC",
+                    sql("queries/gdpr_export:messages_of_conversation"),
                     (conv_dict["id"],),
                 )
                 conv_dict["messages"] = [dict(m) for m in msgs]
@@ -79,7 +79,7 @@ async def export_user_data(username: str) -> io.BytesIO:
 
             # 5. Uso de tokens por día
             rows = await conn.fetchall(
-                "SELECT day, tokens FROM token_daily WHERE owner_id = ? ORDER BY day DESC",
+                sql("queries/gdpr_export:token_daily"),
                 (user_id,),
             )
             zf.writestr(
@@ -89,8 +89,7 @@ async def export_user_data(username: str) -> io.BytesIO:
 
             # 6. Groups donde es miembro
             rows = await conn.fetchall(
-                "SELECT w.id, w.name, w.created_at, wm.role, wm.joined_at "
-                "FROM groups w JOIN group_members wm ON w.id = wm.group_id WHERE wm.username = ?",
+                sql("queries/gdpr_export:groups_of_user"),
                 (user_id,),
             )
             zf.writestr(
@@ -99,7 +98,7 @@ async def export_user_data(username: str) -> io.BytesIO:
             )
 
             # 7. Cuentas externas (solo metadatos, sin claves)
-            rows = await conn.fetchall("SELECT provider, linked_at FROM accounts WHERE owner_id = ?", (user_id,))
+            rows = await conn.fetchall(sql("queries/gdpr_export:accounts"), (user_id,))
             zf.writestr(
                 "accounts.json",
                 json.dumps([dict(r) for r in rows], ensure_ascii=False, indent=2),

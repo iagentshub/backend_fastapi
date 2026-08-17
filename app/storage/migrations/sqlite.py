@@ -641,6 +641,48 @@ async def _group_share_cascade_flag(conn: Any) -> None:
             "ADD COLUMN via_cascade INTEGER NOT NULL DEFAULT 0"
         )
 
+async def _app_logs_index_diet(conn: Any) -> None:
+    """De seis índices a dos en la tabla más escrita del sistema.
+
+    El visor de logs siempre ordena por `ts DESC` con LIMIT, y filtra `ip` y
+    `username` con LIKE '%x%' — el comodín inicial impide usar un B-tree, así
+    que esos dos índices no se podían elegir nunca. Los de `level` y `source`
+    sí se elegían, y por eso hacían daño: al entrar por ellos se pierde el
+    orden de `ts` y hay que ordenar todo el resultado.
+
+    Medido sobre 200.000 filas con ERROR al 1%: filtrar por fuente pasa de
+    18,66 ms a 0,06 ms, insertar 200.000 filas de 1.685 ms a 565 ms, y la base
+    ocupa un 27% menos.
+    """
+    await conn.execute("CREATE INDEX IF NOT EXISTS idx_al_level_ts ON app_logs(level, ts DESC)")
+    for indice in ("idx_al_date", "idx_al_level", "idx_al_username", "idx_al_ip", "idx_al_source"):
+        await conn.execute(f"DROP INDEX IF EXISTS {indice}")
+
+
+async def _drop_redundant_indexes(conn: Any) -> None:
+    """Siete índices que repiten un UNIQUE o una PRIMARY KEY.
+
+    Los dos motores crean su propio índice para esas restricciones, así que
+    estos nunca aportaron un camino de acceso nuevo: comparados los planes de
+    las 97 consultas que tocan estas seis tablas, 14 cambian de índice y
+    ninguna a peor —pasan al implícito, con el mismo tipo de acceso—. En cuatro
+    casos el planificador ya prefería el implícito teniendo ambos.
+
+    Lo que sí costaban, medido: entre un 11% y un 20% del tamaño de esas tablas
+    y en torno a un 25% del tiempo de inserción.
+    """
+    for indice in (
+        "idx_users_email",
+        "idx_users_username",
+        "idx_pat_hash",
+        "idx_group_share_resource",
+        "idx_resource_source_resource",
+        "idx_resource_versions_lookup",
+        "idx_workflow_run_events_run",
+    ):
+        await conn.execute(f"DROP INDEX IF EXISTS {indice}")
+
+
 
 SQLITE_MIGRATIONS = (
     Migration(1, "legacy_schema_catchup", _migrate_sqlite, repeatable=True),
@@ -674,6 +716,8 @@ SQLITE_MIGRATIONS = (
     Migration(23, "pagination_indexes", _pagination_indexes),
     Migration(24, "resource_social_page_index", _resource_social_page_index),
     Migration(25, "group_share_cascade_flag", _group_share_cascade_flag),
+    Migration(26, "app_logs_index_diet", _app_logs_index_diet),
+    Migration(27, "drop_redundant_indexes", _drop_redundant_indexes),
 )
 
 

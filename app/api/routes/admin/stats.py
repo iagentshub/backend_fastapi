@@ -13,6 +13,7 @@ from app.api.routes.auth import require_admin
 from app.config.data import AGENTS_DIR as _AGENTS_DIR
 from app.config.startup_checks import report as config_report
 from app.errors import APIError
+from app.sql import sql
 from app.storage.db import IS_PG, open_db
 from app.utils import flog
 
@@ -22,14 +23,7 @@ async def admin_metadata_tables(_: str = Depends(require_admin)) -> list:
     """Metadatos de las tablas: nombre, filas, columnas y tamaño estimado."""
     async with open_db() as conn:
         if IS_PG:
-            rows = await conn.fetchall("""
-                SELECT tablename AS name,
-                       (SELECT COUNT(*) FROM information_schema.columns
-                        WHERE table_name=tablename AND table_schema='public') AS col_count,
-                       COALESCE(n_live_tup, 0) AS rows,
-                       pg_total_relation_size(quote_ident(tablename)) AS size_bytes
-                FROM   pg_stat_user_tables ORDER BY n_live_tup DESC
-            """)
+            rows = await conn.fetchall(sql("queries/admin_stats:pg_table_stats"))
             return [
                 {
                     "name": r["name"],
@@ -41,7 +35,7 @@ async def admin_metadata_tables(_: str = Depends(require_admin)) -> list:
             ]
         else:
             tables = await conn.fetchall(
-                "SELECT name FROM sqlite_master WHERE type='table' ORDER BY name"
+                sql("queries/admin_stats:sqlite_table_names")
             )
             result = []
             for t in tables:
@@ -50,7 +44,7 @@ async def admin_metadata_tables(_: str = Depends(require_admin)) -> list:
                 cols = await conn.fetchall(f'PRAGMA table_info("{name}")')
                 try:
                     sz = await conn.fetchval(
-                        "SELECT SUM(payload) FROM dbstat WHERE name=?", (name,)
+                        sql("queries/admin_stats:sqlite_table_size"), (name,)
                     )
                 except Exception:  # noqa: BLE001 — dbstat puede no estar compilado
                     sz = None
@@ -103,8 +97,7 @@ async def admin_metadata_table_data(
 
         if IS_PG:
             col_rows = await conn.fetchall(
-                "SELECT column_name FROM information_schema.columns "
-                "WHERE table_name=? AND table_schema='public' ORDER BY ordinal_position",
+                sql("queries/admin_stats:pg_column_names"),
                 (table_name,),
             )
             col_names = [r[0] for r in col_rows]
@@ -227,24 +220,23 @@ async def admin_stats(_: str = Depends(require_admin)) -> dict[str, Any]:
 
     async with open_db() as conn:
         u = await conn.fetchone(
-            "SELECT COUNT(*), SUM(CASE WHEN is_active=1 THEN 1 ELSE 0 END), "
-            "SUM(CASE WHEN is_verified=1 THEN 1 ELSE 0 END) FROM users"
+            sql("queries/admin_stats:user_counts")
         )
         users_total, users_active, users_verified = (u[0] or 0, u[1] or 0, u[2] or 0)
 
         c = await conn.fetchone(
-            "SELECT COUNT(*), COALESCE(SUM(tokens_in),0), COALESCE(SUM(tokens_out),0) FROM connections"
+            sql("queries/admin_stats:connection_totals")
         )
         conns_total, tokens_in, tokens_out = (c[0] or 0, c[1] or 0, c[2] or 0)
 
         knowledge_total = (
-            await conn.fetchval("SELECT COUNT(*) FROM knowledge_items")
+            await conn.fetchval(sql("queries/admin_stats:count_knowledge"))
         ) or 0
         conversations_total = (
-            await conn.fetchval("SELECT COUNT(*) FROM conversations")
+            await conn.fetchval(sql("queries/admin_stats:count_conversations"))
         ) or 0
         workflows_total = (
-            await conn.fetchval("SELECT COUNT(*) FROM agent_workflows")
+            await conn.fetchval(sql("queries/admin_stats:count_workflows"))
         ) or 0
 
         _today_utc = _dt.datetime.now(_dt.timezone.utc).date()
@@ -252,7 +244,7 @@ async def admin_stats(_: str = Depends(require_admin)) -> dict[str, Any]:
         today = _today_utc.isoformat()
         try:
             daily_rows = await conn.fetchall(
-                "SELECT day, SUM(tokens) FROM token_daily WHERE day >= ? GROUP BY day ORDER BY day ASC",
+                sql("queries/admin_stats:tokens_per_day"),
                 (cutoff,),
             )
             tokens_daily = [{"day": r[0], "tokens": r[1]} for r in daily_rows]
@@ -260,21 +252,17 @@ async def admin_stats(_: str = Depends(require_admin)) -> dict[str, Any]:
             if not tokens_daily and (tokens_in + tokens_out) > 0:
                 if IS_PG:
                     await conn.execute(
-                        "INSERT INTO token_daily (day, owner_id, tokens) "
-                        "SELECT ?, owner_id, tokens_in + tokens_out FROM connections "
-                        "WHERE tokens_in + tokens_out > 0 ON CONFLICT (day, owner_id) DO NOTHING",
+                        sql("queries/admin_stats:seed_token_daily_pg"),
                         (today,),
                     )
                 else:
                     await conn.execute(
-                        "INSERT OR IGNORE INTO token_daily (day, owner_id, tokens) "
-                        "SELECT ?, owner_id, tokens_in + tokens_out FROM connections "
-                        "WHERE tokens_in + tokens_out > 0",
+                        sql("queries/admin_stats:seed_token_daily_sqlite"),
                         (today,),
                     )
                 await conn.commit()
                 daily_rows = await conn.fetchall(
-                    "SELECT day, SUM(tokens) FROM token_daily WHERE day >= ? GROUP BY day ORDER BY day ASC",
+                    sql("queries/admin_stats:tokens_per_day"),
                     (cutoff,),
                 )
                 tokens_daily = [{"day": r[0], "tokens": r[1]} for r in daily_rows]
@@ -287,7 +275,7 @@ async def admin_stats(_: str = Depends(require_admin)) -> dict[str, Any]:
         # usa tokens_daily arriba.
         today_local = _dt.datetime.now().strftime("%Y-%m-%d")
         log_rows = await conn.fetchall(
-            "SELECT level, summary FROM app_logs WHERE source='BE' AND date = ?",
+            sql("queries/admin_stats:logs_of_day"),
             (today_local,),
         )
 

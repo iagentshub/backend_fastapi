@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Optional
 
+from app.sql import sql
 from app.storage.crypto import (
     UNREADABLE_FIELDS,
     UNREADABLE_FLAG,
@@ -34,7 +35,7 @@ class AccountStorage:
         """One-time import from per-provider JSON files (formato legado:
         una cuenta por proveedor, sin id propio)."""
         async with open_db() as conn:
-            count = await conn.fetchval("SELECT COUNT(*) FROM accounts")
+            count = await conn.fetchval(sql("queries/accounts:count_all"))
             if count:
                 return
             from app.config.data import DATA_DIR
@@ -56,10 +57,7 @@ class AccountStorage:
     ) -> None:
         if IS_PG:
             await conn.execute(
-                "INSERT INTO accounts (id, owner_id, provider, data, linked_at) "
-                "VALUES (?, ?, ?, ?, ?) "
-                "ON CONFLICT (id, owner_id) DO UPDATE SET provider=EXCLUDED.provider, "
-                "data=EXCLUDED.data, linked_at=EXCLUDED.linked_at",
+                sql("queries/accounts:upsert_pg"),
                 (
                     data["id"],
                     owner_id,
@@ -70,8 +68,7 @@ class AccountStorage:
             )
         else:
             await conn.execute(
-                "INSERT OR REPLACE INTO accounts (id, owner_id, provider, data, linked_at) "
-                "VALUES (?, ?, ?, ?, ?)",
+                sql("queries/accounts:upsert_sqlite"),
                 (
                     data["id"],
                     owner_id,
@@ -85,7 +82,7 @@ class AccountStorage:
     async def get(self, account_id: str, owner_id: str = "admin") -> Optional[Dict[str, Any]]:
         async with open_db() as conn:
             row = await conn.fetchone(
-                "SELECT data FROM accounts WHERE owner_id = ? AND id = ?",
+                sql("queries/accounts:data_of"),
                 (owner_id, account_id),
             )
             if not row:
@@ -98,7 +95,7 @@ class AccountStorage:
         """api_key tal como está en la BD, sin descifrar."""
         async with open_db() as conn:
             row = await conn.fetchone(
-                "SELECT data FROM accounts WHERE owner_id = ? AND id = ?",
+                sql("queries/accounts:data_of"),
                 (owner_id, account_id),
             )
         if not row:
@@ -145,13 +142,13 @@ class AccountStorage:
     async def delete(self, account_id: str, owner_id: str = "admin") -> bool:
         async with open_db() as conn:
             exists = await conn.fetchone(
-                "SELECT id FROM accounts WHERE owner_id = ? AND id = ?",
+                sql("queries/accounts:exists"),
                 (owner_id, account_id),
             )
             if not exists:
                 return False
             await conn.execute(
-                "DELETE FROM accounts WHERE owner_id = ? AND id = ?",
+                sql("queries/accounts:delete"),
                 (owner_id, account_id),
             )
             await conn.commit()
@@ -160,7 +157,7 @@ class AccountStorage:
     async def list(self, owner_id: str = "admin") -> List[Dict[str, Any]]:
         async with open_db() as conn:
             rows = await conn.fetchall(
-                "SELECT data FROM accounts WHERE owner_id = ? ORDER BY provider, linked_at",
+                sql("queries/accounts:list_data_by_owner"),
                 (owner_id,),
             )
         result = []

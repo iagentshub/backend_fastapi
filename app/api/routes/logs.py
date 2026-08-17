@@ -14,6 +14,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.api.routes.auth import require_admin
+from app.sql import sql
 from app.storage.db import DB_ERRORS, open_db
 from app.utils import flog
 from app.utils.net import client_ip as _client_ip
@@ -162,19 +163,7 @@ async def export_logs(
 async def logs_summary(_: str = Depends(require_admin)) -> List[Dict]:
     """Resumen por día: total de entradas, errores y warnings por fuente."""
     async with open_db() as conn:
-        rows = await conn.fetchall("""
-            SELECT date,
-                   COUNT(*) as lines,
-                   SUM(CASE WHEN level='WARNING' AND source='BE' THEN 1 ELSE 0 END) as be_warnings,
-                   SUM(CASE WHEN level='ERROR'   AND source='BE' THEN 1 ELSE 0 END) as be_errors,
-                   SUM(CASE WHEN level='WARNING' AND source='FE' THEN 1 ELSE 0 END) as fe_warnings,
-                   SUM(CASE WHEN level='ERROR'   AND source='FE' THEN 1 ELSE 0 END) as fe_errors,
-                   SUM(CASE WHEN level='WARNING' THEN 1 ELSE 0 END) as warnings,
-                   SUM(CASE WHEN level='ERROR'   THEN 1 ELSE 0 END) as errors
-            FROM app_logs
-            GROUP BY date
-            ORDER BY date DESC
-        """)
+        rows = await conn.fetchall(sql("queries/logs:daily_summary"))
     return [dict(r) for r in rows]
 
 
@@ -208,7 +197,7 @@ async def purge_old_logs(retention_days: Optional[int] = None) -> int:
         try:
             async with open_db() as conn:
                 row = await conn.fetchone(
-                    "SELECT preferences FROM users WHERE role = 'admin' LIMIT 1"
+                    sql("queries/logs:admin_preferences")
                 )
             prefs = json.loads(row["preferences"]) if row and row["preferences"] else {}
             retention_days = int(prefs.get("log_retention_days", 30))
@@ -225,12 +214,12 @@ async def purge_old_logs(retention_days: Optional[int] = None) -> int:
     async with open_db() as conn:
         deleted = (
             await conn.fetchval(
-                "SELECT COUNT(*) FROM app_logs WHERE date < ?", (cutoff,)
+                sql("queries/logs:count_before"), (cutoff,)
             )
             or 0
         )
         if deleted:
-            await conn.execute("DELETE FROM app_logs WHERE date < ?", (cutoff,))
+            await conn.execute(sql("queries/logs:delete_before"), (cutoff,))
             await conn.commit()
     if deleted:
         flog.ok(

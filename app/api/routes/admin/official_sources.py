@@ -26,6 +26,7 @@ from app.services.official_source_importer import (
     parse_repository_url,
 )
 from app.services.official_source_sync import OfficialSourceMaterializer
+from app.sql import sql
 from app.storage.db import open_db
 from app.storage.official_source_storage import (
     OFFICIAL_RESOURCE_TABLES,
@@ -448,7 +449,7 @@ async def admin_transfer_official_source_owner(
 ) -> Dict[str, Any]:
     async with open_db() as conn:
         owner = await conn.fetchone(
-            "SELECT id FROM users WHERE id=? AND role='admin' AND is_active=1",
+            sql("queries/admin_official_sources:active_admin_exists"),
             (body.owner_id,),
         )
     if not owner:

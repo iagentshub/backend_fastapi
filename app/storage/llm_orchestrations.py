@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Optional
 
+from app.sql import sql
 from app.storage.db import open_db
 from app.storage.resource_base import ResourceStorage
 from app.utils.generators import generate_date, generate_id
@@ -31,8 +32,7 @@ class LLMOrchestrationStorage(ResourceStorage):
     async def list(self, owner_id: str) -> List[Dict[str, Any]]:
         async with open_db() as conn:
             rows = await conn.fetchall(
-                "SELECT * FROM llm_orchestrations WHERE owner_id=? "
-                "ORDER BY updated_at DESC",
+                sql("queries/llm_orchestrations:list_by_owner"),
                 (owner_id,),
             )
         return [self._decode(row) for row in rows]
@@ -40,14 +40,14 @@ class LLMOrchestrationStorage(ResourceStorage):
     async def list_all(self) -> List[Dict[str, Any]]:
         async with open_db() as conn:
             rows = await conn.fetchall(
-                "SELECT * FROM llm_orchestrations ORDER BY updated_at DESC"
+                sql("queries/llm_orchestrations:list_all")
             )
         return [self._decode(row) for row in rows]
 
     async def get(self, item_id: str, owner_id: str) -> Optional[Dict[str, Any]]:
         async with open_db() as conn:
             row = await conn.fetchone(
-                "SELECT * FROM llm_orchestrations WHERE id=? AND owner_id=?",
+                sql("queries/llm_orchestrations:get_owned"),
                 (item_id, owner_id),
             )
         return self._decode(row) if row else None
@@ -55,8 +55,7 @@ class LLMOrchestrationStorage(ResourceStorage):
     async def get_any(self, item_id: str) -> Optional[Dict[str, Any]]:
         async with open_db() as conn:
             row = await conn.fetchone(
-                "SELECT * FROM llm_orchestrations WHERE id=? "
-                "ORDER BY updated_at DESC LIMIT 1",
+                sql("queries/llm_orchestrations:get_any"),
                 (item_id,),
             )
         return self._decode(row) if row else None
@@ -87,12 +86,7 @@ class LLMOrchestrationStorage(ResourceStorage):
         }
         async with open_db() as conn:
             await conn.execute(
-                "INSERT INTO llm_orchestrations "
-                "(id, owner_id, name, description, definition, labels, is_active, "
-                "deactivated_at, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-                "ON CONFLICT(id, owner_id) DO UPDATE SET name=excluded.name, "
-                "description=excluded.description, definition=excluded.definition, "
-                "labels=excluded.labels, updated_at=excluded.updated_at",
+                sql("queries/llm_orchestrations:upsert"),
                 (
                     item_id,
                     owner_id,
@@ -113,17 +107,17 @@ class LLMOrchestrationStorage(ResourceStorage):
     async def delete(self, item_id: str, owner_id: str) -> bool:
         async with open_db() as conn:
             found = await conn.fetchval(
-                "SELECT 1 FROM llm_orchestrations WHERE id=? AND owner_id=?",
+                sql("queries/llm_orchestrations:exists_owned"),
                 (item_id, owner_id),
             )
             if not found:
                 return False
             await conn.execute(
-                "DELETE FROM llm_orchestrations WHERE id=? AND owner_id=?",
+                sql("queries/llm_orchestrations:delete_owned"),
                 (item_id, owner_id),
             )
             await conn.execute(
-                "DELETE FROM llm_orchestration_bindings WHERE orchestration_id=?",
+                sql("queries/llm_orchestrations:delete_bindings"),
                 (item_id,),
             )
             await conn.commit()
@@ -133,18 +127,17 @@ class LLMOrchestrationStorage(ResourceStorage):
     async def delete_any(self, item_id: str) -> bool:
         async with open_db() as conn:
             found = await conn.fetchval(
-                "SELECT 1 FROM llm_orchestrations WHERE id=?", (item_id,)
+                sql("queries/llm_orchestrations:exists_any"), (item_id,)
             )
             if not found:
                 return False
-            await conn.execute("DELETE FROM llm_orchestrations WHERE id=?", (item_id,))
+            await conn.execute(sql("queries/llm_orchestrations:delete_any"), (item_id,))
             await conn.execute(
-                "DELETE FROM llm_orchestration_bindings WHERE orchestration_id=?",
+                sql("queries/llm_orchestrations:delete_bindings"),
                 (item_id,),
             )
             await conn.execute(
-                "DELETE FROM resource_group_shares "
-                "WHERE resource_type='llm_orchestration' AND resource_id=?",
+                sql("queries/llm_orchestrations:delete_shares"),
                 (item_id,),
             )
             await conn.commit()

@@ -5,6 +5,8 @@ import json
 from datetime import date
 from typing import Any, Dict, List, Optional
 
+from app.sql import sql
+
 # db se importa DOS veces a propósito: ver app/storage/_storage_helpers.py.
 from app.storage import db as _db
 from app.storage.crypto import (
@@ -48,7 +50,7 @@ class ConnectionStorage(ResourceStorage):
 
         async with open_db() as conn:
             try:
-                count = await conn.fetchval("SELECT COUNT(*) FROM connections")
+                count = await conn.fetchval(sql("queries/connections:count_all"))
                 if count:
                     return
             except DB_ERRORS as exc:
@@ -87,14 +89,7 @@ class ConnectionStorage(ResourceStorage):
         data_json = _compact_resource_data(payload)
         if _db.IS_PG:
             await conn.execute(
-                "INSERT INTO connections (id, owner_id, provider_account_id, name, data, tokens_in, tokens_out, "
-                "is_active, deactivated_at, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-                "ON CONFLICT (id) DO UPDATE SET owner_id=EXCLUDED.owner_id, provider_account_id=EXCLUDED.provider_account_id, "
-                "name=EXCLUDED.name, data=EXCLUDED.data, "
-                "tokens_in=EXCLUDED.tokens_in, tokens_out=EXCLUDED.tokens_out, "
-                "is_active=EXCLUDED.is_active, deactivated_at=EXCLUDED.deactivated_at, "
-                "updated_at=EXCLUDED.updated_at",
+                sql("queries/connections:upsert_pg"),
                 (
                     conn_id,
                     owner_id,
@@ -111,10 +106,7 @@ class ConnectionStorage(ResourceStorage):
             )
         else:
             await conn.execute(
-                "INSERT OR REPLACE INTO connections "
-                "(id, owner_id, provider_account_id, name, data, tokens_in, tokens_out, "
-                "is_active, deactivated_at, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                sql("queries/connections:upsert_sqlite"),
                 (
                     conn_id,
                     owner_id,
@@ -163,14 +155,11 @@ class ConnectionStorage(ResourceStorage):
         async with open_db() as conn:
             if owner_id is None:
                 rows = await conn.fetchall(
-                    "SELECT id, owner_id, provider_account_id, name, data, tokens_in, tokens_out, is_active, "
-                    "deactivated_at, created_at, updated_at FROM connections ORDER BY created_at ASC"
+                    sql("queries/connections:list_all")
                 )
             else:
                 rows = await conn.fetchall(
-                    "SELECT id, owner_id, provider_account_id, name, data, tokens_in, tokens_out, is_active, "
-                    "deactivated_at, created_at, updated_at FROM connections "
-                    "WHERE owner_id = ? ORDER BY created_at ASC",
+                    sql("queries/connections:list_by_owner"),
                     (owner_id,),
                 )
         return [self._row_to_dict(r) for r in rows]
@@ -182,15 +171,12 @@ class ConnectionStorage(ResourceStorage):
         async with open_db() as conn:
             if owner_id is None:
                 row = await conn.fetchone(
-                    "SELECT id, owner_id, provider_account_id, name, data, tokens_in, tokens_out, is_active, "
-                    "deactivated_at, created_at, updated_at FROM connections WHERE id = ?",
+                    sql("queries/connections:get_by_id"),
                     (conn_id,),
                 )
             else:
                 row = await conn.fetchone(
-                    "SELECT id, owner_id, provider_account_id, name, data, tokens_in, tokens_out, is_active, "
-                    "deactivated_at, created_at, updated_at FROM connections "
-                    "WHERE id = ? AND owner_id = ?",
+                    sql("queries/connections:get_owned"),
                     (conn_id, owner_id),
                 )
         return self._row_to_dict(row) if row else None
@@ -203,7 +189,7 @@ class ConnectionStorage(ResourceStorage):
         """
         async with open_db() as conn:
             row = await conn.fetchone(
-                "SELECT owner_id FROM connections WHERE id = ?", (conn_id,)
+                sql("queries/connections:owner_of"), (conn_id,)
             )
         return row[0] if row else None
 
@@ -211,7 +197,7 @@ class ConnectionStorage(ResourceStorage):
         """Campos cifrados tal como están en la BD, sin descifrar."""
         async with open_db() as conn:
             row = await conn.fetchone(
-                "SELECT data FROM connections WHERE id = ? AND owner_id = ?",
+                sql("queries/connections:data_of_owned"),
                 (conn_id, owner_id),
             )
         if not row:
@@ -287,20 +273,20 @@ class ConnectionStorage(ResourceStorage):
         async with open_db() as conn:
             if owner_id is None:
                 existing = await conn.fetchone(
-                    "SELECT id FROM connections WHERE id = ?", (conn_id,)
+                    sql("queries/connections:exists_any"), (conn_id,)
                 )
             else:
                 existing = await conn.fetchone(
-                    "SELECT id FROM connections WHERE id = ? AND owner_id = ?",
+                    sql("queries/connections:exists_owned"),
                     (conn_id, owner_id),
                 )
             if not existing:
                 return False
             if owner_id is None:
-                await conn.execute("DELETE FROM connections WHERE id = ?", (conn_id,))
+                await conn.execute(sql("queries/connections:delete_any"), (conn_id,))
             else:
                 await conn.execute(
-                    "DELETE FROM connections WHERE id = ? AND owner_id = ?",
+                    sql("queries/connections:delete_owned"),
                     (conn_id, owner_id),
                 )
             await conn.commit()
@@ -314,26 +300,24 @@ class ConnectionStorage(ResourceStorage):
         async with open_db() as conn:
             async with conn.transaction():
                 await conn.execute(
-                    "UPDATE connections SET tokens_in = tokens_in + ?, tokens_out = tokens_out + ? WHERE id = ?",
+                    sql("queries/connections:add_tokens"),
                     (input_tokens, output_tokens, conn_id),
                 )
                 total = input_tokens + output_tokens
                 if total > 0:
                     row = await conn.fetchone(
-                        "SELECT owner_id FROM connections WHERE id = ?", (conn_id,)
+                        sql("queries/connections:owner_of"), (conn_id,)
                     )
                     if row:
                         today = date.today().isoformat()
                         owner = row["owner_id"]
                         if _db.IS_PG:
                             await conn.execute(
-                                "INSERT INTO token_daily (day, owner_id, tokens) VALUES (?, ?, ?) "
-                                "ON CONFLICT (day, owner_id) DO UPDATE SET tokens = token_daily.tokens + EXCLUDED.tokens",
+                                sql("queries/connections:token_daily_pg"),
                                 (today, owner, total),
                             )
                         else:
                             await conn.execute(
-                                "INSERT INTO token_daily (day, owner_id, tokens) VALUES (?, ?, ?) "
-                                "ON CONFLICT(day, owner_id) DO UPDATE SET tokens = token_daily.tokens + excluded.tokens",
+                                sql("queries/connections:token_daily_sqlite"),
                                 (today, owner, total),
                             )

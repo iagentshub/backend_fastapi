@@ -50,14 +50,12 @@ def _log_schema() -> str:
     flog sigue creando la tabla él mismo, porque sigue arrancando antes que
     ``init_db``; lo que ya no hace es tener su propia idea de cómo es.
     """
-    from app.storage.schema import SCHEMA_SQLITE
+    from app.storage.schema import tabla_ddl
 
-    trozos = [
-        sentencia.strip() + ";"
-        for sentencia in SCHEMA_SQLITE.split(";")
-        if "app_logs" in sentencia
-    ]
-    return "\n".join(trozos)
+    # Pide la tabla por su nombre. Antes filtraba el esquema entero por la
+    # substring "app_logs", que se habría llevado por delante cualquier otra
+    # tabla o índice que la mencionara.
+    return tabla_ddl("app_logs", "sqlite")
 
 
 class _StdoutFmt(logging.Formatter):

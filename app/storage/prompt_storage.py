@@ -7,6 +7,7 @@ import re
 from typing import Any, Dict, List, Optional
 
 from app.pagination.models import OffsetPage, OffsetParams
+from app.sql import sql
 
 # db se importa DOS veces a propósito: ver app/storage/_storage_helpers.py.
 from app.storage import db as _db
@@ -84,12 +85,7 @@ class PromptStorage(ResourceStorage):
         meta_json = _compact_resource_data(meta)
         if _db.IS_PG:
             await conn.execute(
-                "INSERT INTO prompts (id, owner_id, name, alias, scope, data, content, "
-                "is_active, deactivated_at, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-                "ON CONFLICT (id, owner_id) DO UPDATE SET name=EXCLUDED.name, alias=EXCLUDED.alias, scope=EXCLUDED.scope, data=EXCLUDED.data, "
-                "content=EXCLUDED.content, is_active=EXCLUDED.is_active, "
-                "deactivated_at=EXCLUDED.deactivated_at, updated_at=EXCLUDED.updated_at",
+                sql("queries/prompts:upsert_pg"),
                 (
                     prompt_id,
                     owner_id,
@@ -108,14 +104,7 @@ class PromptStorage(ResourceStorage):
             # Ver skill_storage._upsert: upsert explícito para no perder las
             # columnas que este INSERT no nombra (las de fuente oficial).
             await conn.execute(
-                "INSERT INTO prompts "
-                "(id, owner_id, name, alias, scope, data, content, "
-                "is_active, deactivated_at, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-                "ON CONFLICT (id, owner_id) DO UPDATE SET name=excluded.name, "
-                "alias=excluded.alias, scope=excluded.scope, data=excluded.data, "
-                "content=excluded.content, is_active=excluded.is_active, "
-                "deactivated_at=excluded.deactivated_at, updated_at=excluded.updated_at",
+                sql("queries/prompts:upsert_sqlite"),
                 (
                     prompt_id,
                     owner_id,
@@ -162,29 +151,21 @@ class PromptStorage(ResourceStorage):
         async with open_db() as conn:
             if scope == "public":
                 rows = await conn.fetchall(
-                    "SELECT id, owner_id, name, alias, scope, data, content, is_active, "
-                    "deactivated_at, created_at, updated_at "
-                    "FROM prompts WHERE scope='public' ORDER BY created_at ASC"
+                    sql("queries/prompts:list_public")
                 )
             elif scope == "private":
                 if owner_id:
                     rows = await conn.fetchall(
-                        "SELECT id, owner_id, name, alias, scope, data, content, is_active, "
-                        "deactivated_at, created_at, updated_at "
-                        "FROM prompts WHERE scope='private' AND owner_id=? ORDER BY created_at ASC",
+                        sql("queries/prompts:list_private_by_owner"),
                         (owner_id,),
                     )
                 else:
                     rows = await conn.fetchall(
-                        "SELECT id, owner_id, name, alias, scope, data, content, is_active, "
-                        "deactivated_at, created_at, updated_at "
-                        "FROM prompts WHERE scope='private' ORDER BY created_at ASC"
+                        sql("queries/prompts:list_private")
                     )
             else:  # all
                 rows = await conn.fetchall(
-                    "SELECT id, owner_id, name, alias, scope, data, content, is_active, "
-                    "deactivated_at, created_at, updated_at "
-                    "FROM prompts ORDER BY created_at ASC"
+                    sql("queries/prompts:list_all")
                 )
         return [self._row_to_dict(r, include_content=False) for r in rows]
 
@@ -230,16 +211,12 @@ class PromptStorage(ResourceStorage):
             row = None
             if owner_id:
                 row = await conn.fetchone(
-                    "SELECT id, owner_id, name, alias, scope, data, content, is_active, "
-                    "deactivated_at, created_at, updated_at FROM prompts "
-                    "WHERE alias=? AND owner_id=? AND is_active=1 LIMIT 1",
+                    sql("queries/prompts:get_by_alias_owned"),
                     (alias, owner_id),
                 )
             if row is None:
                 row = await conn.fetchone(
-                    "SELECT id, owner_id, name, alias, scope, data, content, is_active, "
-                    "deactivated_at, created_at, updated_at FROM prompts "
-                    "WHERE alias=? AND scope='public' AND is_active=1 LIMIT 1",
+                    sql("queries/prompts:get_by_alias_public"),
                     (alias,),
                 )
         return self._row_to_dict(row) if row else None
@@ -308,7 +285,7 @@ class PromptStorage(ResourceStorage):
         if conn is not None:
             if not assume_new:
                 dup = await conn.fetchone(
-                    "SELECT 1 FROM prompts WHERE owner_id=? AND alias=? AND id != ?",
+                    sql("queries/prompts:alias_taken"),
                     (actual_owner, alias, prompt_id),
                 )
                 if dup:
@@ -321,7 +298,7 @@ class PromptStorage(ResourceStorage):
             async with open_db() as own_conn:
                 async with own_conn.transaction():
                     dup = await own_conn.fetchone(
-                        "SELECT 1 FROM prompts WHERE owner_id=? AND alias=? AND id != ?",
+                        sql("queries/prompts:alias_taken"),
                         (actual_owner, alias, prompt_id),
                     )
                     if dup:
@@ -344,24 +321,24 @@ class PromptStorage(ResourceStorage):
         async with open_db() as conn:
             if owner_id is not None:
                 row = await conn.fetchone(
-                    "SELECT id FROM prompts WHERE id=? AND scope=? AND owner_id=? LIMIT 1",
+                    sql("queries/prompts:exists_scoped_owned"),
                     (prompt_id, scope, owner_id),
                 )
                 if not row:
                     return False
                 await conn.execute(
-                    "DELETE FROM prompts WHERE id=? AND scope=? AND owner_id=?",
+                    sql("queries/prompts:delete_scoped_owned"),
                     (prompt_id, scope, owner_id),
                 )
             else:
                 row = await conn.fetchone(
-                    "SELECT id FROM prompts WHERE id=? AND scope=? LIMIT 1",
+                    sql("queries/prompts:exists_scoped"),
                     (prompt_id, scope),
                 )
                 if not row:
                     return False
                 await conn.execute(
-                    "DELETE FROM prompts WHERE id=? AND scope=?", (prompt_id, scope)
+                    sql("queries/prompts:delete_scoped"), (prompt_id, scope)
                 )
             await conn.commit()
         await self.clear_labels(prompt_id)
@@ -383,7 +360,7 @@ class PromptStorage(ResourceStorage):
         async with open_db() as conn:
             while True:
                 row = await conn.fetchone(
-                    "SELECT 1 FROM prompts WHERE owner_id=? AND alias=? AND id != ?",
+                    sql("queries/prompts:alias_taken"),
                     (owner_id, candidate, exclude_id),
                 )
                 if not row:

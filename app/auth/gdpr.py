@@ -12,6 +12,7 @@ from app.auth.passwords import _hash_token
 from app.auth.user_lookup import get_user_by_identity
 from app.config.data import AGENTS_DIR, SKILLS_DIR
 from app.services.email import send_deletion_scheduled_email
+from app.sql import sql
 from app.storage.db import open_db
 from app.utils import flog
 from app.utils.generators import generate_date
@@ -24,7 +25,7 @@ async def get_owned_groups(username: str) -> list:
     user_id = user["id"] if user else username
     async with open_db() as conn:
         rows = await conn.fetchall(
-            "SELECT id, name FROM groups WHERE created_by = ?",
+            sql("queries/gdpr:groups_created_by"),
             (user_id,),
         )
         return [dict(r) for r in rows]
@@ -40,7 +41,7 @@ async def schedule_user_deletion(username: str, lang: str = "es") -> str:
     deletion_at = (datetime.now(timezone.utc) + timedelta(days=30)).isoformat()
     async with open_db() as conn:
         await conn.execute(
-            "UPDATE users SET deletion_requested_at = ?, deletion_token = ? WHERE id = ? OR username = ?",
+            sql("queries/gdpr:request_deletion"),
             (deletion_at, _hash_token(token), username, normalize_username(username)),
         )
         await conn.commit()
@@ -55,11 +56,11 @@ async def cancel_user_deletion(token: str) -> bool:
     """Cancel a scheduled deletion via token. Returns True if found and cancelled."""
     async with open_db() as conn:
         if not await conn.fetchone(
-            "SELECT 1 FROM users WHERE deletion_token = ?", (_hash_token(token),)
+            sql("queries/gdpr:deletion_token_exists"), (_hash_token(token),)
         ):
             return False
         await conn.execute(
-            "UPDATE users SET deletion_requested_at = NULL, deletion_token = NULL WHERE deletion_token = ?",
+            sql("queries/gdpr:cancel_deletion"),
             (_hash_token(token),),
         )
         await conn.commit()
@@ -99,56 +100,54 @@ async def purge_user_data(username: str) -> None:
         async with open_db() as conn:
             async with conn.transaction():
                 await conn.execute(
-                    "DELETE FROM messages WHERE conversation_id IN (SELECT id FROM conversations WHERE user_id = ?)",
+                    sql("queries/gdpr:delete_messages"),
                     (user_id,),
                 )
                 await conn.execute(
-                    "DELETE FROM conversations WHERE user_id = ?", (user_id,)
+                    sql("queries/gdpr:delete_conversations"), (user_id,)
                 )
-                await conn.execute("DELETE FROM agents WHERE owner_id = ?", (user_id,))
-                await conn.execute("DELETE FROM skills WHERE owner_id = ?", (user_id,))
+                await conn.execute(sql("queries/gdpr:delete_agents"), (user_id,))
+                await conn.execute(sql("queries/gdpr:delete_skills"), (user_id,))
                 await conn.execute(
-                    "DELETE FROM knowledge_items WHERE owner_id = ?", (user_id,)
-                )
-                await conn.execute(
-                    "DELETE FROM connections WHERE owner_id = ?", (user_id,)
+                    sql("queries/gdpr:delete_knowledge_items"), (user_id,)
                 )
                 await conn.execute(
-                    "DELETE FROM llm_orchestration_bindings "
-                    "WHERE user_id = ? OR orchestration_id IN "
-                    "(SELECT id FROM llm_orchestrations WHERE owner_id = ?)",
+                    sql("queries/gdpr:delete_connections"), (user_id,)
+                )
+                await conn.execute(
+                    sql("queries/gdpr:delete_orchestration_bindings"),
                     (user_id, user_id),
                 )
                 await conn.execute(
-                    "DELETE FROM llm_orchestrations WHERE owner_id = ?", (user_id,)
+                    sql("queries/gdpr:delete_orchestrations"), (user_id,)
                 )
-                await conn.execute("DELETE FROM agent_workflows WHERE owner_id = ?", (user_id,))
-                await conn.execute("DELETE FROM resource_social WHERE owner = ?", (user_id,))
-                await conn.execute("DELETE FROM resource_stars WHERE username = ?", (user_id,))
+                await conn.execute(sql("queries/gdpr:delete_workflows"), (user_id,))
+                await conn.execute(sql("queries/gdpr:delete_social"), (user_id,))
+                await conn.execute(sql("queries/gdpr:delete_stars"), (user_id,))
                 await conn.execute(
-                    "DELETE FROM user_follows WHERE follower = ? OR following = ?",
+                    sql("queries/gdpr:delete_follows"),
                     (user_id, user_id),
                 )
                 await conn.execute(
-                    "DELETE FROM token_daily WHERE owner_id = ?", (user_id,)
+                    sql("queries/gdpr:delete_token_daily"), (user_id,)
                 )
                 await conn.execute(
-                    "DELETE FROM accounts WHERE owner_id = ?", (user_id,)
+                    sql("queries/gdpr:delete_accounts"), (user_id,)
                 )
                 await conn.execute(
-                    "DELETE FROM resource_group_shares WHERE shared_by = ?",
+                    sql("queries/gdpr:delete_group_shares"),
                     (user_id,),
                 )
                 await conn.execute(
-                    "DELETE FROM group_invitations WHERE username = ?", (user_id,)
+                    sql("queries/gdpr:delete_group_invitations"), (user_id,)
                 )
                 await conn.execute(
-                    "DELETE FROM group_members WHERE username = ?", (user_id,)
+                    sql("queries/gdpr:delete_group_members"), (user_id,)
                 )
                 await conn.execute(
-                    "DELETE FROM groups WHERE created_by = ?", (user_id,)
+                    sql("queries/gdpr:delete_groups"), (user_id,)
                 )
-                await conn.execute("DELETE FROM users WHERE id = ?", (user_id,))
+                await conn.execute(sql("queries/gdpr:delete_user"), (user_id,))
         flog.ok(f"[gdpr] BD purgada para {public_username}")
     except Exception as exc:
         flog.error(f"[gdpr] Error purgando BD de {username}: {exc}")
@@ -163,7 +162,7 @@ async def purge_expired_deletions() -> int:
     now = generate_date()
     async with open_db() as conn:
         rows = await conn.fetchall(
-            "SELECT username FROM users WHERE deletion_requested_at IS NOT NULL AND deletion_requested_at <= ?",
+            sql("queries/gdpr:pending_deletions"),
             (now,),
         )
     usernames = [r[0] for r in rows]

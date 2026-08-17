@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional
 
 from app.pagination.cursor import decode_cursor, encode_cursor
 from app.pagination.models import CursorPage, CursorPosition
+from app.sql import sql
 from app.storage.db import open_db
 from app.utils import now_iso as _now
 from app.utils.generators import generate_id
@@ -81,8 +82,7 @@ class ChatStorage:
         now = _now()
         async with open_db() as conn:
             await conn.execute(
-                "INSERT INTO conversations (id, user_id, agent_id, title, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?)",
+                sql("queries/chat:insert_conversation"),
                 (conv_id, user_id, agent_id, title or "", now, now),
             )
             await conn.commit()
@@ -100,8 +100,7 @@ class ChatStorage:
     ) -> Optional[Dict[str, Any]]:
         async with open_db() as conn:
             row = await conn.fetchone(
-                "SELECT id, user_id, agent_id, title, created_at, updated_at "
-                "FROM conversations WHERE id = ? AND user_id = ?",
+                sql("queries/chat:get_conversation"),
                 (conv_id, user_id),
             )
             return dict(row) if row else None
@@ -112,14 +111,12 @@ class ChatStorage:
         async with open_db() as conn:
             if title:
                 await conn.execute(
-                    "UPDATE conversations "
-                    "SET updated_at = ?, title = CASE WHEN title = '' THEN ? ELSE title END "
-                    "WHERE id = ?",
+                    sql("queries/chat:touch_conversation_with_title"),
                     (now, title, conv_id),
                 )
             else:
                 await conn.execute(
-                    "UPDATE conversations SET updated_at = ? WHERE id = ?",
+                    sql("queries/chat:touch_conversation"),
                     (now, conv_id),
                 )
             await conn.commit()
@@ -127,13 +124,13 @@ class ChatStorage:
     async def delete_conversation(self, conv_id: str, user_id: str) -> bool:
         async with open_db() as conn:
             exists = await conn.fetchone(
-                "SELECT id FROM conversations WHERE id = ? AND user_id = ?",
+                sql("queries/chat:conversation_exists"),
                 (conv_id, user_id),
             )
             if not exists:
                 return False
             await conn.execute(
-                "DELETE FROM conversations WHERE id = ? AND user_id = ?",
+                sql("queries/chat:delete_conversation"),
                 (conv_id, user_id),
             )
             await conn.commit()
@@ -153,9 +150,7 @@ class ChatStorage:
         now = _now()
         async with open_db() as conn:
             await conn.execute(
-                "INSERT INTO messages "
-                "(id, conversation_id, role, content, tokens_in, tokens_out, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                sql("queries/chat:insert_message"),
                 (msg_id, conv_id, role, content, tokens_in, tokens_out, now),
             )
             await conn.commit()
@@ -222,12 +217,7 @@ class ChatStorage:
         excluded = exclude_conversation_id or ""
         async with open_db() as conn:
             rows = await conn.fetchall(
-                "SELECT id, role, content, created_at FROM ("
-                "  SELECT m.id, m.role, SUBSTR(m.content, 1, ?) AS content, m.created_at "
-                "  FROM messages m JOIN conversations c ON c.id = m.conversation_id "
-                "  WHERE c.user_id = ? AND c.agent_id = ? AND c.id != ? "
-                "  ORDER BY m.created_at DESC, m.id DESC LIMIT ?"
-                ") recent ORDER BY created_at ASC, id ASC",
+                sql("queries/chat:recent_context"),
                 (chars_per_message, user_id, agent_id, excluded, limit),
             )
             return [dict(row) for row in rows]

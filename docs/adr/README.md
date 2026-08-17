@@ -31,6 +31,7 @@ Donde se movió un bloque, queda en el código una línea `# Ver docs/adr/NNN-�
 | [004](004-explorar-esconde-lo-que-ya-tienes.md) | Explorar enseña lo que no tienes, y el estado vive en el servidor |
 | [005](005-carga-diferida-en-flutter-web.md) | La web no descarga admin, workflows ni el checkout hasta que se entra |
 | [006](006-csrf-en-dos-capas.md) | Anti-CSRF en dos capas: `Origin` verificado y token derivado del JWT |
+| [007](007-sql-en-ficheros.md) | El SQL estático vive en `app/sql/` y se pide por identificador |
 
 ## Plantilla
 

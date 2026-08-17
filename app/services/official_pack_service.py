@@ -14,6 +14,7 @@ from app.models.official_source import (
     PublicOfficialPackComponent,
     PublicOfficialPackDetail,
 )
+from app.sql import sql
 from app.storage import db as _db
 from app.storage.agent_storage import AgentStorage
 from app.storage.db import AsyncConn, open_db
@@ -160,11 +161,7 @@ class OfficialPackService:
         linked: Counter[str] = Counter()
         async with open_db() as conn:
             linked_rows = await conn.fetchall(
-                "SELECT DISTINCT l.source_id,l.component_key FROM resource_source_links l "
-                "JOIN resource_social copied ON copied.resource_type=l.resource_type "
-                "AND copied.linked_to_id=l.resource_id "
-                "AND copied.linked_to_user=l.resource_owner_id "
-                "WHERE copied.owner=?",
+                sql("queries/official_packs:source_links_copied_by_user"),
                 (requester_id,),
             )
         for row in linked_rows:
@@ -345,12 +342,7 @@ class OfficialPackService:
             return None
         async with open_db() as conn:
             linked_rows = await conn.fetchall(
-                "SELECT l.component_key,copied.resource_type,copied.linked_to_id,"
-                "copied.linked_to_user FROM resource_source_links l "
-                "JOIN resource_social copied ON copied.resource_type=l.resource_type "
-                "AND copied.linked_to_id=l.resource_id "
-                "AND copied.linked_to_user=l.resource_owner_id "
-                "WHERE l.source_id=? AND copied.owner=?",
+                sql("queries/official_packs:components_copied_from_source"),
                 (source_id, requester_id),
             )
         linked_keys = {
@@ -499,12 +491,11 @@ class OfficialPackService:
         existing_map: dict[tuple[str, str, str], str] = {}
         async with open_db() as conn:
             existing_rows = await conn.fetchall(
-                "SELECT resource_type,resource_id,linked_to_id,linked_to_user "
-                "FROM resource_social WHERE owner=? AND linked_to_id IS NOT NULL",
+                sql("queries/official_packs:linked_resources_of_user"),
                 (requester_id,),
             )
             prompt_alias_rows = await conn.fetchall(
-                "SELECT alias FROM prompts WHERE owner_id=?", (requester_id,)
+                sql("queries/official_packs:prompt_aliases_of_owner"), (requester_id,)
             )
         for row in existing_rows:
             existing_map[

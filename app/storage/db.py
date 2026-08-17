@@ -206,9 +206,6 @@ async def migrate_schema(sqlite_path: Optional[Path] = None) -> None:
             await _pre_migrate_sqlite(conn)
             await conn.executescript(SCHEMA_SQLITE)
             await run_sqlite_migrations(conn)
-            await conn.execute(
-                "CREATE INDEX IF NOT EXISTS idx_connections_owner ON connections(owner_id)"
-            )
             await conn.commit()
         flog.ok("[db] esquema SQLite migrado")
 

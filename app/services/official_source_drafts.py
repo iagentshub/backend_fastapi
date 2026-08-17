@@ -11,6 +11,7 @@ from app.models.official_source import MATERIALIZABLE_TYPES, PackageComponent
 from app.services.official_source_importer import OfficialSourceImporter
 from app.services.official_source_llm import OfficialSourceLLMAnalyzer
 from app.services.official_source_sync import OfficialSourceMaterializer
+from app.sql import sql
 from app.storage.db import open_db
 from app.storage.official_source_storage import OfficialSourceStorage
 from app.storage.skill_storage import SKILL_LABELS
@@ -307,8 +308,7 @@ class OfficialImportDraftService:
             }
             async with open_db() as conn:
                 agent_rows = await conn.fetchall(
-                    "SELECT id,name,data FROM agents WHERE owner_id=? "
-                    "AND COALESCE(official_source_id,'')<>?",
+                    sql("queries/official_sources:agents_not_from_source"),
                     (draft["source"].get("owner_id"), draft["source_id"]),
                 )
             field_by_type = {

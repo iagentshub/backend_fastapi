@@ -18,6 +18,7 @@ import yaml
 from app.config import data as _cfg
 from app.models.official_source import MATERIALIZABLE_TYPES, PackageComponent
 from app.services.workflow_validator import validate_workflow
+from app.sql import sql
 from app.storage import db as _db
 from app.storage.agent_storage import AgentStorage
 from app.storage.db import AsyncConn, open_db
@@ -227,7 +228,7 @@ class OfficialSourceMaterializer:
                     source_id, keep=set(), conn=conn
                 )
                 await conn.execute(
-                    "DELETE FROM official_sources WHERE id=?", (source_id,)
+                    sql("queries/official_sync:delete_source"), (source_id,)
                 )
                 return removed
 
@@ -275,7 +276,7 @@ class OfficialSourceMaterializer:
         }.get(resource_type)
         if agent_field or resource_type == "memory":
             agent_rows = await conn.fetchall(
-                "SELECT id,owner_id,data FROM agents WHERE owner_id=?", (owner_id,)
+                sql("queries/official_sync:agents_of_owner"), (owner_id,)
             )
             for row in agent_rows:
                 data = json.loads(row["data"])
@@ -293,7 +294,7 @@ class OfficialSourceMaterializer:
                     changed = True
                 if changed:
                     await conn.execute(
-                        "UPDATE agents SET data=? WHERE id=? AND owner_id=?",
+                        sql("queries/official_sync:update_agent_data"),
                         (
                             json.dumps(data, ensure_ascii=False),
                             row["id"],
@@ -315,23 +316,19 @@ class OfficialSourceMaterializer:
                 (resource_id, owner_id),
             )
         await conn.execute(
-            "DELETE FROM resource_labels WHERE resource_type=? AND resource_id=? "
-            "AND owner_id=?",
+            sql("queries/official_sync:delete_labels_of_resource"),
             (resource_type, resource_id, owner_id),
         )
         await conn.execute(
-            "DELETE FROM resource_social WHERE resource_type=? AND resource_id=? "
-            "AND owner=?",
+            sql("queries/official_sync:delete_social_of_resource"),
             (resource_type, resource_id, owner_id),
         )
         await conn.execute(
-            "DELETE FROM resource_group_shares WHERE resource_type=? AND resource_id=? "
-            "AND shared_by=?",
+            sql("queries/official_sync:delete_shares_of_resource"),
             (resource_type, resource_id, owner_id),
         )
         await conn.execute(
-            "DELETE FROM resource_versions "
-            "WHERE resource_type=? AND resource_id=? AND owner_id=?",
+            sql("queries/official_sync:delete_versions_of_resource"),
             (resource_type, resource_id, owner_id),
         )
 

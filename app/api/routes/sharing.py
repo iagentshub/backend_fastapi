@@ -17,6 +17,7 @@ from app.auth.auth import get_user_role
 from app.errors import APIError
 from app.models.request_bodies import GroupShareBody
 from app.models.resource_types import RESOURCE_TYPES
+from app.sql import sql
 from app.storage.agent_storage import AgentStorage
 from app.storage.connection_storage import ConnectionStorage
 from app.storage.db import open_db
@@ -145,8 +146,7 @@ async def list_resource_groups(
             raise APIError(403, "forbidden", "No tienes permisos sobre este recurso")
     async with open_db() as conn:
         rows = await conn.fetchall(
-            "SELECT group_id FROM resource_group_shares "
-            "WHERE resource_type = ? AND resource_id = ?",
+            sql("queries/sharing:groups_of_resource"),
             (resource_type, resource_id),
         )
     return {"group_ids": [row[0] for row in rows]}

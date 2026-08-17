@@ -4,6 +4,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, Optional
 
+from app.sql import sql
 from app.storage.db import IS_PG, open_db
 from app.utils import now_iso as _now
 from app.utils.generators import generate_id
@@ -17,8 +18,7 @@ class BillingStorage:
     async def get_by_username(self, username: str) -> Optional[Dict[str, Any]]:
         async with open_db() as conn:
             row = await conn.fetchone(
-                "SELECT * FROM subscriptions WHERE username = ? "
-                "ORDER BY updated_at DESC LIMIT 1",
+                sql("queries/billing:latest_by_username"),
                 (username,),
             )
             return dict(row) if row else None
@@ -32,7 +32,7 @@ class BillingStorage:
     async def get_active_by_id(self, subscription_id: str) -> Optional[Dict[str, Any]]:
         async with open_db() as conn:
             row = await conn.fetchone(
-                "SELECT * FROM subscriptions WHERE id = ?", (subscription_id,)
+                sql("queries/billing:get_by_id"), (subscription_id,)
             )
             if row and row["status"] not in _ACTIVE_STATUSES_EXCLUDED:
                 return dict(row)
@@ -41,7 +41,7 @@ class BillingStorage:
     async def get_by_stripe_subscription_id(self, stripe_subscription_id: str) -> Optional[Dict[str, Any]]:
         async with open_db() as conn:
             row = await conn.fetchone(
-                "SELECT * FROM subscriptions WHERE stripe_subscription_id = ?",
+                sql("queries/billing:get_by_stripe_id"),
                 (stripe_subscription_id,),
             )
             return dict(row) if row else None
@@ -66,10 +66,7 @@ class BillingStorage:
         async with open_db() as conn:
             if existing:
                 await conn.execute(
-                    "UPDATE subscriptions SET username=?, stripe_customer_id=?, tier=?, "
-                    "seats=?, self_hosted=?, interval=?, amount_cents=?, status=?, "
-                    "current_period_end=?, cancel_at_period_end=?, updated_at=? "
-                    "WHERE stripe_subscription_id=?",
+                    sql("queries/billing:update_by_stripe_id"),
                     (
                         username,
                         stripe_customer_id,
@@ -90,10 +87,7 @@ class BillingStorage:
             else:
                 row_id = generate_id(16)
                 await conn.execute(
-                    "INSERT INTO subscriptions (id, username, stripe_customer_id, "
-                    "stripe_subscription_id, tier, seats, self_hosted, interval, "
-                    "amount_cents, status, current_period_end, cancel_at_period_end, "
-                    "created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    sql("queries/billing:insert_subscription"),
                     (
                         row_id,
                         username,
@@ -117,8 +111,7 @@ class BillingStorage:
     async def set_cancel_at_period_end(self, stripe_subscription_id: str, cancel: bool) -> None:
         async with open_db() as conn:
             await conn.execute(
-                "UPDATE subscriptions SET cancel_at_period_end=?, updated_at=? "
-                "WHERE stripe_subscription_id=?",
+                sql("queries/billing:set_cancel_at_period_end"),
                 (1 if cancel else 0, _now(), stripe_subscription_id),
             )
             await conn.commit()
@@ -138,8 +131,7 @@ class BillingStorage:
         async with open_db() as conn:
             return int(
                 await conn.fetchval(
-                    "SELECT COUNT(*) FROM subscription_license_assignments "
-                    "WHERE subscription_id = ? AND status = 'active'",
+                    sql("queries/billing:count_active_assignments"),
                     (subscription_id,),
                 )
                 or 0
@@ -148,10 +140,7 @@ class BillingStorage:
     async def has_active_license(self, username: str) -> bool:
         async with open_db() as conn:
             row = await conn.fetchone(
-                "SELECT 1 FROM subscription_license_assignments la "
-                "JOIN subscriptions s ON s.id = la.subscription_id "
-                "WHERE la.username = ? AND la.status = 'active' "
-                "AND s.status NOT IN (?, ?) LIMIT 1",
+                sql("queries/billing:has_active_license"),
                 (username, *_ACTIVE_STATUSES_EXCLUDED),
             )
             if row:
@@ -178,16 +167,11 @@ class BillingStorage:
 
         async with open_db() as conn:
             assignment_rows = await conn.fetchall(
-                "SELECT la.username AS user_id, u.username, la.assigned_by, la.assigned_at, la.status, "
-                "u.email, u.role, u.is_active "
-                "FROM subscription_license_assignments la "
-                "LEFT JOIN users u ON u.id = la.username "
-                "WHERE la.subscription_id = ? "
-                "ORDER BY la.status ASC, la.assigned_at ASC",
+                sql("queries/billing:list_assignments"),
                 (subscription_id,),
             )
             user_rows = await conn.fetchall(
-                "SELECT id, username, email, role, is_active FROM users ORDER BY username ASC"
+                sql("queries/billing:list_users")
             )
 
         active = {
@@ -234,13 +218,12 @@ class BillingStorage:
         now = _now()
         async with open_db() as conn:
             if not await conn.fetchone(
-                "SELECT 1 FROM users WHERE id = ?", (target_username,)
+                sql("queries/billing:user_exists"), (target_username,)
             ):
                 raise ValueError("user_not_found")
 
             existing = await conn.fetchone(
-                "SELECT * FROM subscription_license_assignments "
-                "WHERE username = ? AND status = 'active'",
+                sql("queries/billing:active_assignment_for_user"),
                 (target_username,),
             )
             if existing:
@@ -250,8 +233,7 @@ class BillingStorage:
 
             used = int(
                 await conn.fetchval(
-                    "SELECT COUNT(*) FROM subscription_license_assignments "
-                    "WHERE subscription_id = ? AND status = 'active'",
+                    sql("queries/billing:count_active_assignments"),
                     (subscription_id,),
                 )
                 or 0
@@ -261,25 +243,18 @@ class BillingStorage:
 
             if IS_PG:
                 await conn.execute(
-                    "INSERT INTO subscription_license_assignments "
-                    "(subscription_id, username, assigned_by, assigned_at, status) "
-                    "VALUES (?, ?, ?, ?, 'active') "
-                    "ON CONFLICT (subscription_id, username) DO UPDATE SET "
-                    "assigned_by = EXCLUDED.assigned_by, assigned_at = EXCLUDED.assigned_at, status = 'active'",
+                    sql("queries/billing:assign_license_pg"),
                     (subscription_id, target_username, assigned_by, now),
                 )
             else:
                 await conn.execute(
-                    "INSERT OR REPLACE INTO subscription_license_assignments "
-                    "(subscription_id, username, assigned_by, assigned_at, status) "
-                    "VALUES (?, ?, ?, ?, 'active')",
+                    sql("queries/billing:assign_license_sqlite"),
                     (subscription_id, target_username, assigned_by, now),
                 )
             await conn.commit()
 
             row = await conn.fetchone(
-                "SELECT * FROM subscription_license_assignments "
-                "WHERE subscription_id = ? AND username = ?",
+                sql("queries/billing:get_assignment"),
                 (subscription_id, target_username),
             )
             return dict(row)
@@ -289,15 +264,13 @@ class BillingStorage:
     ) -> bool:
         async with open_db() as conn:
             row = await conn.fetchone(
-                "SELECT 1 FROM subscription_license_assignments "
-                "WHERE subscription_id = ? AND username = ? AND status = 'active'",
+                sql("queries/billing:assignment_is_active"),
                 (subscription_id, target_username),
             )
             if not row:
                 return False
             await conn.execute(
-                "UPDATE subscription_license_assignments SET status = 'revoked' "
-                "WHERE subscription_id = ? AND username = ?",
+                sql("queries/billing:revoke_assignment"),
                 (subscription_id, target_username),
             )
             await conn.commit()
@@ -306,7 +279,7 @@ class BillingStorage:
     async def has_processed_event(self, stripe_event_id: str) -> bool:
         async with open_db() as conn:
             row = await conn.fetchone(
-                "SELECT 1 FROM stripe_events WHERE stripe_event_id = ?",
+                sql("queries/billing:stripe_event_seen"),
                 (stripe_event_id,),
             )
             return row is not None
@@ -315,14 +288,12 @@ class BillingStorage:
         async with open_db() as conn:
             if IS_PG:
                 await conn.execute(
-                    "INSERT INTO stripe_events (stripe_event_id, type, processed_at, payload) "
-                    "VALUES (?, ?, ?, ?) ON CONFLICT (stripe_event_id) DO NOTHING",
+                    sql("queries/billing:insert_stripe_event_pg"),
                     (stripe_event_id, event_type, _now(), json.dumps(payload, ensure_ascii=False)),
                 )
             else:
                 await conn.execute(
-                    "INSERT OR IGNORE INTO stripe_events (stripe_event_id, type, processed_at, payload) "
-                    "VALUES (?, ?, ?, ?)",
+                    sql("queries/billing:insert_stripe_event_sqlite"),
                     (stripe_event_id, event_type, _now(), json.dumps(payload, ensure_ascii=False)),
                 )
             await conn.commit()

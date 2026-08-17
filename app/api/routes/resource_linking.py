@@ -24,6 +24,7 @@ from app.api.routes.social import (
 )
 from app.errors import APIError
 from app.services.chat import stream_chat
+from app.sql import sql
 
 # db se importa como MÓDULO a propósito: IS_PG debe leerse en el momento de
 # la llamada. Traerlo por valor congela el dialecto en el arranque y el
@@ -97,11 +98,7 @@ async def link_knowledge(
     async with open_db() as conn:
         if _db.IS_PG:
             await conn.execute(
-                "INSERT INTO resource_social "
-                "(resource_type, resource_id, owner, name, description, is_public, category, "
-                "trial_missing_deps, linked_to_user, linked_to_id) "
-                "VALUES (?, ?, ?, ?, ?, 0, 'Other', 'warn', ?, ?) "
-                "ON CONFLICT DO NOTHING",
+                sql("queries/resource_linking:link_social_pg"),
                 (
                     "knowledge",
                     new_id,
@@ -114,10 +111,7 @@ async def link_knowledge(
             )
         else:
             await conn.execute(
-                "INSERT OR IGNORE INTO resource_social "
-                "(resource_type, resource_id, owner, name, description, is_public, category, "
-                "trial_missing_deps, linked_to_user, linked_to_id) "
-                "VALUES (?, ?, ?, ?, ?, 0, 'Other', 'warn', ?, ?)",
+                sql("queries/resource_linking:link_social_sqlite"),
                 (
                     "knowledge",
                     new_id,
@@ -230,11 +224,7 @@ async def link_agent(
     async with open_db() as conn:
         if _db.IS_PG:
             await conn.execute(
-                "INSERT INTO resource_social "
-                "(resource_type, resource_id, owner, name, description, is_public, category, "
-                "trial_missing_deps, linked_to_user, linked_to_id, tags) "
-                "VALUES (?, ?, ?, ?, ?, 0, 'Other', 'warn', ?, ?, ?) "
-                "ON CONFLICT DO NOTHING",
+                sql("queries/resource_linking:link_social_tags_pg"),
                 (
                     "agent",
                     new_id,
@@ -248,10 +238,7 @@ async def link_agent(
             )
         else:
             await conn.execute(
-                "INSERT OR IGNORE INTO resource_social "
-                "(resource_type, resource_id, owner, name, description, is_public, category, "
-                "trial_missing_deps, linked_to_user, linked_to_id, tags) "
-                "VALUES (?, ?, ?, ?, ?, 0, 'Other', 'warn', ?, ?, ?)",
+                sql("queries/resource_linking:link_social_tags_sqlite"),
                 (
                     "agent",
                     new_id,
@@ -294,11 +281,13 @@ async def _insert_ignore(conn, tabla: str, columnas: str, valores_sql: str, para
     reescriben con monkeypatch y `tests/storage/test_is_pg_en_tiempo_de_llamada.py`
     vigila justo eso.
     """
+    # `sentencia` y no `sql`: ese nombre es el del cargador de app/sql, que este
+    # módulo también usa.
     if _db.IS_PG:
-        sql = f"INSERT INTO {tabla} ({columnas}) VALUES ({valores_sql}) ON CONFLICT DO NOTHING"
+        sentencia = f"INSERT INTO {tabla} ({columnas}) VALUES ({valores_sql}) ON CONFLICT DO NOTHING"
     else:
-        sql = f"INSERT OR IGNORE INTO {tabla} ({columnas}) VALUES ({valores_sql})"
-    await conn.execute(sql, params)
+        sentencia = f"INSERT OR IGNORE INTO {tabla} ({columnas}) VALUES ({valores_sql})"
+    await conn.execute(sentencia, params)
 
 
 async def _link_resource(tipo: str, scope: str, source_id: str, username: str) -> Dict[str, Any]:
@@ -444,11 +433,7 @@ async def _duplicate_workflow(source_id: str, username: str) -> Dict[str, Any]:
     async with open_db() as conn:
         if _db.IS_PG:
             await conn.execute(
-                "INSERT INTO resource_social "
-                "(resource_type, resource_id, owner, name, description, is_public, category, "
-                "trial_missing_deps, linked_to_user, linked_to_id, tags) "
-                "VALUES (?, ?, ?, ?, ?, 0, 'Other', 'warn', ?, ?, ?) "
-                "ON CONFLICT DO NOTHING",
+                sql("queries/resource_linking:link_social_tags_pg"),
                 (
                     "workflow",
                     new_id,
@@ -462,10 +447,7 @@ async def _duplicate_workflow(source_id: str, username: str) -> Dict[str, Any]:
             )
         else:
             await conn.execute(
-                "INSERT OR IGNORE INTO resource_social "
-                "(resource_type, resource_id, owner, name, description, is_public, category, "
-                "trial_missing_deps, linked_to_user, linked_to_id, tags) "
-                "VALUES (?, ?, ?, ?, ?, 0, 'Other', 'warn', ?, ?, ?)",
+                sql("queries/resource_linking:link_social_tags_sqlite"),
                 (
                     "workflow",
                     new_id,
@@ -502,8 +484,7 @@ async def sync_linked_agent(
 
     async with open_db() as conn:
         row = await conn.fetchone(
-            "SELECT linked_to_id, linked_to_user FROM resource_social "
-            "WHERE resource_type=? AND resource_id=?",
+            sql("queries/resource_linking:linked_ref"),
             ("agent", agent_id),
         )
 
@@ -573,8 +554,7 @@ async def sync_linked_skill(
 
     async with open_db() as conn:
         row = await conn.fetchone(
-            "SELECT linked_to_id, linked_to_user FROM resource_social "
-            "WHERE resource_type=? AND resource_id=?",
+            sql("queries/resource_linking:linked_ref"),
             ("skill", skill_id),
         )
 
@@ -623,8 +603,7 @@ async def sync_linked_tool(
 
     async with open_db() as conn:
         row = await conn.fetchone(
-            "SELECT linked_to_id, linked_to_user FROM resource_social "
-            "WHERE resource_type=? AND resource_id=?",
+            sql("queries/resource_linking:linked_ref"),
             ("tool", tool_id),
         )
 
@@ -676,8 +655,7 @@ async def sync_linked_prompt(
 
     async with open_db() as conn:
         row = await conn.fetchone(
-            "SELECT linked_to_id, linked_to_user FROM resource_social "
-            "WHERE resource_type=? AND resource_id=?",
+            sql("queries/resource_linking:linked_ref"),
             ("prompt", prompt_id),
         )
 
@@ -726,8 +704,7 @@ async def try_agent(
     # Step 1: Validate the agent is public in resource_social
     async with open_db() as db:
         row = await db.fetchone(
-            "SELECT trial_missing_deps FROM resource_social "
-            "WHERE resource_type=? AND resource_id=? AND is_public=?",
+            sql("queries/resource_linking:trial_missing_deps"),
             ("agent", agent_id, _PUBLIC_VAL),
         )
     if not row:

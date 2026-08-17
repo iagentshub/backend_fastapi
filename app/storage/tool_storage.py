@@ -10,6 +10,7 @@ import json
 from typing import Any, Dict, List, Optional
 
 from app.pagination.models import OffsetPage, OffsetParams
+from app.sql import sql
 
 # db se importa DOS veces a propósito: ver app/storage/_storage_helpers.py.
 from app.storage import db as _db
@@ -112,16 +113,7 @@ class ToolStorage(ResourceStorage):
         meta_json = _compact_resource_data(meta)
         if _db.IS_PG:
             await conn.execute(
-                "INSERT INTO tools (id, owner_id, name, language, scope, data, content, "
-                "binary_b64, binary_filename, binary_size, binary_uploaded_at, "
-                "is_active, deactivated_at, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-                "ON CONFLICT (id, owner_id) DO UPDATE SET name=EXCLUDED.name, language=EXCLUDED.language, "
-                "scope=EXCLUDED.scope, data=EXCLUDED.data, content=EXCLUDED.content, "
-                "binary_b64=EXCLUDED.binary_b64, binary_filename=EXCLUDED.binary_filename, "
-                "binary_size=EXCLUDED.binary_size, binary_uploaded_at=EXCLUDED.binary_uploaded_at, "
-                "is_active=EXCLUDED.is_active, deactivated_at=EXCLUDED.deactivated_at, "
-                "updated_at=EXCLUDED.updated_at",
+                sql("queries/tools:upsert_pg"),
                 (
                     tool_id,
                     owner_id,
@@ -144,18 +136,7 @@ class ToolStorage(ResourceStorage):
             # Ver skill_storage._upsert: upsert explícito para no perder las
             # columnas que este INSERT no nombra (las de fuente oficial).
             await conn.execute(
-                "INSERT INTO tools "
-                "(id, owner_id, name, language, scope, data, content, "
-                "binary_b64, binary_filename, binary_size, binary_uploaded_at, "
-                "is_active, deactivated_at, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-                "ON CONFLICT (id, owner_id) DO UPDATE SET name=excluded.name, "
-                "language=excluded.language, scope=excluded.scope, data=excluded.data, "
-                "content=excluded.content, binary_b64=excluded.binary_b64, "
-                "binary_filename=excluded.binary_filename, binary_size=excluded.binary_size, "
-                "binary_uploaded_at=excluded.binary_uploaded_at, "
-                "is_active=excluded.is_active, deactivated_at=excluded.deactivated_at, "
-                "updated_at=excluded.updated_at",
+                sql("queries/tools:upsert_sqlite"),
                 (
                     tool_id,
                     owner_id,
@@ -210,33 +191,21 @@ class ToolStorage(ResourceStorage):
         async with open_db() as conn:
             if scope == "public":
                 rows = await conn.fetchall(
-                    "SELECT id, owner_id, name, language, scope, data, content, binary_b64, "
-                    "binary_filename, binary_size, binary_uploaded_at, is_active, "
-                    "deactivated_at, created_at, updated_at "
-                    "FROM tools WHERE scope='public' ORDER BY created_at ASC"
+                    sql("queries/tools:list_public")
                 )
             elif scope == "private":
                 if owner_id:
                     rows = await conn.fetchall(
-                        "SELECT id, owner_id, name, language, scope, data, content, binary_b64, "
-                        "binary_filename, binary_size, binary_uploaded_at, is_active, "
-                        "deactivated_at, created_at, updated_at "
-                        "FROM tools WHERE scope='private' AND owner_id=? ORDER BY created_at ASC",
+                        sql("queries/tools:list_private_by_owner"),
                         (owner_id,),
                     )
                 else:
                     rows = await conn.fetchall(
-                        "SELECT id, owner_id, name, language, scope, data, content, binary_b64, "
-                        "binary_filename, binary_size, binary_uploaded_at, is_active, "
-                        "deactivated_at, created_at, updated_at "
-                        "FROM tools WHERE scope='private' ORDER BY created_at ASC"
+                        sql("queries/tools:list_private")
                     )
             else:  # all
                 rows = await conn.fetchall(
-                    "SELECT id, owner_id, name, language, scope, data, content, binary_b64, "
-                    "binary_filename, binary_size, binary_uploaded_at, is_active, "
-                    "deactivated_at, created_at, updated_at "
-                    "FROM tools ORDER BY created_at ASC"
+                    sql("queries/tools:list_all")
                 )
         return [self._row_to_dict(r, include_content=False) for r in rows]
 
@@ -398,24 +367,24 @@ class ToolStorage(ResourceStorage):
         async with open_db() as conn:
             if owner_id is not None:
                 row = await conn.fetchone(
-                    "SELECT id FROM tools WHERE id=? AND scope=? AND owner_id=? LIMIT 1",
+                    sql("queries/tools:exists_scoped_owned"),
                     (tool_id, scope, owner_id),
                 )
                 if not row:
                     return False
                 await conn.execute(
-                    "DELETE FROM tools WHERE id=? AND scope=? AND owner_id=?",
+                    sql("queries/tools:delete_scoped_owned"),
                     (tool_id, scope, owner_id),
                 )
             else:
                 row = await conn.fetchone(
-                    "SELECT id FROM tools WHERE id=? AND scope=? LIMIT 1",
+                    sql("queries/tools:exists_scoped"),
                     (tool_id, scope),
                 )
                 if not row:
                     return False
                 await conn.execute(
-                    "DELETE FROM tools WHERE id=? AND scope=?", (tool_id, scope)
+                    sql("queries/tools:delete_scoped"), (tool_id, scope)
                 )
             await conn.commit()
         await self.clear_labels(tool_id)
@@ -468,25 +437,23 @@ class ToolStorage(ResourceStorage):
         async with open_db() as conn:
             if owner_id is not None:
                 row = await conn.fetchone(
-                    "SELECT id FROM tools WHERE id=? AND owner_id=? LIMIT 1",
+                    sql("queries/tools:exists_owned"),
                     (tool_id, owner_id),
                 )
                 if not row:
                     return False
                 await conn.execute(
-                    "UPDATE tools SET binary_b64=?, binary_filename=?, binary_size=?, "
-                    "binary_uploaded_at=?, updated_at=? WHERE id=? AND owner_id=?",
+                    sql("queries/tools:set_binary_owned"),
                     (binary_b64, filename, size, now, now, tool_id, owner_id),
                 )
             else:
                 row = await conn.fetchone(
-                    "SELECT id FROM tools WHERE id=? LIMIT 1", (tool_id,)
+                    sql("queries/tools:exists_any"), (tool_id,)
                 )
                 if not row:
                     return False
                 await conn.execute(
-                    "UPDATE tools SET binary_b64=?, binary_filename=?, binary_size=?, "
-                    "binary_uploaded_at=?, updated_at=? WHERE id=?",
+                    sql("queries/tools:set_binary"),
                     (binary_b64, filename, size, now, now, tool_id),
                 )
             await conn.commit()

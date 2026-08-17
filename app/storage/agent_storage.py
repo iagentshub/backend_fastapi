@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional, TypedDict
 from app.models.agent import Agent
 from app.pagination.models import OffsetPage, OffsetParams
 from app.services.resource_visibility import VisibilityFilter
+from app.sql import sql
 
 # db se importa DOS veces a propósito: ver app/storage/_storage_helpers.py.
 from app.storage import db as _db
@@ -104,7 +105,7 @@ class AgentStorage(ResourceStorage):
 
         async with open_db() as conn:
             try:
-                count = await conn.fetchval("SELECT COUNT(*) FROM agents")
+                count = await conn.fetchval(sql("queries/agents:count_all"))
                 if count:
                     return
             except DB_ERRORS as exc:
@@ -155,55 +156,24 @@ class AgentStorage(ResourceStorage):
         updated_at = str(data.get("updated_at") or now)
         is_active = 1 if data.get("is_active", True) else 0
         deactivated_at = data.get("deactivated_at")
-        if _db.IS_PG:
-            await conn.execute(
-                "INSERT INTO agents (id, owner_id, name, scope, data, tokens_in, tokens_out, "
-                "is_active, deactivated_at, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-                "ON CONFLICT (id, owner_id) DO UPDATE SET name=EXCLUDED.name, scope=EXCLUDED.scope, data=EXCLUDED.data, "
-                "tokens_in=EXCLUDED.tokens_in, tokens_out=EXCLUDED.tokens_out, "
-                "is_active=EXCLUDED.is_active, deactivated_at=EXCLUDED.deactivated_at, "
-                "updated_at=EXCLUDED.updated_at",
-                (
-                    agent_id,
-                    owner_id,
-                    name,
-                    scope,
-                    data_json,
-                    tokens_in,
-                    tokens_out,
-                    is_active,
-                    deactivated_at,
-                    created_at,
-                    updated_at,
-                ),
-            )
-        else:
-            # Ver skill_storage._upsert: upsert explícito para no perder las
-            # columnas que este INSERT no nombra (las de fuente oficial).
-            await conn.execute(
-                "INSERT INTO agents "
-                "(id, owner_id, name, scope, data, tokens_in, tokens_out, "
-                "is_active, deactivated_at, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-                "ON CONFLICT (id, owner_id) DO UPDATE SET name=excluded.name, "
-                "scope=excluded.scope, data=excluded.data, tokens_in=excluded.tokens_in, "
-                "tokens_out=excluded.tokens_out, is_active=excluded.is_active, "
-                "deactivated_at=excluded.deactivated_at, updated_at=excluded.updated_at",
-                (
-                    agent_id,
-                    owner_id,
-                    name,
-                    scope,
-                    data_json,
-                    tokens_in,
-                    tokens_out,
-                    is_active,
-                    deactivated_at,
-                    created_at,
-                    updated_at,
-                ),
-            )
+        # Ver skill_storage._upsert: upsert explícito para no perder las
+        # columnas que este INSERT no nombra (las de fuente oficial).
+        await conn.execute(
+            sql("queries/agents:upsert_pg" if _db.IS_PG else "queries/agents:upsert_sqlite"),
+            (
+                agent_id,
+                owner_id,
+                name,
+                scope,
+                data_json,
+                tokens_in,
+                tokens_out,
+                is_active,
+                deactivated_at,
+                created_at,
+                updated_at,
+            ),
+        )
 
     def _row_to_dict(self, row: Any) -> Dict[str, Any]:
         d: Dict[str, Any] = json.loads(row["data"])
@@ -234,31 +204,16 @@ class AgentStorage(ResourceStorage):
 
         async with open_db() as conn:
             if scope == "public":
-                rows = await conn.fetchall(
-                    "SELECT id, owner_id, name, scope, data, tokens_in, tokens_out, "
-                    "is_active, deactivated_at, created_at, updated_at "
-                    "FROM agents WHERE scope='public' ORDER BY created_at ASC"
-                )
+                rows = await conn.fetchall(sql("queries/agents:list_public"))
             elif scope == "private":
                 if owner_id:
                     rows = await conn.fetchall(
-                        "SELECT id, owner_id, name, scope, data, tokens_in, tokens_out, "
-                        "is_active, deactivated_at, created_at, updated_at "
-                        "FROM agents WHERE scope='private' AND owner_id=? ORDER BY created_at ASC",
-                        (owner_id,),
+                        sql("queries/agents:list_private_by_owner"), (owner_id,)
                     )
                 else:
-                    rows = await conn.fetchall(
-                        "SELECT id, owner_id, name, scope, data, tokens_in, tokens_out, "
-                        "is_active, deactivated_at, created_at, updated_at "
-                        "FROM agents WHERE scope='private' ORDER BY created_at ASC"
-                    )
+                    rows = await conn.fetchall(sql("queries/agents:list_private"))
             else:  # all
-                rows = await conn.fetchall(
-                    "SELECT id, owner_id, name, scope, data, tokens_in, tokens_out, "
-                    "is_active, deactivated_at, created_at, updated_at "
-                    "FROM agents ORDER BY created_at ASC"
-                )
+                rows = await conn.fetchall(sql("queries/agents:list_all"))
         return [self._row_to_dict(r) for r in rows]
 
     async def get(
@@ -268,27 +223,12 @@ class AgentStorage(ResourceStorage):
 
         async with open_db() as conn:
             if scope == "public":
-                row = await conn.fetchone(
-                    "SELECT id, owner_id, name, scope, data, tokens_in, tokens_out, "
-                    "is_active, deactivated_at, created_at, updated_at "
-                    "FROM agents WHERE id=? AND scope='public' LIMIT 1",
-                    (agent_id,),
-                )
+                row = await conn.fetchone(sql("queries/agents:get_public"), (agent_id,))
             elif scope == "private":
-                row = await conn.fetchone(
-                    "SELECT id, owner_id, name, scope, data, tokens_in, tokens_out, "
-                    "is_active, deactivated_at, created_at, updated_at "
-                    "FROM agents WHERE id=? AND scope='private' LIMIT 1",
-                    (agent_id,),
-                )
+                row = await conn.fetchone(sql("queries/agents:get_private"), (agent_id,))
             else:
                 # prefer private, fall back to public
-                row = await conn.fetchone(
-                    "SELECT id, owner_id, name, scope, data, tokens_in, tokens_out, "
-                    "is_active, deactivated_at, created_at, updated_at "
-                    "FROM agents WHERE id=? ORDER BY CASE scope WHEN 'private' THEN 0 ELSE 1 END LIMIT 1",
-                    (agent_id,),
-                )
+                row = await conn.fetchone(sql("queries/agents:get_any"), (agent_id,))
         return self._row_to_dict(row) if row else None
 
     async def save(
@@ -351,14 +291,12 @@ class AgentStorage(ResourceStorage):
         async with open_db() as conn:
             if owner_id is not None:
                 await conn.execute(
-                    "UPDATE agents SET tokens_in=tokens_in+?, tokens_out=tokens_out+? "
-                    "WHERE id=? AND scope='private' AND owner_id=?",
+                    sql("queries/agents:add_tokens_by_owner"),
                     (tokens_in, tokens_out, agent_id, owner_id),
                 )
             else:
                 await conn.execute(
-                    "UPDATE agents SET tokens_in=tokens_in+?, tokens_out=tokens_out+? "
-                    "WHERE id=? AND scope='private'",
+                    sql("queries/agents:add_tokens"),
                     (tokens_in, tokens_out, agent_id),
                 )
             await conn.commit()
@@ -377,32 +315,28 @@ class AgentStorage(ResourceStorage):
         async with open_db() as conn:
             if allow_public:
                 row = await conn.fetchone(
-                    "SELECT id FROM agents WHERE id=? LIMIT 1", (agent_id,)
+                    sql("queries/agents:exists_any"), (agent_id,)
                 )
                 if not row:
                     return False
-                await conn.execute("DELETE FROM agents WHERE id=?", (agent_id,))
+                await conn.execute(sql("queries/agents:delete_any"), (agent_id,))
             elif owner_id is not None:
                 row = await conn.fetchone(
-                    "SELECT id FROM agents WHERE id=? AND scope!='public' AND owner_id=? LIMIT 1",
-                    (agent_id, owner_id),
+                    sql("queries/agents:exists_owned"), (agent_id, owner_id)
                 )
                 if not row:
                     return False
                 await conn.execute(
-                    "DELETE FROM agents WHERE id=? AND scope!='public' AND owner_id=?",
-                    (agent_id, owner_id),
+                    sql("queries/agents:delete_owned"), (agent_id, owner_id)
                 )
             else:
                 row = await conn.fetchone(
-                    "SELECT id FROM agents WHERE id=? AND scope!='public' LIMIT 1",
-                    (agent_id,),
+                    sql("queries/agents:exists_not_public"), (agent_id,)
                 )
                 if not row:
                     return False
                 await conn.execute(
-                    "DELETE FROM agents WHERE id=? AND scope!='public'",
-                    (agent_id,),
+                    sql("queries/agents:delete_not_public"), (agent_id,)
                 )
             await conn.commit()
         await self.clear_labels(agent_id)

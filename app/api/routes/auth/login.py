@@ -44,6 +44,7 @@ from app.errors import APIError
 from app.middleware.locale import get_locale
 from app.middleware.ratelimit import RateLimiter
 from app.services.email import send_reset_email, send_verification_email
+from app.sql import sql
 from app.storage.db import open_db
 from app.utils import flog
 from app.utils.net import client_ip as _client_ip
@@ -449,7 +450,7 @@ async def update_profile(
 
     async with open_db() as conn:
         await conn.execute(
-            "UPDATE users SET bio=?, languages=?, is_email_public=?, github=?, cv=? WHERE id=?",
+            sql("queries/login:update_profile"),
             (bio, languages, is_email_public, github, cv, username),
         )
         await conn.commit()
@@ -501,7 +502,7 @@ async def upload_avatar(
         encoded = base64.b64encode(data).decode("ascii")
         async with open_db() as conn:
             await conn.execute(
-                "UPDATE users SET avatar=? WHERE id=?",
+                sql("queries/login:update_avatar"),
                 (encoded, username),
             )
             await conn.commit()

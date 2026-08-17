@@ -30,6 +30,7 @@ from app.models.request_bodies import (
 )
 from app.pagination.materialized import paginate_materialized
 from app.services.connection_access import connection_access
+from app.sql import sql
 from app.storage.agent_storage import AgentStorage
 from app.storage.connection_storage import ConnectionStorage
 from app.storage.db import DB_ERRORS, IS_PG, open_db
@@ -420,30 +421,23 @@ async def get_tokens_daily(
     async with open_db() as conn:
         try:
             rows = await conn.fetchall(
-                "SELECT day, SUM(tokens) FROM token_daily "
-                "WHERE owner_id = ? AND day >= ? GROUP BY day ORDER BY day ASC",
+                sql("queries/connections:tokens_per_day_of_owner"),
                 (group_id, cutoff),
             )
             if not rows:
                 if IS_PG:
                     await conn.execute(
-                        "INSERT INTO token_daily (day, owner_id, tokens) "
-                        "SELECT ?, owner_id, tokens_in + tokens_out FROM connections "
-                        "WHERE owner_id = ? AND tokens_in + tokens_out > 0 "
-                        "ON CONFLICT (day, owner_id) DO NOTHING",
+                        sql("queries/connections:seed_token_daily_pg"),
                         (today, group_id),
                     )
                 else:
                     await conn.execute(
-                        "INSERT OR IGNORE INTO token_daily (day, owner_id, tokens) "
-                        "SELECT ?, owner_id, tokens_in + tokens_out FROM connections "
-                        "WHERE owner_id = ? AND tokens_in + tokens_out > 0",
+                        sql("queries/connections:seed_token_daily_sqlite"),
                         (today, group_id),
                     )
                 await conn.commit()
                 rows = await conn.fetchall(
-                    "SELECT day, SUM(tokens) FROM token_daily "
-                    "WHERE owner_id = ? AND day >= ? GROUP BY day ORDER BY day ASC",
+                    sql("queries/connections:tokens_per_day_of_owner"),
                     (group_id, cutoff),
                 )
         except DB_ERRORS as exc:

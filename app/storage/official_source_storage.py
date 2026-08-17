@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional
 
 from app.config.content_languages import CONTENT_LANGUAGE_LABELS
 from app.models.official_source import INTERNAL_SOURCE_ID, OfficialSource
+from app.sql import sql
 from app.storage.db import AsyncConn, open_db
 from app.utils import now_iso
 from app.utils.generators import generate_id
@@ -47,21 +48,21 @@ class OfficialSourceStorage:
     async def list_sources(self) -> List[Dict[str, Any]]:
         async with open_db() as conn:
             rows = await conn.fetchall(
-                "SELECT * FROM official_sources ORDER BY lower(name)"
+                sql("queries/official_sources:list_all")
             )
         return [OfficialSource(**dict(row)).as_dict() for row in rows]
 
     async def get_source(self, source_id: str) -> Optional[Dict[str, Any]]:
         async with open_db() as conn:
             row = await conn.fetchone(
-                "SELECT * FROM official_sources WHERE id=?", (source_id,)
+                sql("queries/official_sources:get_by_id"), (source_id,)
             )
         return OfficialSource(**dict(row)).as_dict() if row else None
 
     async def find_by_repository(self, repository_url: str) -> Optional[Dict[str, Any]]:
         async with open_db() as conn:
             row = await conn.fetchone(
-                "SELECT * FROM official_sources WHERE repository_url=?",
+                sql("queries/official_sources:get_by_url"),
                 (repository_url,),
             )
         return OfficialSource(**dict(row)).as_dict() if row else None
@@ -74,11 +75,7 @@ class OfficialSourceStorage:
         async with open_db() as conn:
             if existing:
                 await conn.execute(
-                    "UPDATE official_sources SET name=?, description=?, "
-                    "repository_owner=?, repository_name=?, provider=?, repository_path=?, "
-                    "owner_id=COALESCE(owner_id, ?), default_branch=?, tracking_mode=?, "
-                    "tracking_ref=?, import_mode=?, llm_connection_id=?, license=?, "
-                    "updated_at=? WHERE id=?",
+                    sql("queries/official_sources:update_from_repo"),
                     (
                         data["name"],
                         data.get("description", ""),
@@ -99,11 +96,7 @@ class OfficialSourceStorage:
                 )
             else:
                 await conn.execute(
-                    "INSERT INTO official_sources "
-                    "(id,name,description,repository_url,repository_owner,"
-                    "repository_name,provider,repository_path,owner_id,default_branch,"
-                    "tracking_mode,tracking_ref,import_mode,llm_connection_id,license,"
-                    "created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                    sql("queries/official_sources:insert_full"),
                     (
                         source_id,
                         data["name"],
@@ -136,16 +129,13 @@ class OfficialSourceStorage:
             return None
         async with open_db() as conn:
             duplicate = await conn.fetchone(
-                "SELECT id FROM official_sources WHERE repository_url=? AND id<>?",
+                sql("queries/official_sources:url_taken_by_other"),
                 (data["repository_url"], source_id),
             )
             if duplicate:
                 raise ValueError("repository_already_registered")
             await conn.execute(
-                "UPDATE official_sources SET name=?, description=?, repository_url=?, "
-                "repository_owner=?, repository_name=?, provider=?, repository_path=?, "
-                "default_branch=?, tracking_mode=?, tracking_ref=?, license=?, "
-                "updated_at=? WHERE id=?",
+                sql("queries/official_sources:update_fields"),
                 (
                     data["name"],
                     data.get("description", ""),
@@ -177,10 +167,7 @@ class OfficialSourceStorage:
         now = now_iso()
         async with open_db() as conn:
             await conn.execute(
-                "UPDATE official_sources SET latest_checked_at=?, last_sync_error=?, "
-                "last_version=COALESCE(?, last_version), "
-                "last_commit_sha=COALESCE(?, last_commit_sha), sync_state=?, "
-                "updated_at=? WHERE id=?",
+                sql("queries/official_sources:update_sync_result"),
                 (now, error, version, commit_sha, state, now, source_id),
             )
             await conn.commit()
@@ -189,9 +176,7 @@ class OfficialSourceStorage:
         """Bloqueo compare-and-set; también rechaza un borrador obsoleto."""
         async with open_db() as conn:
             row = await conn.fetchone(
-                "UPDATE official_sources SET sync_state='applying',updated_at=? "
-                "WHERE id=? AND sync_state<>'applying' "
-                "AND COALESCE(last_commit_sha,'')=? RETURNING id",
+                sql("queries/official_sources:claim_applying"),
                 (now_iso(), source_id, base_commit_sha),
             )
             await conn.commit()
@@ -201,7 +186,7 @@ class OfficialSourceStorage:
         if not await self.get_source(source_id):
             return False
         async with open_db() as conn:
-            await conn.execute("DELETE FROM official_sources WHERE id=?", (source_id,))
+            await conn.execute(sql("queries/official_sources:delete_source"), (source_id,))
             await conn.commit()
         return True
 
@@ -213,10 +198,7 @@ class OfficialSourceStorage:
         now = now_iso()
         async with open_db() as conn:
             await conn.execute(
-                "INSERT INTO official_sources "
-                "(id,name,description,repository_url,provider,repository_path,"
-                "tracking_mode,tracking_ref,created_at,updated_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                sql("queries/official_sources:insert_minimal"),
                 (
                     INTERNAL_SOURCE_ID,
                     "iAgents Hub",
@@ -312,17 +294,7 @@ class OfficialSourceStorage:
         if source_id:
             now = now_iso()
             await conn.execute(
-                "INSERT INTO resource_source_links "
-                "(source_id,component_key,resource_type,resource_id,resource_owner_id,"
-                "source_path,content_hash,commit_sha,explicitly_selected,"
-                "created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?) "
-                "ON CONFLICT(source_id,component_key) DO UPDATE SET "
-                "resource_type=excluded.resource_type,resource_id=excluded.resource_id,"
-                "resource_owner_id=excluded.resource_owner_id,"
-                "source_path=excluded.source_path,content_hash=excluded.content_hash,"
-                "commit_sha=excluded.commit_sha,"
-                "explicitly_selected=excluded.explicitly_selected,"
-                "updated_at=excluded.updated_at",
+                sql("queries/official_sources:upsert_link"),
                 (
                     source_id,
                     component_id,
@@ -339,8 +311,7 @@ class OfficialSourceStorage:
             )
         else:
             await conn.execute(
-                "DELETE FROM resource_source_links "
-                "WHERE resource_type=? AND resource_id=? AND resource_owner_id=?",
+                sql("queries/official_sources:delete_link_by_resource"),
                 (resource_type, resource_id, owner_id),
             )
 
@@ -350,9 +321,7 @@ class OfficialSourceStorage:
         """Recurso ya materializado para un componente, si sigue existiendo."""
         async with open_db() as conn:
             row = await conn.fetchone(
-                "SELECT resource_type,resource_id,resource_owner_id,source_path,"
-                "content_hash,commit_sha,explicitly_selected FROM resource_source_links "
-                "WHERE source_id=? AND component_key=?",
+                sql("queries/official_sources:get_link"),
                 (source_id, component_id),
             )
         if not row:
@@ -365,10 +334,7 @@ class OfficialSourceStorage:
         """Recursos materializados por una fuente, de todos los tipos."""
         async with open_db() as conn:
             rows = await conn.fetchall(
-                "SELECT component_key,resource_type,resource_id,resource_owner_id,"
-                "source_path,content_hash,commit_sha,explicitly_selected,"
-                "created_at,updated_at "
-                "FROM resource_source_links WHERE source_id=? ORDER BY component_key",
+                sql("queries/official_sources:list_links"),
                 (source_id,),
             )
         return [
@@ -404,7 +370,7 @@ class OfficialSourceStorage:
             return False
         async with open_db() as conn:
             await conn.execute(
-                "UPDATE official_sources SET owner_id=?,updated_at=? WHERE id=?",
+                sql("queries/official_sources:set_owner"),
                 (owner_id, now_iso(), source_id),
             )
             await conn.commit()
@@ -440,27 +406,23 @@ class OfficialSourceStorage:
                         (owner_id, resource_id, old_owner),
                     )
                     await conn.execute(
-                        "UPDATE resource_labels SET owner_id=? "
-                        "WHERE resource_type=? AND resource_id=? AND owner_id=?",
+                        sql("queries/official_sources:relabel_labels_owner"),
                         (owner_id, resource_type, resource_id, old_owner),
                     )
                     await conn.execute(
-                        "UPDATE resource_social SET owner=? "
-                        "WHERE resource_type=? AND resource_id=? AND owner=?",
+                        sql("queries/official_sources:relabel_social_owner"),
                         (owner_id, resource_type, resource_id, old_owner),
                     )
                     await conn.execute(
-                        "UPDATE resource_versions SET owner_id=? "
-                        "WHERE resource_type=? AND resource_id=? AND owner_id=?",
+                        sql("queries/official_sources:relabel_versions_owner"),
                         (owner_id, resource_type, resource_id, old_owner),
                     )
                 await conn.execute(
-                    "UPDATE resource_source_links SET resource_owner_id=? "
-                    "WHERE source_id=?",
+                    sql("queries/official_sources:relabel_links_owner"),
                     (owner_id, source_id),
                 )
                 await conn.execute(
-                    "UPDATE official_sources SET owner_id=?,updated_at=? WHERE id=?",
+                    sql("queries/official_sources:set_owner"),
                     (owner_id, now_iso(), source_id),
                 )
         return True
@@ -481,11 +443,7 @@ class OfficialSourceStorage:
         expires_at = (now_dt + timedelta(hours=24)).isoformat()
         async with open_db() as conn:
             await conn.execute(
-                "INSERT INTO official_import_drafts "
-                "(id,source_id,owner_id,repository_url,provider,repository_path,"
-                "tracking_mode,tracking_ref,resolved_version,commit_sha,source_payload,"
-                "errors,security_warnings,status,expires_at,created_at,updated_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                sql("queries/official_sources:insert_draft"),
                 (
                     draft_id,
                     source_id,
@@ -508,10 +466,7 @@ class OfficialSourceStorage:
             )
             if components:
                 await conn.executemany(
-                    "INSERT INTO official_import_components "
-                    "(draft_id,component_key,payload,selected,explicitly_selected,"
-                    "forced_type,forced_language,forced_tool_language,security_accepted,state) "
-                    "VALUES (?,?,?,?,?,?,?,?,?,?)",
+                    sql("queries/official_sources:insert_draft_component"),
                     [
                         (
                             draft_id,
@@ -536,10 +491,10 @@ class OfficialSourceStorage:
     async def get_draft(self, draft_id: str) -> Optional[Dict[str, Any]]:
         async with open_db() as conn:
             row = await conn.fetchone(
-                "SELECT * FROM official_import_drafts WHERE id=?", (draft_id,)
+                sql("queries/official_sources:get_draft"), (draft_id,)
             )
             count = await conn.fetchval(
-                "SELECT COUNT(*) FROM official_import_components WHERE draft_id=?",
+                sql("queries/official_sources:count_draft_components"),
                 (draft_id,),
             )
         if not row:
@@ -565,8 +520,7 @@ class OfficialSourceStorage:
         payload["base_commit_sha"] = source.get("last_commit_sha") or ""
         async with open_db() as conn:
             await conn.execute(
-                "UPDATE official_import_drafts SET source_id=?,source_payload=?,"
-                "updated_at=? WHERE id=?",
+                sql("queries/official_sources:update_draft_source"),
                 (
                     source["id"],
                     json.dumps(payload, ensure_ascii=False),
@@ -650,16 +604,14 @@ class OfficialSourceStorage:
                 )
             if dependencies is not None:
                 row = await conn.fetchone(
-                    "SELECT payload FROM official_import_components "
-                    "WHERE draft_id=? AND component_key=?",
+                    sql("queries/official_sources:get_component_payload"),
                     (draft_id, component_key),
                 )
                 if row:
                     payload = json.loads(row["payload"])
                     payload["dependencies"] = list(dependencies)
                     await conn.execute(
-                        "UPDATE official_import_components SET payload=? "
-                        "WHERE draft_id=? AND component_key=?",
+                        sql("queries/official_sources:update_component_payload"),
                         (
                             json.dumps(payload, ensure_ascii=False),
                             draft_id,
@@ -667,7 +619,7 @@ class OfficialSourceStorage:
                         ),
                     )
             await conn.execute(
-                "UPDATE official_import_drafts SET updated_at=? WHERE id=?",
+                sql("queries/official_sources:touch_draft"),
                 (now_iso(), draft_id),
             )
             await conn.commit()
@@ -678,8 +630,7 @@ class OfficialSourceStorage:
     ) -> Optional[Dict[str, Any]]:
         async with open_db() as conn:
             row = await conn.fetchone(
-                "SELECT * FROM official_import_components "
-                "WHERE draft_id=? AND component_key=?",
+                sql("queries/official_sources:get_component"),
                 (draft_id, component_key),
             )
         return self._draft_component_from_row(row) if row else None
@@ -687,8 +638,7 @@ class OfficialSourceStorage:
     async def get_all_draft_components(self, draft_id: str) -> List[Dict[str, Any]]:
         async with open_db() as conn:
             rows = await conn.fetchall(
-                "SELECT * FROM official_import_components WHERE draft_id=? "
-                "ORDER BY component_key",
+                sql("queries/official_sources:list_components"),
                 (draft_id,),
             )
         return [self._draft_component_from_row(row) for row in rows]
@@ -702,12 +652,11 @@ class OfficialSourceStorage:
     ) -> None:
         async with open_db() as conn:
             rows = await conn.fetchall(
-                "SELECT component_key FROM official_import_components WHERE draft_id=?",
+                sql("queries/official_sources:list_component_keys"),
                 (draft_id,),
             )
             await conn.executemany(
-                "UPDATE official_import_components SET selected=?,"
-                "explicitly_selected=? WHERE draft_id=? AND component_key=?",
+                sql("queries/official_sources:set_component_selection"),
                 [
                     (
                         int(key in selected),
@@ -719,7 +668,7 @@ class OfficialSourceStorage:
                 ],
             )
             await conn.execute(
-                "UPDATE official_import_drafts SET updated_at=? WHERE id=?",
+                sql("queries/official_sources:touch_draft"),
                 (now_iso(), draft_id),
             )
             await conn.commit()
@@ -737,14 +686,7 @@ class OfficialSourceStorage:
     ) -> None:
         async with open_db() as conn:
             await conn.execute(
-                "INSERT INTO official_source_mappings "
-                "(source_id,source_path,forced_type,forced_language,forced_tool_language,ignored,"
-                "dependencies,updated_at) VALUES (?,?,?,?,?,?,?,?) "
-                "ON CONFLICT(source_id,source_path) DO UPDATE SET "
-                "forced_type=excluded.forced_type,"
-                "forced_language=excluded.forced_language,ignored=excluded.ignored,"
-                "forced_tool_language=excluded.forced_tool_language,"
-                "dependencies=excluded.dependencies,updated_at=excluded.updated_at",
+                sql("queries/official_sources:upsert_mapping"),
                 (
                     source_id,
                     source_path,
@@ -761,7 +703,7 @@ class OfficialSourceStorage:
     async def list_mappings(self, source_id: str) -> Dict[str, Dict[str, Any]]:
         async with open_db() as conn:
             rows = await conn.fetchall(
-                "SELECT * FROM official_source_mappings WHERE source_id=?",
+                sql("queries/official_sources:list_mappings"),
                 (source_id,),
             )
         return {
@@ -776,7 +718,7 @@ class OfficialSourceStorage:
     async def mark_draft_status(self, draft_id: str, status: str) -> None:
         async with open_db() as conn:
             await conn.execute(
-                "UPDATE official_import_drafts SET status=?,updated_at=? WHERE id=?",
+                sql("queries/official_sources:set_draft_status"),
                 (status, now_iso(), draft_id),
             )
             await conn.commit()
@@ -786,13 +728,13 @@ class OfficialSourceStorage:
         async with open_db() as conn:
             count = int(
                 await conn.fetchval(
-                    "SELECT COUNT(*) FROM official_import_drafts WHERE expires_at<?",
+                    sql("queries/official_sources:count_expired_drafts"),
                     (now,),
                 )
                 or 0
             )
             await conn.execute(
-                "DELETE FROM official_import_drafts WHERE expires_at<?", (now,)
+                sql("queries/official_sources:delete_expired_drafts"), (now,)
             )
             await conn.commit()
         return count

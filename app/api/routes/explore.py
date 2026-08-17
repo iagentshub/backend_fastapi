@@ -29,6 +29,7 @@ from app.models.official_source import (
 )
 from app.pagination.http import LINKED_HEADER, TOTAL_HEADER
 from app.services.official_pack_service import OfficialPackService
+from app.sql import sql
 from app.storage.agent_storage import AgentStorage
 from app.storage.db import IS_PG, open_db
 from app.storage.group_shares import GroupShareStorage
@@ -408,8 +409,7 @@ async def explore_preview(
 
     async with open_db() as conn:
         row = await conn.fetchone(
-            "SELECT name, description, owner, category, labels "
-            "FROM resource_social WHERE resource_type=? AND resource_id=? AND is_public=?",
+            sql("queries/explore:social_card"),
             (resource_type, resource_id, _PUBLIC_VAL),
         )
 
@@ -650,9 +650,7 @@ async def _public_agent_graph_parts(
                 if selected is not None and f"{kind}:{child_id}" not in selected:
                     continue
                 row = await conn.fetchone(
-                    "SELECT name, description FROM resource_social "
-                    "WHERE resource_type=? AND resource_id=? AND is_public=? "
-                    "ORDER BY updated_at DESC LIMIT 1",
+                    sql("queries/explore:social_name_desc"),
                     (kind, child_id, _PUBLIC_VAL),
                 )
                 if not row:
@@ -760,9 +758,7 @@ async def explore_resource_graph(
         )
     async with open_db() as conn:
         published = await conn.fetchone(
-            "SELECT name, description FROM resource_social "
-            "WHERE resource_type=? AND resource_id=? AND is_public=? "
-            "ORDER BY updated_at DESC LIMIT 1",
+            sql("queries/explore:social_name_desc"),
             (resource_type, resource_id, _PUBLIC_VAL),
         )
     if not published:
@@ -814,9 +810,7 @@ async def explore_resource_graph(
                 if not agent_id or agent_id in public_agents:
                     continue
                 row = await conn.fetchone(
-                    "SELECT name, description FROM resource_social "
-                    "WHERE resource_type='agent' AND resource_id=? AND is_public=? "
-                    "ORDER BY updated_at DESC LIMIT 1",
+                    sql("queries/explore:agent_name_desc"),
                     (agent_id, _PUBLIC_VAL),
                 )
                 if row:
@@ -947,7 +941,7 @@ async def user_resources(
 
     async with open_db() as conn:
         target_id = await conn.fetchval(
-            "SELECT id FROM users WHERE username = ?", (target_username,)
+            sql("queries/explore:user_id_by_username"), (target_username,)
         )
         if not target_id:
             raise APIError(
@@ -993,7 +987,7 @@ async def follow_user(
     _rl: None = Depends(_social_limiter),
 ) -> Dict[str, Any]:
     async with open_db() as conn:
-        row = await conn.fetchone("SELECT id FROM users WHERE username = ?", (target,))
+        row = await conn.fetchone(sql("queries/explore:user_id_by_username"), (target,))
         if not row:
             raise APIError(
                 404, "not_found", "Usuario no encontrado", extra={"resource": "user"}
@@ -1003,13 +997,12 @@ async def follow_user(
             raise APIError(400, "cannot_follow_self", "No puedes seguirte a ti mismo")
         if IS_PG:
             await conn.execute(
-                "INSERT INTO user_follows (follower, following) VALUES (?, ?) "
-                "ON CONFLICT DO NOTHING",
+                sql("queries/explore:follow_insert_pg"),
                 (username, target_id),
             )
         else:
             await conn.execute(
-                "INSERT OR IGNORE INTO user_follows (follower, following) VALUES (?, ?)",
+                sql("queries/explore:follow_insert_sqlite"),
                 (username, target_id),
             )
         await conn.commit()
@@ -1025,14 +1018,14 @@ async def unfollow_user(
 
     async with open_db() as conn:
         target_id = await conn.fetchval(
-            "SELECT id FROM users WHERE username = ?", (target,)
+            sql("queries/explore:user_id_by_username"), (target,)
         )
         if not target_id:
             raise APIError(
                 404, "not_found", "Usuario no encontrado", extra={"resource": "user"}
             )
         await conn.execute(
-            "DELETE FROM user_follows WHERE follower = ? AND following = ?",
+            sql("queries/explore:unfollow"),
             (username, target_id),
         )
         await conn.commit()
@@ -1047,22 +1040,22 @@ async def follow_status(
 
     async with open_db() as conn:
         target_id = await conn.fetchval(
-            "SELECT id FROM users WHERE username = ?", (target,)
+            sql("queries/explore:user_id_by_username"), (target,)
         )
         if not target_id:
             raise APIError(
                 404, "not_found", "Usuario no encontrado", extra={"resource": "user"}
             )
         is_following_row = await conn.fetchone(
-            "SELECT 1 FROM user_follows WHERE follower = ? AND following = ?",
+            sql("queries/explore:is_following"),
             (username, target_id),
         )
         followers_count = await conn.fetchval(
-            "SELECT COUNT(*) FROM user_follows WHERE following = ?",
+            sql("queries/explore:count_followers"),
             (target_id,),
         )
         following_count = await conn.fetchval(
-            "SELECT COUNT(*) FROM user_follows WHERE follower = ?",
+            sql("queries/explore:count_following"),
             (target_id,),
         )
 

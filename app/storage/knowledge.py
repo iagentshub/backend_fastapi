@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from app.pagination.models import OffsetPage, OffsetParams
 from app.services.resource_visibility import VisibilityFilter
+from app.sql import sql
 from app.storage.db import AsyncConn, open_db
 from app.storage.page_query import fetch_offset_page
 from app.storage.resource_base import ResourceStorage
@@ -515,14 +516,7 @@ class KnowledgeStorage(ResourceStorage):
         updated_at: str,
     ) -> None:
         await conn.execute(
-            "INSERT INTO knowledge_items "
-            "(id, owner_id, type, title, source, content, char_count, mime_type, size_bytes, "
-            "checksum, labels, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-            "ON CONFLICT(id) DO UPDATE SET type=excluded.type,title=excluded.title,"
-            "source=excluded.source,content=excluded.content,"
-            "char_count=excluded.char_count,mime_type=excluded.mime_type,"
-            "size_bytes=excluded.size_bytes,checksum=excluded.checksum,labels=excluded.labels,"
-            "updated_at=excluded.updated_at",
+            sql("queries/knowledge:upsert_item"),
             (
                 item_id,
                 owner_id,

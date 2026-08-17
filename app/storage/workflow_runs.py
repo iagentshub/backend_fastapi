@@ -7,6 +7,7 @@ import os
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from app.sql import sql
 from app.storage.db import open_db
 from app.utils import now_iso
 from app.utils.generators import generate_id
@@ -34,10 +35,7 @@ class WorkflowRunStorage:
         total = len(definition.get("nodes") or [])
         async with open_db() as conn:
             await conn.execute(
-                "INSERT INTO workflow_runs "
-                "(id, workflow_id, started_by, group_id, workflow_name, definition, "
-                "agents, input, status, total_steps, heartbeat_at, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'queued', ?, ?, ?, ?)",
+                sql("queries/workflow_runs:insert_run"),
                 (
                     run_id,
                     workflow_id,
@@ -58,13 +56,13 @@ class WorkflowRunStorage:
 
     async def get(self, run_id: str) -> dict[str, Any] | None:
         async with open_db() as conn:
-            row = await conn.fetchone("SELECT * FROM workflow_runs WHERE id=?", (run_id,))
+            row = await conn.fetchone(sql("queries/workflow_runs:get_run"), (run_id,))
         return self._decode(row) if row else None
 
     async def get_for_user(self, run_id: str, username: str) -> dict[str, Any] | None:
         async with open_db() as conn:
             row = await conn.fetchone(
-                "SELECT * FROM workflow_runs WHERE id=? AND started_by=?",
+                sql("queries/workflow_runs:get_run_owned"),
                 (run_id, username),
             )
         return self._decode(row) if row else None
@@ -72,14 +70,11 @@ class WorkflowRunStorage:
     async def list_for_user(self, username: str, limit: int = 100) -> list[dict[str, Any]]:
         async with open_db() as conn:
             active = await conn.fetchall(
-                "SELECT * FROM workflow_runs WHERE started_by=? "
-                "AND status IN ('queued','running','cancelling') ORDER BY created_at DESC",
+                sql("queries/workflow_runs:list_active_runs"),
                 (username,),
             )
             history = await conn.fetchall(
-                "SELECT * FROM workflow_runs WHERE started_by=? "
-                "AND status IN ('cancelled','completed','failed') "
-                "ORDER BY created_at DESC LIMIT ?",
+                sql("queries/workflow_runs:list_finished_runs"),
                 (username, min(max(limit, 1), HISTORY_LIMIT)),
             )
         return [self._decode(row, detail=False) for row in [*active, *history]]
@@ -97,10 +92,7 @@ class WorkflowRunStorage:
         finished_at = now if status in TERMINAL_STATUSES else None
         async with open_db() as conn:
             await conn.execute(
-                "UPDATE workflow_runs SET status=?, error=COALESCE(?, error), "
-                "final_output=COALESCE(?, final_output), heartbeat_at=?, updated_at=?, "
-                "started_at=COALESCE(started_at, ?), finished_at=COALESCE(?, finished_at) "
-                "WHERE id=?",
+                sql("queries/workflow_runs:update_status"),
                 (status, error, final_output, now, now, started_at, finished_at, run_id),
             )
             await conn.commit()
@@ -109,8 +101,7 @@ class WorkflowRunStorage:
         now = now_iso()
         async with open_db() as conn:
             await conn.execute(
-                "UPDATE workflow_runs SET status='running', started_at=?, "
-                "heartbeat_at=?, updated_at=? WHERE id=? AND status='queued'",
+                sql("queries/workflow_runs:mark_running"),
                 (now, now, now, run_id),
             )
             await conn.commit()
@@ -121,7 +112,7 @@ class WorkflowRunStorage:
         now = now_iso()
         async with open_db() as conn:
             await conn.execute(
-                "UPDATE workflow_runs SET heartbeat_at=?, updated_at=? WHERE id=?",
+                sql("queries/workflow_runs:heartbeat"),
                 (now, now, run_id),
             )
             await conn.commit()
@@ -134,8 +125,7 @@ class WorkflowRunStorage:
         async with open_db() as conn:
             async with conn.transaction():
                 row = await conn.fetchone(
-                    "SELECT last_sequence, completed_steps, total_steps "
-                    "FROM workflow_runs WHERE id=?",
+                    sql("queries/workflow_runs:progress_of"),
                     (run_id,),
                 )
                 if not row:
@@ -148,13 +138,11 @@ class WorkflowRunStorage:
                 if event_type in {"stage_done", "evaluation_done", "workflow_done", "error", "cancelled"}:
                     active_node = None
                 await conn.execute(
-                    "INSERT INTO workflow_run_events (run_id, sequence, payload, created_at) "
-                    "VALUES (?, ?, ?, ?)",
+                    sql("queries/workflow_runs:insert_event"),
                     (run_id, sequence, json.dumps(event, ensure_ascii=False), now),
                 )
                 await conn.execute(
-                    "UPDATE workflow_runs SET last_sequence=?, completed_steps=?, "
-                    "active_node_id=?, heartbeat_at=?, updated_at=? WHERE id=?",
+                    sql("queries/workflow_runs:update_progress"),
                     (sequence, completed, active_node, now, now, run_id),
                 )
         return sequence
@@ -162,8 +150,7 @@ class WorkflowRunStorage:
     async def events_after(self, run_id: str, sequence: int) -> list[dict[str, Any]]:
         async with open_db() as conn:
             rows = await conn.fetchall(
-                "SELECT sequence, payload, created_at FROM workflow_run_events "
-                "WHERE run_id=? AND sequence>? ORDER BY sequence",
+                sql("queries/workflow_runs:list_events_since"),
                 (run_id, sequence),
             )
         result = []
@@ -186,23 +173,20 @@ class WorkflowRunStorage:
         cutoff = (datetime.now(timezone.utc) - timedelta(days=RETENTION_DAYS)).isoformat()
         async with open_db() as conn:
             old_rows = await conn.fetchall(
-                "SELECT id FROM workflow_runs WHERE status IN ('cancelled','completed','failed') "
-                "AND finished_at<?",
+                sql("queries/workflow_runs:finished_before"),
                 (cutoff,),
             )
-            users = await conn.fetchall("SELECT DISTINCT started_by FROM workflow_runs")
+            users = await conn.fetchall(sql("queries/workflow_runs:distinct_users"))
             remove = {str(row["id"]) for row in old_rows}
             for user_row in users:
                 rows = await conn.fetchall(
-                    "SELECT id FROM workflow_runs WHERE started_by=? "
-                    "AND status IN ('cancelled','completed','failed') "
-                    "ORDER BY created_at DESC",
+                    sql("queries/workflow_runs:finished_by_user"),
                     (user_row["started_by"],),
                 )
                 remove.update(str(row["id"]) for row in rows[HISTORY_LIMIT:])
             for run_id in remove:
-                await conn.execute("DELETE FROM workflow_run_events WHERE run_id=?", (run_id,))
-                await conn.execute("DELETE FROM workflow_runs WHERE id=?", (run_id,))
+                await conn.execute(sql("queries/workflow_runs:delete_events"), (run_id,))
+                await conn.execute(sql("queries/workflow_runs:delete_run"), (run_id,))
             await conn.commit()
         return len(remove)
 
@@ -211,14 +195,12 @@ class WorkflowRunStorage:
         now = now_iso()
         async with open_db() as conn:
             rows = await conn.fetchall(
-                "SELECT id FROM workflow_runs WHERE status IN ('queued','running','cancelling') "
-                "AND heartbeat_at<?",
+                sql("queries/workflow_runs:stale_runs"),
                 (cutoff,),
             )
             for row in rows:
                 await conn.execute(
-                    "UPDATE workflow_runs SET status='failed', error=?, finished_at=?, "
-                    "updated_at=? WHERE id=?",
+                    sql("queries/workflow_runs:mark_failed"),
                     ("Ejecución interrumpida porque el worker dejó de responder", now, now, row["id"]),
                 )
             await conn.commit()

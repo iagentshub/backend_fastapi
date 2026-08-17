@@ -15,7 +15,7 @@ INFRASTRUCTURE_TABLES = {"schema_migrations"}
 
 
 def _declared_tables() -> set[str]:
-    sources = [APP_ROOT / "storage" / "schema.py"]
+    sources = [*(APP_ROOT / "sql" / "schema").glob("*.sql")]
     sources.extend((APP_ROOT / "storage" / "migrations").glob("*.py"))
     return {
         match.lower()
@@ -25,11 +25,19 @@ def _declared_tables() -> set[str]:
 
 
 def _runtime_sources() -> str:
-    return "\n".join(
-        source.read_text(encoding="utf-8")
+    """Todo lo que ejecuta la aplicación: el Python y las consultas en fichero.
+
+    Las consultas viven en `app/sql/queries/` desde que el SQL estático salió
+    de los módulos, así que buscar la tabla solo en los `.py` daba por muerta
+    cualquiera cuyo único consumidor fuera un `.sql`.
+    """
+    fuentes = [
+        source
         for source in APP_ROOT.rglob("*.py")
-        if source.name != "schema.py" and "migrations" not in source.parts
-    )
+        if "migrations" not in source.parts
+    ]
+    fuentes.extend((APP_ROOT / "sql" / "queries").rglob("*.sql"))
+    return "\n".join(source.read_text(encoding="utf-8") for source in fuentes)
 
 
 def test_every_declared_application_table_has_a_runtime_consumer():

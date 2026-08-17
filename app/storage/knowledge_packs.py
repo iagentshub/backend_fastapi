@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Optional
 
+from app.sql import sql
 from app.storage import labels as label_index
 from app.storage.db import open_db
 from app.storage.skill_storage import ensure_origin_label
@@ -82,11 +83,7 @@ class KnowledgePackStorage:
             pack = _pack_dict(row)
             if include_items:
                 items = await conn.fetchall(
-                    "SELECT k.id, k.pack_relative_path AS relative_path, "
-                    "k.pack_kind AS kind, k.mime_type, k.size_bytes, k.checksum, "
-                    "k.title, k.type, k.char_count, k.is_active, k.created_at, "
-                    "k.updated_at FROM knowledge_items k WHERE k.pack_id=? "
-                    "ORDER BY k.pack_relative_path",
+                    sql("queries/knowledge_packs:list_pack_files"),
                     (pack_id,),
                 )
                 pack["items"] = [dict(item) for item in items]
@@ -95,10 +92,7 @@ class KnowledgePackStorage:
     async def get_for_item(self, knowledge_id: str) -> Optional[Dict[str, Any]]:
         async with open_db() as conn:
             row = await conn.fetchone(
-                "SELECT p.*, k.pack_relative_path AS relative_path, "
-                "k.pack_kind AS kind, k.mime_type, k.size_bytes, k.checksum, "
-                "1 AS file_count FROM knowledge_items k JOIN knowledge_packs p "
-                "ON p.id=k.pack_id WHERE k.id=?",
+                sql("queries/knowledge_packs:get_file_with_pack"),
                 (knowledge_id,),
             )
         return _pack_dict(row) if row else None
@@ -106,7 +100,7 @@ class KnowledgePackStorage:
     async def item_ids(self, pack_id: str) -> List[str]:
         async with open_db() as conn:
             rows = await conn.fetchall(
-                "SELECT id FROM knowledge_items WHERE pack_id=?",
+                sql("queries/knowledge_packs:pack_item_ids"),
                 (pack_id,),
             )
         return [str(row[0]) for row in rows]
@@ -128,10 +122,7 @@ class KnowledgePackStorage:
         async with open_db() as conn:
             async with conn.transaction():
                 await conn.execute(
-                    "INSERT INTO knowledge_packs "
-                    "(id,owner_id,name,description,labels,scope,source_mode,"
-                    "last_synced_at,upload_status,created_at,updated_at) "
-                    "VALUES (?,?,?,?,?,'private',?,?,?,?,?)",
+                    sql("queries/knowledge_packs:insert_pack"),
                     (
                         pack_id,
                         owner_id,
@@ -149,10 +140,7 @@ class KnowledgePackStorage:
                     knowledge_id = generate_id(16)
                     content = str(item["content"])
                     await conn.execute(
-                        "INSERT INTO knowledge_items "
-                        "(id,owner_id,type,title,source,content,char_count,mime_type,"
-                        "size_bytes,checksum,pack_id,pack_relative_path,pack_kind,"
-                        "labels,created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        sql("queries/knowledge_packs:insert_pack_item"),
                         (
                             knowledge_id,
                             owner_id,
@@ -191,16 +179,14 @@ class KnowledgePackStorage:
         content = str(item["content"])
         async with open_db() as conn:
             row = await conn.fetchone(
-                "SELECT id FROM knowledge_items "
-                "WHERE pack_id=? AND pack_relative_path=?",
+                sql("queries/knowledge_packs:pack_item_by_path"),
                 (pack_id, relative_path),
             )
             async with conn.transaction():
                 if row:
                     knowledge_id = str(row[0])
                     await conn.execute(
-                        "UPDATE knowledge_items SET content=?,char_count=?,pack_kind=?,"
-                        "mime_type=?,size_bytes=?,checksum=?,updated_at=? WHERE id=?",
+                        sql("queries/knowledge_packs:update_pack_item_content"),
                         (
                             content,
                             len(content),
@@ -216,10 +202,7 @@ class KnowledgePackStorage:
                     knowledge_id = generate_id(16)
                     labels = json.dumps(pack.get("labels") or [], ensure_ascii=False)
                     await conn.execute(
-                        "INSERT INTO knowledge_items "
-                        "(id,owner_id,type,title,source,content,char_count,mime_type,"
-                        "size_bytes,checksum,pack_id,pack_relative_path,pack_kind,labels,"
-                        "created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                        sql("queries/knowledge_packs:insert_pack_item"),
                         (
                             knowledge_id,
                             owner_id,
@@ -255,8 +238,7 @@ class KnowledgePackStorage:
         now = generate_date()
         async with open_db() as conn:
             await conn.execute(
-                "UPDATE knowledge_packs SET upload_status='ready',"
-                "last_synced_at=?,updated_at=? WHERE id=? AND owner_id=?",
+                sql("queries/knowledge_packs:mark_pack_ready"),
                 (now, now, pack_id, owner_id),
             )
             await conn.commit()
@@ -269,7 +251,7 @@ class KnowledgePackStorage:
         async with open_db() as conn:
             async with conn.transaction():
                 rows = await conn.fetchall(
-                    "SELECT id FROM knowledge_items WHERE pack_id=?",
+                    sql("queries/knowledge_packs:pack_item_ids"),
                     (pack_id,),
                 )
                 item_ids = [str(row[0]) for row in rows]
@@ -278,24 +260,21 @@ class KnowledgePackStorage:
                     *(("knowledge", item_id) for item_id in item_ids),
                 ]:
                     await conn.execute(
-                        "DELETE FROM resource_social "
-                        "WHERE resource_type=? AND resource_id=?",
+                        sql("queries/knowledge_packs:delete_social_by_resource"),
                         (resource_type, resource_id),
                     )
                     await conn.execute(
-                        "DELETE FROM resource_stars "
-                        "WHERE resource_type=? AND resource_id=?",
+                        sql("queries/knowledge_packs:delete_stars_by_resource"),
                         (resource_type, resource_id),
                     )
                     await conn.execute(
-                        "DELETE FROM resource_group_shares "
-                        "WHERE resource_type=? AND resource_id=?",
+                        sql("queries/knowledge_packs:delete_shares_by_resource"),
                         (resource_type, resource_id),
                     )
                 await conn.execute(
-                    "DELETE FROM knowledge_items WHERE pack_id=?", (pack_id,)
+                    sql("queries/knowledge_packs:delete_pack_items"), (pack_id,)
                 )
-                await conn.execute("DELETE FROM knowledge_packs WHERE id=?", (pack_id,))
+                await conn.execute(sql("queries/knowledge_packs:delete_pack"), (pack_id,))
         return True
 
     async def replace_items(
@@ -313,8 +292,7 @@ class KnowledgePackStorage:
         encoded_labels = json.dumps(labels, ensure_ascii=False)
         async with open_db() as conn:
             existing_rows = await conn.fetchall(
-                "SELECT id,pack_relative_path,checksum,title,content "
-                "FROM knowledge_items WHERE pack_id=?",
+                sql("queries/knowledge_packs:pack_items_for_sync"),
                 (pack_id,),
             )
             existing = {str(row[1]): row for row in existing_rows}
@@ -337,7 +315,7 @@ class KnowledgePackStorage:
                             (knowledge_id,),
                         )
                     await conn.execute(
-                        "DELETE FROM knowledge_items WHERE id=?", (knowledge_id,)
+                        sql("queries/knowledge_packs:delete_item"), (knowledge_id,)
                     )
                 for item in items:
                     relative_path = str(item["relative_path"])
@@ -353,9 +331,7 @@ class KnowledgePackStorage:
                     if row is not None:
                         knowledge_id = str(row[0])
                         await conn.execute(
-                            "UPDATE knowledge_items SET content=?,char_count=?,"
-                            "pack_kind=?,mime_type=?,size_bytes=?,checksum=?,"
-                            "updated_at=? WHERE id=?",
+                            sql("queries/knowledge_packs:update_pack_item_content"),
                             (
                                 content,
                                 len(content),
@@ -371,10 +347,7 @@ class KnowledgePackStorage:
                         knowledge_id = generate_id(16)
                         added_ids.append(knowledge_id)
                         await conn.execute(
-                            "INSERT INTO knowledge_items "
-                            "(id,owner_id,type,title,source,content,char_count,mime_type,"
-                            "size_bytes,checksum,pack_id,pack_relative_path,pack_kind,labels,"
-                            "created_at,updated_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                            sql("queries/knowledge_packs:insert_pack_item"),
                             (
                                 knowledge_id,
                                 pack["owner_id"],
@@ -395,7 +368,7 @@ class KnowledgePackStorage:
                             ),
                         )
                 await conn.execute(
-                    "UPDATE knowledge_packs SET last_synced_at=?,updated_at=? WHERE id=?",
+                    sql("queries/knowledge_packs:touch_pack_sync"),
                     (now, now, pack_id),
                 )
         for row in removed_rows:
@@ -429,12 +402,12 @@ class KnowledgePackStorage:
         async with open_db() as conn:
             async with conn.transaction():
                 await conn.execute(
-                    "UPDATE knowledge_packs SET labels=?,updated_at=? WHERE id=?",
+                    sql("queries/knowledge_packs:update_pack_labels"),
                     (encoded, now, pack_id),
                 )
                 for item_id in item_ids:
                     await conn.execute(
-                        "UPDATE knowledge_items SET labels=?,updated_at=? WHERE id=?",
+                        sql("queries/knowledge_packs:update_item_labels"),
                         (encoded, now, item_id),
                     )
         await label_index.sync_labels(
@@ -465,13 +438,12 @@ class KnowledgePackStorage:
         async with open_db() as conn:
             async with conn.transaction():
                 await conn.execute(
-                    "UPDATE knowledge_packs SET name=?,description=?,labels=?,"
-                    "updated_at=? WHERE id=?",
+                    sql("queries/knowledge_packs:update_pack_metadata"),
                     (name, description, encoded, now, pack_id),
                 )
                 for item_id in item_ids:
                     await conn.execute(
-                        "UPDATE knowledge_items SET labels=?,updated_at=? WHERE id=?",
+                        sql("queries/knowledge_packs:update_item_labels"),
                         (encoded, now, item_id),
                     )
         await label_index.sync_labels(

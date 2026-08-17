@@ -10,6 +10,7 @@ import yaml
 
 from app.config.content_languages import CONTENT_LANGUAGE_LABELS
 from app.pagination.models import OffsetPage, OffsetParams
+from app.sql import sql
 
 # db se importa DOS veces a propósito: ver app/storage/_storage_helpers.py.
 from app.storage import db as _db
@@ -156,7 +157,7 @@ class SkillStorage(ResourceStorage):
 
         async with open_db() as conn:
             try:
-                count = await conn.fetchval("SELECT COUNT(*) FROM skills")
+                count = await conn.fetchval(sql("queries/skills:count_all"))
                 if count:
                     return
             except DB_ERRORS as exc:
@@ -211,12 +212,7 @@ class SkillStorage(ResourceStorage):
         meta_json = _compact_resource_data(meta)
         if _db.IS_PG:
             await conn.execute(
-                "INSERT INTO skills (id, owner_id, name, category, scope, data, content, "
-                "is_active, deactivated_at, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-                "ON CONFLICT (id, owner_id) DO UPDATE SET name=EXCLUDED.name, category=EXCLUDED.category, scope=EXCLUDED.scope, data=EXCLUDED.data, "
-                "content=EXCLUDED.content, is_active=EXCLUDED.is_active, "
-                "deactivated_at=EXCLUDED.deactivated_at, updated_at=EXCLUDED.updated_at",
+                sql("queries/skills:upsert_pg"),
                 (
                     skill_id,
                     owner_id,
@@ -237,14 +233,7 @@ class SkillStorage(ResourceStorage):
             # (official_source_id / official_component_id, que gestiona
             # official_source_storage) cada vez que se guarda el recurso.
             await conn.execute(
-                "INSERT INTO skills "
-                "(id, owner_id, name, category, scope, data, content, "
-                "is_active, deactivated_at, created_at, updated_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?) "
-                "ON CONFLICT (id, owner_id) DO UPDATE SET name=excluded.name, "
-                "category=excluded.category, scope=excluded.scope, data=excluded.data, "
-                "content=excluded.content, is_active=excluded.is_active, "
-                "deactivated_at=excluded.deactivated_at, updated_at=excluded.updated_at",
+                sql("queries/skills:upsert_sqlite"),
                 (
                     skill_id,
                     owner_id,
@@ -292,29 +281,21 @@ class SkillStorage(ResourceStorage):
         async with open_db() as conn:
             if scope == "public":
                 rows = await conn.fetchall(
-                    "SELECT id, owner_id, name, category, scope, data, content, is_active, "
-                    "deactivated_at, created_at, updated_at "
-                    "FROM skills WHERE scope='public' ORDER BY created_at ASC"
+                    sql("queries/skills:list_public")
                 )
             elif scope == "private":
                 if owner_id:
                     rows = await conn.fetchall(
-                        "SELECT id, owner_id, name, category, scope, data, content, is_active, "
-                        "deactivated_at, created_at, updated_at "
-                        "FROM skills WHERE scope='private' AND owner_id=? ORDER BY created_at ASC",
+                        sql("queries/skills:list_private_by_owner"),
                         (owner_id,),
                     )
                 else:
                     rows = await conn.fetchall(
-                        "SELECT id, owner_id, name, category, scope, data, content, is_active, "
-                        "deactivated_at, created_at, updated_at "
-                        "FROM skills WHERE scope='private' ORDER BY created_at ASC"
+                        sql("queries/skills:list_private")
                     )
             else:  # all
                 rows = await conn.fetchall(
-                    "SELECT id, owner_id, name, category, scope, data, content, is_active, "
-                    "deactivated_at, created_at, updated_at "
-                    "FROM skills ORDER BY created_at ASC"
+                    sql("queries/skills:list_all")
                 )
         return [self._row_to_dict(r, include_content=False) for r in rows]
 
@@ -446,24 +427,24 @@ class SkillStorage(ResourceStorage):
         async with open_db() as conn:
             if owner_id is not None:
                 row = await conn.fetchone(
-                    "SELECT id FROM skills WHERE id=? AND scope=? AND owner_id=? LIMIT 1",
+                    sql("queries/skills:exists_scoped_owned"),
                     (skill_id, scope, owner_id),
                 )
                 if not row:
                     return False
                 await conn.execute(
-                    "DELETE FROM skills WHERE id=? AND scope=? AND owner_id=?",
+                    sql("queries/skills:delete_scoped_owned"),
                     (skill_id, scope, owner_id),
                 )
             else:
                 row = await conn.fetchone(
-                    "SELECT id FROM skills WHERE id=? AND scope=? LIMIT 1",
+                    sql("queries/skills:exists_scoped"),
                     (skill_id, scope),
                 )
                 if not row:
                     return False
                 await conn.execute(
-                    "DELETE FROM skills WHERE id=? AND scope=?", (skill_id, scope)
+                    sql("queries/skills:delete_scoped"), (skill_id, scope)
                 )
             await conn.commit()
         await self.clear_labels(skill_id)

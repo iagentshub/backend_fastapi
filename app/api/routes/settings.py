@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field, model_validator
 from app.api.routes.auth import require_admin, require_auth
 from app.config.session import REGISTRATION_MODES
 from app.errors import APIError
+from app.sql import sql
 from app.storage.db import open_db
 from app.utils import flog
 from app.utils.generators import generate_date, generate_id
@@ -83,7 +84,7 @@ def _settings_response(prefs: dict) -> dict:
 async def _get_prefs(user_id: str) -> dict:
     async with open_db() as conn:
         row = await conn.fetchone(
-            "SELECT preferences FROM users WHERE id = ?", (user_id,)
+            sql("queries/settings:preferences_of_user"), (user_id,)
         )
     if not row or not row["preferences"]:
         return {}
@@ -99,7 +100,7 @@ async def _get_prefs(user_id: str) -> dict:
 async def _save_prefs(user_id: str, prefs: dict) -> None:
     async with open_db() as conn:
         await conn.execute(
-            "UPDATE users SET preferences = ? WHERE id = ?",
+            sql("queries/settings:set_preferences"),
             (json.dumps(prefs), user_id),
         )
         await conn.commit()

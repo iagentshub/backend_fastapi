@@ -19,6 +19,7 @@ from app.api.routes.auth import GroupContext, require_auth, require_group
 from app.errors import APIError
 from app.middleware.ratelimit import RateLimiter
 from app.models.resource_types import SOCIAL_RESOURCE_TYPES
+from app.sql import sql
 from app.storage.agent_storage import AgentStorage
 from app.storage.db import IS_PG, open_db
 from app.storage.groups import GroupStorage
@@ -45,7 +46,7 @@ async def _assert_public(resource_type: str, source_id: str) -> None:
     """Enlazar solo está disponible para contenido público del marketplace."""
     async with open_db() as conn:
         row = await conn.fetchone(
-            "SELECT 1 FROM resource_social WHERE resource_type=? AND resource_id=? AND is_public=?",
+            sql("queries/social:public_flag_exists"),
             (resource_type, source_id, _PUBLIC_VAL),
         )
     if not row:
@@ -299,8 +300,7 @@ async def _publish_skill_cascade(
         )
     async with open_db() as conn:
         row = await conn.fetchone(
-            "SELECT linked_to_id FROM resource_social "
-            "WHERE resource_type=? AND resource_id=? AND owner=?",
+            sql("queries/social:linked_to_id"),
             ("skill", skill_id, username),
         )
         if row and row["linked_to_id"]:
@@ -336,8 +336,7 @@ async def _publish_tool_cascade(
         )
     async with open_db() as conn:
         row = await conn.fetchone(
-            "SELECT linked_to_id FROM resource_social "
-            "WHERE resource_type=? AND resource_id=? AND owner=?",
+            sql("queries/social:linked_to_id"),
             ("tool", tool_id, username),
         )
         if row and row["linked_to_id"]:
@@ -373,8 +372,7 @@ async def _publish_prompt_cascade(
         )
     async with open_db() as conn:
         row = await conn.fetchone(
-            "SELECT linked_to_id FROM resource_social "
-            "WHERE resource_type=? AND resource_id=? AND owner=?",
+            sql("queries/social:linked_to_id"),
             ("prompt", prompt_id, username),
         )
         if row and row["linked_to_id"]:
@@ -415,8 +413,7 @@ async def _publish_knowledge_cascade(
         )
     async with open_db() as conn:
         row = await conn.fetchone(
-            "SELECT linked_to_id FROM resource_social "
-            "WHERE resource_type=? AND resource_id=? AND owner=?",
+            sql("queries/social:linked_to_id"),
             ("knowledge", knowledge_id, username),
         )
         if row and row["linked_to_id"]:
@@ -448,7 +445,7 @@ async def _publish_knowledge_pack_cascade(
         labels.append("public")
     async with open_db() as conn:
         await conn.execute(
-            "UPDATE knowledge_packs SET scope='public',labels=?,updated_at=? WHERE id=?",
+            sql("queries/social:pack_make_public"),
             (json.dumps(labels), generate_date(), pack_id),
         )
         await _upsert_social(
@@ -484,14 +481,11 @@ async def sync_knowledge_visibility_from_labels(
             return
         async with open_db() as conn:
             await conn.execute(
-                "UPDATE knowledge_packs SET scope='private',updated_at=? WHERE id=?",
+                sql("queries/social:pack_make_private"),
                 (generate_date(), resource_id),
             )
             await conn.execute(
-                "DELETE FROM resource_social WHERE ("
-                "(resource_type='knowledge_pack' AND resource_id=?) OR "
-                "(resource_type='knowledge' AND resource_id IN "
-                "(SELECT id FROM knowledge_items WHERE pack_id=?)))",
+                sql("queries/social:delete_social_pack_cascade"),
                 (resource_id, resource_id),
             )
             await conn.commit()
@@ -504,7 +498,7 @@ async def sync_knowledge_visibility_from_labels(
         return
     async with open_db() as conn:
         await conn.execute(
-            "DELETE FROM resource_social WHERE resource_type='knowledge' AND resource_id=?",
+            sql("queries/social:delete_social_knowledge"),
             (resource_id,),
         )
         await conn.commit()
@@ -558,8 +552,7 @@ async def _cascade_publish_workflow(
             continue
         async with open_db() as conn:
             linked_row = await conn.fetchone(
-                "SELECT linked_to_id FROM resource_social "
-                "WHERE resource_type=? AND resource_id=? AND owner=?",
+                sql("queries/social:linked_to_id"),
                 ("agent", agent_id, username),
             )
         if linked_row and linked_row["linked_to_id"]:
@@ -647,8 +640,7 @@ async def _assert_not_linked_copy(
     """Impide publicar una copia enlazada (creada vía "Enlazar" de un recurso ajeno):
     republicarla generaría una entrada duplicada del original en Explorar."""
     row = await conn.fetchone(
-        "SELECT linked_to_id FROM resource_social "
-        "WHERE resource_type=? AND resource_id=? AND owner=?",
+        sql("queries/social:linked_to_id"),
         (resource_type, resource_id, owner),
     )
     if row and row["linked_to_id"]:
@@ -674,13 +666,7 @@ async def _upsert_social(
 ) -> None:
     if IS_PG:
         await conn.execute(
-            "INSERT INTO resource_social "
-            "(resource_type, resource_id, owner, name, description, is_public, category, trial_missing_deps, tags, labels, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, now()) "
-            "ON CONFLICT (resource_type, resource_id, owner) DO UPDATE SET "
-            "name=EXCLUDED.name, description=EXCLUDED.description, is_public=EXCLUDED.is_public, "
-            "category=EXCLUDED.category, trial_missing_deps=EXCLUDED.trial_missing_deps, "
-            "tags=EXCLUDED.tags, labels=EXCLUDED.labels, updated_at=now()",
+            sql("queries/social:upsert_social_pg"),
             (
                 resource_type,
                 resource_id,
@@ -696,13 +682,7 @@ async def _upsert_social(
         )
     else:
         await conn.execute(
-            "INSERT INTO resource_social "
-            "(resource_type, resource_id, owner, name, description, is_public, category, trial_missing_deps, tags, labels, updated_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now')) "
-            "ON CONFLICT(resource_type, resource_id, owner) DO UPDATE SET "
-            "name=excluded.name, description=excluded.description, is_public=excluded.is_public, "
-            "category=excluded.category, trial_missing_deps=excluded.trial_missing_deps, "
-            "tags=excluded.tags, labels=excluded.labels, updated_at=excluded.updated_at",
+            sql("queries/social:upsert_social_sqlite"),
             (
                 resource_type,
                 resource_id,
@@ -782,8 +762,7 @@ async def set_knowledge_pack_visibility(
             if "public" not in labels:
                 labels.append("public")
             await conn.execute(
-                "UPDATE knowledge_packs SET scope='public', labels=?, updated_at=? "
-                "WHERE id=? AND owner_id=?",
+                sql("queries/social:pack_publish_owned"),
                 (json.dumps(labels), generate_date(), pack_id, owner_id),
             )
             await _upsert_social(
@@ -811,15 +790,11 @@ async def set_knowledge_pack_visibility(
             if "private" not in labels:
                 labels.append("private")
             await conn.execute(
-                "UPDATE knowledge_packs SET scope='private', labels=?, updated_at=? "
-                "WHERE id=? AND owner_id=?",
+                sql("queries/social:pack_unpublish_owned"),
                 (json.dumps(labels), generate_date(), pack_id, owner_id),
             )
             await conn.execute(
-                "DELETE FROM resource_social WHERE ("
-                "(resource_type='knowledge_pack' AND resource_id=?) OR "
-                "(resource_type='knowledge' AND resource_id IN "
-                "(SELECT id FROM knowledge_items WHERE pack_id=?)))",
+                sql("queries/social:delete_social_pack_cascade"),
                 (pack_id, pack_id),
             )
             await conn.commit()
@@ -906,8 +881,7 @@ async def set_agent_visibility(
             )
         else:
             await conn.execute(
-                "DELETE FROM resource_social "
-                "WHERE resource_type=? AND resource_id=? AND owner=?",
+                sql("queries/social:delete_social_entry"),
                 ("agent", agent_id, username),
             )
         await conn.commit()
@@ -957,8 +931,7 @@ async def set_skill_visibility(
             )
         else:
             await conn.execute(
-                "DELETE FROM resource_social "
-                "WHERE resource_type=? AND resource_id=? AND owner=?",
+                sql("queries/social:delete_social_entry"),
                 ("skill", skill_id, username),
             )
         await conn.commit()
@@ -1001,8 +974,7 @@ async def set_prompt_visibility(
             )
         else:
             await conn.execute(
-                "DELETE FROM resource_social "
-                "WHERE resource_type=? AND resource_id=? AND owner=?",
+                sql("queries/social:delete_social_entry"),
                 ("prompt", prompt_id, username),
             )
         await conn.commit()
@@ -1045,8 +1017,7 @@ async def set_tool_visibility(
             )
         else:
             await conn.execute(
-                "DELETE FROM resource_social "
-                "WHERE resource_type=? AND resource_id=? AND owner=?",
+                sql("queries/social:delete_social_entry"),
                 ("tool", tool_id, username),
             )
         await conn.commit()
@@ -1091,8 +1062,7 @@ async def set_workflow_visibility(
             )
         else:
             await conn.execute(
-                "DELETE FROM resource_social "
-                "WHERE resource_type=? AND resource_id=? AND owner=?",
+                sql("queries/social:delete_social_entry"),
                 ("workflow", workflow_id, ctx.user),
             )
         await conn.commit()
@@ -1122,27 +1092,21 @@ async def star_resource(
     async with open_db() as conn:
         if IS_PG:
             await conn.execute(
-                "INSERT INTO resource_stars (username, resource_type, resource_id) "
-                "VALUES (?, ?, ?) ON CONFLICT DO NOTHING",
+                sql("queries/social:star_insert_pg"),
                 (username, resource_type, resource_id),
             )
         else:
             await conn.execute(
-                "INSERT OR IGNORE INTO resource_stars (username, resource_type, resource_id) "
-                "VALUES (?, ?, ?)",
+                sql("queries/social:star_insert_sqlite"),
                 (username, resource_type, resource_id),
             )
         await conn.execute(
-            "UPDATE resource_social SET stars_count = ("
-            "SELECT COUNT(*) FROM resource_stars "
-            "WHERE resource_type=? AND resource_id=?"
-            ") WHERE resource_type=? AND resource_id=?",
+            sql("queries/social:refresh_stars_count"),
             (resource_type, resource_id, resource_type, resource_id),
         )
         await conn.commit()
         count = await conn.fetchval(
-            "SELECT COUNT(*) FROM resource_stars "
-            "WHERE resource_type=? AND resource_id=?",
+            sql("queries/social:count_stars"),
             (resource_type, resource_id),
         )
     return {"ok": True, "stars": count or 0}
@@ -1166,21 +1130,16 @@ async def unstar_resource(
 
     async with open_db() as conn:
         await conn.execute(
-            "DELETE FROM resource_stars "
-            "WHERE username=? AND resource_type=? AND resource_id=?",
+            sql("queries/social:star_delete"),
             (username, resource_type, resource_id),
         )
         await conn.execute(
-            "UPDATE resource_social SET stars_count = ("
-            "SELECT COUNT(*) FROM resource_stars "
-            "WHERE resource_type=? AND resource_id=?"
-            ") WHERE resource_type=? AND resource_id=?",
+            sql("queries/social:refresh_stars_count"),
             (resource_type, resource_id, resource_type, resource_id),
         )
         await conn.commit()
         count = await conn.fetchval(
-            "SELECT COUNT(*) FROM resource_stars "
-            "WHERE resource_type=? AND resource_id=?",
+            sql("queries/social:count_stars"),
             (resource_type, resource_id),
         )
     return {"ok": True, "stars": count or 0}

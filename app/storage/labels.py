@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Any, Dict, List, Optional
 
 from app.models.resource_types import normalize_resource_type
+from app.sql import sql
 from app.storage.db import open_db
 
 
@@ -26,13 +27,12 @@ async def sync_labels(
     clean = sorted({str(lbl).strip() for lbl in (labels or []) if str(lbl).strip()})
     async with open_db() as conn:
         await conn.execute(
-            "DELETE FROM resource_labels WHERE resource_type=? AND resource_id=?",
+            sql("queries/labels:delete_labels"),
             (rtype, resource_id),
         )
         for label in clean:
             await conn.execute(
-                "INSERT INTO resource_labels (resource_type, resource_id, owner_id, label) "
-                "VALUES (?, ?, ?, ?)",
+                sql("queries/labels:insert_label"),
                 (rtype, resource_id, owner, label),
             )
         await conn.commit()
@@ -43,7 +43,7 @@ async def clear_labels(resource_type: str, resource_id: str) -> None:
     rtype = normalize_resource_type(resource_type)
     async with open_db() as conn:
         await conn.execute(
-            "DELETE FROM resource_labels WHERE resource_type=? AND resource_id=?",
+            sql("queries/labels:delete_labels"),
             (rtype, resource_id),
         )
         await conn.commit()
@@ -59,14 +59,12 @@ async def resources_with_label(
     async with open_db() as conn:
         if owner_id is None:
             rows = await conn.fetchall(
-                "SELECT resource_type, resource_id, owner_id FROM resource_labels "
-                "WHERE label=? ORDER BY resource_type, resource_id",
+                sql("queries/labels:by_label"),
                 (label,),
             )
         else:
             rows = await conn.fetchall(
-                "SELECT resource_type, resource_id, owner_id FROM resource_labels "
-                "WHERE label=? AND owner_id=? ORDER BY resource_type, resource_id",
+                sql("queries/labels:by_label_and_owner"),
                 (label, owner_id),
             )
     return [

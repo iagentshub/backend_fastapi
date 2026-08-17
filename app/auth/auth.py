@@ -39,6 +39,7 @@ from app.auth.user_lookup import (  # noqa: F401 - re-exportadas para compat
 )
 from app.config.data import DATA_DIR
 from app.config.session import EMAIL_VERIFY_ENABLED
+from app.sql import sql
 from app.storage.db import IS_PG, open_db
 from app.storage.guest import is_guest
 from app.utils import flog
@@ -58,15 +59,14 @@ async def register_user(username: str, password: str, email: str = "") -> None:
     async with open_db() as conn:
         async with conn.transaction():
             if await conn.fetchone(
-                "SELECT 1 FROM users WHERE username = ?", (username,)
+                sql("queries/auth:username_exists"), (username,)
             ):
                 raise ValueError("El nombre de usuario ya está en uso")
-            if await conn.fetchone("SELECT 1 FROM users WHERE email = ?", (email,)):
+            if await conn.fetchone(sql("queries/auth:email_exists"), (email,)):
                 raise ValueError("El correo electrónico ya está registrado")
             now = generate_date()
             await conn.execute(
-                "INSERT INTO users (id, username, email, password_hash, role, is_active, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                sql("queries/auth:insert_user_basic"),
                 (generate_id(32), username, email, password_hash, "standard", 1, now),
             )
     flog.ok(f"Nuevo usuario: {username}", username=username)
@@ -95,9 +95,9 @@ async def register_user_email(
     password_hash = await hash_password_async(password)
     async with open_db() as conn:
         async with conn.transaction():
-            if await conn.fetchone("SELECT 1 FROM users WHERE username = ?", (username,)):
+            if await conn.fetchone(sql("queries/auth:username_exists"), (username,)):
                 raise ValueError("El nombre de usuario ya está en uso")
-            if await conn.fetchone("SELECT 1 FROM users WHERE email = ?", (email,)):
+            if await conn.fetchone(sql("queries/auth:email_exists"), (email,)):
                 raise ValueError("El correo electrónico ya está registrado")
             now = generate_date()
             is_verified = 1
@@ -107,10 +107,7 @@ async def register_user_email(
                 token_hash = _hash_token(token)
                 is_verified = 0
             await conn.execute(
-                "INSERT INTO users "
-                "(id, username, email, password_hash, display_name, birth_date, gender, "
-                "country, phone, role, is_active, is_verified, verification_token, created_at) "
-                "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                sql("queries/auth:insert_user_full"),
                 (
                     generate_id(32),
                     username,
@@ -136,14 +133,14 @@ async def verify_email_token(token: str) -> Optional[str]:
     """Mark user as verified by their token. Returns the username on success, None if invalid."""
     async with open_db() as conn:
         row = await conn.fetchone(
-            "SELECT username FROM users WHERE verification_token = ? AND is_verified = 0",
+            sql("queries/auth:username_by_verification_token"),
             (_hash_token(token),),
         )
         if not row:
             return None
         username = row[0]
         await conn.execute(
-            "UPDATE users SET is_verified = 1, verification_token = NULL WHERE username = ?",
+            sql("queries/auth:mark_verified"),
             (username,),
         )
         await conn.commit()
@@ -156,7 +153,7 @@ async def create_password_reset_token(email: str) -> Optional[str]:
 
     async with open_db() as conn:
         if not await conn.fetchone(
-            "SELECT username FROM users WHERE email = ? AND is_active = 1", (email,)
+            sql("queries/auth:username_by_email_active"), (email,)
         ):
             return None
         token = secrets.token_urlsafe(32)
@@ -164,7 +161,7 @@ async def create_password_reset_token(email: str) -> Optional[str]:
             datetime.now(timezone.utc) + timedelta(hours=PASSWORD_RESET_EXPIRE_HOURS)
         ).isoformat()
         await conn.execute(
-            "UPDATE users SET reset_token = ?, reset_token_expires = ? WHERE email = ?",
+            sql("queries/auth:set_reset_token"),
             (_hash_token(token), expires, email),
         )
         await conn.commit()
@@ -176,7 +173,7 @@ async def consume_reset_token(token: str, new_password: str) -> bool:
     token_hash = _hash_token(token)
     async with open_db() as conn:
         row = await conn.fetchone(
-            "SELECT reset_token_expires FROM users WHERE reset_token = ?",
+            sql("queries/auth:reset_token_expiry"),
             (token_hash,),
         )
         if not row:
@@ -189,9 +186,7 @@ async def consume_reset_token(token: str, new_password: str) -> bool:
     now = generate_date()
     async with open_db() as conn, conn.transaction():
         updated = await conn.fetchone(
-            "UPDATE users SET password_hash = ?, reset_token = NULL, reset_token_expires = NULL "
-            "WHERE reset_token = ? AND reset_token_expires > ? "
-            "RETURNING username, email",
+            sql("queries/auth:reset_password_by_token"),
             (password_hash, token_hash, now),
         )
         if not updated:
@@ -206,7 +201,7 @@ async def _touch_password_changed_at(conn: Any, username: str) -> None:
     """Marca el instante de cambio de contraseña para invalidar tokens anteriores (A2)."""
     now = generate_date()
     await conn.execute(
-        "UPDATE users SET password_changed_at = ? WHERE id = ? OR username = ?",
+        sql("queries/auth:set_password_changed_at"),
         (now, username, normalize_username(username)),
     )
     await _clear_temp_admin_pass(conn, username)
@@ -232,7 +227,7 @@ async def _clear_temp_admin_pass(conn: Any, username: str) -> None:
 
     target = os.environ.get("GAIA_ADMIN_EMAIL", "admin@localhost.com").strip().lower()
     row = await conn.fetchone(
-        "SELECT 1 FROM users WHERE (id = ? OR username = ?) AND lower(email) = ?",
+        sql("queries/auth:email_matches_user"),
         (username, normalize_username(username), target),
     )
     if not row:
@@ -246,7 +241,7 @@ async def set_own_password(username: str, new_password: str) -> None:
     password_hash = await hash_password_async(new_password)
     async with open_db() as conn:
         await conn.execute(
-            "UPDATE users SET password_hash = ? WHERE id = ? OR username = ?",
+            sql("queries/auth:set_password_by_id_or_username"),
             (password_hash, username, normalize_username(username)),
         )
         await _touch_password_changed_at(conn, username)
@@ -270,7 +265,7 @@ async def get_user_role(username: str) -> str:
 
 async def list_users() -> list:
     async with open_db() as conn:
-        rows = await conn.fetchall("SELECT * FROM users ORDER BY created_at ASC")
+        rows = await conn.fetchall(sql("queries/auth:list_users"))
         result = []
         for row in rows:
             d = dict(row)
@@ -304,7 +299,7 @@ async def admin_update_user(username: str, **fields) -> bool:
         return True
     async with open_db() as conn:
         if not await conn.fetchone(
-            "SELECT 1 FROM users WHERE username = ?", (username,)
+            sql("queries/auth:username_exists"), (username,)
         ):
             return False
         await conn.execute(
@@ -322,11 +317,11 @@ async def admin_set_password(username: str, new_password: str) -> bool:
     password_hash = await hash_password_async(new_password)
     async with open_db() as conn:
         if not await conn.fetchone(
-            "SELECT 1 FROM users WHERE username = ?", (username,)
+            sql("queries/auth:username_exists"), (username,)
         ):
             return False
         await conn.execute(
-            "UPDATE users SET password_hash = ? WHERE username = ?",
+            sql("queries/auth:set_password_by_username"),
             (password_hash, username),
         )
         await _touch_password_changed_at(conn, username)  # A2
@@ -391,7 +386,7 @@ async def ensure_admin_user() -> None:
             if stored_pass:
                 async with open_db() as _chk:
                     _row = await _chk.fetchone(
-                        "SELECT password_hash FROM users WHERE email = ?",
+                        sql("queries/auth:password_hash_by_email"),
                         (target_email,),
                     )
                 if _row and _row["password_hash"]:
@@ -412,14 +407,14 @@ async def ensure_admin_user() -> None:
 
     async with open_db() as conn:
         row = await conn.fetchone(
-            "SELECT username, role FROM users WHERE email = ?", (target_email,)
+            sql("queries/auth:username_role_by_email"), (target_email,)
         )
         target = dict(row) if row else None
 
         if target:
             if target["role"] != "admin":
                 await conn.execute(
-                    "UPDATE users SET role = ? WHERE email = ?", ("admin", target_email)
+                    sql("queries/auth:set_role_by_email"), ("admin", target_email)
                 )
                 await conn.commit()
                 if not reset_mode:
@@ -438,7 +433,7 @@ async def ensure_admin_user() -> None:
             password = secrets.token_urlsafe(12)
             password_hash = await hash_password_async(password)
             await conn.execute(
-                "UPDATE users SET password_hash = ? WHERE email = ?",
+                sql("queries/auth:set_password_by_email"),
                 (password_hash, target_email),
             )
             await conn.commit()
@@ -446,7 +441,7 @@ async def ensure_admin_user() -> None:
         else:
             # No hay cuenta con ese email
             existing = await conn.fetchone(
-                "SELECT username FROM users WHERE role = ? LIMIT 1", ("admin",)
+                sql("queries/auth:first_user_with_role"), ("admin",)
             )
             if existing and not reset_mode:
                 return
@@ -456,9 +451,7 @@ async def ensure_admin_user() -> None:
             now = generate_date()
             try:
                 await conn.execute(
-                    "INSERT INTO users "
-                    "(id, username, email, password_hash, role, is_active, is_verified, created_at) "
-                    "VALUES (?,?,?,?,?,?,?,?)",
+                    sql("queries/auth:insert_user_with_role"),
                     (
                         generate_id(32),
                         target_username,

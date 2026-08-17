@@ -10,6 +10,7 @@ from fastapi import Request
 from app.config.server import WORKERS as _WORKERS
 from app.config.session import RATE_MAX_IPS as _MAX_IPS
 from app.errors import APIError
+from app.sql import sql
 from app.storage.db import open_db
 from app.utils.net import client_ip as _client_ip
 
@@ -92,22 +93,11 @@ class RateLimiter:
         now = time.time()
         cutoff = now - self._window
         limiter_key = f"{self._name}:{key}"
-        query = """
-            INSERT INTO rate_limit_windows(limiter_key, window_start, request_count)
-            VALUES (?, ?, 1)
-            ON CONFLICT(limiter_key) DO UPDATE SET
-                window_start = CASE
-                    WHEN rate_limit_windows.window_start <= ? THEN excluded.window_start
-                    ELSE rate_limit_windows.window_start
-                END,
-                request_count = CASE
-                    WHEN rate_limit_windows.window_start <= ? THEN 1
-                    ELSE rate_limit_windows.request_count + 1
-                END
-            RETURNING request_count, window_start
-        """
         async with open_db() as conn:
-            row = await conn.fetchone(query, (limiter_key, now, cutoff, cutoff))
+            row = await conn.fetchone(
+                sql("queries/ratelimit:consume_window"),
+                (limiter_key, now, cutoff, cutoff),
+            )
             await conn.commit()
         count = int(row[0]) if row else self._calls + 1
         window_start = float(row[1]) if row else now

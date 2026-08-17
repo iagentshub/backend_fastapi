@@ -9,6 +9,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, Dict, List, Optional
 
+from app.sql import sql
 from app.storage.db import open_db
 from app.utils import now_iso as _now
 
@@ -64,8 +65,7 @@ class GroupShareStorage:
         """Pares (tipo, id) que el grupo solo ve porque los arrastró otro recurso."""
         async with open_db() as conn:
             rows = await conn.fetchall(
-                "SELECT resource_type, resource_id FROM resource_group_shares "
-                "WHERE group_id = ? AND via_cascade = 1",
+                sql("queries/group_shares:cascade_shares_of_group"),
                 (group_id,),
             )
             return [(str(row[0]), str(row[1])) for row in rows]
@@ -75,9 +75,7 @@ class GroupShareStorage:
     ) -> bool:
         async with open_db() as conn:
             row = await conn.fetchone(
-                "DELETE FROM resource_group_shares "
-                "WHERE resource_type = ? AND resource_id = ? AND group_id = ? "
-                "RETURNING group_id",
+                sql("queries/group_shares:delete_share"),
                 (resource_type, resource_id, group_id),
             )
             await conn.commit()
@@ -89,8 +87,7 @@ class GroupShareStorage:
         """IDs de recursos compartidos directamente con TODO el group."""
         async with open_db() as conn:
             rows = await conn.fetchall(
-                "SELECT resource_id FROM resource_group_shares "
-                "WHERE group_id = ? AND resource_type = ?",
+                sql("queries/group_shares:resource_ids_shared"),
                 (group_id, resource_type),
             )
             return [r[0] for r in rows]
@@ -101,11 +98,7 @@ class GroupShareStorage:
         """Mapa recurso→grupos accesibles en una única consulta por usuario."""
         async with open_db() as conn:
             rows = await conn.fetchall(
-                "SELECT s.resource_id, s.group_id "
-                "FROM resource_group_shares s "
-                "JOIN group_members m ON m.group_id = s.group_id "
-                "JOIN groups g ON g.id = s.group_id "
-                "WHERE m.username = ? AND s.resource_type = ? AND g.is_active = 1",
+                sql("queries/group_shares:shares_visible_to_user"),
                 (username, resource_type),
             )
         result: Dict[str, List[str]] = {}

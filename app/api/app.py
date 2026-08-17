@@ -62,6 +62,7 @@ from app.services.workflow_run_executor import (
     stop_workflow_runs,
     workflow_run_maintenance_loop,
 )
+from app.sql import sql
 from app.storage.db import close_db_pool, init_db, open_db
 from app.utils import flog
 
@@ -283,7 +284,7 @@ def create_app() -> FastAPI:
     async def _health():
         try:
             async with open_db() as conn:
-                await conn.fetchval("SELECT 1")
+                await conn.fetchval(sql("queries/health:ping"))
             db_ok = True
         except Exception as exc:  # noqa: BLE001
             # /api/health tiene que responder siempre, incluso con la BD rota:

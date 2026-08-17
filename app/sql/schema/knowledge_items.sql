@@ -1,0 +1,28 @@
+CREATE TABLE IF NOT EXISTS knowledge_items (
+    id         TEXT PRIMARY KEY,
+    owner_id   TEXT NOT NULL,
+    type       TEXT NOT NULL,
+    title      TEXT NOT NULL,
+    source     TEXT NOT NULL,
+    content    TEXT NOT NULL,
+    char_count INTEGER NOT NULL DEFAULT 0,
+    mime_type  TEXT NOT NULL DEFAULT '',
+    size_bytes BIGINT NOT NULL DEFAULT 0,
+    checksum   TEXT NOT NULL DEFAULT '',
+    pack_id    TEXT,
+    pack_relative_path TEXT NOT NULL DEFAULT '',
+    pack_kind  TEXT NOT NULL DEFAULT '',
+    labels     TEXT NOT NULL DEFAULT '["private"]',
+    is_active  @BOOL@ NOT NULL DEFAULT 1,
+    deactivated_at TEXT,
+    official_source_id    TEXT,
+    -- Trazabilidad de solo escritura; se lee por
+    -- resource_source_links.component_key. Ver agents.sql.
+    official_component_id TEXT,
+    created_at TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_knowledge_owner
+    ON knowledge_items(owner_id, type, created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_knowledge_official
+    ON knowledge_items(official_source_id);

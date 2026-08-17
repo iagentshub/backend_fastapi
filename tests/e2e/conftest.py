@@ -1,4 +1,5 @@
 """E2E fixtures: real uvicorn server on a random TCP port."""
+
 from __future__ import annotations
 
 import io
@@ -52,19 +53,24 @@ def live_server():
     env = {
         **os.environ,
         "GAIA_DATA_DIR": str(data_dir),
-        "DATABASE_URL": "",               # force SQLite
+        "DATABASE_URL": "",  # force SQLite
         "GAIA_ADMIN_EMAIL": admin_email,  # server creates/promotes this user on startup
         "PYTHONPATH": str(BACKEND_DIR),
     }
 
     proc = subprocess.Popen(
         [
-            sys.executable, "-m", "uvicorn",
+            sys.executable,
+            "-m",
+            "uvicorn",
             "app.api.app:create_app",
             "--factory",
-            "--host", "127.0.0.1",
-            "--port", str(port),
-            "--log-level", "warning",
+            "--host",
+            "127.0.0.1",
+            "--port",
+            str(port),
+            "--log-level",
+            "warning",
         ],
         cwd=str(BACKEND_DIR),
         env=env,
@@ -98,11 +104,15 @@ def auth_client(live_server):
     deadline = time.monotonic() + 5.0
     while not pass_file.exists() and time.monotonic() < deadline:
         time.sleep(0.1)
-    assert pass_file.exists(), f".admin_pass not found in {data_dir} — server may not have started correctly"
+    assert pass_file.exists(), (
+        f".admin_pass not found in {data_dir} — server may not have started correctly"
+    )
     password = pass_file.read_text(encoding="utf-8").strip()
 
     with httpx.Client(base_url=base, follow_redirects=True) as client:
-        r = client.post("/api/auth/login", json={"email": admin_email, "password": password})
+        r = client.post(
+            "/api/auth/login", json={"email": admin_email, "password": password}
+        )
         assert r.status_code == 200, f"Login failed: {r.text}"
         # CsrfMiddleware exige X-CSRF-Token en toda mutación autenticada por
         # cookie; React y Flutter la leen de `ga_csrf` (no HttpOnly) y la
@@ -115,12 +125,18 @@ def auth_client(live_server):
 
 # ── Shared helpers ────────────────────────────────────────────────────────────
 
-def create_skill(client: httpx.Client, name: str, description: str, content: str) -> dict:
-    r = client.post("/api/skills/private", json={
-        "name": name,
-        "description": description,
-        "content": content,
-    })
+
+def create_skill(
+    client: httpx.Client, name: str, description: str, content: str
+) -> dict:
+    r = client.post(
+        "/api/skills/private",
+        json={
+            "name": name,
+            "description": description,
+            "content": content,
+        },
+    )
     assert r.status_code == 200, r.text
     return r.json()
 

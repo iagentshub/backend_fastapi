@@ -13,6 +13,7 @@ from app.api.routes.auth import require_auth
 from app.auth.auth import get_user_by_username
 from app.errors import APIError
 from app.pagination.http import TOTAL_HEADER
+from app.sql import sql
 from app.storage.db import open_db
 
 router = APIRouter(prefix="/api/users", tags=["users"])
@@ -23,9 +24,7 @@ async def _get_social_fields(username: str) -> dict[str, Any]:
 
     async with open_db() as conn:
         row = await conn.fetchone(
-            "SELECT id, CASE WHEN avatar IS NULL OR avatar = '' THEN 0 ELSE 1 END, "
-            "bio, languages, email, is_email_public, github, cv, created_at "
-            "FROM users WHERE username = ?",
+            sql("queries/users:public_profile"),
             (username,),
         )
         if not row:
@@ -33,14 +32,14 @@ async def _get_social_fields(username: str) -> dict[str, Any]:
         user_id = row[0]
         followers_count = (
             await conn.fetchval(
-                "SELECT COUNT(*) FROM user_follows WHERE following = ?",
+                sql("queries/users:count_followers"),
                 (user_id,),
             )
             or 0
         )
         following_count = (
             await conn.fetchval(
-                "SELECT COUNT(*) FROM user_follows WHERE follower = ?",
+                sql("queries/users:count_following"),
                 (user_id,),
             )
             or 0
@@ -76,34 +75,23 @@ async def search_users(
         if response is not None:
             if q:
                 total = await conn.fetchval(
-                    "SELECT COUNT(*) FROM users u "
-                    "WHERE u.id != ? AND LOWER(u.username) LIKE LOWER(?)",
+                    sql("queries/users:count_matching"),
                     (username, f"%{q}%"),
                 )
             else:
                 total = await conn.fetchval(
-                    "SELECT COUNT(*) FROM users u WHERE u.id != ?", (username,)
+                    sql("queries/users:count_all"), (username,)
                 )
             response.headers[TOTAL_HEADER] = str(total or 0)
         if q:
             pattern = f"%{q}%"
             rows = await conn.fetchall(
-                "SELECT u.username, CASE WHEN u.avatar IS NULL OR u.avatar = '' THEN 0 ELSE 1 END, "
-                "(SELECT COUNT(*) FROM user_follows WHERE following = u.id) AS followers_count, "
-                "(SELECT COUNT(*) FROM resource_social WHERE owner IN (u.id, u.username) AND is_public = 1) AS public_resources_count "
-                "FROM users u "
-                "WHERE u.id != ? AND LOWER(u.username) LIKE LOWER(?) "
-                "ORDER BY u.username LIMIT ? OFFSET ?",
+                sql("queries/users:search_page"),
                 (username, pattern, limit, offset),
             )
         else:
             rows = await conn.fetchall(
-                "SELECT u.username, CASE WHEN u.avatar IS NULL OR u.avatar = '' THEN 0 ELSE 1 END, "
-                "(SELECT COUNT(*) FROM user_follows WHERE following = u.id) AS followers_count, "
-                "(SELECT COUNT(*) FROM resource_social WHERE owner IN (u.id, u.username) AND is_public = 1) AS public_resources_count "
-                "FROM users u "
-                "WHERE u.id != ? "
-                "ORDER BY u.username LIMIT ? OFFSET ?",
+                sql("queries/users:list_page"),
                 (username, limit, offset),
             )
     return [
@@ -126,7 +114,7 @@ async def get_avatar(username: str, _: str = Depends(require_auth)):
 
     async with open_db() as conn:
         row = await conn.fetchone(
-            "SELECT avatar FROM users WHERE username=?", (username,)
+            sql("queries/users:avatar_of"), (username,)
         )
 
     if not row or not row[0]:

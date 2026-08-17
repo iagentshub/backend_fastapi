@@ -17,6 +17,7 @@ from app.models.request_bodies import (
     StatusBody,
     VerificationBody,
 )
+from app.sql import sql
 from app.storage.agent_storage import AgentStorage as _AgentStorage
 from app.storage.db import open_db
 from app.storage.groups import GroupStorage as _GroupStorage
@@ -32,7 +33,7 @@ _llm_orchestrations = _LLMOrchestrationStorage()
 
 
 async def _username_map(conn: Any) -> dict[str, str]:
-    rows = await conn.fetchall("SELECT id, username FROM users")
+    rows = await conn.fetchall(sql("queries/admin_resources:user_ids"))
     return {str(row[0]): str(row[1]) for row in rows}
 
 
@@ -44,8 +45,7 @@ async def admin_list_connections(
 
     async with open_db() as conn:
         rows = await conn.fetchall(
-            "SELECT id, owner_id, provider_account_id, name, data, tokens_in, tokens_out, created_at "
-            "FROM connections ORDER BY created_at DESC"
+            sql("queries/admin_resources:list_connections")
         )
         username_map = await _username_map(conn)
     result = []
@@ -103,7 +103,7 @@ async def admin_list_agents(_: str = Depends(require_admin)) -> list[dict[str, A
     async with open_db() as conn:
         username_map = await _username_map(conn)
         conn_rows = await conn.fetchall(
-            "SELECT id, owner_id, tokens_in, tokens_out FROM connections"
+            sql("queries/admin_resources:connection_tokens")
         )
     conn_data = {
         r[0]: {"owner_id": r[1], "tokens_in": r[2], "tokens_out": r[3]}
@@ -273,8 +273,7 @@ async def admin_list_memory(_: str = Depends(require_admin)) -> list[dict[str, A
     async with open_db() as conn:
         username_map = await _username_map(conn)
         rows = await conn.fetchall(
-            "SELECT id, owner_id, content, updated_at FROM memory_files "
-            "ORDER BY updated_at DESC"
+            sql("queries/admin_resources:list_memory_files")
         )
     return [
         {
@@ -404,9 +403,7 @@ async def admin_list_groups(
 
     async with open_db() as conn:
         group_rows = await conn.fetchall(
-            "SELECT g.id, g.name, g.created_by, u.username, g.created_at, g.is_active "
-            "FROM groups g LEFT JOIN users u ON u.id = g.created_by "
-            "ORDER BY g.created_at DESC"
+            sql("queries/admin_resources:list_groups")
         )
         groups = [
             {
@@ -421,19 +418,18 @@ async def admin_list_groups(
             for r in group_rows
         ]
         mc_rows = await conn.fetchall(
-            "SELECT group_id, COUNT(*) FROM group_members GROUP BY group_id"
+            sql("queries/admin_resources:members_per_group")
         )
         member_counts = {r[0]: r[1] for r in mc_rows}
         cs_rows = await conn.fetchall(
-            "SELECT owner_id, COUNT(*), COALESCE(SUM(tokens_in), 0), COALESCE(SUM(tokens_out), 0) "
-            "FROM connections GROUP BY owner_id"
+            sql("queries/admin_resources:connections_per_owner")
         )
         conn_stats = {
             r[0]: {"count": r[1], "tokens_in": r[2], "tokens_out": r[3]}
             for r in cs_rows
         }
         kc_rows = await conn.fetchall(
-            "SELECT owner_id, COUNT(*) FROM knowledge_items GROUP BY owner_id"
+            sql("queries/admin_resources:knowledge_per_owner")
         )
         know_counts = {r[0]: r[1] for r in kc_rows}
 
@@ -518,7 +514,7 @@ async def admin_verify_resource(
 
     async with open_db() as conn:
         row = await conn.fetchone(
-            "SELECT 1 FROM resource_social WHERE resource_type=? AND resource_id=?",
+            sql("queries/admin_resources:social_exists"),
             (resource_type, resource_id),
         )
         if not row:
@@ -529,7 +525,7 @@ async def admin_verify_resource(
                 extra={"resource": "resource"},
             )
         await conn.execute(
-            "UPDATE resource_social SET verified=? WHERE resource_type=? AND resource_id=?",
+            sql("queries/admin_resources:set_verified"),
             (db_val, resource_type, resource_id),
         )
         await conn.commit()
@@ -570,7 +566,7 @@ async def admin_set_resource_owner(
 
     async with open_db() as conn:
         user_row = await conn.fetchone(
-            "SELECT id, username, is_active FROM users WHERE username=?", (new_owner,)
+            sql("queries/admin_resources:user_by_username"), (new_owner,)
         )
         if not user_row:
             raise APIError(

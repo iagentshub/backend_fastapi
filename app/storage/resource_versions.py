@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Optional
 
+from app.sql import sql
 from app.storage.db import AsyncConn, open_db
 from app.utils.generators import generate_date as _now
 from app.utils.generators import generate_id
@@ -24,8 +25,7 @@ class ResourceVersionStorage:
     ) -> Dict[str, Any]:
         async def write(target: AsyncConn) -> Dict[str, Any]:
             latest = await target.fetchval(
-                "SELECT MAX(version) FROM resource_versions "
-                "WHERE resource_type=? AND resource_id=? AND owner_id=?",
+                sql("queries/resource_versions:max_version"),
                 (resource_type, resource_id, owner_id),
             )
             version = int(latest or 0) + 1
@@ -41,9 +41,7 @@ class ResourceVersionStorage:
                 "created_at": _now(),
             }
             await target.execute(
-                "INSERT INTO resource_versions "
-                "(id, resource_type, resource_id, owner_id, version, snapshot, "
-                "created_by, reason, created_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                sql("queries/resource_versions:insert_version"),
                 (
                     item["id"],
                     resource_type,
@@ -70,9 +68,7 @@ class ResourceVersionStorage:
     ) -> List[Dict[str, Any]]:
         async with open_db() as conn:
             rows = await conn.fetchall(
-                "SELECT id, version, created_by, reason, created_at "
-                "FROM resource_versions WHERE resource_type=? AND resource_id=? "
-                "AND owner_id=? ORDER BY version DESC",
+                sql("queries/resource_versions:list_versions"),
                 (resource_type, resource_id, owner_id),
             )
         return [dict(row) for row in rows]
@@ -82,8 +78,7 @@ class ResourceVersionStorage:
     ) -> Optional[Dict[str, Any]]:
         async with open_db() as conn:
             row = await conn.fetchone(
-                "SELECT * FROM resource_versions WHERE resource_type=? "
-                "AND resource_id=? AND owner_id=? AND version=?",
+                sql("queries/resource_versions:get_version"),
                 (resource_type, resource_id, owner_id, version),
             )
         if not row:

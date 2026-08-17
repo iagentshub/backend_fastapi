@@ -16,6 +16,7 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING, List, Optional
 
+from app.sql import sql
 from app.storage import labels as _labels
 from app.storage.migration import LegacyMigrationStorage
 from app.utils.generators import generate_date
@@ -87,14 +88,15 @@ class ResourceStorage(LegacyMigrationStorage):
             from app.models.resource_types import normalize_resource_type
 
             resource_type = normalize_resource_type(self.resource_type)
+            # Las mismas dos sentencias que usa storage/labels.py: comparten
+            # sección para que el índice transversal se escriba igual desde los
+            # dos sitios.
             await conn.execute(
-                "DELETE FROM resource_labels WHERE resource_type=? AND resource_id=?",
-                (resource_type, resource_id),
+                sql("queries/labels:delete_labels"), (resource_type, resource_id)
             )
             for label in sorted({item.strip() for item in labels if item.strip()}):
                 await conn.execute(
-                    "INSERT INTO resource_labels "
-                    "(resource_type,resource_id,owner_id,label) VALUES (?,?,?,?)",
+                    sql("queries/labels:insert_label"),
                     (resource_type, resource_id, owner_id or "", label),
                 )
             return

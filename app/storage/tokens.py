@@ -19,6 +19,7 @@ import secrets
 from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional, Tuple
 
+from app.sql import sql
 from app.storage.db import open_db
 from app.utils import now_iso as _now
 from app.utils.generators import generate_id
@@ -109,12 +110,11 @@ async def create_auth_code(username: str, state: str) -> str:
         async with conn.transaction():
             # Barrido perezoso: los caducados se van solos, sin cron.
             await conn.execute(
-                "DELETE FROM vscode_auth_codes WHERE expires_at <= ?",
+                sql("queries/tokens:purge_expired_codes"),
                 (now.isoformat(),),
             )
             await conn.execute(
-                "INSERT INTO vscode_auth_codes (code_hash, username, state, expires_at) "
-                "VALUES (?, ?, ?, ?)",
+                sql("queries/tokens:insert_auth_code"),
                 (
                     hash_token(code),
                     username,
@@ -133,7 +133,7 @@ async def consume_auth_code(code: str, state: str) -> Optional[str]:
     """
     async with open_db() as conn:
         row = await conn.fetchone(
-            "SELECT * FROM vscode_auth_codes WHERE code_hash = ?",
+            sql("queries/tokens:get_auth_code"),
             (hash_token(code),),
         )
         if row is None:
@@ -146,7 +146,7 @@ async def consume_auth_code(code: str, state: str) -> Optional[str]:
         # DELETE ... RETURNING (SQLite ≥3.35 y PG lo soportan).
         async with conn.transaction():
             await conn.execute(
-                "DELETE FROM vscode_auth_codes WHERE code_hash = ?",
+                sql("queries/tokens:delete_auth_code"),
                 (data["code_hash"],),
             )
 
@@ -194,9 +194,7 @@ class TokenStorage:
         async with open_db() as conn:
             async with conn.transaction():
                 await conn.execute(
-                    "INSERT INTO personal_access_tokens "
-                    "(id, username, name, token_hash, prefix, created_at, expires_at) "
-                    "VALUES (?, ?, ?, ?, ?, ?, ?)",
+                    sql("queries/tokens:insert_pat"),
                     (
                         row["id"],
                         username,
@@ -212,8 +210,7 @@ class TokenStorage:
     async def list_for_user(self, username: str) -> List[Dict[str, Any]]:
         async with open_db() as conn:
             rows = await conn.fetchall(
-                "SELECT * FROM personal_access_tokens WHERE username = ? "
-                "ORDER BY created_at DESC",
+                sql("queries/tokens:list_pats"),
                 (username,),
             )
         return [_public(r) for r in rows]
@@ -228,15 +225,14 @@ class TokenStorage:
         """
         async with open_db() as conn:
             row = await conn.fetchone(
-                "SELECT id FROM personal_access_tokens "
-                "WHERE id = ? AND username = ? AND revoked_at IS NULL",
+                sql("queries/tokens:active_pat_of_user"),
                 (token_id, username),
             )
             if row is None:
                 return False
             async with conn.transaction():
                 await conn.execute(
-                    "UPDATE personal_access_tokens SET revoked_at = ? WHERE id = ?",
+                    sql("queries/tokens:revoke_pat"),
                     (_now(), token_id),
                 )
             return True
@@ -253,7 +249,7 @@ class TokenStorage:
 
         async with open_db() as conn:
             row = await conn.fetchone(
-                "SELECT * FROM personal_access_tokens WHERE token_hash = ?",
+                sql("queries/tokens:pat_by_hash"),
                 (hash_token(token),),
             )
             if row is None:
@@ -272,7 +268,7 @@ class TokenStorage:
             if last_used is None or now - last_used >= _LAST_USED_GRANULARITY:
                 async with conn.transaction():
                     await conn.execute(
-                        "UPDATE personal_access_tokens SET last_used_at = ? WHERE id = ?",
+                        sql("queries/tokens:touch_pat"),
                         (now.isoformat(), data["id"]),
                     )
 

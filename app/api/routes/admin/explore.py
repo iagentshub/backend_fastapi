@@ -30,6 +30,7 @@ from app.models.llm_orchestration import (
     orchestration_id_from_connection,
 )
 from app.pagination.materialized import paginate_materialized
+from app.sql import sql
 from app.storage.db import open_db
 from app.storage.knowledge_packs import KnowledgePackStorage
 from app.storage.official_source_storage import OfficialSourceStorage
@@ -212,9 +213,7 @@ async def admin_resource_graph(
     packs_by_id = {str(pack["id"]): pack for pack in packs}
     async with open_db() as conn:
         pack_member_rows = await conn.fetchall(
-            "SELECT pack_id,id AS knowledge_id,pack_relative_path AS relative_path,"
-            "pack_kind AS kind FROM knowledge_items WHERE pack_id IS NOT NULL "
-            "ORDER BY pack_id,pack_relative_path"
+            sql("queries/admin_explore:pack_files")
         )
     pack_members: dict[str, list[dict[str, Any]]] = {}
     for row in pack_member_rows:
@@ -243,7 +242,7 @@ async def admin_resource_graph(
 
     async with open_db() as conn:
         account_rows = await conn.fetchall(
-            "SELECT id,owner_id,provider,data FROM accounts"
+            sql("queries/admin_explore:all_accounts")
         )
     provider_accounts: dict[tuple[str, str], dict[str, str]] = {}
     for row in account_rows:
@@ -522,10 +521,10 @@ async def admin_resource_graph(
 
     async with open_db() as conn:
         member_rows = await conn.fetchall(
-            "SELECT group_id, username, role FROM group_members"
+            sql("queries/admin_explore:all_group_members")
         )
         share_rows = await conn.fetchall(
-            "SELECT group_id, resource_type, resource_id FROM resource_group_shares"
+            sql("queries/admin_explore:all_group_shares")
         )
 
     if resource_type == "user":

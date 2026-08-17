@@ -26,6 +26,7 @@ from app.services.agent_access import agent_access
 from app.services.agent_listing import list_authenticated_agents
 from app.services.agent_presentation import apply_agent_locale
 from app.services.agent_presentation import validate_agent_scope as _check_scope
+from app.sql import sql
 from app.storage.agent_storage import AgentStorage
 from app.storage.chat import ChatStorage
 from app.storage.connection_storage import ConnectionStorage
@@ -410,8 +411,7 @@ async def save_agent(
             if scope == "public":
                 await _assert_not_linked_copy(conn, "agent", saved["id"], group_id)
                 previous = await conn.fetchone(
-                    "SELECT category, trial_missing_deps FROM resource_social "
-                    "WHERE resource_type=? AND resource_id=? AND owner=?",
+                    sql("queries/agents:social_category_of_agent"),
                     ("agent", saved["id"], group_id),
                 )
                 await _upsert_social(
@@ -429,8 +429,7 @@ async def save_agent(
                 )
             else:
                 await conn.execute(
-                    "DELETE FROM resource_social WHERE resource_type=? "
-                    "AND resource_id=? AND owner=?",
+                    sql("queries/agents:delete_social_of_agent"),
                     ("agent", saved["id"], group_id),
                 )
             await conn.commit()

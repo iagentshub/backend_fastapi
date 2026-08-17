@@ -9,6 +9,7 @@ from __future__ import annotations
 import json
 from typing import Any, Callable, Dict, List, Optional
 
+from app.sql import sql
 from app.storage.db import IS_PG, open_db
 from app.utils import now_iso as _now
 from app.utils.generators import generate_id
@@ -33,7 +34,7 @@ class GroupStorage:
     async def get(self, group_id: str) -> Optional[Dict[str, Any]]:
         async with open_db() as conn:
             row = await conn.fetchone(
-                "SELECT * FROM groups WHERE id = ?", (group_id,)
+                sql("queries/groups:get_by_id"), (group_id,)
             )
             return _row(row)
 
@@ -41,10 +42,7 @@ class GroupStorage:
         """Devuelve todos los groups de equipo donde el usuario es miembro."""
         async with open_db() as conn:
             rows = await conn.fetchall(
-                "SELECT w.*, wm.role, u.username AS created_by_username FROM groups w "
-                "JOIN group_members wm ON w.id = wm.group_id "
-                "LEFT JOIN users u ON u.id = w.created_by "
-                "WHERE wm.username = ? ORDER BY w.created_at ASC",
+                sql("queries/groups:list_for_user"),
                 (username,),
             )
             result: List[Dict[str, Any]] = []
@@ -60,13 +58,11 @@ class GroupStorage:
         async with open_db() as conn:
             async with conn.transaction():
                 await conn.execute(
-                    "INSERT INTO groups (id, name, created_by, created_at) "
-                    "VALUES (?, ?, ?, ?)",
+                    sql("queries/groups:insert_group"),
                     (group_id, name.strip(), created_by, now),
                 )
                 await conn.execute(
-                    "INSERT INTO group_members (group_id, username, role, joined_at) "
-                    "VALUES (?, ?, ?, ?)",
+                    sql("queries/groups:insert_owner_member"),
                     (group_id, created_by, "owner", now),
                 )
         return {
@@ -82,7 +78,7 @@ class GroupStorage:
     async def update(self, group_id: str, name: str) -> bool:
         async with open_db() as conn:
             row = await conn.fetchone(
-                "UPDATE groups SET name = ? WHERE id = ? RETURNING id",
+                sql("queries/groups:update_name"),
                 (name.strip(), group_id),
             )
             await conn.commit()
@@ -97,32 +93,32 @@ class GroupStorage:
                 agent_ids = [
                     r[0]
                     for r in await conn.fetchall(
-                        "SELECT id FROM agents WHERE owner_id = ?", (group_id,)
+                        sql("queries/groups:agent_ids_by_owner"), (group_id,)
                     )
                 ]
                 skill_ids = [
                     r[0]
                     for r in await conn.fetchall(
-                        "SELECT id FROM skills WHERE owner_id = ?", (group_id,)
+                        sql("queries/groups:skill_ids_by_owner"), (group_id,)
                     )
                 ]
                 knowledge_ids = [
                     r[0]
                     for r in await conn.fetchall(
-                        "SELECT id FROM knowledge_items WHERE owner_id = ?",
+                        sql("queries/groups:knowledge_ids_by_owner"),
                         (group_id,),
                     )
                 ]
                 connection_ids = [
                     r[0]
                     for r in await conn.fetchall(
-                        "SELECT id FROM connections WHERE owner_id = ?", (group_id,)
+                        sql("queries/groups:connection_ids_by_owner"), (group_id,)
                     )
                 ]
                 workflow_ids = [
                     r[0]
                     for r in await conn.fetchall(
-                        "SELECT id FROM agent_workflows WHERE owner_id = ?",
+                        sql("queries/groups:workflow_ids_by_owner"),
                         (group_id,),
                     )
                 ]
@@ -136,43 +132,43 @@ class GroupStorage:
                 ):
                     for rid in ids:
                         await conn.execute(
-                            "DELETE FROM resource_social WHERE resource_type = ? AND resource_id = ?",
+                            sql("queries/groups:delete_social_by_resource"),
                             (resource_type, rid),
                         )
                         await conn.execute(
-                            "DELETE FROM resource_group_shares WHERE resource_type = ? AND resource_id = ?",
+                            sql("queries/groups:delete_shares_by_resource"),
                             (resource_type, rid),
                         )
 
                 await conn.execute(
-                    "DELETE FROM agents WHERE owner_id = ?", (group_id,)
+                    sql("queries/groups:delete_agents_by_owner"), (group_id,)
                 )
                 await conn.execute(
-                    "DELETE FROM skills WHERE owner_id = ?", (group_id,)
+                    sql("queries/groups:delete_skills_by_owner"), (group_id,)
                 )
                 await conn.execute(
-                    "DELETE FROM knowledge_items WHERE owner_id = ?", (group_id,)
+                    sql("queries/groups:delete_knowledge_by_owner"), (group_id,)
                 )
                 await conn.execute(
-                    "DELETE FROM connections WHERE owner_id = ?", (group_id,)
+                    sql("queries/groups:delete_connections_by_owner"), (group_id,)
                 )
                 await conn.execute(
-                    "DELETE FROM agent_workflows WHERE owner_id = ?", (group_id,)
+                    sql("queries/groups:delete_workflows_by_owner"), (group_id,)
                 )
                 await conn.execute(
-                    "DELETE FROM resource_group_shares WHERE group_id = ?",
+                    sql("queries/groups:delete_shares_by_group"),
                     (group_id,),
                 )
                 await conn.execute(
-                    "DELETE FROM group_invitations WHERE group_id = ?",
+                    sql("queries/groups:delete_invitations_by_group"),
                     (group_id,),
                 )
                 await conn.execute(
-                    "DELETE FROM group_members WHERE group_id = ?",
+                    sql("queries/groups:delete_members_by_group"),
                     (group_id,),
                 )
                 row = await conn.fetchone(
-                    "DELETE FROM groups WHERE id = ? RETURNING id",
+                    sql("queries/groups:delete_group"),
                     (group_id,),
                 )
             return row is not None
@@ -181,7 +177,7 @@ class GroupStorage:
         active = 1 if status == "active" else 0
         async with open_db() as conn:
             row = await conn.fetchone(
-                "UPDATE groups SET is_active = ? WHERE id = ? RETURNING id",
+                sql("queries/groups:set_active"),
                 (active, group_id),
             )
             await conn.commit()
@@ -207,18 +203,18 @@ class GroupStorage:
         """Transfer ownership to an existing member. Returns False if not a member."""
         async with open_db() as conn:
             member = await conn.fetchone(
-                "SELECT 1 FROM group_members WHERE group_id = ? AND username = ?",
+                sql("queries/groups:member_exists"),
                 (group_id, new_owner),
             )
             if not member:
                 return False
             async with conn.transaction():
                 await conn.execute(
-                    "UPDATE groups SET created_by = ? WHERE id = ?",
+                    sql("queries/groups:set_created_by"),
                     (new_owner, group_id),
                 )
                 await conn.execute(
-                    "UPDATE group_members SET role = ? WHERE group_id = ? AND username = ?",
+                    sql("queries/groups:set_member_role"),
                     ("owner", group_id, new_owner),
                 )
             return True
@@ -228,10 +224,7 @@ class GroupStorage:
     async def list_members(self, group_id: str) -> List[Dict[str, Any]]:
         async with open_db() as conn:
             rows = await conn.fetchall(
-                "SELECT u.username, wm.role, wm.permissions, wm.joined_at, u.display_name "
-                "FROM group_members wm "
-                "JOIN users u ON u.id = wm.username "
-                "WHERE wm.group_id = ? ORDER BY wm.joined_at ASC",
+                sql("queries/groups:list_members"),
                 (group_id,),
             )
             result = []
@@ -249,7 +242,7 @@ class GroupStorage:
     ) -> Optional[Dict[str, Any]]:
         async with open_db() as conn:
             row = await conn.fetchone(
-                "SELECT * FROM group_members WHERE group_id = ? AND username = ?",
+                sql("queries/groups:get_member"),
                 (group_id, username),
             )
             return _row(row)
@@ -267,16 +260,12 @@ class GroupStorage:
         async with open_db() as conn:
             if IS_PG:
                 await conn.execute(
-                    "INSERT INTO group_members (group_id, username, role, joined_at) "
-                    "VALUES (?, ?, ?, ?) ON CONFLICT (group_id, username) DO UPDATE SET role = ?",
+                    sql("queries/groups:upsert_member_pg"),
                     (group_id, username, role, now, role),
                 )
             else:
                 await conn.execute(
-                    "INSERT INTO group_members "
-                    "(group_id, username, role, joined_at) VALUES (?, ?, ?, ?) "
-                    "ON CONFLICT(group_id, username) "
-                    "DO UPDATE SET role=excluded.role",
+                    sql("queries/groups:upsert_member_sqlite"),
                     (group_id, username, role, now),
                 )
             await conn.commit()
@@ -285,8 +274,7 @@ class GroupStorage:
     async def remove_member(self, group_id: str, username: str) -> bool:
         async with open_db() as conn:
             row = await conn.fetchone(
-                "DELETE FROM group_members "
-                "WHERE group_id = ? AND username = ? RETURNING group_id",
+                sql("queries/groups:delete_member"),
                 (group_id, username),
             )
             await conn.commit()
@@ -299,8 +287,7 @@ class GroupStorage:
             return False
         async with open_db() as conn:
             row = await conn.fetchone(
-                "UPDATE group_members SET role = ? "
-                "WHERE group_id = ? AND username = ? RETURNING group_id",
+                sql("queries/groups:update_member_role"),
                 (role, group_id, username),
             )
             await conn.commit()
@@ -311,8 +298,7 @@ class GroupStorage:
     ) -> bool:
         async with open_db() as conn:
             row = await conn.fetchone(
-                "UPDATE group_members SET permissions = ? "
-                "WHERE group_id = ? AND username = ? RETURNING group_id",
+                sql("queries/groups:update_member_permissions"),
                 (json.dumps(permissions, ensure_ascii=False), group_id, username),
             )
             await conn.commit()
@@ -407,17 +393,12 @@ class GroupStorage:
         async with open_db() as conn:
             if IS_PG:
                 row = await conn.fetchone(
-                    "INSERT INTO group_invitations "
-                    "(id, group_id, invited_by, username, status, created_at) "
-                    "VALUES (?, ?, ?, ?, 'pending', ?) "
-                    "ON CONFLICT (group_id, username) DO NOTHING RETURNING id",
+                    sql("queries/groups:insert_invitation_pg"),
                     (inv_id, group_id, invited_by, username, now),
                 )
             else:
                 row = await conn.fetchone(
-                    "INSERT OR IGNORE INTO group_invitations "
-                    "(id, group_id, invited_by, username, status, created_at) "
-                    "VALUES (?, ?, ?, ?, 'pending', ?) RETURNING id",
+                    sql("queries/groups:insert_invitation_sqlite"),
                     (inv_id, group_id, invited_by, username, now),
                 )
             await conn.commit()
@@ -435,9 +416,7 @@ class GroupStorage:
     async def list_invitations(self, group_id: str) -> List[Dict[str, Any]]:
         async with open_db() as conn:
             rows = await conn.fetchall(
-                "SELECT wi.id, wi.group_id, wi.invited_by, u.username, wi.status, wi.created_at "
-                "FROM group_invitations wi JOIN users u ON u.id = wi.username "
-                "WHERE wi.group_id = ? AND wi.status = 'pending' ORDER BY wi.created_at DESC",
+                sql("queries/groups:list_group_invitations"),
                 (group_id,),
             )
             return [dict(r) for r in rows]
@@ -445,11 +424,7 @@ class GroupStorage:
     async def list_my_invitations(self, username: str) -> List[Dict[str, Any]]:
         async with open_db() as conn:
             rows = await conn.fetchall(
-                "SELECT wi.id, wi.group_id, wi.invited_by, u.username, wi.status, "
-                "wi.created_at, w.name AS group_name FROM group_invitations wi "
-                "LEFT JOIN groups w ON w.id = wi.group_id "
-                "JOIN users u ON u.id = wi.username "
-                "WHERE wi.username = ? AND wi.status = 'pending' ORDER BY wi.created_at DESC",
+                sql("queries/groups:list_user_invitations"),
                 (username,),
             )
             return [dict(r) for r in rows]
@@ -457,8 +432,7 @@ class GroupStorage:
     async def cancel_invitation(self, inv_id: str, group_id: str) -> bool:
         async with open_db() as conn:
             row = await conn.fetchone(
-                "DELETE FROM group_invitations "
-                "WHERE id = ? AND group_id = ? RETURNING id",
+                sql("queries/groups:delete_invitation_by_group"),
                 (inv_id, group_id),
             )
             await conn.commit()
@@ -468,8 +442,7 @@ class GroupStorage:
         """Acepta la invitación y añade al usuario como miembro. Devuelve group_id."""
         async with open_db() as conn:
             row = await conn.fetchone(
-                "SELECT * FROM group_invitations "
-                "WHERE id = ? AND username = ? AND status = 'pending'",
+                sql("queries/groups:get_pending_invitation"),
                 (inv_id, username),
             )
             if not row:
@@ -479,28 +452,23 @@ class GroupStorage:
             async with conn.transaction():
                 if IS_PG:
                     await conn.execute(
-                        "INSERT INTO group_members "
-                        "(group_id, username, role, joined_at) "
-                        "VALUES (?, ?, 'member', ?) "
-                        "ON CONFLICT (group_id, username) DO NOTHING",
+                        sql("queries/groups:add_member_ignore_pg"),
                         (group_id, username, now),
                     )
                 else:
                     await conn.execute(
-                        "INSERT OR IGNORE INTO group_members "
-                        "(group_id, username, role, joined_at) VALUES (?, ?, 'member', ?)",
+                        sql("queries/groups:add_member_ignore_sqlite"),
                         (group_id, username, now),
                     )
                 await conn.execute(
-                    "DELETE FROM group_invitations WHERE id = ?", (inv_id,)
+                    sql("queries/groups:delete_invitation"), (inv_id,)
                 )
             return group_id
 
     async def reject_invitation(self, inv_id: str, username: str) -> bool:
         async with open_db() as conn:
             row = await conn.fetchone(
-                "DELETE FROM group_invitations "
-                "WHERE id = ? AND username = ? RETURNING id",
+                sql("queries/groups:delete_invitation_by_user"),
                 (inv_id, username),
             )
             await conn.commit()
