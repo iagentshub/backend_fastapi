@@ -5,6 +5,15 @@ from __future__ import annotations
 import io
 
 
+def _png_bytes() -> bytes:
+    """PNG de 1x1 válido — detect_avatar_mime lo exige."""
+    return (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+        b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00"
+        b"\x00\x01\x01\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+
+
 def _register_and_login(client, username="socialuser", password="pass1234"):
     import asyncio
 
@@ -185,17 +194,33 @@ def test_avatar_webp_se_sirve_con_mime_correcto(client):
     assert served.headers["content-type"] == "image/webp"
 
 
-def test_avatar_mayor_10mb_rechazado_400_no_413(client):
+def test_avatar_grande_pasa_si_el_admin_no_puso_limite(client):
+    """Por defecto no hay techo, y el avatar no puede inventarse uno propio.
+
+    Tenía uno de 10 MB, tercero de tres límites distintos para la misma
+    subida: el middleware cortaba en 2 MB y nginx en 1, así que su mensaje
+    —«no puede superar 10 MB»— nunca llegó a ser cierto.
+    """
     _register_and_login(client, "avatartoobig")
-    data = b"x" * (
-        10 * 1024 * 1024 + 1024
-    )  # >10 MB, bajo el override de 11 MB del middleware
+    data = _png_bytes() + b"\x00" * (3 * 1024 * 1024)
     r = client.post(
         "/api/auth/me/avatar",
-        files={"avatar": ("toobig.jpg", io.BytesIO(data), "image/jpeg")},
+        files={"avatar": ("grande.png", io.BytesIO(data), "image/png")},
     )
-    assert r.status_code == 400
-    assert r.json()["detail"]["code"] == "avatar_too_large"
+    assert r.status_code == 200, r.text
+
+
+def test_avatar_por_encima_del_limite_del_admin_da_413_con_el_numero(admin_client):
+    """Con un límite puesto, quien rechaza es el middleware, en JSON y con el
+    número dentro — no la página HTML de 413 de nginx."""
+    admin_client.put("/api/settings/platform", json={"max_request_bytes": 4096})
+    r = admin_client.post(
+        "/api/auth/me/avatar",
+        files={"avatar": ("grande.png", io.BytesIO(b"x" * 8192), "image/png")},
+    )
+    assert r.status_code == 413
+    assert r.json()["detail"]["code"] == "payload_too_large"
+    assert r.json()["detail"]["limit_bytes"] == 4096
 
 
 def test_avatar_campo_no_fichero_devuelve_400(client):

@@ -460,6 +460,45 @@ def test_get_platform_public_oauth_toggles_default_true(client):
     assert data["oauth_microsoft_enabled"] is True
 
 
+def test_platform_sin_limite_de_tamano_por_defecto(admin_client, client):
+    """El default es 0 = sin límite, y el cliente lo lee de la config pública.
+
+    Antes había tres números distintos para la misma petición (1 MB en nginx,
+    2 MB aquí, 10 MB anunciados en Dart) y ganaba el de nginx, que responde en
+    HTML. Ahora el número es uno y lo pone el administrador.
+    """
+    assert admin_client.get("/api/settings/platform").json()["max_request_bytes"] == 0
+    assert client.get("/api/settings/platform/public").json()["max_request_bytes"] == 0
+
+
+def test_put_platform_max_request_bytes(admin_client, client):
+    r = admin_client.put("/api/settings/platform", json={"max_request_bytes": 5_000})
+    assert r.status_code == 200, r.text
+    assert r.json()["max_request_bytes"] == 5_000
+    assert (
+        client.get("/api/settings/platform/public").json()["max_request_bytes"] == 5_000
+    )
+
+
+def test_put_platform_max_request_bytes_negativo(admin_client):
+    r = admin_client.put("/api/settings/platform", json={"max_request_bytes": -1})
+    assert r.status_code == 422
+
+
+def test_el_limite_guardado_lo_aplica_el_middleware_sin_reiniciar(admin_client):
+    """Guardar el número en el panel tiene que surtir efecto en la petición
+    siguiente: si el middleware lo hubiera fijado al arrancar, no lo haría."""
+    admin_client.put("/api/settings/platform", json={"max_request_bytes": 64})
+
+    r = admin_client.put(
+        "/api/settings/platform",
+        json={"default_theme": "x" * 500},
+    )
+    assert r.status_code == 413, r.text
+    assert r.json()["detail"]["code"] == "payload_too_large"
+    assert r.json()["detail"]["limit_bytes"] == 64
+
+
 def test_put_platform_config_oauth_toggles(admin_client):
     r = admin_client.put(
         "/api/settings/platform",

@@ -174,10 +174,10 @@ def create_app() -> FastAPI:
     )
 
     app.add_middleware(RequestLoggerMiddleware)
-    app.add_middleware(
-        BodySizeLimitMiddleware,
-        overrides={"/api/auth/me/avatar": 11 * 1024 * 1024},
-    )
+    # Sin argumentos: el límite lo decide el administrador en caliente. La
+    # excepción por prefijo que había aquí para el avatar era código muerto —
+    # nginx cortaba la petición muy por debajo antes de que llegara.
+    app.add_middleware(BodySizeLimitMiddleware)
     app.add_middleware(SecurityHeadersMiddleware)
     app.add_middleware(LocaleMiddleware)
     app.add_middleware(LicenseGateMiddleware)

@@ -35,6 +35,7 @@ Donde se movió un bloque, queda en el código una línea `# Ver docs/adr/NNN-�
 | [008](008-sesiones-revocables.md) | Sesiones revocables — access corto, refresh rotatorio y una tabla que manda |
 | [009](009-cuota-compartida-y-por-principal.md) | La cuota de rate limit se comparte entre workers y se cuenta por principal |
 | [010](010-el-grafo-se-arma-en-el-cliente.md) | El backend entrega relaciones; el grafo lo arma el cliente |
+| [011](011-un-solo-limite-de-tamano-y-lo-pone-el-admin.md) | Un solo límite de tamaño de petición, y lo pone el administrador |
 
 ## Plantilla
 

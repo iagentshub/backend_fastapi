@@ -550,7 +550,6 @@ async def change_password(
 # ── Social profile ────────────────────────────────────────────────────────────
 
 _ALLOWED_LANGUAGES = CONTENT_LANGUAGE_SET
-_MAX_AVATAR_BYTES = 10 * 1024 * 1024  # 10 MB (la compresión real ocurre en el cliente)
 _ALLOWED_AVATAR_EXT = {".jpg", ".jpeg", ".png", ".webp"}
 
 
@@ -616,9 +615,12 @@ async def upload_avatar(
                 "Formato no permitido. Usa jpg, png o webp.",
             )
 
+        # El tamaño no se comprueba aquí: lo hace BodySizeLimitMiddleware con
+        # el número que puso el administrador, y para todas las peticiones por
+        # igual. El 10 MB propio que había en esta línea era el tercero de tres
+        # límites distintos para la misma subida, y su mensaje mentía desde que
+        # el middleware cortaba en 2.
         data = await file.read()
-        if len(data) > _MAX_AVATAR_BYTES:
-            raise APIError(400, "avatar_too_large", "El avatar no puede superar 10 MB.")
         from app.utils.images import detect_avatar_mime
 
         if detect_avatar_mime(data) is None:

@@ -120,6 +120,24 @@ def test_https_sin_proxies_de_confianza_avisa(settings, monkeypatch):
 # ── El informe ────────────────────────────────────────────────────────────────
 
 
+def test_sin_limite_de_tamano_avisa(settings, monkeypatch):
+    """0 es el default y es legítimo, pero no puede quedar sin decir: desde que
+    nginx no impone el suyo, es lo único que limita el tamaño de una subida."""
+    monkeypatch.setattr(session_cfg, "BODY_MAX_BYTES", 0)
+    settings()
+    assert _check("body_limit").severity == "warning"
+
+
+def test_con_limite_de_tamano_configurado_esta_bien(settings, monkeypatch):
+    settings(max_request_bytes=10 * 1024 * 1024)
+    assert _check("body_limit").severity == "ok"
+
+
+def test_limite_de_tamano_no_numerico_es_error(settings, monkeypatch):
+    settings(max_request_bytes="diez megas")
+    assert _check("body_limit").severity == "error"
+
+
 def test_el_informe_no_lleva_valores(settings, monkeypatch):
     """Lo ve cualquier admin desde el panel: nombres de variable, nunca valores."""
     settings(billing_enabled=True)

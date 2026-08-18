@@ -7,7 +7,18 @@ from collections import deque
 
 import pytest
 
-from app.middleware.body_limit import BodySizeLimitMiddleware
+from app.middleware.body_limit import (
+    UNLIMITED,
+    BodySizeLimitMiddleware,
+    configured_max_bytes,
+    invalidate_body_limit_cache,
+)
+
+
+def _escribir_settings(data_dir, cfg: dict) -> None:
+    """Escribe settings.json como lo haría el panel, invalidando el caché."""
+    (data_dir / "settings.json").write_text(json.dumps(cfg), encoding="utf-8")
+    invalidate_body_limit_cache()
 
 
 def _scope(headers: list[tuple[bytes, bytes]] | None = None, path: str = "/test") -> dict:
@@ -114,30 +125,56 @@ async def test_allows_body_at_exact_limit() -> None:
 
 
 @pytest.mark.asyncio
-async def test_override_permite_mas_bytes_en_path_configurado() -> None:
-    middleware = BodySizeLimitMiddleware(
-        _consume_body, max_bytes=5, overrides={"/avatar": 100}
-    )
-    body = b"x" * 50
+async def test_sin_limite_deja_pasar_un_cuerpo_grande() -> None:
+    """0 es el valor por defecto y significa «sin límite», no «nada pasa»."""
+    middleware = BodySizeLimitMiddleware(_consume_body, max_bytes=UNLIMITED)
     sent = await _run_with_middleware(
         middleware,
-        [{"type": "http.request", "body": body, "more_body": False}],
-        path="/avatar",
+        [{"type": "http.request", "body": b"x" * 5_000, "more_body": False}],
     )
 
     assert sent[0]["status"] == 204
 
 
+def test_max_bytes_negativo_no_se_acepta() -> None:
+    with pytest.raises(ValueError):
+        BodySizeLimitMiddleware(_consume_body, max_bytes=-1)
+
+
 @pytest.mark.asyncio
-async def test_override_no_afecta_paths_no_configurados() -> None:
-    middleware = BodySizeLimitMiddleware(
-        _consume_body, max_bytes=5, overrides={"/avatar": 100}
-    )
-    body = b"x" * 50
+async def test_el_limite_lo_manda_la_config_del_admin(
+    tmp_data_dir, patch_data_dir
+) -> None:
+    """Sin max_bytes fijo, el middleware relee lo que el admin dejó guardado.
+
+    Fijarlo en el constructor lo congelaría en el valor del arranque: cambiar
+    el número en el panel no haría nada hasta reiniciar el servidor.
+    """
+    _escribir_settings(tmp_data_dir, {"max_request_bytes": 4})
+    middleware = BodySizeLimitMiddleware(_consume_body)
+
     sent = await _run_with_middleware(
         middleware,
-        [{"type": "http.request", "body": body, "more_body": False}],
-        path="/otra-ruta",
+        [{"type": "http.request", "body": b"x" * 10, "more_body": False}],
     )
-
     assert sent[0]["status"] == 413
+    assert json.loads(sent[1]["body"])["detail"]["limit_bytes"] == 4
+
+    _escribir_settings(tmp_data_dir, {"max_request_bytes": 0})
+    sent = await _run_with_middleware(
+        middleware,
+        [{"type": "http.request", "body": b"x" * 10, "more_body": False}],
+    )
+    assert sent[0]["status"] == 204
+
+
+def test_max_request_bytes_ilegible_cae_al_entorno(
+    tmp_data_dir, patch_data_dir, monkeypatch
+) -> None:
+    """Un valor corrupto no puede dejar la puerta abierta en silencio."""
+    import app.config.session as session_cfg
+
+    monkeypatch.setattr(session_cfg, "BODY_MAX_BYTES", 7)
+    _escribir_settings(tmp_data_dir, {"max_request_bytes": "grande"})
+
+    assert configured_max_bytes() == 7

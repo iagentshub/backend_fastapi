@@ -288,6 +288,12 @@ _PLATFORM_DEFAULTS: dict = {
     "registration": "open",  # open | closed | invite
     "max_users": 0,  # 0 = sin límite
     "max_concurrent_sessions": 0,  # 0 = sin límite
+    # Tamaño máximo de cuerpo de petición, en bytes; 0 = sin límite, y ese es
+    # el default. Lo aplica BodySizeLimitMiddleware a TODA petición, no solo a
+    # las subidas, y es el único techo que queda: nginx ya no impone el suyo
+    # (client_max_body_size 0) para que el rechazo sea siempre el JSON del
+    # backend y no su página HTML de 413.
+    "max_request_bytes": 0,
     "guest_enabled": True,
     "email_verify": False,
     "users_can_configure_theme": True,
@@ -356,6 +362,13 @@ def _read_platform_cfg() -> dict:
     for k in _PLATFORM_DEFAULTS:
         if k in raw:
             cfg[k] = raw[k]
+    if "max_request_bytes" not in raw:
+        # Su default no es el literal de arriba: sale de GAIA_BODY_MAX_BYTES por
+        # el mismo lector que usa el middleware. Sin esto el panel enseñaría
+        # «sin límite» en una instalación que sí lo tiene puesto por entorno.
+        from app.middleware.body_limit import configured_max_bytes
+
+        cfg["max_request_bytes"] = configured_max_bytes()
     return cfg
 
 
@@ -388,6 +401,10 @@ def _write_platform_cfg(cfg: dict) -> None:
     from app.middleware.licenses import invalidate_billing_cache
 
     invalidate_billing_cache()
+    # max_request_bytes también: mismo motivo, otro caché.
+    from app.middleware.body_limit import invalidate_body_limit_cache
+
+    invalidate_body_limit_cache()
 
 
 class PlatformConfigUpdate(BaseModel):
@@ -395,6 +412,7 @@ class PlatformConfigUpdate(BaseModel):
     registration: Optional[str] = None
     max_users: Optional[int] = None
     max_concurrent_sessions: Optional[int] = None
+    max_request_bytes: Optional[int] = None
     guest_enabled: Optional[bool] = None
     email_verify: Optional[bool] = None
     users_can_configure_theme: Optional[bool] = None
@@ -446,6 +464,11 @@ async def get_platform_config_public() -> dict:
         and cfg.get("oauth_github_enabled", True),
         "splash_cycles": cfg.get("splash_cycles", 1),
         "splash_end_on_logo": cfg.get("splash_end_on_logo", True),
+        # El cliente valida el tamaño antes de subir para no hacer viajar un
+        # fichero que va a rebotar. Sale aquí, y no como constante copiada en
+        # Dart, porque el número lo cambia el admin en caliente; el rechazo de
+        # verdad lo sigue dando el middleware.
+        "max_request_bytes": cfg.get("max_request_bytes", 0),
     }
 
 
@@ -491,6 +514,13 @@ async def update_platform_config(
             "invalid_field",
             "max_concurrent_sessions debe ser >= 0",
             extra={"field": "max_concurrent_sessions"},
+        )
+    if "max_request_bytes" in update and update["max_request_bytes"] < 0:
+        raise APIError(
+            422,
+            "invalid_field",
+            "max_request_bytes debe ser >= 0 (0 = sin límite)",
+            extra={"field": "max_request_bytes"},
         )
     if "log_retention_days" in update and not (
         1 <= update["log_retention_days"] <= 365

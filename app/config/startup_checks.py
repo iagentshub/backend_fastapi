@@ -501,6 +501,50 @@ def _check_rate_limit_ip_ceiling() -> ConfigCheck:
     )
 
 
+def _check_body_limit(settings: dict) -> ConfigCheck:
+    """El techo de tamaño de cuerpo de petición.
+
+    A 0 no hay ninguno: cualquier POST puede llegar del tamaño que sea, y los
+    handlers de subida hacen `await file.read()` entero en memoria. Es el valor
+    por defecto y una decisión legítima —una instalación interna que sube packs
+    grandes lo quiere así—, pero no puede quedar sin decir: es lo único que
+    limita el tamaño desde que nginx dejó de imponer el suyo.
+    """
+    raw = settings.get("max_request_bytes", _session.BODY_MAX_BYTES)
+    try:
+        limit = int(raw)
+    except (TypeError, ValueError):
+        return ConfigCheck(
+            key="body_limit",
+            feature="Tamaño máximo de petición",
+            severity="error",
+            detail=(
+                "max_request_bytes no es un número; se aplica el valor del "
+                "entorno en su lugar."
+            ),
+            variables=("GAIA_BODY_MAX_BYTES",),
+        )
+    if limit <= 0:
+        return ConfigCheck(
+            key="body_limit",
+            feature="Tamaño máximo de petición",
+            severity="warning",
+            detail=(
+                "Sin límite de tamaño de petición: una subida puede ocupar "
+                "tanta memoria como quiera quien la envía. Se configura en el "
+                "panel de administración."
+            ),
+            variables=("GAIA_BODY_MAX_BYTES",),
+        )
+    return ConfigCheck(
+        key="body_limit",
+        feature="Tamaño máximo de petición",
+        severity="ok",
+        detail="Las peticiones tienen un techo de tamaño configurado.",
+        variables=("GAIA_BODY_MAX_BYTES",),
+    )
+
+
 def _check_data_dir() -> ConfigCheck:
     existing = _data.DATA_DIR
     while not existing.exists() and existing != existing.parent:
@@ -545,6 +589,7 @@ def run_checks() -> list[ConfigCheck]:
         _check_trusted_proxies(),
         _check_secure_cookies(),
         _check_rate_limit_ip_ceiling(),
+        _check_body_limit(settings),
         _check_maintenance_intervals(),
     ]
 

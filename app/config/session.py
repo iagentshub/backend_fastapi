@@ -171,7 +171,13 @@ RATE_MAX_IPS      = int(os.getenv("GAIA_RATE_MAX_IPS",      "10000"))  # IPs sim
 # el techo por encima. A 0 se desactiva y solo cuenta el principal —lo dice la
 # auditoría de arranque, no se apaga en silencio.
 RATE_IP_FACTOR    = int(os.getenv("GAIA_RATE_IP_FACTOR",    "5"))
-BODY_MAX_BYTES    = int(os.getenv("GAIA_BODY_MAX_BYTES",   str(2 * 1024 * 1024)))  # tamaño máximo de request
+# Tamaño máximo de cuerpo de petición, en bytes. **0 = sin límite**, que es el
+# valor por defecto: lo decide el administrador desde el panel
+# (`max_request_bytes` en settings.json) y esta variable es solo el valor de
+# partida cuando no ha tocado nada. Antes era 2 MB fijos —un número dimensionado
+# para cuerpos JSON que las subidas de ficheros heredaron sin que nadie lo
+# revisara—, y nginx cortaba en su millón por defecto antes de llegar aquí.
+BODY_MAX_BYTES    = int(os.getenv("GAIA_BODY_MAX_BYTES",   "0"))
 
 # ── Proxies confiables para X-Forwarded-For ────────────────────────────────────
 # Solo se lee el header X-Forwarded-For cuando la conexión TCP viene de una de

@@ -188,6 +188,13 @@ def patch_data_dir(tmp_data_dir, tmp_path, monkeypatch):
     # settings.json a mano, saltándose _write_platform_cfg (que es quien invalida).
     licenses_mod.invalidate_billing_cache()
 
+    # Mismo caso para el límite de tamaño de petición: lo cachea su middleware
+    # y varios tests escriben settings.json a mano. Aquí no lee SETTINGS_FILE
+    # por valor (importa el módulo), así que basta con vaciar el caché.
+    import app.middleware.body_limit as body_limit_mod
+
+    body_limit_mod.invalidate_body_limit_cache()
+
     yield
 
     # Reset DB state after test
