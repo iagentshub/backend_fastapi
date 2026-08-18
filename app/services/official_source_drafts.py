@@ -360,60 +360,75 @@ class OfficialImportDraftService:
             "detached_references": detached_references,
         }
 
-    async def graph(self, draft_id: str) -> Dict[str, Any]:
+    async def relations(self, draft_id: str) -> Dict[str, Any]:
+        """Componentes del borrador y sus dependencias, en hechos planos.
+
+        El grafo lo arma el cliente, igual que el del resto de recursos: aquí
+        solo se dice qué componente trae el repositorio y cuál depende de cuál.
+        """
+        from app.services import resource_relations as relations_service
+
         draft = await self.storage.get_draft(draft_id)
         if not draft:
             raise KeyError("draft_not_found")
-        items = await self.storage.get_all_draft_components(draft_id)
-        nodes = [
-            {
-                "id": "source",
-                "type": "official_source",
-                "label": draft["source"].get("name", "Repositorio"),
-                "description": draft["source"].get("repository_url", ""),
-            },
-            *[
-                {
-                    "id": item["component_id"],
-                    "type": item.get("forced_type") or item["component_type"],
-                    "label": item["name"],
-                    "description": (
-                        f"{item['state']} · "
-                        f"{'seleccionado' if item['selected'] else 'no seleccionado'}"
-                    ),
-                }
-                for item in items
-            ],
+        components = await self.storage.get_all_draft_components(draft_id)
+
+        items: List[Dict[str, Any]] = [
+            relations_service.item(
+                component.get("forced_type") or component["component_type"],
+                component["component_id"],
+                component["name"],
+                description=(
+                    f"{component['state']} · "
+                    f"{'seleccionado' if component['selected'] else 'no seleccionado'}"
+                ),
+                relation="origin",
+            )
+            for component in components
         ]
-        edges = [
-            {
-                "source_id": "source",
-                "target_id": item["component_id"],
-                "dashed": False,
-            }
-            for item in items
-        ]
-        edges.extend(
-            {
-                "source_id": item["component_id"],
-                "target_id": dependency,
-                "dashed": True,
-            }
-            for item in items
-            for dependency in item.get("dependencies", [])
+        tipos = {
+            component["component_id"]: (
+                component.get("forced_type") or component["component_type"]
+            )
+            for component in components
+        }
+        for component in components:
+            dependencies = component.get("dependencies", [])
+            for dependency in dependencies:
+                if dependency not in tipos:
+                    continue
+                items.append(
+                    relations_service.item(
+                        tipos[dependency],
+                        dependency,
+                        dependency,
+                        relation="depends",
+                        via=(tipos[component["component_id"]], component["component_id"]),
+                    )
+                )
+            for relation in component.get("relations", []):
+                target = relation.get("target_id")
+                if not target or target in dependencies or target not in tipos:
+                    continue
+                items.append(
+                    relations_service.item(
+                        tipos[target],
+                        target,
+                        target,
+                        relation="uses"
+                        if relation.get("relation_type") == "uses"
+                        else "shared",
+                        via=(tipos[component["component_id"]], component["component_id"]),
+                    )
+                )
+
+        return relations_service.payload(
+            root_type="official_source",
+            root_id=draft_id,
+            root_label=draft["source"].get("name", "Repositorio"),
+            root_description=draft["source"].get("repository_url", ""),
+            items=items,
         )
-        edges.extend(
-            {
-                "source_id": item["component_id"],
-                "target_id": relation["target_id"],
-                "dashed": relation.get("relation_type") != "uses",
-            }
-            for item in items
-            for relation in item.get("relations", [])
-            if relation.get("target_id")
-            and relation.get("target_id") not in item.get("dependencies", [])
-        )
-        return {"root_id": "source", "nodes": nodes, "edges": edges}
 
     async def apply(self, draft_id: str, admin_id: str) -> Dict[str, Any]:
         draft = await self.storage.get_draft(draft_id)

@@ -56,6 +56,12 @@ def test_admin_explore_forbidden_for_standard(client, reset_rate_limiter):
     assert client.get("/api/admin/explore").status_code == 403
 
 
+def _via(item):
+    """El (tipo, id) del que cuelga una relación, o None si es la raíz."""
+    via = item.get("via")
+    return (via["type"], via["id"]) if via else None
+
+
 def test_admin_agent_graph_contains_owner_connection_and_workflow(admin_client):
     import asyncio
 
@@ -115,31 +121,35 @@ def test_admin_agent_graph_contains_owner_connection_and_workflow(admin_client):
     assert workflow.status_code in (200, 201)
     group = admin_client.post("/api/groups", json={"name": "Graph test group"}).json()
 
-    response = admin_client.get(f"/api/admin/resources/agent/{agent['id']}/graph")
+    response = admin_client.get(f"/api/admin/resources/agent/{agent['id']}/relations")
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["root_id"] == f"agent:{agent['id']}"
-    node_types = {node["type"] for node in payload["nodes"]}
+    assert payload["root"] == {
+        "type": "agent",
+        "id": agent["id"],
+        "label": payload["root"]["label"],
+        "description": payload["root"]["description"],
+    }
+    tipos = {item["type"] for item in payload["items"]}
     assert {
-        "agent",
         "user",
         "connection",
         "workflow",
         "skill",
         "memory",
         "knowledge",
-    }.issubset(node_types)
-    assert {edge["relation"] for edge in payload["edges"]} >= {
+    }.issubset(tipos)
+    assert {item["relation"] for item in payload["items"]} >= {
         "owns",
         "uses",
         "orchestrates",
     }
-    skill_node = next(n for n in payload["nodes"] if n["type"] == "skill")
-    assert skill_node["label"] == "Graph skill name"
-    memory_node = next(n for n in payload["nodes"] if n["type"] == "memory")
-    assert memory_node["label"] == "graph-memory-file"
-    assert memory_node["id"] == f"memory:{memory_id}"
+    skill_item = next(i for i in payload["items"] if i["type"] == "skill")
+    assert skill_item["label"] == "Graph skill name"
+    memory_item = next(i for i in payload["items"] if i["type"] == "memory")
+    assert memory_item["label"] == "graph-memory-file"
+    assert memory_item["id"] == memory_id
 
     for resource_type, resource_id in (
         ("user", admin_user["id"]),
@@ -151,37 +161,38 @@ def test_admin_agent_graph_contains_owner_connection_and_workflow(admin_client):
         ("memory", memory_id),
     ):
         related = admin_client.get(
-            f"/api/admin/resources/{resource_type}/{resource_id}/graph"
+            f"/api/admin/resources/{resource_type}/{resource_id}/relations"
         )
         assert related.status_code == 200
-        assert related.json()["root_id"] == f"{resource_type}:{resource_id}"
+        raiz = related.json()["root"]
+        assert (raiz["type"], raiz["id"]) == (resource_type, resource_id)
 
     # El grafo del usuario propietario también debe incluir la skill y la
     # memoria — antes ninguno de los dos era un tipo conocido por Admin.
     user_graph = admin_client.get(
-        f"/api/admin/resources/user/{admin_user['id']}/graph"
+        f"/api/admin/resources/user/{admin_user['id']}/relations"
     ).json()
-    user_node_types = {node["type"] for node in user_graph["nodes"]}
-    assert "skill" in user_node_types
-    assert "memory" in user_node_types
+    tipos_del_usuario = {item["type"] for item in user_graph["items"]}
+    assert "skill" in tipos_del_usuario
+    assert "memory" in tipos_del_usuario
 
-    # No basta con que los nodos aparezcan sueltos bajo el usuario: el grafo
-    # debe dejar claro que es el AGENTE quien usa la skill/memoria/knowledge,
-    # no solo que el usuario "posee" ambos por separado sin conectar.
-    agent_node_id = f"agent:{agent['id']}"
-    uses_targets = {
-        edge["target_id"]
-        for edge in user_graph["edges"]
-        if edge["source_id"] == agent_node_id and edge["relation"] == "uses"
+    # No basta con que los recursos aparezcan sueltos bajo el usuario: tiene
+    # que constar que es el AGENTE quien usa la skill/memoria/knowledge, no
+    # solo que el usuario "posee" ambos por separado sin conectar.
+    usados_por_el_agente = {
+        (item["type"], item["id"])
+        for item in user_graph["items"]
+        if item["relation"] == "uses"
+        and item["via"] == {"type": "agent", "id": agent["id"]}
     }
-    assert f"skill:{skill['id']}" in uses_targets
-    assert f"knowledge:{knowledge['id']}" in uses_targets
-    assert f"memory:{memory_id}" in uses_targets
-    assert f"connection:{connection['id']}" in uses_targets
+    assert ("skill", skill["id"]) in usados_por_el_agente
+    assert ("knowledge", knowledge["id"]) in usados_por_el_agente
+    assert ("memory", memory_id) in usados_por_el_agente
+    assert ("connection", connection["id"]) in usados_por_el_agente
 
 
 def test_admin_resource_graph_not_found(admin_client):
-    response = admin_client.get("/api/admin/resources/agent/missing/graph")
+    response = admin_client.get("/api/admin/resources/agent/missing/relations")
 
     assert response.status_code == 404
 
@@ -224,29 +235,45 @@ def test_user_graph_nests_pack_files_under_the_pack(admin_client):
     ).json()
 
     graph = admin_client.get(
-        f"/api/admin/resources/user/{admin_user['id']}/graph"
+        f"/api/admin/resources/user/{admin_user['id']}/relations"
     ).json()
-    edges = {
-        (edge["source_id"], edge["target_id"], edge["relation"])
-        for edge in graph["edges"]
+    hechos = {
+        (item["type"], item["id"], item["relation"], _via(item))
+        for item in graph["items"]
     }
-    user_id = f"user:{admin_user['id']}"
-    pack_id = f"knowledge_pack:{pack['id']}"
-    file_node_id = f"knowledge:{file_id}"
-    directory_id = f"knowledge_directory:{pack['id']}:ops"
+    pack_via = ("knowledge_pack", pack["id"])
 
-    assert (user_id, pack_id, "owns") in edges
-    assert (pack_id, directory_id, "contains") in edges
-    assert (directory_id, file_node_id, "contains") in edges
-    assert not any(
-        source == user_id and target == file_node_id for source, target, _ in edges
+    # El pack cuelga del usuario y el fichero del pack, con su ruta: las
+    # carpetas las construye el cliente a partir de `path`.
+    assert ("knowledge_pack", pack["id"], "owns", None) in hechos
+    assert ("knowledge", file_id, "contains", pack_via) in hechos
+    fichero = next(
+        item
+        for item in graph["items"]
+        if item["type"] == "knowledge" and item["id"] == file_id
     )
-    assert (f"agent:{full_agent['id']}", pack_id, "uses") in edges
-    assert (f"agent:{partial_agent['id']}", pack_id, "uses_partial") in edges
+    assert fichero["path"] == "ops/deploy.sh"
+    # Y nunca cuelga directamente del usuario, que es lo que lo dejaba plano.
+    assert ("knowledge", file_id, "owns", None) not in hechos
+
+    assert (
+        "knowledge_pack",
+        pack["id"],
+        "uses",
+        ("agent", full_agent["id"]),
+    ) in hechos
+    assert (
+        "knowledge_pack",
+        pack["id"],
+        "uses_partial",
+        ("agent", partial_agent["id"]),
+    ) in hechos
+    # Ningún agente enlaza el fichero suelto: siempre a través de su pack.
     assert not any(
-        source in {f"agent:{full_agent['id']}", f"agent:{partial_agent['id']}"}
-        and target == file_node_id
-        for source, target, _ in edges
+        item["type"] == "knowledge"
+        and item["id"] == file_id
+        and _via(item) in {("agent", full_agent["id"]), ("agent", partial_agent["id"])}
+        for item in graph["items"]
     )
 
     stored = admin_client.get("/api/admin/knowledge").json()
@@ -295,15 +322,22 @@ def test_user_graph_groups_official_resources_under_repository(admin_client):
 
     source_id = asyncio.run(mark())
     graph = admin_client.get(
-        f"/api/admin/resources/user/{admin_user['id']}/graph"
+        f"/api/admin/resources/user/{admin_user['id']}/relations"
     ).json()
-    edges = {
-        (edge["source_id"], edge["target_id"], edge["relation"])
-        for edge in graph["edges"]
+    hechos = {
+        (item["type"], item["id"], item["relation"], _via(item))
+        for item in graph["items"]
     }
-    assert (f"user:{admin_user['id']}", f"official_source:{source_id}", "owns") in edges
-    assert (f"official_source:{source_id}", f"skill:{skill['id']}", "origin") in edges
-    assert (f"user:{admin_user['id']}", f"skill:{skill['id']}", "owns") not in edges
+    # La skill cuelga del repositorio del que vino, no del usuario: así se ve
+    # de dónde salió y no solo quién la tiene.
+    assert ("official_source", source_id, "owns", None) in hechos
+    assert (
+        "skill",
+        skill["id"],
+        "origin",
+        ("official_source", source_id),
+    ) in hechos
+    assert ("skill", skill["id"], "owns", None) not in hechos
 
 
 def test_user_graph_groups_synced_connections_under_provider_account(admin_client):
@@ -337,20 +371,17 @@ def test_user_graph_groups_synced_connections_under_provider_account(admin_clien
 
     account_id, connection_id = asyncio.run(seed())
     graph = admin_client.get(
-        f"/api/admin/resources/user/{admin_user['id']}/graph"
+        f"/api/admin/resources/user/{admin_user['id']}/relations"
     ).json()
-    edges = {
-        (edge["source_id"], edge["target_id"], edge["relation"])
-        for edge in graph["edges"]
+    hechos = {
+        (item["type"], item["id"], item["relation"], _via(item))
+        for item in graph["items"]
     }
-    assert (f"user:{admin_user['id']}", f"provider:{account_id}", "owns") in edges
+    assert ("provider", account_id, "owns", None) in hechos
     assert (
-        f"provider:{account_id}",
-        f"connection:{connection_id}",
+        "connection",
+        connection_id,
         "provides",
-    ) in edges
-    assert (
-        f"user:{admin_user['id']}",
-        f"connection:{connection_id}",
-        "owns",
-    ) not in edges
+        ("provider", account_id),
+    ) in hechos
+    assert ("connection", connection_id, "owns", None) not in hechos

@@ -404,51 +404,6 @@ class OfficialPackService:
         ]
         return PublicOfficialPackDetail(pack=pack, components=components)
 
-    async def graph(
-        self, requester_id: str, source_id: str
-    ) -> Optional[dict[str, Any]]:
-        detail = await self.detail(requester_id, source_id)
-        if detail is None:
-            return None
-        root_id = f"official_source:{source_id}"
-        nodes = [
-            {
-                "id": root_id,
-                "resource_id": source_id,
-                "label": detail.pack.name,
-                "type": "official_source",
-                "description": detail.pack.repository_url,
-            }
-        ]
-        edges: list[dict[str, Any]] = []
-        for component in detail.components:
-            node_id = f"{component.resource_type}:{component.resource_id}"
-            nodes.append(
-                {
-                    "id": node_id,
-                    "resource_id": component.resource_id,
-                    "label": component.name,
-                    "type": component.resource_type,
-                    "description": component.description,
-                }
-            )
-            edges.append(
-                {"source_id": root_id, "target_id": node_id, "relation": "origin"}
-            )
-        by_key = {item.component_key: item for item in detail.components}
-        for component in detail.components:
-            for dependency in component.dependencies:
-                target = by_key.get(dependency)
-                if target:
-                    edges.append(
-                        {
-                            "source_id": f"{component.resource_type}:{component.resource_id}",
-                            "target_id": f"{target.resource_type}:{target.resource_id}",
-                            "relation": "uses",
-                        }
-                    )
-        return {"root_id": root_id, "nodes": nodes, "edges": edges}
-
     async def link(
         self, requester_id: str, source_id: str, request: LinkOfficialPackRequest
     ) -> Optional[LinkOfficialPackResult]:

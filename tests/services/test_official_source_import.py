@@ -325,7 +325,7 @@ def test_deselect_dependency_cascades_to_agent(admin_client) -> None:
         )
         service = OfficialImportDraftService(storage)
         await service.update_component(draft["id"], "agent", {"selected": True})
-        graph = await service.graph(draft["id"])
+        graph = await service.relations(draft["id"])
         selected = {
             item["component_id"]
             for item in await storage.get_all_draft_components(draft["id"])
@@ -342,12 +342,12 @@ def test_deselect_dependency_cascades_to_agent(admin_client) -> None:
     selected, after, graph = asyncio.run(run())
     assert selected == {"agent", "skill"}
     assert after == set()
-    assert graph["root_id"] == "source"
-    assert graph["nodes"][0]["label"] == "Cascade"
-    assert {
-        (edge["source_id"], edge["target_id"], edge["dashed"])
-        for edge in graph["edges"]
-    } >= {("source", "agent", False), ("agent", "skill", True)}
+    # El borrador entrega hechos, no un grafo: el repositorio como raíz, un
+    # componente por fila y la dependencia que lo arrastra.
+    assert graph["root"]["label"] == "Cascade"
+    hechos = [(item["id"], item["relation"], item["via"]) for item in graph["items"]]
+    assert ("agent", "origin", None) in hechos
+    assert ("skill", "depends", {"type": "agent", "id": "agent"}) in hechos
 
 
 def test_materialization_rolls_back_all_resources_on_failure(admin_client) -> None:

@@ -63,11 +63,11 @@ GET /api/admin/metadata/tables/{table_name}/data
 GET /api/admin/official-source-drafts/{draft_id}
 GET /api/admin/official-source-drafts/{draft_id}/components
 GET /api/admin/official-source-drafts/{draft_id}/diff
-GET /api/admin/official-source-drafts/{draft_id}/graph
+GET /api/admin/official-source-drafts/{draft_id}/relations
 GET /api/admin/official-sources
 GET /api/admin/prompts
-GET /api/admin/resources/{resource_type}/{resource_id}/graph
 GET /api/admin/resources/{resource_type}/{resource_id}/origin
+GET /api/admin/resources/{resource_type}/{resource_id}/relations
 GET /api/admin/skills
 GET /api/admin/stats
 GET /api/admin/tools
@@ -98,9 +98,8 @@ GET /api/connections/{conn_id}
 GET /api/explore
 GET /api/explore/official-packs
 GET /api/explore/official-packs/{source_id}
-GET /api/explore/official-packs/{source_id}/graph
-GET /api/explore/{resource_type}/{resource_id}/graph
 GET /api/explore/{resource_type}/{resource_id}/preview
+GET /api/explore/{resource_type}/{resource_id}/relations
 GET /api/feed
 GET /api/groups
 GET /api/groups/my-invitations

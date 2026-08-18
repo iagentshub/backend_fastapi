@@ -423,17 +423,19 @@ def test_publish_pack_exposes_pack_files_and_graph_as_one_unit(alice):
     assert {item["resource_type"] for item in individual} == {"knowledge"}
     assert {item["pack_id"] for item in individual} == {created["id"]}
 
-    graph = alice.get(f"/api/explore/knowledge_pack/{created['id']}/graph")
-    assert graph.status_code == 200
-    payload = graph.json()
-    assert payload["root_id"] == f"knowledge_pack:{created['id']}"
-    directory_nodes = {
-        node["label"]
-        for node in payload["nodes"]
-        if node["type"] == "knowledge_directory"
+    relations = alice.get(f"/api/explore/knowledge_pack/{created['id']}/relations")
+    assert relations.status_code == 200
+    payload = relations.json()
+    assert payload["root"]["id"] == created["id"]
+    # Las carpetas no viajan: el backend manda la ruta de cada fichero y el
+    # árbol lo construye el cliente.
+    carpetas = {
+        item["path"].rsplit("/", 1)[0]
+        for item in payload["items"]
+        if "/" in item.get("path", "")
     }
-    assert directory_nodes == {"skills", "scripts"}
-    assert len(payload["edges"]) == 4
+    assert carpetas == {"skills", "scripts"}
+    assert len(payload["items"]) == 2
 
 
 def test_group_owned_pack_can_be_published_as_one_unit(alice):
@@ -451,8 +453,8 @@ def test_group_owned_pack_can_be_published_as_one_unit(alice):
         json={"is_public": True, "category": "Other"},
     )
     assert published.status_code == 200
-    graph = alice.get(f"/api/explore/knowledge_pack/{pack['id']}/graph")
-    assert graph.status_code == 200
+    relations = alice.get(f"/api/explore/knowledge_pack/{pack['id']}/relations")
+    assert relations.status_code == 200
 
     unpublished = alice.put(
         f"/api/knowledge-packs/{pack['id']}/visibility",
@@ -460,7 +462,10 @@ def test_group_owned_pack_can_be_published_as_one_unit(alice):
     )
     assert unpublished.status_code == 200
     assert (
-        alice.get(f"/api/explore/knowledge_pack/{pack['id']}/graph").status_code == 404
+        alice.get(
+            f"/api/explore/knowledge_pack/{pack['id']}/relations"
+        ).status_code
+        == 404
     )
 
 

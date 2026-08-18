@@ -12,13 +12,6 @@ WHERE resource_type=? AND resource_id=? AND is_public=?
 ORDER BY updated_at DESC
 LIMIT 1;
 
--- name: agent_name_desc
-SELECT name, description
-FROM resource_social
-WHERE resource_type='agent' AND resource_id=? AND is_public=?
-ORDER BY updated_at DESC
-LIMIT 1;
-
 -- name: user_id_by_username
 SELECT id
 FROM users

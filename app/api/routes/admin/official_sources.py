@@ -412,13 +412,13 @@ async def admin_get_official_source_draft_diff(
         ) from exc
 
 
-@admin_router.get("/official-source-drafts/{draft_id}/graph")
-async def admin_get_official_source_draft_graph(
+@admin_router.get("/official-source-drafts/{draft_id}/relations")
+async def admin_get_official_source_draft_relations(
     draft_id: str, admin: str = Depends(require_admin)
 ) -> Dict[str, Any]:
     await _owned_draft(draft_id, admin)
     try:
-        return await _drafts.graph(draft_id)
+        return await _drafts.relations(draft_id)
     except KeyError as exc:
         raise APIError(
             404, "not_found", "Borrador de importación no encontrado"

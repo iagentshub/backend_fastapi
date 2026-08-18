@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, Query, Response
 
 import app.config.data as _cfg
+import app.services.resource_relations as _relations
 from app.api.routes.auth import require_auth, require_session
 from app.api.routes.social import _PUBLIC_VAL, _social_limiter
 from app.config.content_languages import (
@@ -336,22 +337,6 @@ async def explore_official_pack_detail(
     return detail
 
 
-@router.get("/api/explore/official-packs/{source_id}/graph")
-async def explore_official_pack_graph(
-    source_id: str,
-    username: str = Depends(require_session),
-) -> Dict[str, Any]:
-    graph = await _official_packs.graph(username, source_id)
-    if graph is None:
-        raise APIError(
-            404,
-            "not_found",
-            "Pack oficial no encontrado o sin recursos publicos",
-            extra={"resource": "official_pack"},
-        )
-    return graph
-
-
 @router.post(
     "/api/explore/official-packs/{source_id}/link",
     response_model=LinkOfficialPackResult,
@@ -561,317 +546,39 @@ async def explore_preview(
     return base
 
 
-def _append_pack_members_to_graph(
-    *,
-    pack_id: str,
-    pack_node_id: str,
-    members: List[Dict[str, Any]],
-    nodes: List[Dict[str, Any]],
-    edges: List[Dict[str, Any]],
-    seen: set[str],
-) -> None:
-    """Añade la jerarquía real del directorio: pack -> carpetas -> archivos."""
-    for member in members:
-        member_id = str(member.get("id") or "")
-        if not member_id:
-            continue
-        relative_path = str(member.get("relative_path") or member_id)
-        parts = [part for part in relative_path.split("/") if part]
-        parent_id = pack_node_id
-        directory_parts: List[str] = []
-        for directory_name in parts[:-1]:
-            directory_parts.append(directory_name)
-            directory_path = "/".join(directory_parts)
-            directory_id = f"knowledge_pack_directory:{pack_id}:{directory_path}"
-            if directory_id not in seen:
-                seen.add(directory_id)
-                nodes.append(
-                    {
-                        "id": directory_id,
-                        "label": directory_name,
-                        "type": "knowledge_directory",
-                        "description": directory_path,
-                    }
-                )
-                edges.append(
-                    {
-                        "source_id": parent_id,
-                        "target_id": directory_id,
-                        "relation": "contains",
-                    }
-                )
-            parent_id = directory_id
-        member_node_id = f"knowledge:{member_id}"
-        if member_node_id not in seen:
-            seen.add(member_node_id)
-            nodes.append(
-                {
-                    "id": member_node_id,
-                    "label": parts[-1] if parts else relative_path,
-                    "type": "knowledge",
-                    "description": member.get("kind", ""),
-                }
-            )
-            edges.append(
-                {
-                    "source_id": parent_id,
-                    "target_id": member_node_id,
-                    "relation": "contains",
-                }
-            )
+_GRAPH_TYPES = {"agent", "workflow", "knowledge_pack"}
 
 
-async def _public_agent_graph_parts(
-    agent: Dict[str, Any], source_node_id: str
-) -> tuple[List[Dict[str, Any]], List[Dict[str, Any]]]:
-    """Recursos públicos que usa un agente, sin revelar dependencias privadas."""
-    raw_selection = agent.get("public_dependencies")
-    selected = (
-        {str(value) for value in raw_selection if value}
-        if raw_selection is not None
-        else None
-    )
-    references = (
-        ("skill", agent.get("skills") or []),
-        ("knowledge_pack", agent.get("knowledge_packs") or []),
-        ("knowledge", agent.get("knowledge") or []),
-        ("prompt", agent.get("prompts") or []),
-        ("tool", agent.get("tools") or []),
-    )
-    nodes: List[Dict[str, Any]] = []
-    edges: List[Dict[str, Any]] = []
-    seen: set[str] = set()
-    async with open_db() as conn:
-        for kind, resource_ids in references:
-            for child_resource_id in resource_ids:
-                child_id = str(child_resource_id or "")
-                if not child_id:
-                    continue
-                if selected is not None and f"{kind}:{child_id}" not in selected:
-                    continue
-                row = await conn.fetchone(
-                    sql("queries/explore:social_name_desc"),
-                    (kind, child_id, _PUBLIC_VAL),
-                )
-                if not row:
-                    continue
-                node_id = f"{kind}:{child_id}"
-                parent_id = source_node_id
-                if kind == "knowledge":
-                    item = await _knowledge.get(child_id)
-                    pack_id = str((item or {}).get("pack_id") or "")
-                    if pack_id:
-                        pack = await _knowledge_packs.get(pack_id, include_items=False)
-                        pack_node_id = f"knowledge_pack:{pack_id}"
-                        if pack and pack_node_id not in seen:
-                            seen.add(pack_node_id)
-                            nodes.append(
-                                {
-                                    "id": pack_node_id,
-                                    "label": pack.get("name", pack_id),
-                                    "type": "knowledge_pack",
-                                    "description": "Selección parcial",
-                                }
-                            )
-                            edges.append(
-                                {
-                                    "source_id": source_node_id,
-                                    "target_id": pack_node_id,
-                                    "relation": "uses_partial",
-                                }
-                            )
-                        parent_id = pack_node_id
-                        _append_pack_members_to_graph(
-                            pack_id=pack_id,
-                            pack_node_id=pack_node_id,
-                            members=[item] if item else [],
-                            nodes=nodes,
-                            edges=edges,
-                            seen=seen,
-                        )
-                        continue
-                if node_id not in seen:
-                    seen.add(node_id)
-                    nodes.append(
-                        {
-                            "id": node_id,
-                            "label": row["name"] or child_id,
-                            "type": kind,
-                            "description": row["description"] or "",
-                        }
-                    )
-                edges.append(
-                    {
-                        "source_id": parent_id,
-                        "target_id": node_id,
-                        "relation": "uses",
-                    }
-                )
-                if kind == "knowledge_pack":
-                    pack = await _knowledge_packs.get(child_id)
-                    _append_pack_members_to_graph(
-                        pack_id=child_id,
-                        pack_node_id=node_id,
-                        members=(pack or {}).get("items") or [],
-                        nodes=nodes,
-                        edges=edges,
-                        seen=seen,
-                    )
-    memory_file = str(agent.get("memory_file") or "").strip()
-    if (
-        agent.get("use_memory")
-        and memory_file
-        and (selected is None or f"memory:{memory_file}" in selected)
-    ):
-        memory_node_id = f"memory:{memory_file}"
-        nodes.append(
-            {
-                "id": memory_node_id,
-                "label": memory_file,
-                "type": "memory",
-                "description": "Memoria publicada con el agente",
-            }
-        )
-        edges.append(
-            {
-                "source_id": source_node_id,
-                "target_id": memory_node_id,
-                "relation": "uses",
-            }
-        )
-    return nodes, edges
-
-
-@router.get("/api/explore/{resource_type}/{resource_id}/graph")
-async def explore_resource_graph(
-    resource_type: str,
-    resource_id: str,
-    _: str = Depends(require_session),
-) -> Dict[str, Any]:
-    """Grafo público de agentes y orquestaciones visibles en Explore."""
-    if resource_type not in {"agent", "workflow", "knowledge_pack"}:
+def _validar_tipo_de_grafo(resource_type: str) -> None:
+    if resource_type not in _GRAPH_TYPES:
         raise APIError(
             422,
             "invalid_field",
             "Este tipo de recurso no dispone de grafo público",
             extra={"field": "resource_type"},
         )
-    async with open_db() as conn:
-        published = await conn.fetchone(
-            sql("queries/explore:social_name_desc"),
-            (resource_type, resource_id, _PUBLIC_VAL),
-        )
-    if not published:
+
+
+@router.get("/api/explore/{resource_type}/{resource_id}/relations")
+async def explore_resource_relations(
+    resource_type: str,
+    resource_id: str,
+    _: str = Depends(require_session),
+) -> Dict[str, Any]:
+    """Relaciones públicas de un recurso: el cliente arma el grafo con ellas."""
+    if resource_type == "official_source":
+        relations = await _relations.official_pack_relations(_, resource_id)
+    else:
+        _validar_tipo_de_grafo(resource_type)
+        relations = await _relations.public_relations(resource_type, resource_id)
+    if relations is None:
         raise APIError(
             404,
             "not_found",
             "Recurso no encontrado o no es público",
             extra={"resource": resource_type},
         )
-
-    root_id = f"{resource_type}:{resource_id}"
-    nodes: List[Dict[str, Any]] = [
-        {
-            "id": root_id,
-            "label": published["name"] or resource_id,
-            "type": resource_type,
-            "description": published["description"] or "",
-        }
-    ]
-    edges: List[Dict[str, Any]] = []
-
-    if resource_type == "knowledge_pack":
-        pack = await _knowledge_packs.get(resource_id)
-        _append_pack_members_to_graph(
-            pack_id=resource_id,
-            pack_node_id=root_id,
-            members=(pack or {}).get("items") or [],
-            nodes=nodes,
-            edges=edges,
-            seen={root_id},
-        )
-    elif resource_type == "agent":
-        agent = await _agents.get(resource_id)
-        if agent:
-            child_nodes, child_edges = await _public_agent_graph_parts(agent, root_id)
-            nodes.extend(child_nodes)
-            edges.extend(child_edges)
-    else:
-        workflow = await _workflows.get_any(resource_id)
-        definition = (workflow or {}).get("definition") or {}
-        raw_nodes = definition.get("nodes") or []
-        raw_edges = definition.get("edges") or []
-        step_ids: Dict[str, str] = {}
-        incoming: set[str] = set()
-        public_agents: Dict[str, Dict[str, Any]] = {}
-        async with open_db() as conn:
-            for raw_node in raw_nodes:
-                agent_id = str(raw_node.get("agent_id") or "")
-                if not agent_id or agent_id in public_agents:
-                    continue
-                row = await conn.fetchone(
-                    sql("queries/explore:agent_name_desc"),
-                    (agent_id, _PUBLIC_VAL),
-                )
-                if row:
-                    public_agents[agent_id] = dict(row)
-
-        for index, raw_node in enumerate(raw_nodes):
-            raw_step_id = str(raw_node.get("id") or f"step-{index}")
-            step_id = f"workflow_step:{resource_id}:{raw_step_id}"
-            step_ids[raw_step_id] = step_id
-            agent_id = str(raw_node.get("agent_id") or "")
-            public_agent = public_agents.get(agent_id)
-            label = (
-                (public_agent or {}).get("name") or raw_node.get("label") or raw_step_id
-            )
-            nodes.append(
-                {
-                    "id": step_id,
-                    "label": label,
-                    "type": "evaluator"
-                    if raw_node.get("kind") == "evaluator"
-                    else "agent",
-                    "description": (public_agent or {}).get("description") or "",
-                }
-            )
-            if public_agent:
-                agent = await _agents.get(agent_id)
-                if agent:
-                    child_nodes, child_edges = await _public_agent_graph_parts(
-                        agent, step_id
-                    )
-                    known_node_ids = {node["id"] for node in nodes}
-                    nodes.extend(
-                        node for node in child_nodes if node["id"] not in known_node_ids
-                    )
-                    edges.extend(child_edges)
-
-        for raw_edge in raw_edges:
-            source = step_ids.get(str(raw_edge.get("source") or ""))
-            target = step_ids.get(str(raw_edge.get("target") or ""))
-            if not source or not target:
-                continue
-            incoming.add(target)
-            edges.append(
-                {
-                    "source_id": source,
-                    "target_id": target,
-                    "relation": "flow",
-                    "dashed": raw_edge.get("type") == "loop",
-                }
-            )
-        for step_id in step_ids.values():
-            if step_id not in incoming:
-                edges.append(
-                    {
-                        "source_id": root_id,
-                        "target_id": step_id,
-                        "relation": "orchestrates",
-                    }
-                )
-
-    return {"root_id": root_id, "nodes": nodes, "edges": edges}
+    return relations
 
 
 @router.get("/api/social/me/resources")

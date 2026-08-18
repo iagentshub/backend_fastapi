@@ -173,14 +173,14 @@ def test_grafo_publico_de_agente_incluye_solo_dependencias_publicadas(client):
     asyncio.run(unpublish_private_dependency())
 
     _login(client, "explore_graph_viewer")
-    response = client.get(f"/api/explore/agent/{agent['id']}/graph")
+    response = client.get(f"/api/explore/agent/{agent['id']}/relations")
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["root_id"] == f"agent:{agent['id']}"
-    node_ids = {node["id"] for node in payload["nodes"]}
-    assert f"skill:{public_skill['id']}" in node_ids
-    assert f"skill:{private_skill['id']}" not in node_ids
+    assert payload["root"]["id"] == agent["id"]
+    referidos = {(item["type"], item["id"]) for item in payload["items"]}
+    assert ("skill", public_skill["id"]) in referidos
+    assert ("skill", private_skill["id"]) not in referidos
 
 
 def test_publicar_agente_materializa_solo_dependencias_elegidas(client):
@@ -288,18 +288,23 @@ def test_grafo_publico_de_workflow_conserva_flujo_y_recursos(client):
     assert publish.status_code == 200, publish.text
 
     _login(client, "explore_workflow_graph_viewer")
-    response = client.get(f"/api/explore/workflow/{workflow_id}/graph")
+    response = client.get(f"/api/explore/workflow/{workflow_id}/relations")
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["root_id"] == f"workflow:{workflow_id}"
-    assert any(edge.get("relation") == "flow" for edge in payload["edges"])
-    assert any(node["id"] == f"skill:{skill['id']}" for node in payload["nodes"])
+    assert payload["root"]["id"] == workflow_id
+    items = payload["items"]
+    # El flujo entre pasos y las dependencias de cada agente viajan como
+    # hechos: el grafo lo arma el cliente.
+    assert any(item["relation"] == "flow" for item in items)
+    assert any(
+        item["type"] == "skill" and item["id"] == skill["id"] for item in items
+    )
 
 
 def test_grafo_publico_rechaza_tipos_sin_grafo(client):
     _login(client, "explore_graph_invalid")
-    response = client.get("/api/explore/skill/anything/graph")
+    response = client.get("/api/explore/skill/anything/relations")
     assert response.status_code == 422
 
 

@@ -212,10 +212,13 @@ def test_detalle_y_grafo_del_pack_conservan_relaciones(client, admin_client, adm
     components = {item["component_key"]: item for item in detail.json()["components"]}
     assert components["researcher"]["dependencies"] == ["brainstorming"]
 
-    graph = client.get(f"/api/explore/official-packs/{source_id}/graph")
-    assert graph.status_code == 200
-    assert graph.json()["root_id"] == f"official_source:{source_id}"
-    assert any(edge["relation"] == "uses" for edge in graph.json()["edges"])
+    # El pack oficial ya no tiene endpoint propio de grafo: entra por el
+    # mismo `/relations` que el resto de recursos de Explorar.
+    relations = client.get(f"/api/explore/official_source/{source_id}/relations")
+    assert relations.status_code == 200
+    payload = relations.json()
+    assert payload["root"]["id"] == source_id
+    assert any(item["relation"] == "uses" for item in payload["items"])
 
 
 def test_vincular_pack_es_atomico_idempotente_y_reutiliza_dependencias(
