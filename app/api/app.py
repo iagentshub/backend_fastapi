@@ -49,11 +49,17 @@ from app.auth.auth import ensure_admin_user
 from app.auth.gdpr import purge_expired_deletions
 from app.config import data as _cfg
 from app.config.cors import CORS_ORIGINS
+from app.config.maintenance import (
+    GDPR_PURGE_SECONDS,
+    LOG_PURGE_SECONDS,
+    RATELIMIT_PURGE_SECONDS,
+)
 from app.config.startup_checks import assert_config_ok, log_startup_report
 from app.middleware.body_limit import BodySizeLimitMiddleware
 from app.middleware.csrf import CsrfMiddleware
 from app.middleware.licenses import LicenseGateMiddleware
 from app.middleware.locale import LocaleMiddleware
+from app.middleware.ratelimit import purge_expired_windows
 from app.middleware.request_logging import RequestLoggerMiddleware
 from app.middleware.security import SecurityHeadersMiddleware
 from app.pagination.http import PAGINATION_HEADERS
@@ -73,9 +79,9 @@ def _dev_mode() -> bool:
 
 
 async def _gdpr_purge_loop() -> None:
-    """Purga cuentas con el período de gracia expirado cada 6 horas."""
+    """Purga cuentas con el período de gracia expirado. Cadencia en config."""
     while True:
-        await asyncio.sleep(6 * 3600)
+        await asyncio.sleep(GDPR_PURGE_SECONDS)
         try:
             n = await purge_expired_deletions()
             if n:
@@ -87,9 +93,13 @@ async def _gdpr_purge_loop() -> None:
 
 
 async def _log_purge_loop() -> None:
-    """Purga entradas de log antiguas cada 24 horas según la retención configurada."""
+    """Purga entradas de log más antiguas que la retención configurada.
+
+    La retención es la política y la fija el admin; esto solo es cada cuánto se
+    comprueba.
+    """
     while True:
-        await asyncio.sleep(24 * 3600)
+        await asyncio.sleep(LOG_PURGE_SECONDS)
         try:
             from app.api.routes.logs import purge_old_logs
 
@@ -97,6 +107,24 @@ async def _log_purge_loop() -> None:
         except Exception as exc:  # noqa: BLE001
             # Ver _gdpr_purge_loop: la tarea no puede morir por una ronda.
             flog.error(f"[logs] Error en purga automática: {exc}")
+
+
+async def _rate_limit_purge_loop() -> None:
+    """Borra las ventanas de rate limit ya vencidas. Cadencia en config.
+
+    La cuota compartida deja una fila por (limiter, principal) y el UPSERT solo
+    reinicia la de quien vuelve: sin esto la tabla crece con cada IP y cada
+    cuenta que pasó una vez por un endpoint limitado, y nunca decrece.
+    """
+    while True:
+        await asyncio.sleep(RATELIMIT_PURGE_SECONDS)
+        try:
+            n = await purge_expired_windows()
+            if n:
+                flog.info(f"[ratelimit] {n} ventana(s) vencidas purgadas")
+        except Exception as exc:  # noqa: BLE001
+            # Ver _gdpr_purge_loop: la tarea no puede morir por una ronda.
+            flog.error(f"[ratelimit] Error en purga automática: {exc}")
 
 
 @asynccontextmanager
@@ -114,6 +142,7 @@ async def _lifespan(app: FastAPI):
     tasks = (
         asyncio.create_task(_gdpr_purge_loop(), name="gdpr-purge"),
         asyncio.create_task(_log_purge_loop(), name="log-purge"),
+        asyncio.create_task(_rate_limit_purge_loop(), name="ratelimit-purge"),
         asyncio.create_task(
             workflow_run_maintenance_loop(), name="workflow-run-maintenance"
         ),

@@ -11,10 +11,10 @@ from fastapi.responses import StreamingResponse
 from app.api.routes.auth import GroupContext, require_group_session
 from app.auth.auth import get_user_role
 from app.config.data import AGENTS_DIR, MEMORY_DIR, SKILLS_DIR
-from app.config.session import RATE_CHAT_CALLS, RATE_CHAT_WINDOW
+from app.config.session import RATE_CHAT_CALLS, RATE_CHAT_WINDOW, RATE_IP_FACTOR
 from app.errors import APIError
 from app.middleware.locale import get_locale
-from app.middleware.ratelimit import RateLimiter
+from app.middleware.ratelimit import RateLimiter, principal_key
 from app.models.llm_orchestration import orchestration_id_from_connection
 from app.models.request_bodies import AgentChatBody
 from app.services.agent_access import agent_access
@@ -53,7 +53,16 @@ _groups = GroupStorage()
 _chat = ChatStorage()
 _knowledge = KnowledgeStorage()
 _knowledge_packs = KnowledgePackStorage()
-_chat_limiter = RateLimiter(calls=RATE_CHAT_CALLS, window=RATE_CHAT_WINDOW)
+# Por usuario y no por IP: quien gasta la llamada al LLM es la cuenta, y detrás
+# de un NAT corporativo la IP es la de toda la oficina.
+_chat_limiter = RateLimiter(
+    calls=RATE_CHAT_CALLS,
+    window=RATE_CHAT_WINDOW,
+    key_func=principal_key,
+    shared=True,
+    name="agent-chat",
+    ip_calls=RATE_CHAT_CALLS * RATE_IP_FACTOR,
+)
 
 
 async def _assert_can_read_agent(

@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends
 from app.api.routes.auth import GroupContext, require_group, require_group_session
 from app.auth.auth import get_user_role
 from app.config.session import (
+    RATE_IP_FACTOR,
     RATE_TEST_CALLS,
     RATE_TEST_WINDOW,
     RATE_TESTALL_CALLS,
@@ -17,7 +18,7 @@ from app.config.session import (
 )
 from app.connections import get_provider
 from app.errors import APIError
-from app.middleware.ratelimit import RateLimiter
+from app.middleware.ratelimit import RateLimiter, principal_key
 from app.models.request_bodies import ConnectionTestsBody
 from app.services.connection_access import connection_access
 from app.services.credentials import is_unreadable, test_failure
@@ -27,8 +28,24 @@ from app.storage.guest import get_session, is_guest
 router = APIRouter(prefix="/api/connections", tags=["connection-diagnostics"])
 
 _storage = ConnectionStorage()
-_test_limiter = RateLimiter(calls=RATE_TEST_CALLS, window=RATE_TEST_WINDOW)
-_test_all_limiter = RateLimiter(calls=RATE_TESTALL_CALLS, window=RATE_TESTALL_WINDOW)
+# Ambos endpoints salen a un tercero con la credencial del usuario, así que la
+# cuota tiene que ser suya: son superficie de amplificación, no de navegación.
+_test_limiter = RateLimiter(
+    calls=RATE_TEST_CALLS,
+    window=RATE_TEST_WINDOW,
+    key_func=principal_key,
+    shared=True,
+    name="connection-test",
+    ip_calls=RATE_TEST_CALLS * RATE_IP_FACTOR,
+)
+_test_all_limiter = RateLimiter(
+    calls=RATE_TESTALL_CALLS,
+    window=RATE_TESTALL_WINDOW,
+    key_func=principal_key,
+    shared=True,
+    name="connection-test-all",
+    ip_calls=RATE_TESTALL_CALLS * RATE_IP_FACTOR,
+)
 
 
 async def _resolve_connections(

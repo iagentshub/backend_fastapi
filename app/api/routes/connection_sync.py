@@ -8,8 +8,9 @@ from fastapi import APIRouter, Depends
 
 from app.api.routes.auth import GroupContext, require_group
 from app.auth.auth import get_user_role
+from app.config.session import RATE_IP_FACTOR
 from app.errors import APIError
-from app.middleware.ratelimit import RateLimiter
+from app.middleware.ratelimit import RateLimiter, principal_key
 from app.services.connection_access import connection_access
 from app.services.credentials import assert_readable
 from app.services.hub_sync import run_hub_sync
@@ -19,7 +20,16 @@ from app.storage.connection_storage import ConnectionStorage
 router = APIRouter(prefix="/api/connections", tags=["connection-sync"])
 
 _storage = ConnectionStorage()
-_hub_sync_limiter = RateLimiter(calls=20, window=60)
+# N2: limitar hub-sync para evitar amplificación de peticiones HTTP externas.
+# 20 syncs/min por cuenta es un límite útil en producción sin romper tests.
+_hub_sync_limiter = RateLimiter(
+    calls=20,
+    window=60,
+    key_func=principal_key,
+    shared=True,
+    name="hub-sync",
+    ip_calls=20 * RATE_IP_FACTOR,
+)
 
 
 async def _owner(user: str, group_id: str) -> str | None:

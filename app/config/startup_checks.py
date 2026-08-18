@@ -38,6 +38,7 @@ from typing import Literal
 # reescribir settings.json en caliente) necesitan ver el valor de ahora.
 import app.config.billing as _billing
 import app.config.data as _data
+import app.config.maintenance as _maintenance
 import app.config.session as _session
 
 Severity = Literal["ok", "warning", "error"]
@@ -445,6 +446,61 @@ def _check_secure_cookies() -> ConfigCheck:
     )
 
 
+def _check_maintenance_intervals() -> ConfigCheck:
+    """Cadencia de los bucles de fondo, cuando el entorno trae algo inservible.
+
+    Un intervalo a 0 no es «purgar constantemente»: es un `while True` sin
+    espera quemando una CPU por worker. `config/maintenance.py` lo sube al
+    suelo y lo anota aquí, porque una corrección silenciosa haría creer que el
+    valor pedido está en vigor.
+    """
+    if _maintenance.ANOMALIAS:
+        return ConfigCheck(
+            key="maintenance_intervals",
+            feature="Cadencia de los bucles de mantenimiento",
+            severity="warning",
+            detail=(
+                "Un intervalo no era un número o quedaba por debajo del mínimo: "
+                "se aplica el mínimo, no el valor pedido."
+            ),
+            variables=tuple(dict.fromkeys(_maintenance.ANOMALIAS)),
+        )
+    return ConfigCheck(
+        key="maintenance_intervals",
+        feature="Cadencia de los bucles de mantenimiento",
+        severity="ok",
+        detail="Purgas de RGPD, logs, rate limit y workflows con cadencia válida.",
+    )
+
+
+def _check_rate_limit_ip_ceiling() -> ConfigCheck:
+    """El techo por IP de los limiters con clave por usuario.
+
+    A 0 la cuota queda solo por principal, y quien registra cuentas desechables
+    se lleva un cupo entero con cada una. Es una decisión legítima —una
+    instalación interna detrás de un NAT puede quererlo— pero silenciosa: la
+    variable no apaga nada visible y nadie lo notaría hasta el abuso.
+    """
+    if _session.RATE_IP_FACTOR <= 0:
+        return ConfigCheck(
+            key="rate_limit_ip_ceiling",
+            feature="Techo por IP del rate limiting",
+            severity="warning",
+            detail=(
+                "Los limiters con cuota por usuario no tienen techo por IP: "
+                "cada cuenta nueva suma un cupo completo."
+            ),
+            variables=("GAIA_RATE_IP_FACTOR",),
+        )
+    return ConfigCheck(
+        key="rate_limit_ip_ceiling",
+        feature="Techo por IP del rate limiting",
+        severity="ok",
+        detail="Cuota por usuario con un techo por IP por encima.",
+        variables=("GAIA_RATE_IP_FACTOR",),
+    )
+
+
 def _check_data_dir() -> ConfigCheck:
     existing = _data.DATA_DIR
     while not existing.exists() and existing != existing.parent:
@@ -488,6 +544,8 @@ def run_checks() -> list[ConfigCheck]:
         _check_github_oauth(),
         _check_trusted_proxies(),
         _check_secure_cookies(),
+        _check_rate_limit_ip_ceiling(),
+        _check_maintenance_intervals(),
     ]
 
 

@@ -15,15 +15,8 @@ from app.api.routes.auth import (
 from app.auth.auth import get_user_role
 from app.config.data import AGENTS_DIR, SKILLS_DIR
 from app.config.security import assert_safe_url
-from app.config.session import (
-    RATE_TEST_CALLS,
-    RATE_TEST_WINDOW,
-    RATE_TESTALL_CALLS,
-    RATE_TESTALL_WINDOW,
-)
 from app.connections import get_provider
 from app.errors import APIError
-from app.middleware.ratelimit import RateLimiter
 from app.models.llm_orchestration import orchestration_connection_id
 from app.models.request_bodies import (
     ConnectionPayload,
@@ -53,11 +46,6 @@ _know_storage = KnowledgeStorage()
 _llm_orchestration_storage = LLMOrchestrationStorage()
 _shares = GroupShareStorage()
 _groups = GroupStorage()
-_test_limiter = RateLimiter(calls=RATE_TEST_CALLS, window=RATE_TEST_WINDOW)
-_test_all_limiter = RateLimiter(calls=RATE_TESTALL_CALLS, window=RATE_TESTALL_WINDOW)
-# N2: limitar hub-sync para evitar amplificación de peticiones HTTP externas
-# 20 syncs/min por IP es un límite útil en producción sin romper tests
-_hub_sync_limiter = RateLimiter(calls=20, window=60)
 
 
 async def _owner(user: str, group_id: str) -> str | None:

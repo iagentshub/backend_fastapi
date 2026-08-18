@@ -293,6 +293,11 @@ def clear_all_rate_limiters():
     listarlos aquí: la lista escrita a mano se había quedado sin 4 de los 13
     (device flow, login de GitHub, sync del hub y social), y cada limiter nuevo
     volvía a olvidarse en silencio.
+
+    Los limiters compartidos no cuentan en `_data` sino en la tabla
+    `rate_limit_windows`, y esa no hace falta vaciarla aquí: `patch_data_dir` da
+    una BD SQLite nueva por test. Si algún día un test reutilizara la BD, el
+    aislamiento de estos se perdería sin que este fixture se enterase.
     """
 
     def _clear():

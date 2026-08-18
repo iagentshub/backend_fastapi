@@ -9,8 +9,9 @@ from fastapi import APIRouter, Depends
 
 from app.api.routes.auth import require_auth
 from app.config.data import AGENTS_DIR, SKILLS_DIR
+from app.config.session import RATE_IP_FACTOR
 from app.errors import APIError
-from app.middleware.ratelimit import RateLimiter
+from app.middleware.ratelimit import RateLimiter, principal_key
 from app.models.request_bodies import AccountBody, AccountSyncBody, DeviceCodeBody
 from app.services.credentials import assert_readable
 from app.services.provider_models import fetch_provider_models as _fetch_models
@@ -24,7 +25,17 @@ router = APIRouter(prefix="/api/accounts", tags=["accounts"])
 
 _storage = AccountStorage()
 _conn_storage = ConnectionStorage()
-_device_flow_limiter = RateLimiter(calls=30, window=60)
+# El sondeo del device flow lo hace un usuario ya autenticado que vincula su
+# cuenta de GitHub; su cupo no puede depender de cuántos compañeros comparten
+# la salida a internet de la oficina.
+_device_flow_limiter = RateLimiter(
+    calls=30,
+    window=60,
+    key_func=principal_key,
+    shared=True,
+    name="accounts-device-flow",
+    ip_calls=30 * RATE_IP_FACTOR,
+)
 
 
 async def _owner(user: str) -> str:

@@ -16,8 +16,9 @@ from pydantic import BaseModel, Field
 
 import app.config.data as _cfg
 from app.api.routes.auth import GroupContext, require_auth, require_group
+from app.config.session import RATE_IP_FACTOR
 from app.errors import APIError
-from app.middleware.ratelimit import RateLimiter
+from app.middleware.ratelimit import RateLimiter, principal_key
 from app.models.resource_types import SOCIAL_RESOURCE_TYPES
 from app.sql import sql
 from app.storage.agent_storage import AgentStorage
@@ -38,8 +39,17 @@ router = APIRouter(tags=["social"])
 # A4: tipos de recurso válidos para star/unstar y endpoints sociales
 _VALID_SOCIAL_RESOURCE_TYPES = SOCIAL_RESOURCE_TYPES
 
-# N2: rate limiting para endpoints sociales (star, follow)
-_social_limiter = RateLimiter(calls=30, window=60)
+# N2: rate limiting para endpoints sociales (star, follow). Todos exigen
+# sesión, así que la cuota va por cuenta: quien infla contadores lo hace desde
+# una cuenta, y cambiar de IP no le devuelve el cupo.
+_social_limiter = RateLimiter(
+    calls=30,
+    window=60,
+    key_func=principal_key,
+    shared=True,
+    name="social",
+    ip_calls=30 * RATE_IP_FACTOR,
+)
 
 
 async def _assert_public(resource_type: str, source_id: str) -> None:

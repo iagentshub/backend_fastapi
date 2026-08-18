@@ -129,3 +129,262 @@ def test_limiter_compartido_conserva_la_cuota_global(monkeypatch):
     )
     assert limiter._calls == 5
     assert limiter._shared is True
+
+
+# ── Clave por principal ───────────────────────────────────────────────────────
+# La IP falla en las dos direcciones para un endpoint autenticado: tras un NAT
+# toda la oficina comparte cupo, y quien rota IPs no encuentra techo.
+
+
+def _app_con_limiter(limiter):
+    app = FastAPI()
+
+    @app.get("/test")
+    async def endpoint(request: Request):
+        await limiter(request)
+        return {"ok": True}
+
+    return app
+
+
+def test_la_clave_sale_del_usuario_del_jwt():
+    from app.auth.auth import create_token
+    from app.middleware.ratelimit import principal_key
+
+    app = FastAPI()
+    visto: list[str] = []
+
+    @app.get("/test")
+    async def endpoint(request: Request):
+        visto.append(principal_key(request))
+        return {"ok": True}
+
+    client = TestClient(app)
+    client.cookies.set("ga_token", create_token("ana"))
+    client.get("/test")
+    assert visto == ["user:ana"]
+
+
+def test_dos_usuarios_desde_la_misma_ip_no_comparten_cuota(tmp_path):
+    """El caso del NAT: TestClient siempre sale con la misma IP."""
+    from app.auth.auth import create_token
+    from app.middleware.ratelimit import RateLimiter, principal_key
+
+    limiter = RateLimiter(
+        calls=1, window=60, key_func=principal_key, shared=True, name="test-nat"
+    )
+    client = TestClient(_app_con_limiter(limiter))
+
+    client.cookies.set("ga_token", create_token("ana"))
+    assert client.get("/test").status_code == 200
+    assert client.get("/test").status_code == 429
+
+    client.cookies.set("ga_token", create_token("luis"))
+    assert client.get("/test").status_code == 200
+
+
+def test_un_token_ilegible_cae_a_la_ip():
+    """principal_key no autoriza: un token falso no es una identidad nueva."""
+    from app.middleware.ratelimit import principal_key
+
+    app = FastAPI()
+    visto: list[str] = []
+
+    @app.get("/test")
+    async def endpoint(request: Request):
+        visto.append(principal_key(request))
+        return {"ok": True}
+
+    client = TestClient(app)
+    client.cookies.set("ga_token", "no-es-un-jwt")
+    client.get("/test")
+    assert visto == ["ip:testclient"]
+
+
+def test_el_pat_se_identifica_por_su_hash():
+    """Resolver el PAT a usuario costaría una consulta en la ruta caliente."""
+    from app.middleware.ratelimit import principal_key
+
+    app = FastAPI()
+    visto: list[str] = []
+
+    @app.get("/test")
+    async def endpoint(request: Request):
+        visto.append(principal_key(request))
+        return {"ok": True}
+
+    client = TestClient(app)
+    client.get("/test", headers={"authorization": "Bearer iah_uno"})
+    client.get("/test", headers={"authorization": "Bearer iah_uno"})
+    client.get("/test", headers={"authorization": "Bearer iah_dos"})
+    assert visto[0].startswith("pat:")
+    assert visto[0] == visto[1] != visto[2]
+    assert "iah_uno" not in visto[0]  # la clave no lleva el secreto dentro
+
+
+# ── Ventana secundaria por IP ─────────────────────────────────────────────────
+
+
+def test_la_ventana_por_ip_corta_las_cuentas_desechables():
+    from app.auth.auth import create_token
+    from app.middleware.ratelimit import RateLimiter, principal_key
+
+    limiter = RateLimiter(
+        calls=1,
+        window=60,
+        key_func=principal_key,
+        shared=True,
+        name="test-ipwide",
+        ip_calls=2,
+    )
+    client = TestClient(_app_con_limiter(limiter))
+
+    # Tres cuentas distintas: cada una tiene su cupo de 1, pero la IP tiene 2.
+    for user in ("ana", "luis"):
+        client.cookies.set("ga_token", create_token(user))
+        assert client.get("/test").status_code == 200
+
+    client.cookies.set("ga_token", create_token("marta"))
+    assert client.get("/test").status_code == 429
+
+
+def test_sin_credencial_una_peticion_gasta_una_sola_vez():
+    """La clave primaria cae a la IP; la ventana secundaria no puede duplicar."""
+    from app.middleware.ratelimit import RateLimiter, principal_key
+
+    limiter = RateLimiter(
+        calls=3,
+        window=60,
+        key_func=principal_key,
+        shared=True,
+        name="test-sin-credencial",
+        ip_calls=3,
+    )
+    client = TestClient(_app_con_limiter(limiter))
+    for _ in range(3):
+        assert client.get("/test").status_code == 200
+    assert client.get("/test").status_code == 429
+
+
+def test_ip_calls_invalido_se_rechaza():
+    from app.middleware.ratelimit import RateLimiter
+
+    try:
+        RateLimiter(calls=5, window=60, shared=True, name="test-mal", ip_calls=0)
+    except ValueError:
+        return
+    raise AssertionError("ip_calls=0 debía rechazarse")
+
+
+# ── Los limiters de las rutas no cuentan en memoria ───────────────────────────
+
+
+def _limiters_de_rutas():
+    """Los RateLimiter declarados en app/api/routes, con su módulo."""
+    import importlib
+    import pkgutil
+
+    import app.api.routes as routes_pkg
+    from app.middleware.ratelimit import RateLimiter
+
+    encontrados = []
+    for mod_info in pkgutil.walk_packages(
+        routes_pkg.__path__, prefix="app.api.routes."
+    ):
+        mod = importlib.import_module(mod_info.name)
+        for attr, obj in vars(mod).items():
+            if isinstance(obj, RateLimiter):
+                encontrados.append((mod_info.name, attr, obj))
+    return encontrados
+
+
+def test_todo_limiter_de_ruta_comparte_su_cuota():
+    """El contador en memoria se divide entre workers y se pierde al reiniciar.
+
+    Doce de los diecinueve limiters seguían así mucho después de que existiera
+    `shared=True`, porque nada lo comprobaba: el que se olvida no falla, solo
+    limita menos de lo que dice su código.
+    """
+    encontrados = _limiters_de_rutas()
+    assert encontrados, "El recorrido no encontró ningún limiter: revisa el test"
+    en_memoria = [
+        f"{mod}.{attr}" for mod, attr, lim in encontrados if not lim._shared
+    ]
+    assert not en_memoria, f"Limiters con contador de proceso: {en_memoria}"
+
+
+def test_ningun_limiter_de_ruta_esta_sin_usar():
+    """Un limiter declarado y nunca puesto en un Depends no limita nada.
+
+    Cuatro se quedaron así al extraer agent_chat.py y connection_*.py de sus
+    módulos originales: el nombre seguía ahí y el endpoint ya no lo pedía.
+
+    No basta con buscar `Depends(...)`: unos endpoints llaman al limiter a mano
+    después de validar el cuerpo, y `_login_limiter` se declara en
+    dependencies.py y se aplica desde otros tres módulos a propósito. La señal
+    es que alguien lo *aplique* en algún sitio del paquete.
+    """
+    import re
+    from pathlib import Path
+
+    import app.api.routes as routes_pkg
+
+    raiz = Path(routes_pkg.__path__[0])
+    codigo = "\n".join(
+        f.read_text(encoding="utf-8") for f in sorted(raiz.rglob("*.py"))
+    )
+    huerfanos = [
+        f"{mod}.{attr}"
+        for mod, attr, _ in _limiters_de_rutas()
+        if not re.search(rf"(Depends\(|await )\s*{re.escape(attr)}\b", codigo)
+    ]
+    assert not huerfanos, f"Limiters declarados que nadie aplica: {huerfanos}"
+
+
+def test_los_nombres_de_limiter_no_colisionan():
+    """Dos limiters distintos con el mismo nombre comparten fila en la BD."""
+    por_nombre: dict[str, set[int]] = {}
+    for _mod, _attr, lim in _limiters_de_rutas():
+        por_nombre.setdefault(lim._name, set()).add(id(lim))
+    repetidos = [n for n, ids in por_nombre.items() if len(ids) > 1]
+    assert not repetidos, f"Nombre compartido por limiters distintos: {repetidos}"
+
+
+# ── Purga de ventanas vencidas ────────────────────────────────────────────────
+
+
+def test_la_purga_borra_lo_vencido_y_respeta_lo_vivo():
+    import asyncio
+    import time
+
+    from app.middleware.ratelimit import purge_expired_windows
+    from app.storage.db import open_db
+
+    async def _run():
+        async with open_db() as conn:
+            for key, edad in (("viejo", 10_000), ("reciente", 5)):
+                await conn.execute(
+                    "INSERT INTO rate_limit_windows"
+                    "(limiter_key, window_start, request_count) VALUES (?, ?, ?)",
+                    (key, time.time() - edad, 1),
+                )
+            await conn.commit()
+        borradas = await purge_expired_windows()
+        async with open_db() as conn:
+            filas = await conn.fetchall("SELECT limiter_key FROM rate_limit_windows")
+        return borradas, {f[0] for f in filas}
+
+    borradas, quedan = asyncio.run(_run())
+    assert borradas == 1
+    assert quedan == {"reciente"}
+
+
+def test_el_horizonte_de_purga_es_la_ventana_mas_larga(monkeypatch):
+    """Purgar con el corte de 60 s borraría la cuota de auth-forgot (1 h)."""
+    import app.middleware.ratelimit as rl
+
+    largo = rl.RateLimiter(calls=5, window=3600, shared=True, name="test-largo")
+    corto = rl.RateLimiter(calls=5, window=60, shared=True, name="test-corto")
+    monkeypatch.setattr(rl, "INSTANCES", [corto, largo])
+    horizonte = max(li._window for li in rl.INSTANCES if li._shared)
+    assert horizonte == 3600

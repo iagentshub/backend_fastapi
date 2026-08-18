@@ -18,8 +18,9 @@ from app.config.billing import (
     STRIPE_SECRET_KEY,
     STRIPE_WEBHOOK_SECRET,
 )
+from app.config.session import RATE_IP_FACTOR
 from app.errors import APIError
-from app.middleware.ratelimit import RateLimiter
+from app.middleware.ratelimit import RateLimiter, principal_key
 from app.services.billing_link import (
     get_stripe_customer_id,
     get_username_by_stripe_customer_id,
@@ -35,8 +36,24 @@ stripe.api_version = STRIPE_API_VERSION
 router = APIRouter(prefix="/api/billing", tags=["billing"])
 
 _billing = BillingStorage()
-_subscribe_limiter = RateLimiter(calls=10, window=60, key_func=_client_ip)
-_quote_limiter = RateLimiter(calls=30, window=60, key_func=_client_ip)
+# /subscribe exige sesión: la cuota es de la cuenta que abre el checkout.
+_subscribe_limiter = RateLimiter(
+    calls=10,
+    window=60,
+    key_func=principal_key,
+    shared=True,
+    name="billing-subscribe",
+    ip_calls=10 * RATE_IP_FACTOR,
+)
+# /quote es público —la página de precios la consulta sin sesión—, así que
+# aquí la IP no es un mal sustituto: es la única identidad que hay.
+_quote_limiter = RateLimiter(
+    calls=30,
+    window=60,
+    key_func=_client_ip,
+    shared=True,
+    name="billing-quote",
+)
 
 _SELF_HOSTED_PRICE_IDS = {
     "month": STRIPE_PRICE_SELFHOSTED_MONTHLY,

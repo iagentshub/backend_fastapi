@@ -33,6 +33,7 @@ Donde se movió un bloque, queda en el código una línea `# Ver docs/adr/NNN-�
 | [006](006-csrf-en-dos-capas.md) | Anti-CSRF en dos capas: `Origin` verificado y token derivado del JWT |
 | [007](007-sql-en-ficheros.md) | El SQL estático vive en `app/sql/` y se pide por identificador |
 | [008](008-sesiones-revocables.md) | Sesiones revocables — access corto, refresh rotatorio y una tabla que manda |
+| [009](009-cuota-compartida-y-por-principal.md) | La cuota de rate limit se comparte entre workers y se cuenta por principal |
 
 ## Plantilla
 

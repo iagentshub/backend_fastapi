@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import Callable
 from typing import Any
 
+from app.config.maintenance import WORKFLOW_PURGE_SECONDS, WORKFLOW_TICK_SECONDS
 from app.services.workflow_errors import workflow_error_event
 from app.services.workflow_runner import run_workflow
 from app.storage.workflow_runs import WorkflowRunStorage
@@ -117,12 +118,18 @@ async def stop_workflow_runs() -> None:
 
 
 async def workflow_run_maintenance_loop() -> None:
-    """Reconcile dead workers and apply retention without client activity."""
+    """Reconcile dead workers and apply retention without client activity.
+
+    La retención va montada sobre el tick de reconciliación, así que se cuenta
+    en ticks: derivarlo de los dos intervalos evita que cambiar el tick mueva
+    la retención sin que nadie lo pida.
+    """
+    cada = max(1, WORKFLOW_PURGE_SECONDS // WORKFLOW_TICK_SECONDS)
     purge_tick = 0
     while True:
-        await asyncio.sleep(30)
+        await asyncio.sleep(WORKFLOW_TICK_SECONDS)
         await _storage.fail_stale()
         purge_tick += 1
-        if purge_tick >= 120:  # hourly
+        if purge_tick >= cada:
             purge_tick = 0
             await _storage.purge()

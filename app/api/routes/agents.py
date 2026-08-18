@@ -14,10 +14,8 @@ from app.api.routes.auth import (
 )
 from app.auth.auth import get_user_role
 from app.config.data import AGENTS_DIR, MEMORY_DIR, SKILLS_DIR
-from app.config.session import RATE_CHAT_CALLS, RATE_CHAT_WINDOW
 from app.errors import APIError
 from app.middleware.locale import get_locale
-from app.middleware.ratelimit import RateLimiter
 from app.models.llm_orchestration import orchestration_id_from_connection
 from app.models.request_bodies import AgentPayload
 from app.pagination.materialized import paginate_materialized
@@ -66,7 +64,6 @@ _chat = ChatStorage()
 _knowledge = KnowledgeStorage()
 _knowledge_packs = KnowledgePackStorage()
 _versions = ResourceVersionStorage()
-_chat_limiter = RateLimiter(calls=RATE_CHAT_CALLS, window=RATE_CHAT_WINDOW)
 
 
 async def _validate_resource_refs(

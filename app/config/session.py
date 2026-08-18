@@ -164,6 +164,13 @@ RATE_RESET_WINDOW = int(os.getenv("GAIA_RATE_RESET_WINDOW", "300"))
 RATE_REFRESH_CALLS  = int(os.getenv("GAIA_RATE_REFRESH_CALLS",  "60"))
 RATE_REFRESH_WINDOW = int(os.getenv("GAIA_RATE_REFRESH_WINDOW", "300"))
 RATE_MAX_IPS      = int(os.getenv("GAIA_RATE_MAX_IPS",      "10000"))  # IPs simultáneas en memoria
+# Ventana secundaria por IP de los limiters con clave por usuario: el mismo
+# cupo multiplicado por este factor. Existe porque la clave por principal, sola,
+# regala una cuota entera por cada cuenta desechable que alguien registre; la
+# IP no puede ser el límite principal (un NAT corporativo comparte una) pero sí
+# el techo por encima. A 0 se desactiva y solo cuenta el principal —lo dice la
+# auditoría de arranque, no se apaga en silencio.
+RATE_IP_FACTOR    = int(os.getenv("GAIA_RATE_IP_FACTOR",    "5"))
 BODY_MAX_BYTES    = int(os.getenv("GAIA_BODY_MAX_BYTES",   str(2 * 1024 * 1024)))  # tamaño máximo de request
 
 # ── Proxies confiables para X-Forwarded-For ────────────────────────────────────

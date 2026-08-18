@@ -17,3 +17,12 @@ ON CONFLICT(limiter_key) DO UPDATE SET
         ELSE rate_limit_windows.request_count + 1
     END
 RETURNING request_count, window_start;
+
+-- Purga del bucle de mantenimiento: una ventana cuyo inicio quedó fuera del
+-- horizonte ya no cuenta para nadie —la siguiente petición la reiniciaría—,
+-- así que borrarla no devuelve cuota a nadie.
+-- name: count_expired
+SELECT COUNT(*) FROM rate_limit_windows WHERE window_start < ?;
+
+-- name: purge_expired
+DELETE FROM rate_limit_windows WHERE window_start < ?;

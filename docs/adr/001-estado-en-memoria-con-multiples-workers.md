@@ -1,7 +1,7 @@
 # 001 · Estado en memoria con múltiples workers
 
 - **Fecha**: 2026-08-16 (la decisión es anterior; esto solo la saca del código)
-- **Estado**: aceptada, con una consecuencia abierta
+- **Estado**: aceptada; la parte del rate limiter la cierra el [009](009-cuota-compartida-y-por-principal.md)
 - **Afecta a**: `main.py`, `app/middleware/ratelimit.py`, `app/storage/guest.py`,
   `app/config/server.py`, y a cualquier despliegue con `GAIA_WORKERS > 1`
 
@@ -52,12 +52,17 @@ tablas e índices en paralelo contra una BD recién creada.
   invitado, pero no el del rate limiter ni el tope de sesiones.
 - **Contador de rate limit fuera del proceso (Redis/BD)** — es lo correcto si el
   límite tiene que ser **exacto**, y para el login probablemente deba serlo. No
-  se ha hecho: es otra conversación, con otra dependencia de infraestructura.
+  se hizo *aquí*: era otra conversación. Se hizo después contra la BD, sin
+  Redis, y hoy lo usan todos los limiters de ruta — ver el
+  [009](009-cuota-compartida-y-por-principal.md).
 
 ## Consecuencias
 
 - El límite de rate limiting es aproximado por diseño: se pasa por arriba, nunca
-  por abajo. Sigue siendo por proceso y se pierde al reiniciar.
+  por abajo. **Esto ya no describe la ruta de producción**: desde el 009 todos
+  los limiters de ruta cuentan en la BD y el límite declarado es el del clúster.
+  El reparto sigue vivo para los limiters sin nombre estable, que hoy son solo
+  los de los tests.
 - Con `GAIA_WORKERS > 1` y sin sticky sessions, el invitado pierde su trabajo
   entre peticiones. Está avisado en el arranque, no resuelto.
 - Cualquier estado nuevo en memoria de proceso hereda este problema. Antes de
