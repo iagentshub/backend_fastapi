@@ -30,8 +30,8 @@ def test_openai_stream_retries_transient_dns_failure():
     response = _sse_done_response("OK")
 
     with (
-        patch("app.services.chat.safe_urlopen", side_effect=[dns_error, response]) as urlopen,
-        patch("app.services.chat.time.sleep") as sleep,
+        patch("app.services.chat.providers.safe_urlopen", side_effect=[dns_error, response]) as urlopen,
+        patch("app.services.chat.providers.time.sleep") as sleep,
     ):
         reply, _, _ = _do_openai_stream_with_dns_retry(
             "https://example.com/v1/chat/completions",
@@ -57,9 +57,9 @@ def test_openai_stream_retries_transient_gateway_failure():
 
     with (
         patch(
-            "app.services.chat.safe_urlopen", side_effect=[gateway_error, response]
+            "app.services.chat.providers.safe_urlopen", side_effect=[gateway_error, response]
         ) as urlopen,
-        patch("app.services.chat.time.sleep") as sleep,
+        patch("app.services.chat.providers.time.sleep") as sleep,
     ):
         reply, _, _ = _do_openai_stream_with_dns_retry(
             "https://example.com/v1/chat/completions",
@@ -78,10 +78,10 @@ def test_openai_stream_retries_timeout_before_first_token():
 
     with (
         patch(
-            "app.services.chat.safe_urlopen",
+            "app.services.chat.providers.safe_urlopen",
             side_effect=[TimeoutError("The read operation timed out"), response],
         ) as urlopen,
-        patch("app.services.chat.time.sleep") as sleep,
+        patch("app.services.chat.providers.time.sleep") as sleep,
     ):
         reply, _, _ = _do_openai_stream_with_dns_retry(
             "https://example.com/v1/chat/completions",
@@ -151,7 +151,7 @@ async def test_openai_compat_routing(conn_type, expected_url):
         captured_url.append(req.full_url)
         return mock_resp
 
-    with patch("app.services.chat.safe_urlopen", side_effect=fake_urlopen):
+    with patch("app.services.chat.providers.safe_urlopen", side_effect=fake_urlopen):
         events = [
             e
             async for e in stream_chat(
@@ -168,7 +168,7 @@ async def test_stream_chat_returns_reply():
     conn = _make_conn("openai")
     mock_resp = _sse_done_response("Respuesta de prueba")
 
-    with patch("app.services.chat.safe_urlopen", return_value=mock_resp):
+    with patch("app.services.chat.providers.safe_urlopen", return_value=mock_resp):
         events = [
             e
             async for e in stream_chat(
@@ -185,7 +185,7 @@ async def test_stream_chat_connection_error_yields_error_event():
     agent = _make_agent("openai")
     conn = _make_conn("openai")
 
-    with patch("app.services.chat.safe_urlopen", side_effect=Exception("network error")):
+    with patch("app.services.chat.providers.safe_urlopen", side_effect=Exception("network error")):
         events = [
             e
             async for e in stream_chat(
@@ -211,7 +211,7 @@ async def test_stream_chat_explains_openai_compatible_404():
         BytesIO(b"404 page not found"),
     )
 
-    with patch("app.services.chat.safe_urlopen", side_effect=not_found):
+    with patch("app.services.chat.providers.safe_urlopen", side_effect=not_found):
         events = [
             event
             async for event in stream_chat(
@@ -254,7 +254,7 @@ async def test_system_prompt_included_in_messages():
         sent_payloads.append(body)
         return _sse_done_response()
 
-    with patch("app.services.chat.safe_urlopen", side_effect=fake_urlopen):
+    with patch("app.services.chat.providers.safe_urlopen", side_effect=fake_urlopen):
         [
             e
             async for e in stream_chat(

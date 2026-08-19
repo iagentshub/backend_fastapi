@@ -44,7 +44,7 @@ async def _recoger(agent, conn) -> list[dict]:
 async def test_openai_compat_rechaza_url_hacia_red_interna(url):
     conn = {**_make_conn("openai"), "url": url}
 
-    with patch("app.services.chat.safe_urlopen") as urlopen:
+    with patch("app.services.chat.providers.safe_urlopen") as urlopen:
         eventos = await _recoger(_make_agent("openai"), conn)
 
     assert urlopen.call_count == 0, "no debe llegar a hacer la petición"
@@ -56,7 +56,7 @@ async def test_openai_compat_rechaza_url_hacia_red_interna(url):
 async def test_claude_rechaza_url_hacia_red_interna():
     conn = {**_make_conn("claude"), "url": "http://169.254.169.254/latest/meta-data"}
 
-    with patch("app.services.chat.safe_urlopen") as urlopen:
+    with patch("app.services.chat.providers.safe_urlopen") as urlopen:
         eventos = await _recoger(_make_agent("claude"), conn)
 
     assert urlopen.call_count == 0
@@ -102,7 +102,7 @@ async def test_cuerpo_no_json_no_llega_al_cliente():
     """Antes viajaban 500 bytes crudos del host que respondiese."""
     secreto = "<html>token interno: s3cr3t-de-red-interna</html>"
 
-    with patch("app.services.chat.safe_urlopen", side_effect=_http_error(secreto)):
+    with patch("app.services.chat.providers.safe_urlopen", side_effect=_http_error(secreto)):
         eventos = await _recoger(_make_agent("openai"), _make_conn("openai"))
 
     error = eventos[-1]
@@ -115,7 +115,7 @@ async def test_mensaje_de_negocio_del_proveedor_si_llega():
     """Distinguir el error de negocio del proveedor del volcado de red."""
     cuerpo = json.dumps({"error": {"message": "You exceeded your current quota"}})
 
-    with patch("app.services.chat.safe_urlopen", side_effect=_http_error(cuerpo, 429)):
+    with patch("app.services.chat.providers.safe_urlopen", side_effect=_http_error(cuerpo, 429)):
         eventos = await _recoger(_make_agent("openai"), _make_conn("openai"))
 
     assert "exceeded your current quota" in eventos[-1]["message"]
@@ -125,7 +125,7 @@ async def test_mensaje_de_negocio_del_proveedor_si_llega():
 async def test_urlerror_no_revela_el_host():
     fallo = urllib.error.URLError("Connection refused to 10.0.0.7:5432")
 
-    with patch("app.services.chat.safe_urlopen", side_effect=fallo):
+    with patch("app.services.chat.providers.safe_urlopen", side_effect=fallo):
         eventos = await _recoger(_make_agent("openai"), _make_conn("openai"))
 
     error = eventos[-1]
@@ -137,7 +137,7 @@ async def test_urlerror_no_revela_el_host():
 async def test_excepcion_inesperada_no_revela_str_exc():
     fallo = RuntimeError("no such column: users.secreto — /srv/app/storage/db.py")
 
-    with patch("app.services.chat.safe_urlopen", side_effect=fallo):
+    with patch("app.services.chat.providers.safe_urlopen", side_effect=fallo):
         eventos = await _recoger(_make_agent("openai"), _make_conn("openai"))
 
     error = eventos[-1]

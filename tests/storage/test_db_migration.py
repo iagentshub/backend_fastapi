@@ -343,9 +343,14 @@ async def test_future_dep_in_schema_index_deps_applied(tmp_path, monkeypatch):
     db = tmp_path / "future.db"
     _make_old_db(db)
 
+    # El parche va sobre el módulo que EJECUTA la secuencia, que es donde se
+    # resuelve el nombre: `legacy` lo reexporta, pero `_pre_migrate_sqlite` lee
+    # el suyo. Ver la sección «La trampa» de CLAUDE.md.
+    from app.storage.migrations.legacy import _catchup_sqlite
+
     original = list(migration_mod._SCHEMA_INDEX_DEPS)
     monkeypatch.setattr(
-        migration_mod,
+        _catchup_sqlite,
         "_SCHEMA_INDEX_DEPS",
         original + [("users", "future_regression_col", "TEXT")],
     )

@@ -62,7 +62,7 @@ async def test_prompt_mention_injected_into_system():
         sent_payloads.append(json.loads(req.data.decode()))
         return _sse_done_response()
 
-    with patch("app.services.chat.safe_urlopen", side_effect=fake_urlopen):
+    with patch("app.services.chat.providers.safe_urlopen", side_effect=fake_urlopen):
         [
             e
             async for e in stream_chat(
@@ -99,7 +99,7 @@ async def test_prompt_mention_is_case_insensitive():
         sent_payloads.append(json.loads(req.data.decode()))
         return _sse_done_response()
 
-    with patch("app.services.chat.safe_urlopen", side_effect=fake_urlopen):
+    with patch("app.services.chat.providers.safe_urlopen", side_effect=fake_urlopen):
         [
             e
             async for e in stream_chat(
@@ -136,7 +136,7 @@ async def test_no_mention_does_not_inject_prompt():
         sent_payloads.append(json.loads(req.data.decode()))
         return _sse_done_response()
 
-    with patch("app.services.chat.safe_urlopen", side_effect=fake_urlopen):
+    with patch("app.services.chat.providers.safe_urlopen", side_effect=fake_urlopen):
         [
             e
             async for e in stream_chat(
@@ -176,7 +176,7 @@ async def test_mention_of_prompt_not_in_agent_catalog_is_resolved():
         sent_payloads.append(json.loads(req.data.decode()))
         return _sse_done_response()
 
-    with patch("app.services.chat.safe_urlopen", side_effect=fake_urlopen):
+    with patch("app.services.chat.providers.safe_urlopen", side_effect=fake_urlopen):
         [
             e
             async for e in stream_chat(
@@ -217,7 +217,7 @@ async def test_mention_of_own_private_prompt_not_in_agent_catalog_is_resolved():
         sent_payloads.append(json.loads(req.data.decode()))
         return _sse_done_response()
 
-    with patch("app.services.chat.safe_urlopen", side_effect=fake_urlopen):
+    with patch("app.services.chat.providers.safe_urlopen", side_effect=fake_urlopen):
         [
             e
             async for e in stream_chat(
@@ -259,7 +259,7 @@ async def test_mention_of_other_owners_private_prompt_is_ignored():
         sent_payloads.append(json.loads(req.data.decode()))
         return _sse_done_response()
 
-    with patch("app.services.chat.safe_urlopen", side_effect=fake_urlopen):
+    with patch("app.services.chat.providers.safe_urlopen", side_effect=fake_urlopen):
         [
             e
             async for e in stream_chat(
@@ -282,7 +282,7 @@ async def test_prompt_storage_none_does_not_break_stream_chat():
     agent["prompts"] = ["prompt-1"]
     conn = _make_conn("openai")
 
-    with patch("app.services.chat.safe_urlopen", return_value=_sse_done_response()):
+    with patch("app.services.chat.providers.safe_urlopen", return_value=_sse_done_response()):
         events = [
             e
             async for e in stream_chat(

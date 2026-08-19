@@ -47,7 +47,7 @@ async def _sent_system_message(
         sent_payloads.append(json.loads(req.data.decode()))
         return _sse_done_response()
 
-    with patch("app.services.chat.safe_urlopen", side_effect=fake_urlopen):
+    with patch("app.services.chat.providers.safe_urlopen", side_effect=fake_urlopen):
         [
             e
             async for e in stream_chat(
@@ -141,7 +141,7 @@ async def test_history_not_queried_without_user_id():
         side_effect=AssertionError("no debería llamarse sin user_id")
     )
 
-    with patch("app.services.chat.safe_urlopen", return_value=_sse_done_response()):
+    with patch("app.services.chat.providers.safe_urlopen", return_value=_sse_done_response()):
         [
             e
             async for e in stream_chat(
@@ -168,7 +168,7 @@ async def test_context_budget_truncates_resources_and_warns():
         payloads.append(json.loads(req.data.decode()))
         return _sse_done_response()
 
-    with patch("app.services.chat.safe_urlopen", side_effect=fake_urlopen):
+    with patch("app.services.chat.providers.safe_urlopen", side_effect=fake_urlopen):
         events = [
             event
             async for event in stream_chat(
@@ -196,7 +196,7 @@ async def test_effort_level_is_sent_to_openai_compatible_provider():
         sent_payloads.append(json.loads(req.data.decode()))
         return _sse_done_response()
 
-    with patch("app.services.chat.safe_urlopen", side_effect=fake_urlopen):
+    with patch("app.services.chat.providers.safe_urlopen", side_effect=fake_urlopen):
         [
             event
             async for event in stream_chat(

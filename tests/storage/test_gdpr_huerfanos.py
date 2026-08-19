@@ -12,7 +12,7 @@ import sqlite3
 
 import aiosqlite
 
-from app.storage.migrations.sqlite import _gdpr_orphan_resources
+from app.storage.migrations.steps.misc import _gdpr_orphan_resources_sqlite
 
 _ESQUEMA = """
 CREATE TABLE users (id TEXT PRIMARY KEY, username TEXT);
@@ -48,7 +48,7 @@ async def test_borra_las_filas_de_un_usuario_que_ya_no_existe(tmp_path):
     await conn.execute("INSERT INTO resource_versions VALUES ('v1', 'u-borrada')")
     await conn.execute("INSERT INTO resource_source_links VALUES ('s1', 'u-borrada')")
 
-    await _gdpr_orphan_resources(conn)
+    await _gdpr_orphan_resources_sqlite(conn)
 
     for tabla in ("prompts", "tools", "memory_files", "knowledge_packs",
                   "resource_versions"):
@@ -61,7 +61,7 @@ async def test_no_toca_lo_de_un_usuario_vivo(tmp_path):
     conn = await _db(tmp_path)
     await conn.execute("INSERT INTO prompts VALUES ('p1', 'u-viva', 'a')")
 
-    await _gdpr_orphan_resources(conn)
+    await _gdpr_orphan_resources_sqlite(conn)
 
     assert await _ids(conn, "prompts") == ["u-viva"]
     await conn.close()
@@ -73,7 +73,7 @@ async def test_conserva_el_catálogo_público_y_el_propietario_legacy(tmp_path):
     await conn.execute("INSERT INTO prompts VALUES ('p1', '__public__', 'a')")
     await conn.execute("INSERT INTO memory_files VALUES ('m1', 'admin')")
 
-    await _gdpr_orphan_resources(conn)
+    await _gdpr_orphan_resources_sqlite(conn)
 
     assert await _ids(conn, "prompts") == ["__public__"]
     assert await _ids(conn, "memory_files") == ["admin"]
@@ -85,7 +85,7 @@ async def test_una_instalación_sin_usuarios_no_se_vacía(tmp_path):
     conn = await _db(tmp_path, con_usuarios=False)
     await conn.execute("INSERT INTO prompts VALUES ('p1', 'cualquiera', 'a')")
 
-    await _gdpr_orphan_resources(conn)
+    await _gdpr_orphan_resources_sqlite(conn)
 
     assert await _ids(conn, "prompts") == ["cualquiera"]
     await conn.close()

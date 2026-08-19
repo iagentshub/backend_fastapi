@@ -17,6 +17,41 @@ class Migration:
     repeatable: bool = False
 
 
+@dataclass(frozen=True)
+class MigrationPair:
+    """Un paso de migración con sus dos implementaciones.
+
+    La lista de pasos era dos tuplas paralelas, una por motor, con las mismas
+    versiones y los mismos nombres escritos dos veces. Declarar el paso una vez
+    con ambas variantes hace imposible añadirlo a un motor y olvidarlo en el
+    otro: sin las dos funciones no se construye el par.
+
+    Cuando el SQL es idéntico en ambos motores se pasa la misma función a los
+    dos lados (ver `steps/shared.py`).
+    """
+
+    version: int
+    name: str
+    sqlite: MigrationRunner
+    postgres: MigrationRunner
+    repeatable: bool = False
+
+    def para(self, dialect: Dialect) -> Migration:
+        return Migration(
+            version=self.version,
+            name=self.name,
+            run=self.sqlite if dialect == "sqlite" else self.postgres,
+            repeatable=self.repeatable,
+        )
+
+
+def migrations_for(
+    dialect: Dialect, pairs: Iterable[MigrationPair]
+) -> tuple[Migration, ...]:
+    """Deriva la tupla de un motor a partir de la lista única de pares."""
+    return tuple(pair.para(dialect) for pair in pairs)
+
+
 async def _ensure_registry(conn: Any, dialect: Dialect) -> None:
     applied_at = (
         "TEXT NOT NULL DEFAULT (strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))"

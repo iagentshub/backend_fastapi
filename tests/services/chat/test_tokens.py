@@ -56,7 +56,7 @@ async def test_openai_done_event_includes_tokens():
         sent_payloads.append(json.loads(req.data.decode()))
         return mock_resp
 
-    with patch("app.services.chat.safe_urlopen", side_effect=fake_urlopen):
+    with patch("app.services.chat.providers.safe_urlopen", side_effect=fake_urlopen):
         events = [
             e
             async for e in stream_chat(
@@ -75,9 +75,9 @@ async def test_capacity_exhausted_emite_error_sse_controlado():
     conn = _make_conn("openai")
 
     with (
-        patch("app.services.chat._assert_provider_url"),
+        patch("app.services.chat.providers._assert_provider_url"),
         patch(
-            "app.services.chat.run_llm_blocking",
+            "app.services.chat._streaming.run_llm_blocking",
             new=AsyncMock(side_effect=LLMCapacityError("sin cupo")),
         ),
     ):
@@ -141,7 +141,7 @@ def test_claude_invalid_event_warns_and_continues():
     )
 
     with (
-        patch("app.services.chat.safe_urlopen", return_value=mock_resp),
+        patch("app.services.chat.providers.safe_urlopen", return_value=mock_resp),
         patch("app.services.chat.flog.warning") as warning,
     ):
         reply, tokens_in, tokens_out = _do_claude_stream(
@@ -157,7 +157,7 @@ async def test_claude_done_event_includes_tokens():
     conn = _make_conn("claude", model="claude-3-5-sonnet-20241022")
     mock_resp = _sse_claude_response("Bonjour", input_tokens=20, output_tokens=8)
 
-    with patch("app.services.chat.safe_urlopen", return_value=mock_resp):
+    with patch("app.services.chat.providers.safe_urlopen", return_value=mock_resp):
         events = [
             e
             async for e in stream_chat(
@@ -204,7 +204,7 @@ async def test_claude_emite_cada_delta_segun_llega():
     mock_resp.__exit__ = MagicMock(return_value=False)
     mock_resp.__iter__ = MagicMock(return_value=iter(lines))
 
-    with patch("app.services.chat.safe_urlopen", return_value=mock_resp):
+    with patch("app.services.chat.providers.safe_urlopen", return_value=mock_resp):
         events = [
             e
             async for e in stream_chat(
@@ -312,7 +312,7 @@ async def test_openai_usage_chunk_with_empty_choices():
     conn = _make_conn("nvidia", model="meta/llama-3.1-8b-instruct")
     mock_resp = _sse_openai_with_usage("Hola", prompt_tokens=30, completion_tokens=12)
 
-    with patch("app.services.chat.safe_urlopen", return_value=mock_resp):
+    with patch("app.services.chat.providers.safe_urlopen", return_value=mock_resp):
         events = [
             e
             async for e in stream_chat(
@@ -347,7 +347,7 @@ async def test_deepseek_v4_uses_bounded_non_thinking_generation(
         sent_payloads.append(json.loads(req.data.decode()))
         return _sse_done_response()
 
-    with patch("app.services.chat.safe_urlopen", side_effect=fake_urlopen):
+    with patch("app.services.chat.providers.safe_urlopen", side_effect=fake_urlopen):
         [
             event
             async for event in stream_chat(

@@ -74,7 +74,7 @@ async def test_repeatable_migration_runs_again_but_is_recorded_once(tmp_path):
 
 
 async def test_knowledge_checksum_migration_backfills_objects_and_pack_bytes(tmp_path):
-    from app.storage.migrations.sqlite import _knowledge_item_checksums
+    from app.storage.migrations.steps.knowledge import _knowledge_item_checksums_sqlite
 
     async with aiosqlite.connect(tmp_path / "knowledge-checksum.db") as conn:
         conn.row_factory = sqlite3.Row
@@ -97,8 +97,8 @@ async def test_knowledge_checksum_migration_backfills_objects_and_pack_bytes(tmp
             );
         """)
 
-        await _knowledge_item_checksums(conn)
-        await _knowledge_item_checksums(conn)
+        await _knowledge_item_checksums_sqlite(conn)
+        await _knowledge_item_checksums_sqlite(conn)
         rows = await conn.execute_fetchall(
             "SELECT id,checksum FROM knowledge_items ORDER BY id"
         )
@@ -115,7 +115,7 @@ async def test_knowledge_checksum_migration_backfills_objects_and_pack_bytes(tmp
 async def test_knowledge_checksum_migration_does_not_require_legacy_pack_table(
     tmp_path,
 ):
-    from app.storage.migrations.sqlite import _knowledge_item_checksums
+    from app.storage.migrations.steps.knowledge import _knowledge_item_checksums_sqlite
 
     async with aiosqlite.connect(tmp_path / "knowledge-checksum-direct.db") as conn:
         conn.row_factory = sqlite3.Row
@@ -127,7 +127,7 @@ async def test_knowledge_checksum_migration_does_not_require_legacy_pack_table(
             INSERT INTO knowledge_items VALUES ('text-1', 'contenido normal');
         """)
 
-        await _knowledge_item_checksums(conn)
+        await _knowledge_item_checksums_sqlite(conn)
         row = (
             await conn.execute_fetchall(
                 "SELECT checksum FROM knowledge_items WHERE id='text-1'"
@@ -138,11 +138,11 @@ async def test_knowledge_checksum_migration_does_not_require_legacy_pack_table(
 
 
 async def test_pack_migration_does_not_create_obsolete_membership_table(tmp_path):
-    from app.storage.migrations.sqlite import _knowledge_packs
+    from app.storage.migrations.steps.knowledge import _knowledge_packs_sqlite
 
     async with aiosqlite.connect(tmp_path / "knowledge-pack-direct.db") as conn:
         conn.row_factory = sqlite3.Row
-        await _knowledge_packs(conn)
+        await _knowledge_packs_sqlite(conn)
         tables = {
             str(row[0])
             for row in await conn.execute_fetchall(
@@ -155,7 +155,9 @@ async def test_pack_migration_does_not_create_obsolete_membership_table(tmp_path
 
 
 async def test_pack_membership_migration_moves_relation_to_knowledge_item(tmp_path):
-    from app.storage.migrations.sqlite import _knowledge_items_pack_membership
+    from app.storage.migrations.steps.knowledge import (
+        _knowledge_items_pack_membership_sqlite,
+    )
 
     async with aiosqlite.connect(tmp_path / "pack-membership.db") as conn:
         conn.row_factory = sqlite3.Row
@@ -176,8 +178,8 @@ async def test_pack_membership_migration_moves_relation_to_knowledge_item(tmp_pa
             );
         """)
 
-        await _knowledge_items_pack_membership(conn)
-        await _knowledge_items_pack_membership(conn)
+        await _knowledge_items_pack_membership_sqlite(conn)
+        await _knowledge_items_pack_membership_sqlite(conn)
         row = (
             await conn.execute_fetchall(
                 "SELECT pack_id,pack_relative_path,pack_kind "
@@ -196,7 +198,9 @@ async def test_pack_membership_migration_moves_relation_to_knowledge_item(tmp_pa
 
 
 async def test_knowledge_metadata_repair_recovers_catalogued_values(tmp_path):
-    from app.storage.migrations.sqlite import _knowledge_item_metadata_repair
+    from app.storage.migrations.steps.knowledge import (
+        _knowledge_item_metadata_repair_sqlite,
+    )
 
     async with aiosqlite.connect(tmp_path / "knowledge-metadata.db") as conn:
         conn.row_factory = sqlite3.Row
@@ -217,8 +221,8 @@ async def test_knowledge_metadata_repair_recovers_catalogued_values(tmp_path):
             );
         """)
 
-        await _knowledge_item_metadata_repair(conn)
-        await _knowledge_item_metadata_repair(conn)
+        await _knowledge_item_metadata_repair_sqlite(conn)
+        await _knowledge_item_metadata_repair_sqlite(conn)
         rows = await conn.execute_fetchall(
             "SELECT id,mime_type,size_bytes FROM knowledge_items ORDER BY id"
         )
@@ -233,7 +237,9 @@ async def test_knowledge_metadata_repair_recovers_catalogued_values(tmp_path):
 
 async def test_official_published_components_column_is_added_on_old_dbs(tmp_path):
     """La selección publicada se añade a versiones creadas antes de existir."""
-    from app.storage.migrations.sqlite import _official_published_components
+    from app.storage.migrations.steps.official import (
+        _official_published_components_sqlite,
+    )
 
     async with aiosqlite.connect(tmp_path / "official.db") as conn:
         conn.row_factory = sqlite3.Row
@@ -245,9 +251,9 @@ async def test_official_published_components_column_is_added_on_old_dbs(tmp_path
             "INSERT INTO official_package_versions VALUES ('pkg','v1','published')"
         )
 
-        await _official_published_components(conn)
+        await _official_published_components_sqlite(conn)
         # Idempotente: la segunda pasada no debe fallar ni duplicar la columna.
-        await _official_published_components(conn)
+        await _official_published_components_sqlite(conn)
 
         rows = await conn.execute_fetchall(
             "PRAGMA table_info(official_package_versions)"
@@ -263,7 +269,7 @@ async def test_official_published_components_column_is_added_on_old_dbs(tmp_path
 
 async def test_connection_provider_migration_backfills_legacy_account_link(tmp_path):
     """La migración se ejecuta con una Connection cruda de aiosqlite."""
-    from app.storage.migrations.sqlite import _connection_provider_accounts
+    from app.storage.migrations.steps.misc import _connection_provider_accounts_sqlite
 
     async with aiosqlite.connect(tmp_path / "provider-account.db") as conn:
         conn.row_factory = sqlite3.Row
@@ -284,8 +290,8 @@ async def test_connection_provider_migration_backfills_legacy_account_link(tmp_p
             );
         """)
 
-        await _connection_provider_accounts(conn)
-        await _connection_provider_accounts(conn)
+        await _connection_provider_accounts_sqlite(conn)
+        await _connection_provider_accounts_sqlite(conn)
         row = (
             await conn.execute_fetchall(
                 "SELECT provider_account_id FROM connections WHERE id='connection-1'"
@@ -296,7 +302,7 @@ async def test_connection_provider_migration_backfills_legacy_account_link(tmp_p
 
 
 async def test_resource_social_origin_index_is_partial_and_idempotent(tmp_path):
-    from app.storage.migrations.sqlite import _resource_social_origin_index
+    from app.storage.migrations.steps.shared import _resource_social_origin_index
 
     async with aiosqlite.connect(tmp_path / "origin-index.db") as conn:
         await conn.execute(
@@ -318,7 +324,9 @@ async def test_resource_social_origin_index_is_partial_and_idempotent(tmp_path):
 
 
 async def test_public_agent_catalog_migration_repairs_missing_social_row(tmp_path):
-    from app.storage.migrations.sqlite import _public_agents_in_social_catalog
+    from app.storage.migrations.steps.misc import (
+        _public_agents_in_social_catalog_sqlite,
+    )
 
     async with aiosqlite.connect(tmp_path / "public-agent.db") as conn:
         conn.row_factory = sqlite3.Row
@@ -341,8 +349,8 @@ async def test_public_agent_catalog_migration_repairs_missing_social_row(tmp_pat
             );
         """)
 
-        await _public_agents_in_social_catalog(conn)
-        await _public_agents_in_social_catalog(conn)
+        await _public_agents_in_social_catalog_sqlite(conn)
+        await _public_agents_in_social_catalog_sqlite(conn)
         rows = await conn.execute_fetchall("SELECT * FROM resource_social")
 
     assert len(rows) == 1
@@ -353,17 +361,17 @@ async def test_public_agent_catalog_migration_repairs_missing_social_row(tmp_pat
 
 async def test_migraciones_del_catalogo_viejo_no_fallan_sin_sus_tablas(tmp_path):
     """En una base nueva esas tablas ya no existen: deben ser no-ops."""
-    from app.storage.migrations.sqlite import (
-        _official_component_metadata,
-        _official_copy_mode,
-        _official_published_components,
+    from app.storage.migrations.steps.official import (
+        _official_component_metadata_sqlite,
+        _official_copy_mode_sqlite,
+        _official_published_components_sqlite,
     )
 
     async with aiosqlite.connect(tmp_path / "fresh.db") as conn:
         conn.row_factory = sqlite3.Row
-        await _official_component_metadata(conn)
-        await _official_copy_mode(conn)
-        await _official_published_components(conn)
+        await _official_component_metadata_sqlite(conn)
+        await _official_copy_mode_sqlite(conn)
+        await _official_published_components_sqlite(conn)
 
         tables = await conn.execute_fetchall(
             "SELECT name FROM sqlite_master WHERE type='table'"
@@ -374,7 +382,9 @@ async def test_migraciones_del_catalogo_viejo_no_fallan_sin_sus_tablas(tmp_path)
 
 async def test_el_contenido_oficial_pasa_a_columnas_de_recurso(tmp_path):
     """La migración 7 marca los recursos y retira las tablas del catálogo."""
-    from app.storage.migrations.sqlite import _official_content_as_resources
+    from app.storage.migrations.steps.official import (
+        _official_content_as_resources_sqlite,
+    )
 
     async with aiosqlite.connect(tmp_path / "catalogo.db") as conn:
         conn.row_factory = sqlite3.Row
@@ -407,9 +417,9 @@ async def test_el_contenido_oficial_pasa_a_columnas_de_recurso(tmp_path):
         await conn.execute("CREATE TABLE official_package_components (package_id TEXT)")
         await conn.execute("CREATE TABLE official_package_copies (id TEXT)")
 
-        await _official_content_as_resources(conn)
+        await _official_content_as_resources_sqlite(conn)
         # Idempotente: el arranque siguiente vuelve a pasar por aquí.
-        await _official_content_as_resources(conn)
+        await _official_content_as_resources_sqlite(conn)
 
         skills = await conn.execute_fetchall("PRAGMA table_info(skills)")
         sources = await conn.execute_fetchall(
