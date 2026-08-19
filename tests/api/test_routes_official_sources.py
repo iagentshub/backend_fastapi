@@ -266,7 +266,7 @@ def test_vincular_pack_es_atomico_idempotente_y_reutiliza_dependencias(
 def test_vincular_seleccion_no_carga_componentes_ajenos(
     client, admin_client, admin_id, monkeypatch
 ):
-    from app.api.routes import explore as explore_routes
+    from app.api.routes.explore import official_packs as explore_routes
 
     source_id = _seed_source()
     _materialize(source_id, None, admin_id)
@@ -301,7 +301,7 @@ def test_vincular_seleccion_no_carga_componentes_ajenos(
 def test_vincular_pack_revierte_todo_si_falla_un_componente(
     client, admin_client, admin_id, monkeypatch
 ):
-    from app.api.routes import explore as explore_routes
+    from app.api.routes.explore import official_packs as explore_routes
     from app.auth.auth import get_user_by_username
 
     source_id = _seed_source()

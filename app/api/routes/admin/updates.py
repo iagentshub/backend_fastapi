@@ -205,7 +205,10 @@ async def admin_set_auto_update(
             f"Docker rechazó la operación (HTTP {resp.status_code})",
         )
 
-    from app.api.routes.settings import _read_platform_cfg, _write_platform_cfg
+    from app.services.platform_settings import (
+        _read_platform_cfg,
+        _write_platform_cfg,
+    )
 
     cfg = _read_platform_cfg()
     cfg["auto_update_enabled"] = body.enabled

@@ -280,7 +280,7 @@ def _prune_history(history: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """Mismo horizonte que la retención de logs (Admin → Config → Logs) — un
     solo dial para "cuánto histórico guardamos" en vez de dos ajustes que
     puedan desincronizarse."""
-    from app.api.routes.settings import _read_platform_cfg
+    from app.services.platform_settings import _read_platform_cfg
 
     retention_days = int(_read_platform_cfg().get("log_retention_days", 30))
     cutoff = time.time() - retention_days * 86400

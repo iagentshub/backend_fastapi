@@ -142,8 +142,8 @@ def patch_data_dir(tmp_data_dir, tmp_path, monkeypatch):
     # Forzar REGISTRATION_MODE="open" en los tests para que client.post("/api/auth/register")
     # funcione independientemente del entorno de producción (GAIA_REGISTRATION=closed/invite).
     # auth.py es un paquete: REGISTRATION_MODE/EMAIL_VERIFY_ENABLED/SECURE_COOKIES
-    # se importan por valor en el submódulo login.py, no en __init__.py.
-    import app.api.routes.auth.login as auth_routes
+    # se importan por valor en el submódulo session.py, no en __init__.py.
+    import app.api.routes.auth.session as auth_routes
 
     monkeypatch.setattr(auth_routes, "REGISTRATION_MODE", "open")
 

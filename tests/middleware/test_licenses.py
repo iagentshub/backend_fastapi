@@ -92,7 +92,7 @@ def test_el_escritor_de_settings_invalida_el_cache(settings, monkeypatch):
     efecto hasta reiniciar el proceso.
     """
     import app.config.data as cfg
-    from app.api.routes.settings import _write_platform_cfg
+    from app.services.platform_settings import _write_platform_cfg
 
     f, write = settings
     write(billing_enabled=False)

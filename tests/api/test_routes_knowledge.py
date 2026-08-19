@@ -68,7 +68,7 @@ def test_list_items_filter_by_type(alice):
         "/api/knowledge/text", json={"title": "Texto", "content": "contenido de texto"}
     )
     # URL item via mock
-    with patch("app.api.routes.knowledge.fetch_url_text", return_value="contenido url"):
+    with patch("app.api.routes.knowledge.items.fetch_url_text", return_value="contenido url"):
         alice.post(
             "/api/knowledge/url", json={"url": "https://example.com", "title": "Web"}
         )
@@ -500,7 +500,7 @@ def test_add_text_item_missing_content(alice):
 
 def test_add_url_item_mocked(alice):
     with patch(
-        "app.api.routes.knowledge.fetch_url_text",
+        "app.api.routes.knowledge.items.fetch_url_text",
         return_value="texto extraído de la web",
     ):
         r = alice.post(
@@ -521,7 +521,7 @@ def test_add_url_item_missing_url(alice):
 
 def test_add_url_item_fetch_error(alice):
     with patch(
-        "app.api.routes.knowledge.fetch_url_text",
+        "app.api.routes.knowledge.items.fetch_url_text",
         side_effect=Exception("timeout"),
     ):
         r = alice.post("/api/knowledge/url", json={"url": "https://bad.example.com"})
@@ -580,7 +580,7 @@ def test_upload_document_preserves_content_language_labels(alice):
 
 def test_upload_image_document_uses_ocr(alice, monkeypatch):
     monkeypatch.setattr(
-        "app.api.routes.knowledge.extract_document_text",
+        "app.api.routes.knowledge.items.extract_document_text",
         lambda content, filename, mime: "Texto reconocido en la imagen",
     )
     r = alice.post(

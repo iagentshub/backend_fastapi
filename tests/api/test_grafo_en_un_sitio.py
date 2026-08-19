@@ -5,7 +5,7 @@ estar escrito ocho veces: cuatro en el cliente Flutter y cuatro aquí. No eran
 ocho grafos distintos: cuatro repetían «un agente usa una skill, un prompt, una
 tool…» y tres el recorrido de carpetas de un pack, ya divergidos entre sí.
 
-Ahora el backend aporta solo hechos (`app/services/resource_relations.py`) y el
+Ahora el backend aporta solo hechos (`app/services/resource_relations/`) y el
 ensamblado vive en `app_flutter/lib/shared/graph/resource_graph_builder.dart`.
 Estas guardas existen para que no vuelva a repartirse.
 """
@@ -17,7 +17,10 @@ from pathlib import Path
 
 RUTAS = Path(__file__).resolve().parents[2] / "app" / "api" / "routes"
 SERVICIOS = Path(__file__).resolve().parents[2] / "app" / "services"
-CONSTRUCTOR = "resource_relations.py"
+# El servicio es un paquete desde que pasó de 1301 líneas, pero la arista se
+# sigue construyendo en un solo fichero suyo: se nombra ese, no el paquete, para
+# que declararla en otro submódulo tampoco pase desapercibido.
+CONSTRUCTOR = SERVICIOS / "resource_relations" / "graph.py"
 
 
 def _ficheros_de_ruta() -> list[Path]:
@@ -55,7 +58,7 @@ def test_ninguna_ruta_devuelve_un_grafo_montado():
     ]
 
     assert infractores == [], (
-        "Devuelve relaciones (app/services/resource_relations.py) en vez de un "
+        "Devuelve relaciones (app/services/resource_relations/) en vez de un "
         f"grafo ya montado: {infractores}"
     )
 
@@ -65,7 +68,7 @@ def test_solo_el_servicio_de_relaciones_construye_aristas():
     infractores = [
         f"{fichero.relative_to(SERVICIOS.parent)}:{linea}"
         for fichero in [*SERVICIOS.rglob("*.py"), *RUTAS.rglob("*.py")]
-        if fichero.name != CONSTRUCTOR
+        if fichero != CONSTRUCTOR
         for linea in _diccionarios_con(fichero, {"source_id", "target_id"})
     ]
 

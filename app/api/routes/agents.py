@@ -361,7 +361,7 @@ async def save_agent(
             # Un agente nuevo no publica dependencias por omisión.
             public_dependencies = []
 
-        from app.api.routes.social import _agent_public_dependency_keys
+        from app.services.publication_cascade import _agent_public_dependency_keys
 
         invalid_dependencies = sorted(
             set(public_dependencies or []) - _agent_public_dependency_keys(payload)
@@ -388,9 +388,9 @@ async def save_agent(
         # un agente creado directamente como público no aparecía en Explore.
         # Recurso, versión y catálogo comparten transacción para que nunca
         # queden estados públicos a medias.
-        from app.api.routes.social import (
+        from app.services.publication_cascade import _cascade_publish_agent
+        from app.services.social_catalog import (
             _assert_not_linked_copy,
-            _cascade_publish_agent,
             _upsert_social,
         )
 

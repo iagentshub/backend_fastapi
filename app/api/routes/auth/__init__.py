@@ -8,8 +8,9 @@ Partido en:
                        backend. Reexportado aquí para que esos imports no
                        cambien (mismo criterio que routes/admin/__init__.py
                        documenta para su propio caso).
-    login.py           registro, login, sesión, recuperación de contraseña,
-                       perfil social.
+    session.py         registro, login, sesión y revocación.
+    passwords.py       recuperación y cambio de contraseña.
+    profile.py         perfil del usuario y avatar.
     oauth_device.py    login con GitHub (Device Flow).
     gdpr.py            estado/solicitud/cancelación de borrado, export RGPD.
     pat_tokens.py      personal access tokens.
@@ -30,13 +31,17 @@ from app.api.routes.auth.dependencies import (
 )
 
 from . import gdpr as _gdpr
-from . import login as _login
 from . import oauth_device as _oauth_device
+from . import passwords as _passwords
 from . import pat_tokens as _pat_tokens
+from . import profile as _profile
+from . import session as _session
 from . import vscode_oauth as _vscode_oauth
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
-router.include_router(_login.router)
+router.include_router(_session.router)
+router.include_router(_passwords.router)
+router.include_router(_profile.router)
 router.include_router(_oauth_device.router)
 router.include_router(_gdpr.router)
 router.include_router(_pat_tokens.router)

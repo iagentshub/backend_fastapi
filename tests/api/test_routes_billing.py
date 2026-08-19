@@ -8,7 +8,10 @@ import json
 import time
 from unittest.mock import AsyncMock, patch
 
-import app.api.routes.billing as billing_routes
+import stripe
+
+import app.api.routes.billing._shared as billing_routes
+import app.api.routes.billing.webhook as billing_webhook
 
 
 class FakeStripeObject(dict):
@@ -114,8 +117,8 @@ def test_subscribe_requires_auth(client):
 def test_subscribe_success_creates_customer_and_subscription(client):
     _setup_user(client, "alice")
     fake_sub = _fake_subscription()
-    with patch.object(billing_routes.stripe.Customer, "create", return_value=FakeStripeObject(id="cus_123")) as mock_customer, \
-         patch.object(billing_routes.stripe.Subscription, "create", return_value=fake_sub) as mock_sub:
+    with patch.object(stripe.Customer, "create", return_value=FakeStripeObject(id="cus_123")) as mock_customer, \
+         patch.object(stripe.Subscription, "create", return_value=fake_sub) as mock_sub:
         r = client.post("/api/billing/subscribe", json={"tier": "developer", "seats": 1, "interval": "month", "self_hosted": False})
     assert r.status_code == 200, r.text
     body = r.json()
@@ -138,8 +141,8 @@ def test_subscribe_seats_out_of_range(client):
 def test_subscribe_duplicate_active_subscription_409(client):
     _setup_user(client, "alice")
     fake_sub = _fake_subscription()
-    with patch.object(billing_routes.stripe.Customer, "create", return_value=FakeStripeObject(id="cus_123")), \
-         patch.object(billing_routes.stripe.Subscription, "create", return_value=fake_sub):
+    with patch.object(stripe.Customer, "create", return_value=FakeStripeObject(id="cus_123")), \
+         patch.object(stripe.Subscription, "create", return_value=fake_sub):
         r1 = client.post("/api/billing/subscribe", json={"tier": "developer", "seats": 1, "interval": "month"})
         assert r1.status_code == 200
         r2 = client.post("/api/billing/subscribe", json={"tier": "developer", "seats": 1, "interval": "month"})
@@ -160,8 +163,8 @@ def test_get_subscription_free_default(client):
 def _subscribe(client, **plan):
     billing_routes._subscribe_limiter._data.clear()
     fake_sub = _fake_subscription(**{k: v for k, v in plan.items() if k in ("tier", "seats", "interval", "self_hosted")})
-    with patch.object(billing_routes.stripe.Customer, "create", return_value=FakeStripeObject(id="cus_123")), \
-         patch.object(billing_routes.stripe.Subscription, "create", return_value=fake_sub):
+    with patch.object(stripe.Customer, "create", return_value=FakeStripeObject(id="cus_123")), \
+         patch.object(stripe.Subscription, "create", return_value=fake_sub):
         r = client.post("/api/billing/subscribe", json={
             "tier": plan.get("tier", "developer"),
             "seats": plan.get("seats", 1),
@@ -181,7 +184,7 @@ def test_cancel_no_subscription_404(client):
 def test_cancel_graceful_sets_cancel_at_period_end(client):
     _setup_user(client, "alice")
     _subscribe(client)
-    with patch.object(billing_routes.stripe.Subscription, "modify", return_value=None) as mock_modify:
+    with patch.object(stripe.Subscription, "modify", return_value=None) as mock_modify:
         r = client.post("/api/billing/cancel", json={"immediate": False})
     assert r.status_code == 200
     assert r.json()["cancel_at_period_end"] is True
@@ -191,9 +194,9 @@ def test_cancel_graceful_sets_cancel_at_period_end(client):
 def test_reactivate_after_graceful_cancel(client):
     _setup_user(client, "alice")
     _subscribe(client)
-    with patch.object(billing_routes.stripe.Subscription, "modify", return_value=None):
+    with patch.object(stripe.Subscription, "modify", return_value=None):
         client.post("/api/billing/cancel", json={"immediate": False})
-    with patch.object(billing_routes.stripe.Subscription, "modify", return_value=None) as mock_modify:
+    with patch.object(stripe.Subscription, "modify", return_value=None) as mock_modify:
         r = client.post("/api/billing/reactivate")
     assert r.status_code == 200
     assert r.json()["cancel_at_period_end"] is False
@@ -213,8 +216,8 @@ def test_change_seats_business(client):
     _setup_user(client, "alice")
     _subscribe(client, tier="business", seats=10, interval="month")
     fake_sub = _fake_subscription(tier="business", seats=10)
-    with patch.object(billing_routes.stripe.Subscription, "retrieve", return_value=fake_sub), \
-         patch.object(billing_routes.stripe.SubscriptionItem, "modify", return_value=None) as mock_item_modify:
+    with patch.object(stripe.Subscription, "retrieve", return_value=fake_sub), \
+         patch.object(stripe.SubscriptionItem, "modify", return_value=None) as mock_item_modify:
         r = client.post("/api/billing/change-seats", json={"seats": 20})
     assert r.status_code == 200, r.text
     assert r.json()["seats"] == 20
@@ -357,7 +360,7 @@ def test_webhook_real_signature_and_subscription_updated(client):
     event = {"id": "evt_real_1", "object": "event", "type": "customer.subscription.updated", "data": {"object": sub_obj}}
     payload = json.dumps(event).encode()
 
-    with patch.object(billing_routes, "STRIPE_WEBHOOK_SECRET", _WEBHOOK_SECRET):
+    with patch.object(billing_webhook, "STRIPE_WEBHOOK_SECRET", _WEBHOOK_SECRET):
         sig_header = _sign_payload(payload, _WEBHOOK_SECRET)
         r = client.post("/api/billing/webhook", content=payload, headers={"stripe-signature": sig_header})
 
@@ -381,9 +384,9 @@ def test_webhook_duplicate_event_processed_once(client):
     event = {"id": "evt_dup_1", "object": "event", "type": "customer.subscription.updated", "data": {"object": sub_obj}}
     payload = json.dumps(event).encode()
 
-    with patch.object(billing_routes, "STRIPE_WEBHOOK_SECRET", _WEBHOOK_SECRET):
+    with patch.object(billing_webhook, "STRIPE_WEBHOOK_SECRET", _WEBHOOK_SECRET):
         sig_header = _sign_payload(payload, _WEBHOOK_SECRET)
-        with patch.object(billing_routes, "_handle_subscription_event", new_callable=AsyncMock) as mock_handle:
+        with patch.object(billing_webhook, "_handle_subscription_event", new_callable=AsyncMock) as mock_handle:
             client.post("/api/billing/webhook", content=payload, headers={"stripe-signature": sig_header})
             client.post("/api/billing/webhook", content=payload, headers={"stripe-signature": sig_header})
         assert mock_handle.call_count == 1
@@ -405,7 +408,7 @@ def test_webhook_subscription_deleted_marks_canceled(client):
     event = {"id": "evt_del_1", "object": "event", "type": "customer.subscription.deleted", "data": {"object": sub_obj}}
     payload = json.dumps(event).encode()
 
-    with patch.object(billing_routes, "STRIPE_WEBHOOK_SECRET", _WEBHOOK_SECRET):
+    with patch.object(billing_webhook, "STRIPE_WEBHOOK_SECRET", _WEBHOOK_SECRET):
         sig_header = _sign_payload(payload, _WEBHOOK_SECRET)
         r = client.post("/api/billing/webhook", content=payload, headers={"stripe-signature": sig_header})
     assert r.status_code == 200

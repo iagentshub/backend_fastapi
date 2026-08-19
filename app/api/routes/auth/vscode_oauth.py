@@ -40,7 +40,7 @@ def _check_callback(callback: str) -> None:
 
 
 def _public_base_url(request: Request) -> str:
-    from app.api.routes.auth.login import _public_base_url as _impl
+    from app.api.routes.auth._shared import _public_base_url as _impl
 
     return _impl(request)
 

@@ -739,7 +739,7 @@ def test_llm_retries_when_first_response_has_no_json() -> None:
 
 
 def test_llm_skips_one_invalid_chunk_and_keeps_partial_result(monkeypatch) -> None:
-    from app.services import official_source_llm as llm_module
+    from app.services.official_source_llm import _filters as llm_module
 
     monkeypatch.setattr(llm_module, "_CHUNK_FILES", 1)
 
