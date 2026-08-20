@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 from typing import Any, Dict
 
+from app.services.publishing import assert_can_publish
 from app.services.resource_stores import (
     _agents_store,
     _knowledge_packs_store,
@@ -48,6 +49,7 @@ def _agent_public_dependency_keys(agent: Dict[str, Any]) -> set[str]:
     if agent.get("use_memory") and memory_file:
         keys.add(f"memory:{memory_file}")
     return keys
+
 
 async def _publish_skill_cascade(
     skill_id: str, username: str, owner_ids: set[str]
@@ -84,6 +86,7 @@ async def _publish_skill_cascade(
         )
         await conn.commit()
 
+
 async def _publish_tool_cascade(
     tool_id: str, username: str, owner_ids: set[str]
 ) -> None:
@@ -119,6 +122,7 @@ async def _publish_tool_cascade(
         )
         await conn.commit()
 
+
 async def _publish_prompt_cascade(
     prompt_id: str, username: str, owner_ids: set[str]
 ) -> None:
@@ -153,6 +157,7 @@ async def _publish_prompt_cascade(
             json.dumps(labels),
         )
         await conn.commit()
+
 
 async def _publish_knowledge_cascade(
     knowledge_id: str, username: str, owner_ids: set[str]
@@ -194,6 +199,7 @@ async def _publish_knowledge_cascade(
         )
         await conn.commit()
 
+
 async def _publish_knowledge_pack_cascade(
     pack_id: str, username: str, owner_ids: set[str]
 ) -> None:
@@ -225,6 +231,7 @@ async def _publish_knowledge_pack_cascade(
     for item in pack.get("items") or []:
         await _publish_knowledge_cascade(str(item.get("id") or ""), username, owner_ids)
 
+
 async def sync_knowledge_visibility_from_labels(
     *,
     resource_type: str,
@@ -234,6 +241,8 @@ async def sync_knowledge_visibility_from_labels(
     is_public: bool,
 ) -> None:
     """Sincroniza Explorar con la etiqueta de visibilidad de Knowledge."""
+    if is_public:
+        assert_can_publish(username)
     if resource_type == "knowledge_pack":
         if is_public:
             await _publish_knowledge_pack_cascade(resource_id, username, owner_ids)
@@ -262,6 +271,7 @@ async def sync_knowledge_visibility_from_labels(
         )
         await conn.commit()
 
+
 async def _cascade_publish_agent(
     agent: Dict[str, Any],
     username: str,
@@ -274,6 +284,7 @@ async def _cascade_publish_agent(
     existiera la selección explícita. Un conjunto vacío publica solo el agente.
     Las conexiones no forman parte de este catálogo ni se aceptan como claves.
     """
+    assert_can_publish(username)
     owner_ids = {username, group_id} - {""}
     for skill_id in agent.get("skills") or []:
         if selected is None or f"skill:{skill_id}" in selected:
@@ -291,11 +302,13 @@ async def _cascade_publish_agent(
         if selected is None or f"tool:{tool_id}" in selected:
             await _publish_tool_cascade(tool_id, username, owner_ids)
 
+
 async def _cascade_publish_workflow(
     workflow: Dict[str, Any], username: str, group_id: str = ""
 ) -> None:
     """Al publicar una orquestación, publica en cascada los agentes propios que usa
     (y, para cada uno, sus skills/conocimiento — ver _cascade_publish_agent)."""
+    assert_can_publish(username)
     owner_ids = {str(workflow.get("owner_id") or ""), username, group_id} - {""}
     agents_storage = _agents_store
     seen: set[str] = set()

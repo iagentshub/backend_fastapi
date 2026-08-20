@@ -90,7 +90,9 @@ ABIERTOS = [
 @pytest.mark.parametrize("metodo,ruta", ABIERTOS)
 def test_el_demo_del_invitado_sigue_abierto(guest, metodo, ruta):
     r = guest.request(metodo, ruta)
-    assert r.status_code == 200, f"{metodo} {ruta} rompió el demo: {r.status_code} {r.text}"
+    assert r.status_code == 200, (
+        f"{metodo} {ruta} rompió el demo: {r.status_code} {r.text}"
+    )
 
 
 def test_el_invitado_completa_el_camino_del_demo(guest):
@@ -196,3 +198,55 @@ def test_el_invitado_tampoco_publica_un_agente(guest):
     )
     assert r.status_code == 403, r.text
     assert r.json()["detail"]["code"] == "guest_cannot_publish"
+
+
+def test_el_invitado_no_crea_knowledge_publico(guest):
+    r = guest.post(
+        "/api/knowledge/text",
+        json={
+            "title": "Knowledge público",
+            "content": "contenido",
+            "labels": ["public"],
+        },
+    )
+
+    assert r.status_code == 403, r.text
+    assert r.json()["detail"]["code"] == "guest_cannot_publish"
+    assert guest.get("/api/knowledge").json() == []
+
+
+def test_el_invitado_no_convierte_su_knowledge_privado_en_publico(guest):
+    created = guest.post(
+        "/api/knowledge/text",
+        json={"title": "Knowledge privado", "content": "contenido"},
+    )
+    assert created.status_code == 200, created.text
+    item_id = created.json()["id"]
+
+    published = guest.put(
+        f"/api/knowledge/{item_id}/labels",
+        json={"labels": ["public"]},
+    )
+
+    assert published.status_code == 403, published.text
+    assert published.json()["detail"]["code"] == "guest_cannot_publish"
+    stored = next(
+        item for item in guest.get("/api/knowledge").json() if item["id"] == item_id
+    )
+    assert "private" in stored["labels"]
+    assert "public" not in stored["labels"]
+
+
+def test_el_invitado_no_inicia_un_pack_publico(guest):
+    r = guest.post(
+        "/api/knowledge/packs/upload-sessions",
+        json={
+            "name": "Pack público",
+            "labels": ["public"],
+            "total_files": 1,
+        },
+    )
+
+    assert r.status_code == 403, r.text
+    assert r.json()["detail"]["code"] == "guest_cannot_publish"
+    assert guest.get("/api/knowledge/packs").json() == []

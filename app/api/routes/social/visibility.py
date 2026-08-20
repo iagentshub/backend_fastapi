@@ -24,6 +24,7 @@ from app.services.publication_cascade import (
     _cascade_publish_workflow,
     _publish_knowledge_cascade,
 )
+from app.services.publishing import assert_can_publish
 from app.services.resource_stores import (
     _agents_store,
     _groups_store,
@@ -53,25 +54,31 @@ class _AgentVisibilityBody(BaseModel):
     trial_missing_deps: str = "warn"
     publish_dependencies: List[str] = Field(default_factory=list)
 
+
 class _SkillVisibilityBody(BaseModel):
     is_public: bool
     category: str
+
 
 class _PromptVisibilityBody(BaseModel):
     is_public: bool
     category: str
 
+
 class _ToolVisibilityBody(BaseModel):
     is_public: bool
     category: str
+
 
 class _WorkflowVisibilityBody(BaseModel):
     is_public: bool
     category: str
 
+
 class _KnowledgePackVisibilityBody(BaseModel):
     is_public: bool
     category: str
+
 
 @router.put("/api/knowledge-packs/{pack_id}/visibility")
 async def set_knowledge_pack_visibility(
@@ -80,6 +87,8 @@ async def set_knowledge_pack_visibility(
     ctx: GroupContext = Depends(require_group),
 ) -> Dict[str, Any]:
     """Publica o retira un pack y todos sus archivos como una unidad."""
+    if body.is_public:
+        assert_can_publish(ctx.user)
     _check_category(body.category)
     pack = await _knowledge_packs_store.get(pack_id)
     if not pack:
@@ -161,6 +170,7 @@ async def set_knowledge_pack_visibility(
             )
     return {"ok": True}
 
+
 @router.put("/api/agents/{scope}/{agent_id}/visibility")
 async def set_agent_visibility(
     scope: str,
@@ -168,6 +178,8 @@ async def set_agent_visibility(
     body: _AgentVisibilityBody,
     username: str = Depends(require_auth),
 ) -> Dict[str, Any]:
+    if body.is_public:
+        assert_can_publish(username)
     _check_category(body.category)
     if body.trial_missing_deps not in ("warn", "silent"):
         raise APIError(
@@ -236,6 +248,7 @@ async def set_agent_visibility(
         )
     return {"ok": True}
 
+
 @router.put("/api/skills/{scope}/{skill_id}/visibility")
 async def set_skill_visibility(
     scope: str,
@@ -243,6 +256,8 @@ async def set_skill_visibility(
     body: _SkillVisibilityBody,
     username: str = Depends(require_auth),
 ) -> Dict[str, Any]:
+    if body.is_public:
+        assert_can_publish(username)
     _check_category(body.category)
     skills = _skills_store
     skill = await skills.get(scope, skill_id)
@@ -278,6 +293,7 @@ async def set_skill_visibility(
         await conn.commit()
     return {"ok": True}
 
+
 @router.put("/api/prompts/{scope}/{prompt_id}/visibility")
 async def set_prompt_visibility(
     scope: str,
@@ -285,6 +301,8 @@ async def set_prompt_visibility(
     body: _PromptVisibilityBody,
     username: str = Depends(require_auth),
 ) -> Dict[str, Any]:
+    if body.is_public:
+        assert_can_publish(username)
     _check_category(body.category)
     prompts = _prompts_store
     prompt = await prompts.get(scope, prompt_id)
@@ -320,6 +338,7 @@ async def set_prompt_visibility(
         await conn.commit()
     return {"ok": True}
 
+
 @router.put("/api/tools/{scope}/{tool_id}/visibility")
 async def set_tool_visibility(
     scope: str,
@@ -327,6 +346,8 @@ async def set_tool_visibility(
     body: _ToolVisibilityBody,
     username: str = Depends(require_auth),
 ) -> Dict[str, Any]:
+    if body.is_public:
+        assert_can_publish(username)
     _check_category(body.category)
     tools = _tools_store
     tool = await tools.get(scope, tool_id)
@@ -362,12 +383,15 @@ async def set_tool_visibility(
         await conn.commit()
     return {"ok": True}
 
+
 @router.put("/api/workflows/{workflow_id}/visibility")
 async def set_workflow_visibility(
     workflow_id: str,
     body: _WorkflowVisibilityBody,
     ctx: GroupContext = Depends(require_group),
 ) -> Dict[str, Any]:
+    if body.is_public:
+        assert_can_publish(ctx.user)
     _check_category(body.category)
     workflows = _workflows_store
     workflow = await workflows.get(workflow_id, ctx.group_id)

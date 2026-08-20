@@ -14,6 +14,7 @@ from typing import Any, Dict, List, Optional
 from app.api.routes.auth import GroupContext
 from app.auth.auth import get_user_role
 from app.errors import APIError
+from app.services.publishing import assert_can_publish
 from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
 from app.storage.knowledge import (
@@ -152,10 +153,14 @@ _PACK_MAX_TOTAL_BYTES = 50 * 1024 * 1024
 
 _PACK_SESSION_MAX_TOTAL_BYTES = 500 * 1024 * 1024
 
+
 async def _owner(user: str, group_id: str) -> Optional[str]:
     return None if await get_user_role(user) == "admin" else group_id
 
-def _content_labels(body: Dict[str, Any], *, allow_origin: bool = False) -> List[str]:
+
+def _content_labels(
+    body: Dict[str, Any], *, user: str, allow_origin: bool = False
+) -> List[str]:
     raw = body.get("labels")
     if raw is None:
         return ensure_origin_label(["private"], "community")
@@ -190,11 +195,15 @@ def _content_labels(body: Dict[str, Any], *, allow_origin: bool = False) -> List
         )
     selected_visibility = visibility[0] if visibility else "private"
     editable = [value for value in labels if value not in {"public", "private"}]
-    return ensure_origin_label(
+    normalized = ensure_origin_label(
         [selected_visibility, *editable], None if allow_origin else "community"
     )
+    if "public" in normalized:
+        assert_can_publish(user)
+    return normalized
 
-def _edited_labels(raw: Any, existing: Dict[str, Any]) -> List[str]:
+
+def _edited_labels(raw: Any, existing: Dict[str, Any], *, user: str) -> List[str]:
     if not isinstance(raw, list):
         raise APIError(
             422,
@@ -233,7 +242,11 @@ def _edited_labels(raw: Any, existing: Dict[str, Any]) -> List[str]:
     )
     editable = [value for value in assignable if value not in {"private", "public"}]
     origin = "official" if "official" in existing_labels else "community"
-    return ensure_origin_label([visibility, *editable], origin)
+    normalized = ensure_origin_label([visibility, *editable], origin)
+    if "public" in normalized:
+        assert_can_publish(user)
+    return normalized
+
 
 async def _sync_social_visibility(
     *, resource_type: str, resource_id: str, ctx: GroupContext, is_public: bool
@@ -250,6 +263,7 @@ async def _sync_social_visibility(
         is_public=is_public,
     )
 
+
 def _pack_skip_reason(relative_path: str) -> Optional[str]:
     path = PurePosixPath(relative_path)
     lower_parts = {part.lower() for part in path.parts[:-1]}
@@ -264,6 +278,7 @@ def _pack_skip_reason(relative_path: str) -> Optional[str]:
         return "posible_secreto"
     return None
 
+
 def _pack_file_is_extractable(relative_path: str) -> bool:
     path = PurePosixPath(relative_path)
     name = path.name.lower()
@@ -276,6 +291,7 @@ def _pack_file_is_extractable(relative_path: str) -> bool:
         or name.startswith(("readme.", "license.", "changelog."))
     )
 
+
 def _catalogued_file_content(relative_path: str, mime_type: str, size: int) -> str:
     return (
         f"Archivo catalogado dentro del pack: {relative_path}\n"
@@ -283,6 +299,7 @@ def _catalogued_file_content(relative_path: str, mime_type: str, size: int) -> s
         f"Tamano: {size} bytes\n"
         "El formato no contiene texto extraible directamente."
     )
+
 
 def _pack_kind(relative_path: str) -> str:
     path = PurePosixPath(relative_path)
@@ -336,6 +353,7 @@ def _pack_kind(relative_path: str) -> str:
         return "config"
     return "document" if _pack_file_is_extractable(relative_path) else "asset"
 
+
 def _normalize_pack_path(raw: str) -> str:
     value = raw.replace("\\", "/").strip("/")
     path = PurePosixPath(value)
@@ -359,8 +377,10 @@ def _normalize_pack_path(raw: str) -> str:
         )
     return path.as_posix()
 
+
 def _valid_sha256(value: str) -> bool:
     return len(value) == 64 and all(char in "0123456789abcdef" for char in value)
+
 
 def _pack_reported_size(raw_sizes: List[Any], index: int, fallback: int) -> int:
     if not raw_sizes:

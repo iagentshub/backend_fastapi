@@ -60,6 +60,7 @@ async def list_items(
         requested_group_id=requested_group_id,
     )
 
+
 @router.post("/text")
 async def add_text(
     body: KnowledgeTextBody,
@@ -72,6 +73,7 @@ async def add_text(
     source = str(body.get("source") or title).strip()
     labels = _content_labels(
         body,
+        user=user,
         allow_origin=await get_user_role(user) == "admin",
     )
     if not title:
@@ -99,6 +101,7 @@ async def add_text(
     )
     return item
 
+
 @router.post("/url")
 async def add_url(
     body: KnowledgeUrlBody,
@@ -110,6 +113,7 @@ async def add_url(
     title = str(body.get("title") or "").strip() or url
     labels = _content_labels(
         body,
+        user=user,
         allow_origin=await get_user_role(user) == "admin",
     )
     if not url:
@@ -141,6 +145,7 @@ async def add_url(
     )
     return item
 
+
 @router.post("/document")
 async def upload_document(
     file: UploadFile = File(...),
@@ -159,6 +164,7 @@ async def upload_document(
         ) from exc
     content_labels = _content_labels(
         {"labels": parsed_labels},
+        user=user,
         allow_origin=await get_user_role(user) == "admin",
     )
     filename = file.filename or "documento"
@@ -222,6 +228,7 @@ async def upload_document(
     )
     return item
 
+
 @router.put("/{item_id}")
 async def update_item(
     item_id: str,
@@ -245,7 +252,7 @@ async def update_item(
             422, "name_too_long", "El nombre no puede superar 160 caracteres"
         )
     labels = (
-        _edited_labels(body.labels, item)
+        _edited_labels(body.labels, item, user=ctx.user)
         if body.labels is not None
         else list(item.get("labels") or [])
     )
@@ -262,6 +269,7 @@ async def update_item(
     )
     return await _storage.get(item_id) or {"id": item_id, "name": name}
 
+
 @router.put("/{item_id}/labels")
 async def update_item_labels(
     item_id: str,
@@ -277,7 +285,7 @@ async def update_item_labels(
     role = await get_user_role(ctx.user)
     if role != "admin" and item.get("owner_id") not in {ctx.user, ctx.group_id}:
         raise APIError(403, "forbidden", "Sin permisos sobre este conocimiento")
-    labels = _edited_labels(body.labels, item)
+    labels = _edited_labels(body.labels, item, user=ctx.user)
     owner = None if role == "admin" else str(item["owner_id"])
     if not await _storage.update_labels(item_id, owner, labels):
         raise APIError(
@@ -290,6 +298,7 @@ async def update_item_labels(
         is_public="public" in labels,
     )
     return await _storage.get(item_id) or {"id": item_id, "labels": labels}
+
 
 @router.delete("/{item_id}")
 async def delete_item(

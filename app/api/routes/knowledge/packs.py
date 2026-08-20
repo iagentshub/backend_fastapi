@@ -80,6 +80,7 @@ async def list_packs(
                     own_ids.add(pack_id)
     return packs
 
+
 @router.post("/packs")
 async def upload_pack(
     name: str = Form(...),
@@ -148,7 +149,9 @@ async def upload_pack(
             extra={"max_files": _PACK_MAX_FILES},
         )
     content_labels = _content_labels(
-        {"labels": raw_labels}, allow_origin=await get_user_role(user) == "admin"
+        {"labels": raw_labels},
+        user=user,
+        allow_origin=await get_user_role(user) == "admin",
     )
     normalized_paths = [_normalize_pack_path(str(path)) for path in raw_paths]
     if len(normalized_paths) != len(set(normalized_paths)):
@@ -252,6 +255,7 @@ async def upload_pack(
     pack["ignored"] = ignored
     return pack
 
+
 @router.get("/packs/{pack_id}")
 async def get_pack(
     pack_id: str,
@@ -276,6 +280,7 @@ async def get_pack(
         raise APIError(403, "forbidden", "Sin acceso a este pack")
     return pack
 
+
 @router.delete("/packs/{pack_id}")
 async def delete_pack(
     pack_id: str,
@@ -295,6 +300,7 @@ async def delete_pack(
             404, "not_found", "Pack no encontrado", extra={"resource": "knowledge_pack"}
         )
     return {"ok": True}
+
 
 @router.put("/packs/{pack_id}")
 async def update_pack(
@@ -330,7 +336,7 @@ async def update_pack(
             "La descripción no puede superar 2000 caracteres",
         )
     labels = (
-        _edited_labels(body.labels, pack)
+        _edited_labels(body.labels, pack, user=ctx.user)
         if body.labels is not None
         else list(pack.get("labels") or [])
     )
@@ -353,6 +359,7 @@ async def update_pack(
     )
     return await _packs.get(pack_id) or {"id": pack_id, "name": name}
 
+
 @router.put("/packs/{pack_id}/labels")
 async def update_pack_labels(
     pack_id: str,
@@ -368,7 +375,7 @@ async def update_pack_labels(
     role = await get_user_role(ctx.user)
     if role != "admin" and pack.get("owner_id") not in {ctx.user, ctx.group_id}:
         raise APIError(403, "forbidden", "Sin permisos sobre este pack")
-    labels = _edited_labels(body.labels, pack)
+    labels = _edited_labels(body.labels, pack, user=ctx.user)
     owner = None if role == "admin" else str(pack["owner_id"])
     if not await _packs.update_labels(pack_id, owner, labels):
         raise APIError(

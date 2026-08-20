@@ -66,6 +66,7 @@ async def create_pack_upload_session(
     source_mode = "reference" if body.source_mode == "reference" else "upload"
     labels = _content_labels(
         {"labels": body.labels or []},
+        user=ctx.user,
         allow_origin=await get_user_role(ctx.user) == "admin",
     )
     owner = await _owner(ctx.user, ctx.group_id) or ctx.group_id
@@ -78,6 +79,7 @@ async def create_pack_upload_session(
         source_mode=source_mode,
         upload_status="uploading",
     )
+
 
 @router.post("/packs/upload-sessions/{pack_id}/files")
 async def upload_pack_session_file(
@@ -166,8 +168,7 @@ async def upload_pack_session_file(
                 # usuario sube un PDF, recibe la ficha catalogada en vez del texto
                 # y no hay forma de saber por qué.
                 flog.warning(
-                    f"[knowledge] Extracción fallida de {path} "
-                    f"({mime_type}): {exc}"
+                    f"[knowledge] Extracción fallida de {path} ({mime_type}): {exc}"
                 )
                 content = ""
         if not content.strip() or "\x00" in content:
@@ -189,6 +190,7 @@ async def upload_pack_session_file(
     if result is None:
         raise APIError(404, "not_found", "Sesión no encontrada")
     return result
+
 
 @router.post("/packs/upload-sessions/{pack_id}/complete")
 async def complete_pack_upload_session(
@@ -216,6 +218,7 @@ async def complete_pack_upload_session(
         is_public="public" in (completed.get("labels") or []),
     )
     return completed
+
 
 @router.delete("/packs/upload-sessions/{pack_id}")
 async def cancel_pack_upload_session(
