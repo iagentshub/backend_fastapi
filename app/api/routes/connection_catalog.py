@@ -7,7 +7,7 @@ from typing import Any
 
 from fastapi import APIRouter, Depends
 
-from app.api.routes.auth import require_auth
+from app.api.routes.auth import require_session
 from app.config.security import assert_safe_url
 from app.connections import all_providers
 from app.models.request_bodies import OllamaModelsBody
@@ -16,14 +16,14 @@ router = APIRouter(prefix="/api/connections", tags=["connection-catalog"])
 
 
 @router.get("/providers")
-async def list_providers(_: str = Depends(require_auth)) -> list[dict[str, Any]]:
+async def list_providers(_: str = Depends(require_session)) -> list[dict[str, Any]]:
     return all_providers()
 
 
 @router.post("/ollama-models")
 async def ollama_models(
     body: OllamaModelsBody,
-    _: str = Depends(require_auth),
+    _: str = Depends(require_session),
 ) -> dict[str, Any]:
     from app.connections.ollama import OllamaProvider
 

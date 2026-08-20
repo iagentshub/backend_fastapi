@@ -25,6 +25,7 @@ from app.auth.auth import (
     verify_password_async,
 )
 from app.auth.cookies import clear_session_cookies, set_session_cookies
+from app.auth.gdpr import purge_user_data
 from app.auth.passwords import create_token, decode_claims
 from app.auth.sessions import open_session
 from app.config.session import (
@@ -41,6 +42,7 @@ from app.errors import APIError
 from app.middleware.locale import get_locale
 from app.middleware.ratelimit import RateLimiter
 from app.services.email import send_verification_email
+from app.storage.guest import is_guest
 from app.storage.sessions import (
     REASON_LOGOUT,
     REASON_LOGOUT_ALL,
@@ -246,16 +248,51 @@ async def verify_email(
     await open_session(response, user["id"], request)
     return {"ok": True, "username": username}
 
+async def _cerrar_invitado_previo(ga_token: str | None) -> None:
+    """Un invitado por navegador: el alta cierra y borra el anterior.
+
+    Sin esto, pulsar dos veces «entrar como invitado» —recargar, dudar, volver
+    a pulsar— deja tantos invitados como pulsaciones, y ninguno se purga: el
+    barrido se lleva a los que no tienen **sesión viva**, y esos la tienen, solo
+    que ya no la usa nadie. Medido: tres pulsaciones, tres filas, cero
+    purgadas; el cupo se consume hasta que caduquen sus sesiones y la demo
+    responde 503 estando casi vacía.
+
+    Solo actúa sobre invitados: un usuario registrado que pulse el botón no
+    pierde su sesión ni, mucho menos, su cuenta.
+    """
+    if not ga_token:
+        return
+    claims = decode_claims(ga_token, allow_expired=True)
+    if not claims or not is_guest(claims.username):
+        return
+    if claims.session_id:
+        await _sessions.revoke(claims.session_id, REASON_LOGOUT)
+    await purge_user_data(claims.username)
+
+
 @router.post("/guest")
 async def guest_login(
     request: Request,
     response: Response,
+    ga_token: str | None = Cookie(default=None),
     _rl: None = Depends(_guest_limiter),
 ) -> dict[str, Any]:
-    from app.storage.guest import new_guest_id
+    from app.storage.guest import create_guest_user
 
-    guest_id = new_guest_id()
+    await _cerrar_invitado_previo(ga_token)
+    guest_id = await create_guest_user()
     await open_session(response, guest_id, request)
+    # El alta es la única petición del invitado que el log no puede atribuirle
+    # solo: `_username_for_log` lee la cookie de la petición, y aquí la cookie
+    # se emite en la respuesta, así que esa línea sale como anónima. Sin esta,
+    # el registro tiene la IP pero no dice qué invitado nació de ella — y el
+    # invitado se borra al salir, con lo que el log es lo único que queda.
+    flog.ok(
+        f"[guest] alta usuario={guest_id}",
+        ip=_client_ip(request),
+        username=guest_id,
+    )
     return {"ok": True, "username": guest_id}
 
 @router.post("/logout")
@@ -274,6 +311,13 @@ async def logout(
         claims = decode_claims(ga_token, allow_expired=True)
         if claims and claims.session_id:
             await _sessions.revoke(claims.session_id, REASON_LOGOUT)
+        # El invitado no sobrevive a su sesión: cerrarla borra su usuario y con
+        # él todo lo que creó, con la misma rutina que el borrado RGPD. Va
+        # después de revocar para que una purga que falle no deje la sesión
+        # abierta, y antes de las cookies para que el cliente no se quede con
+        # una credencial que ya no identifica a nadie.
+        if claims and is_guest(claims.username):
+            await purge_user_data(claims.username)
     clear_session_cookies(response)
     return {"ok": True}
 

@@ -416,6 +416,40 @@ def _check_rate_limit_ip_ceiling() -> ConfigCheck:
         variables=("GAIA_RATE_IP_FACTOR",),
     )
 
+def _check_guest_demo() -> ConfigCheck:
+    """El tope de invitados simultáneos, que es también el interruptor del demo.
+
+    A 0 el alta responde 503 siempre: la demo queda apagada. Es una decisión
+    legítima en una instalación privada, pero no lo dice nada más — la ruta
+    sigue publicada y el cliente sigue ofreciendo el botón «entrar como
+    invitado», así que sin este aviso el síntoma es un 503 sin explicación.
+
+    Aquí había otra cosa: con varios workers el tope real era el declarado por
+    worker, porque las sesiones vivían en memoria de proceso. Ya no — el
+    invitado es una fila en la BD y el número es el del clúster.
+    """
+    import app.storage.guest as _guest
+
+    if _guest.MAX_SESSIONS <= 0:
+        return ConfigCheck(
+            key="guest_demo",
+            feature="Sesiones de invitado",
+            severity="warning",
+            detail=(
+                "El demo de invitado está desactivado: el alta responde 503 "
+                "a cualquiera que lo intente."
+            ),
+            variables=("GAIA_MAX_GUEST_SESSIONS",),
+        )
+    return ConfigCheck(
+        key="guest_demo",
+        feature="Sesiones de invitado",
+        severity="ok",
+        detail="Demo activo, con tope de invitados simultáneos en el clúster.",
+        variables=("GAIA_MAX_GUEST_SESSIONS",),
+    )
+
+
 def _check_body_limit(settings: dict) -> ConfigCheck:
     """El techo de tamaño de cuerpo de petición.
 

@@ -7,7 +7,7 @@ from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends
 
-from app.api.routes.auth import GroupContext, require_group, require_group_session
+from app.api.routes.auth import GroupContext, require_group_session
 from app.auth.auth import get_user_role
 from app.config.session import (
     RATE_IP_FACTOR,
@@ -23,7 +23,6 @@ from app.models.request_bodies import ConnectionTestsBody
 from app.services.connection_access import connection_access
 from app.services.credentials import is_unreadable, test_failure
 from app.storage.connection_storage import ConnectionStorage
-from app.storage.guest import get_session, is_guest
 
 router = APIRouter(prefix="/api/connections", tags=["connection-diagnostics"])
 
@@ -65,7 +64,7 @@ async def _get_conn_any(
 @router.post("/test-all")
 async def test_all_connections(
     body: ConnectionTestsBody | None = None,
-    ctx: GroupContext = Depends(require_group),
+    ctx: GroupContext = Depends(require_group_session),
     _rl: None = Depends(_test_all_limiter),
 ) -> List[Dict[str, Any]]:
     user, group_id = ctx.user, ctx.group_id
@@ -110,16 +109,11 @@ async def test_connection(
     _rl: None = Depends(_test_limiter),
 ) -> Dict[str, Any]:
     user, group_id = ctx.user, ctx.group_id
-    if is_guest(user):
-        conn = next(
-            (c for c in get_session(user).connections if c.get("id") == conn_id), None
-        )
+    role = await get_user_role(user)
+    if role == "admin":
+        conn = await _storage.get(conn_id, None)
     else:
-        role = await get_user_role(user)
-        if role == "admin":
-            conn = await _storage.get(conn_id, None)
-        else:
-            conn = await _get_conn_any(conn_id, user, group_id)
+        conn = await _get_conn_any(conn_id, user, group_id)
     if not conn:
         raise APIError(
             404, "not_found", "Conexión no encontrada", extra={"resource": "connection"}

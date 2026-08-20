@@ -8,7 +8,7 @@ from typing import Any
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel
 
-from app.api.routes.auth import require_auth
+from app.api.routes.auth import require_session
 from app.storage.db import IS_PG, PH, open_db
 
 router = APIRouter(prefix="/api/agents", tags=["agent-preferences"])
@@ -21,7 +21,7 @@ class AgentPreferenceBody(BaseModel):
 @router.get("/{agent_id}/preferences")
 async def get_agent_preferences(
     agent_id: str,
-    user: str = Depends(require_auth),
+    user: str = Depends(require_session),
 ) -> dict[str, Any]:
     async with open_db() as conn:
         row = await conn.fetchone(
@@ -36,7 +36,7 @@ async def get_agent_preferences(
 async def put_agent_preferences(
     agent_id: str,
     body: AgentPreferenceBody,
-    user: str = Depends(require_auth),
+    user: str = Depends(require_session),
 ) -> dict[str, Any]:
     now_str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
     async with open_db() as conn:

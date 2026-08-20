@@ -45,19 +45,16 @@ async def me(
 
     role = await get_user_role(user_id)
     group_name: str | None = None
-    if is_guest(user_id):
-        auth_method = "guest"
-        user_row: dict[str, Any] = {}
-        username = user_id
+    user_row: dict[str, Any] = await get_user_by_id(user_id) or {}
+    username = user_row.get("username", "")
+    # El invitado tiene fila como cualquiera; lo que el cliente necesita saber
+    # es que su sesión es efímera, y eso viaja aquí.
+    auth_method = "guest" if is_guest(user_id) else (user_row.get("provider") or "internal")
+    if group_id != user_id:
+        group = await _groups.get(group_id)
+        group_name = group["name"] if group else group_id
     else:
-        user_row = await get_user_by_id(user_id) or {}
-        username = user_row.get("username", "")
-        auth_method = user_row.get("provider") or "internal"
-        if group_id != user_id:
-            group = await _groups.get(group_id)
-            group_name = group["name"] if group else group_id
-        else:
-            group_name = user_row.get("display_name") or username
+        group_name = user_row.get("display_name") or username
 
     payload: dict[str, Any] = {
         "id": user_id,

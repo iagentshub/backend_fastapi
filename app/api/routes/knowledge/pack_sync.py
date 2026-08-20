@@ -35,7 +35,6 @@ from app.errors import APIError
 from app.models.request_bodies import (
     KnowledgePackManifestBody,
 )
-from app.storage.guest import is_guest
 from app.storage.knowledge import (
     extract_document_text,
 )
@@ -79,8 +78,6 @@ async def compare_pack_sync_manifest(
     body: KnowledgePackManifestBody,
     ctx: GroupContext = Depends(require_group_session),
 ) -> Dict[str, Any]:
-    if is_guest(ctx.user):
-        raise APIError(403, "forbidden", "Los invitados no pueden sincronizar packs")
     pack = await _packs.get(pack_id)
     if pack is None:
         raise APIError(
@@ -146,8 +143,6 @@ async def sync_pack(
     files: List[UploadFile] = File(default=[]),
     ctx: GroupContext = Depends(require_group_session),
 ) -> Dict[str, Any]:
-    if is_guest(ctx.user):
-        raise APIError(403, "forbidden", "Los invitados no pueden sincronizar packs")
     pack = await _packs.get(pack_id, include_items=False)
     if pack is None:
         raise APIError(

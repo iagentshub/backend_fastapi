@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 import sqlite3
+import time
 from io import StringIO
 
 import pytest
@@ -204,6 +205,39 @@ def test_args_se_sustituyen(captured):
 
 
 # ── _DBHandler ─────────────────────────────────────────────────────────────────
+
+
+def test_el_hilo_de_volcado_revive_si_alguien_cierra_el_handler(tmp_path):
+    """El fallo: uvicorn deja el logger sin quien vuelque el buffer.
+
+    `Config.configure_logging()` llama a `dictConfig`, que empieza cerrando
+    todos los handlers ya registrados (`_clearExistingHandlers`). Nuestro
+    `close()` corta el hilo `flog-flush`, y el handler sigue vivo pero sin nadie
+    que escriba: a partir de ahí solo llegaban a `app_logs` los lotes completos
+    de 50 y los ERROR. En una instalación tranquila eso son las últimas hasta 49
+    líneas sin aparecer en el visor — y en un invitado, cuyo rastro en el log es
+    lo único que le sobrevive, justo las que interesan.
+    """
+    db = tmp_path / "logs.sqlite3"
+    h = _DBHandler(db, batch_size=50, flush_interval=0.05)
+    assert h._flusher is not None and h._flusher.is_alive()
+
+    h.close()  # lo que hace dictConfig por debajo
+    assert not h._flusher.is_alive()
+
+    h.emit(_make_record(logging.INFO, "después del cierre", ip="1.1.1.1", username="x"))
+    assert h._flusher.is_alive(), "el buffer se quedó sin quien lo vuelque"
+
+    # Y vuelca solo, sin llenar el lote y sin que nadie llame a flush().
+    esperar = time.monotonic() + 5
+    filas: list = []
+    while time.monotonic() < esperar and not filas:
+        conn = sqlite3.connect(str(db))
+        filas = conn.execute("SELECT summary FROM app_logs").fetchall()
+        conn.close()
+        if not filas:
+            time.sleep(0.05)
+    assert filas and filas[0][0] == "después del cierre"
 
 
 def test_db_handler_crea_fichero(tmp_path):

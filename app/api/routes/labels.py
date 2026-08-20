@@ -6,7 +6,7 @@ from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends
 
-from app.api.routes.auth import GroupContext, require_group
+from app.api.routes.auth import GroupContext, require_group_session
 from app.auth.auth import get_user_role
 from app.storage.labels import resources_with_label
 
@@ -15,7 +15,7 @@ router = APIRouter(prefix="/api/labels", tags=["labels"])
 
 @router.get("/{label}")
 async def list_resources_with_label(
-    label: str, ctx: GroupContext = Depends(require_group)
+    label: str, ctx: GroupContext = Depends(require_group_session)
 ) -> List[Dict[str, Any]]:
     """Devuelve los recursos (de cualquier tipo) que llevan una etiqueta.
 

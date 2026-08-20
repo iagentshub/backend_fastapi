@@ -28,7 +28,6 @@ from app.services.skill_builder import (
 )
 from app.storage.connection_storage import ConnectionStorage
 from app.storage.groups import GroupStorage
-from app.storage.guest import get_session, is_guest
 
 router = APIRouter(prefix="/api/skill-builder", tags=["skill-builder"])
 logger = logging.getLogger(__name__)
@@ -58,33 +57,26 @@ async def builder_chat(
     else:
         conn_id, ollama_model = raw_conn_id, None
 
-    role = ""
-    if is_guest(user):
-        conn = next(
-            (item for item in get_session(user).connections if item.get("id") == conn_id),
-            None,
+    role = await get_user_role(user)
+    if (
+        group_id != user
+        and role != "admin"
+        and not await _groups.has_resource_permission(
+            group_id, user, "connections", conn_id, "direct"
         )
+    ):
+        raise APIError(
+            403,
+            "forbidden",
+            "No tienes permiso para usar esta conexión directamente",
+            extra={"resource": "connection"},
+        )
+    if role == "admin":
+        conn = await _conns.get(conn_id, None)
     else:
-        role = await get_user_role(user)
-        if (
-            group_id != user
-            and role != "admin"
-            and not await _groups.has_resource_permission(
-                group_id, user, "connections", conn_id, "direct"
-            )
-        ):
-            raise APIError(
-                403,
-                "forbidden",
-                "No tienes permiso para usar esta conexión directamente",
-                extra={"resource": "connection"},
-            )
-        if role == "admin":
-            conn = await _conns.get(conn_id, None)
-        else:
-            from app.services.connection_access import connection_access
+        from app.services.connection_access import connection_access
 
-            conn = await connection_access.get_accessible(conn_id, user, group_id)
+        conn = await connection_access.get_accessible(conn_id, user, group_id)
 
     if conn and ollama_model:
         conn = {**conn, "model": ollama_model}

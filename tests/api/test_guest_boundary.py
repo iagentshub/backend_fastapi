@@ -1,15 +1,16 @@
-"""Frontera del invitado — BE-01.
+"""Frontera del invitado.
 
-Hasta el cierre, `require_auth` y `require_group` estaban aliasadas al rango
-`guest`, así que cualquiera que llamase a POST /api/auth/guest pasaba la puerta
-de los ~140 endpoints que las usan, incluidos billing, settings, social,
-sharing, users, accounts y workflows, que nunca miraron si quien llamaba era un
-invitado.
+Hasta el cierre de BE-01, `require_auth` y `require_group` estaban aliasadas al
+rango `guest`, así que cualquiera que llamase a POST /api/auth/guest pasaba la
+puerta de los ~140 endpoints que las usan, incluidos billing, settings, social,
+sharing, users y accounts, que nunca miraron si quien llamaba era un invitado.
 
-El allowlist no se decidió a ojo: los endpoints con rama `is_guest(...)` son los
-conscientes del invitado por diseño y siguen abiertos con `require_session`.
-Este fichero fija esa frontera en ambas direcciones para que no se pueda mover
-sin que un test lo diga.
+Aquel allowlist se derivaba del código: «endpoint con rama `is_guest(...)`» era
+exactamente el conjunto que sabía trabajar contra la GuestSession en memoria.
+Esa regla ya no existe —el invitado es un usuario efímero en la BD y usa el
+mismo almacenamiento que todos—, así que la frontera es ahora una decisión de
+producto: **todo su espacio personal, nada de lo que no es suyo**. Este fichero
+es donde está escrita, en las dos direcciones.
 """
 
 from __future__ import annotations
@@ -26,18 +27,18 @@ def guest(client):
 
 
 # ── Lo que el invitado NO debe poder tocar ────────────────────────────────────
-# Un endpoint representativo por cada router que nunca contempló al invitado.
+# Un endpoint representativo por cada router que no le pertenece: lo que es de
+# otros (users, social, groups, sharing), lo que no tiene sentido sin cuenta
+# (billing, cuentas OAuth, PATs) y lo que es de la instalación (admin).
 
 CERRADOS = [
     ("GET", "/api/accounts"),
     ("GET", "/api/billing/subscription"),
     ("GET", "/api/feed"),
     ("GET", "/api/groups"),
-    ("GET", "/api/labels"),
-    ("GET", "/api/settings"),
     ("GET", "/api/social/feed"),
     ("GET", "/api/users"),
-    ("GET", "/api/workflows"),
+    ("POST", "/api/auth/tokens"),
 ]
 
 
@@ -50,32 +51,39 @@ def test_el_invitado_no_entra(guest, metodo, ruta):
     # 403 es la respuesta correcta: credencial válida, rango insuficiente.
     # 404 también vale — significa que la ruta ni siquiera existe ya.
     assert r.status_code in (403, 404), f"{metodo} {ruta} devolvió {r.status_code}"
-    if r.status_code == 403:
-        assert r.json()["detail"]["code"] == "guest_forbidden"
 
 
 def test_el_anonimo_sin_credencial_tampoco(client):
     """Sin sesión de ningún tipo la respuesta es 401, no 403."""
-    r = client.get("/api/settings")
+    r = client.get("/api/users")
     assert r.status_code == 401
 
 
-# ── Lo que el invitado SÍ debe poder hacer: el demo ───────────────────────────
+def test_el_invitado_no_administra(guest):
+    r = guest.get("/api/admin/users")
+    assert r.status_code == 403
+    assert r.json()["detail"]["code"] == "forbidden"
+
+
+# ── Lo que el invitado SÍ debe poder hacer: su espacio personal ───────────────
 
 ABIERTOS = [
     ("GET", "/api/auth/me"),
     ("GET", "/api/agents"),
     ("GET", "/api/connections"),
     ("GET", "/api/skills"),
+    ("GET", "/api/prompts"),
+    ("GET", "/api/tools"),
     ("GET", "/api/knowledge"),
+    ("GET", "/api/knowledge/packs"),
     ("GET", "/api/memory"),
     ("GET", "/api/chats/recent"),
+    ("GET", "/api/workflows"),
+    ("GET", "/api/settings"),
+    ("GET", "/api/labels/private"),
+    ("GET", "/api/llm-orchestrations"),
     # Catálogo público: solo filas is_public. Es la vitrina del demo.
     ("GET", "/api/explore"),
-    # Prompts llegó a main mientras corrían las fases y se cerró al
-    # integrar, pese a tener ramas is_guest y su propio campo en
-    # GuestSession. Lo cazó la suite; aquí queda fijado.
-    ("GET", "/api/prompts"),
 ]
 
 
@@ -86,7 +94,7 @@ def test_el_demo_del_invitado_sigue_abierto(guest, metodo, ruta):
 
 
 def test_el_invitado_completa_el_camino_del_demo(guest):
-    """Crear conexión y agente en la sesión efímera, que es para lo que existe."""
+    """Crear conexión y agente, que es para lo que existe la demo."""
     r = guest.post(
         "/api/connections",
         json={
@@ -114,25 +122,28 @@ def test_el_invitado_completa_el_camino_del_demo(guest):
     assert any(a["name"] == "agente demo" for a in guest.get("/api/agents").json())
 
 
-# ── Prompts: guest-aware por diseño, pero no entero ───────────────────────────
-# Los 4 handlers con rama is_guest() están abiertos; activate y deactivate no la
-# tienen —operan sobre el estado del grupo en BD— y siguen cerrados.
+def test_el_invitado_activa_y_desactiva_lo_suyo(guest):
+    """Con la sesión en memoria esto respondía 403: no había dónde guardarlo."""
+    r = guest.post(
+        "/api/agents",
+        json={"name": "para desactivar", "system_prompt": "x", "model": "gpt-4o"},
+    )
+    assert r.status_code in (200, 201), r.text
+    agent_id = r.json()["id"]
 
-PROMPTS_CERRADOS = [
-    ("POST", "/api/prompts/x/activate"),
-    ("POST", "/api/prompts/x/deactivate"),
-]
+    assert guest.post(f"/api/agents/{agent_id}/deactivate").status_code == 200
+    assert guest.post(f"/api/agents/{agent_id}/activate").status_code == 200
 
 
-@pytest.mark.parametrize("metodo,ruta", PROMPTS_CERRADOS)
-def test_el_invitado_no_activa_prompts_del_grupo(guest, metodo, ruta):
-    r = guest.request(metodo, ruta)
-    assert r.status_code == 403, f"{metodo} {ruta} devolvió {r.status_code}"
-    assert r.json()["detail"]["code"] == "guest_forbidden"
+def test_el_invitado_guarda_su_conversacion(guest):
+    """Antes esto era un 403 explícito: «los invitados no pueden guardar
+    conversaciones». Ahora puede, y se borra con él."""
+    r = guest.post("/api/chats/agente-x", json={"title": "una charla"})
+    assert r.status_code == 200, r.text
+    assert guest.get("/api/chats/agente-x").status_code == 200
 
 
 def test_el_invitado_guarda_y_borra_su_prompt_privado(guest):
-    """El prompt vive en la sesión efímera, no en la BD."""
     r = guest.post(
         "/api/prompts/private",
         json={
@@ -148,3 +159,40 @@ def test_el_invitado_guarda_y_borra_su_prompt_privado(guest):
     assert guest.get(f"/api/prompts/private/{pid}").status_code == 200
     assert guest.delete(f"/api/prompts/private/{pid}").status_code == 200
     assert guest.get(f"/api/prompts/private/{pid}").status_code == 404
+
+
+PUBLICABLES = [
+    ("POST", "/api/skills/public"),
+    ("POST", "/api/prompts/public"),
+    ("POST", "/api/tools/public"),
+]
+
+
+@pytest.mark.parametrize("metodo,ruta", PUBLICABLES)
+def test_el_invitado_no_publica_en_la_vitrina(guest, metodo, ruta):
+    """Lo único cerrado dentro de su propio espacio: lo que publicase se
+    desvanecería del catálogo al expirar su sesión, dejando enlaces rotos en
+    quien lo hubiera enlazado."""
+    r = guest.request(
+        metodo,
+        ruta,
+        json={"name": "publico", "description": "d", "content": "c", "alias": "pub-x"},
+    )
+    assert r.status_code == 403, f"{metodo} {ruta} devolvió {r.status_code}"
+    assert r.json()["detail"]["code"] == "guest_cannot_publish"
+
+
+def test_el_invitado_tampoco_publica_un_agente(guest):
+    """El agente no pasa por `scope` en la URL sino en el cuerpo, así que su
+    guarda está en otro sitio del handler y se comprueba aparte."""
+    r = guest.post(
+        "/api/agents",
+        json={
+            "name": "agente publico",
+            "system_prompt": "x",
+            "model": "gpt-4o",
+            "scope": "public",
+        },
+    )
+    assert r.status_code == 403, r.text
+    assert r.json()["detail"]["code"] == "guest_cannot_publish"

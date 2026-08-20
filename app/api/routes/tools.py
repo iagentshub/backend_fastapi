@@ -5,11 +5,12 @@ Calcado de skills.py, con dos diferencias estructurales: `language`
 (obligatorio) sustituye a `category`, y hay contenido dual texto/binario
 (python/shell usan `content`; cpp usa un binario subido aparte).
 
-A diferencia de skills.py/prompts.py, estas rutas NO aceptan invitados
-(`require_group` en vez de `require_group_session`): GuestSession solo
-contempla connections/agents/skills/knowledge/memory/prompts por diseño (ver
-comentario en auth.py sobre el allowlist de invitado), y subir binarios
-ejecutables desde una sesión de demo efímera no aporta nada al producto.
+Estas rutas estuvieron cerradas a los invitados mientras su sesión era un dict
+en memoria: GuestSession no contemplaba tools y escribir la rama habría sido
+duplicar cada handler. Hoy el invitado es un usuario efímero y las tools son
+parte de su espacio personal como el resto. Lo único que sigue cerrado es
+publicar (`assert_can_publish`), igual que en skills y prompts.
+Ver docs/adr/012-el-invitado-es-un-usuario-efimero.md.
 """
 
 from __future__ import annotations
@@ -20,11 +21,12 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, File, Query, Response, UploadFile
 
-from app.api.routes.auth import GroupContext, require_group
+from app.api.routes.auth import GroupContext, require_group_session
 from app.auth.auth import get_user_role
 from app.errors import APIError
 from app.models.request_bodies import CatalogResourcePayload
 from app.pagination.models import OffsetParams
+from app.services.publishing import assert_can_publish
 from app.services.scoped_resource_listing import list_authenticated_scoped_resources
 from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
@@ -96,7 +98,7 @@ async def list_tools(
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
     response: Response = None,  # type: ignore[assignment]
-    ctx: GroupContext = Depends(require_group),
+    ctx: GroupContext = Depends(require_group_session),
 ) -> List[Dict[str, Any]]:
     _check_scope(scope)
     return await list_authenticated_scoped_resources(
@@ -113,7 +115,7 @@ async def list_tools(
 
 @router.get("/{scope}/{tool_id}")
 async def get_tool(
-    scope: str, tool_id: str, ctx: GroupContext = Depends(require_group)
+    scope: str, tool_id: str, ctx: GroupContext = Depends(require_group_session)
 ) -> Dict[str, Any]:
     user = ctx.user
     _check_scope(scope)
@@ -135,10 +137,12 @@ async def get_tool(
 async def save_tool(
     scope: str,
     body: CatalogResourcePayload,
-    ctx: GroupContext = Depends(require_group),
+    ctx: GroupContext = Depends(require_group_session),
 ) -> Dict[str, Any]:
     user, group_id = ctx.user, ctx.group_id
     _check_scope(scope)
+    if scope == "public":
+        assert_can_publish(user)
     payload = body.payload()
     role = await get_user_role(user)
     allowed_labels = (
@@ -235,10 +239,12 @@ async def save_tool(
 
 @router.delete("/{scope}/{tool_id}")
 async def delete_tool(
-    scope: str, tool_id: str, ctx: GroupContext = Depends(require_group)
+    scope: str, tool_id: str, ctx: GroupContext = Depends(require_group_session)
 ) -> Dict[str, Any]:
     user, group_id = ctx.user, ctx.group_id
     _check_scope(scope)
+    if scope == "public":
+        assert_can_publish(user)
     # Ownership check before delete
     tl = await _storage.get_any(tool_id)
     if tl:
@@ -293,14 +299,14 @@ async def _set_tool_active(
 
 @router.post("/{tool_id}/activate")
 async def activate_tool(
-    tool_id: str, ctx: GroupContext = Depends(require_group)
+    tool_id: str, ctx: GroupContext = Depends(require_group_session)
 ) -> Dict[str, Any]:
     return await _set_tool_active(tool_id, True, ctx)
 
 
 @router.post("/{tool_id}/deactivate")
 async def deactivate_tool(
-    tool_id: str, ctx: GroupContext = Depends(require_group)
+    tool_id: str, ctx: GroupContext = Depends(require_group_session)
 ) -> Dict[str, Any]:
     return await _set_tool_active(tool_id, False, ctx)
 
@@ -315,7 +321,7 @@ async def upload_tool_binary(
     scope: str,
     tool_id: str,
     file: UploadFile = File(...),
-    ctx: GroupContext = Depends(require_group),
+    ctx: GroupContext = Depends(require_group_session),
 ) -> Dict[str, Any]:
     user, group_id = ctx.user, ctx.group_id
     _check_scope(scope)
@@ -364,7 +370,7 @@ async def upload_tool_binary(
 
 @router.get("/{scope}/{tool_id}/binary")
 async def download_tool_binary(
-    scope: str, tool_id: str, ctx: GroupContext = Depends(require_group)
+    scope: str, tool_id: str, ctx: GroupContext = Depends(require_group_session)
 ) -> Response:
     _check_scope(scope)
     tl = await _storage.get(scope, tool_id)

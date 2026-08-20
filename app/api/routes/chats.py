@@ -11,7 +11,6 @@ from app.errors import APIError
 from app.models.request_bodies import ConversationBody
 from app.pagination.http import publish_cursor_page
 from app.storage.chat import ChatStorage
-from app.storage.guest import is_guest
 
 router = APIRouter(prefix="/api/chats", tags=["chats"])
 _chat = ChatStorage()
@@ -22,8 +21,6 @@ async def list_recent_conversations(
     limit: int = Query(default=8, ge=1, le=50),
     user: str = Depends(require_session),
 ) -> List[Dict[str, Any]]:
-    if is_guest(user):
-        return []
     return await _chat.list_recent_conversations(user, limit)
 
 
@@ -35,8 +32,6 @@ async def list_conversations(
     response: Response = None,  # type: ignore[assignment]
     user: str = Depends(require_session),
 ) -> List[Dict[str, Any]]:
-    if is_guest(user):
-        return []
     try:
         page = await _chat.list_conversations_page(
             user, agent_id, limit=limit, cursor=cursor
@@ -51,10 +46,6 @@ async def list_conversations(
 async def new_conversation(
     agent_id: str, body: ConversationBody, user: str = Depends(require_session)
 ) -> Dict[str, Any]:
-    if is_guest(user):
-        raise APIError(
-            403, "forbidden", "Los invitados no pueden guardar conversaciones"
-        )
     body = body.payload()
     title = str(body.get("title") or "")
     return await _chat.new_conversation(user, agent_id, title)
@@ -69,8 +60,6 @@ async def get_messages(
     response: Response = None,  # type: ignore[assignment]
     user: str = Depends(require_session),
 ) -> List[Dict[str, Any]]:
-    if is_guest(user):
-        return []
     conv = await _chat.get_conversation(conv_id, user)
     if not conv:
         raise APIError(
@@ -91,10 +80,6 @@ async def get_messages(
 async def delete_conversation(
     agent_id: str, conv_id: str, user: str = Depends(require_session)
 ) -> Dict[str, Any]:
-    if is_guest(user):
-        raise APIError(
-            403, "forbidden", "Los invitados no pueden borrar conversaciones"
-        )
     if not await _chat.delete_conversation(conv_id, user):
         raise APIError(
             404,

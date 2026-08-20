@@ -10,7 +10,7 @@ from fastapi import APIRouter, Depends
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
-from app.api.routes.auth import GroupContext, require_group
+from app.api.routes.auth import GroupContext, require_group_session
 from app.auth.auth import get_user_role
 from app.config.data import AGENTS_DIR, SKILLS_DIR
 from app.errors import APIError
@@ -89,7 +89,7 @@ async def _owned_resource(
 async def versions(
     resource_type: str,
     resource_id: str,
-    ctx: GroupContext = Depends(require_group),
+    ctx: GroupContext = Depends(require_group_session),
 ) -> list[Dict[str, Any]]:
     await _owned_resource(resource_type, resource_id, ctx.group_id)
     return await _versions.list(resource_type, resource_id, ctx.group_id)
@@ -100,7 +100,7 @@ async def version_detail(
     resource_type: str,
     resource_id: str,
     version: int,
-    ctx: GroupContext = Depends(require_group),
+    ctx: GroupContext = Depends(require_group_session),
 ) -> Dict[str, Any]:
     await _owned_resource(resource_type, resource_id, ctx.group_id)
     item = await _versions.get(
@@ -118,7 +118,7 @@ async def restore_version(
     resource_type: str,
     resource_id: str,
     version: int,
-    ctx: GroupContext = Depends(require_group),
+    ctx: GroupContext = Depends(require_group_session),
 ) -> Dict[str, Any]:
     resource = await _owned_resource(resource_type, resource_id, ctx.group_id)
     assert_resource_writable(resource, resource_type)
@@ -148,7 +148,7 @@ async def restore_version(
 @router.get("/workflows")
 async def list_workflows(
     include_inactive: bool = False,
-    ctx: GroupContext = Depends(require_group),
+    ctx: GroupContext = Depends(require_group_session),
 ) -> list[Dict[str, Any]]:
     owner_ids = {ctx.user, ctx.group_id}
     own: list[Dict[str, Any]] = []
@@ -200,7 +200,7 @@ async def _accessible_workflow(
 @router.get("/workflows/{workflow_id}")
 async def get_workflow(
     workflow_id: str,
-    ctx: GroupContext = Depends(require_group),
+    ctx: GroupContext = Depends(require_group_session),
 ) -> Dict[str, Any]:
     item = await _accessible_workflow(workflow_id, ctx)
     if not item:
@@ -217,7 +217,7 @@ async def get_workflow(
 @router.post("/workflows")
 async def save_workflow(
     body: WorkflowBody,
-    ctx: GroupContext = Depends(require_group),
+    ctx: GroupContext = Depends(require_group_session),
 ) -> Dict[str, Any]:
     role = await get_user_role(ctx.user)
     allowed_labels = (
@@ -290,7 +290,7 @@ async def save_workflow(
 @router.delete("/workflows/{workflow_id}")
 async def delete_workflow(
     workflow_id: str,
-    ctx: GroupContext = Depends(require_group),
+    ctx: GroupContext = Depends(require_group_session),
 ) -> Dict[str, bool]:
     existing = await _workflows.get_any(workflow_id)
     if existing:
@@ -325,14 +325,14 @@ async def _set_workflow_active(
 
 @router.post("/workflows/{workflow_id}/activate")
 async def activate_workflow(
-    workflow_id: str, ctx: GroupContext = Depends(require_group)
+    workflow_id: str, ctx: GroupContext = Depends(require_group_session)
 ) -> Dict[str, Any]:
     return await _set_workflow_active(workflow_id, True, ctx)
 
 
 @router.post("/workflows/{workflow_id}/deactivate")
 async def deactivate_workflow(
-    workflow_id: str, ctx: GroupContext = Depends(require_group)
+    workflow_id: str, ctx: GroupContext = Depends(require_group_session)
 ) -> Dict[str, Any]:
     return await _set_workflow_active(workflow_id, False, ctx)
 
@@ -437,7 +437,7 @@ async def _prepare_workflow_run(workflow_id: str, ctx: GroupContext):
 async def run_saved_workflow(
     workflow_id: str,
     body: WorkflowRunBody,
-    ctx: GroupContext = Depends(require_group),
+    ctx: GroupContext = Depends(require_group_session),
 ) -> StreamingResponse:
     _, definition, resolve = await _prepare_workflow_run(workflow_id, ctx)
 
@@ -468,7 +468,7 @@ async def run_saved_workflow(
 async def start_saved_workflow_run(
     workflow_id: str,
     body: WorkflowRunBody,
-    ctx: GroupContext = Depends(require_group),
+    ctx: GroupContext = Depends(require_group_session),
 ) -> Dict[str, Any]:
     workflow, definition, resolve = await _prepare_workflow_run(workflow_id, ctx)
     agent_snapshots: list[dict[str, Any]] = []
@@ -498,7 +498,7 @@ async def start_saved_workflow_run(
 @router.get("/workflow-runs")
 async def list_workflow_runs(
     limit: int = 100,
-    ctx: GroupContext = Depends(require_group),
+    ctx: GroupContext = Depends(require_group_session),
 ) -> list[Dict[str, Any]]:
     await _workflow_runs.fail_stale()
     return await _workflow_runs.list_for_user(ctx.user, limit=limit)
@@ -507,7 +507,7 @@ async def list_workflow_runs(
 @router.get("/workflow-runs/{run_id}")
 async def workflow_run_detail(
     run_id: str,
-    ctx: GroupContext = Depends(require_group),
+    ctx: GroupContext = Depends(require_group_session),
 ) -> Dict[str, Any]:
     run = await _workflow_runs.get_for_user(run_id, ctx.user)
     if not run:
@@ -524,7 +524,7 @@ async def workflow_run_detail(
 async def stream_workflow_run_events(
     run_id: str,
     after: int = 0,
-    ctx: GroupContext = Depends(require_group),
+    ctx: GroupContext = Depends(require_group_session),
 ) -> StreamingResponse:
     run = await _workflow_runs.get_for_user(run_id, ctx.user)
     if not run:
@@ -570,7 +570,7 @@ async def stream_workflow_run_events(
 @router.post("/workflow-runs/{run_id}/cancel")
 async def cancel_workflow_run(
     run_id: str,
-    ctx: GroupContext = Depends(require_group),
+    ctx: GroupContext = Depends(require_group_session),
 ) -> Dict[str, Any]:
     run = await _workflow_runs.get_for_user(run_id, ctx.user)
     if not run:

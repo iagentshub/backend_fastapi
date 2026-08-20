@@ -13,7 +13,7 @@ from typing import Any, Dict
 from fastapi import Depends
 from pydantic import BaseModel
 
-from app.api.routes.auth import GroupContext, require_group
+from app.api.routes.auth import GroupContext, require_group_session
 from app.api.routes.resource_linking._router import router
 from app.api.routes.resource_linking._shared import (
     _agents_store,
@@ -42,7 +42,7 @@ async def try_agent(
     scope: str,
     agent_id: str,
     body: _AgentTryBody,
-    ctx: GroupContext = Depends(require_group),
+    ctx: GroupContext = Depends(require_group_session),
 ) -> Dict[str, Any]:
     """Prueba un agente público usando la connection propia del caller, sin guardar historial."""
 

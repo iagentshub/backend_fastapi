@@ -139,7 +139,10 @@ async def get_public_profile(
     _: str = Depends(require_auth),
 ) -> dict[str, Any]:
     user = await get_user_by_username(username)
-    if not user:
+    # El invitado tiene fila en `users` pero no perfil: es una cuenta efímera
+    # que nadie puede seguir ni visitar dos veces. Para el resto del mundo no
+    # existe, y 404 es exactamente eso.
+    if not user or user.get("role") == "guest":
         raise APIError(
             404, "not_found", "Usuario no encontrado", extra={"resource": "user"}
         )

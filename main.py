@@ -14,20 +14,10 @@ from app.storage.db import migrate_schema
 def main() -> None:
     workers = WORKERS
 
-    if workers > 1 and os.getenv("GAIA_GUEST_DEMO", "1") == "1":
-        # El invitado pierde su trabajo entre peticiones y el tope real es
-        # workers × MAX_SESSIONS. Aviso, no arreglo.
-        # Ver docs/adr/001-estado-en-memoria-con-multiples-workers.md
-        from app.storage.guest import MAX_SESSIONS
-        from app.utils import flog
-
-        flog.warning(
-            f"[guest] GAIA_WORKERS={workers} con sesiones de invitado en memoria: "
-            "sin sticky sessions en el proxy el invitado perderá su trabajo entre "
-            f"peticiones, y el tope real de sesiones es {workers * MAX_SESSIONS} "
-            f"({MAX_SESSIONS} por worker), no {MAX_SESSIONS}."
-        )
-
+    # Aquí había un aviso: con varios workers el invitado perdía su trabajo
+    # entre peticiones y el tope real era workers × MAX_SESSIONS. Ya no aplica
+    # — la sesión de invitado es un usuario en la BD, que los workers comparten.
+    # Ver docs/adr/012-el-invitado-es-un-usuario-efimero.md.
     if workers > 1:
         # Una sola vez en el proceso maestro: si no, los workers competirían por
         # crear las mismas tablas/índices contra una DB recién creada.

@@ -73,6 +73,8 @@ class RequestLoggerMiddleware(BaseHTTPMiddleware):
             # una misma IP es alguien probando. Antes se registraba como "-",
             # indistinguible de una petición anónima normal.
             return "?invalid"
-        if request.cookies.get("ga_guest"):
-            return "guest"
+        # Aquí se leía una cookie `ga_guest` para registrar al invitado como
+        # "guest". Nunca existió: ningún emisor la puso jamás, y el invitado
+        # viaja en `ga_token` como todo el mundo — así que sale arriba, y con su
+        # id, que distingue a un invitado de otro.
         return "-"

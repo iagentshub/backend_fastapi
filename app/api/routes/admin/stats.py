@@ -8,6 +8,8 @@ from typing import Any
 
 from fastapi import Depends, Query
 
+# Por módulo, no por valor: el tope se lee en caliente y los tests lo ajustan.
+import app.storage.guest as _guest_cfg
 from app.api.routes.admin._router import admin_router
 from app.api.routes.auth import require_admin
 from app.config.data import AGENTS_DIR as _AGENTS_DIR
@@ -224,6 +226,15 @@ async def admin_stats(_: str = Depends(require_admin)) -> dict[str, Any]:
         )
         users_total, users_active, users_verified = (u[0] or 0, u[1] or 0, u[2] or 0)
 
+        # Los invitados van aparte y no suman a `users_total`: son cuentas
+        # efímeras que se borran solas, así que mezclarlas haría subir y bajar
+        # el total sin que nadie se dé de alta ni de baja. Pero el admin
+        # necesita verlas: son las que consumen el cupo del demo, y cuando se
+        # llena el alta responde 503 sin que nada más lo explique.
+        guests_active = (
+            await conn.fetchval(sql("queries/guest:count_guests"))
+        ) or 0
+
         c = await conn.fetchone(
             sql("queries/admin_stats:connection_totals")
         )
@@ -322,6 +333,8 @@ async def admin_stats(_: str = Depends(require_admin)) -> dict[str, Any]:
         "users_total": users_total,
         "users_active": users_active,
         "users_verified": users_verified,
+        "guests_active": guests_active,
+        "guests_max": _guest_cfg.MAX_SESSIONS,
         "connections_total": conns_total,
         "tokens_in": tokens_in,
         "tokens_out": tokens_out,

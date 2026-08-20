@@ -151,6 +151,13 @@ RATE_TESTALL_CALLS  = int(os.getenv("GAIA_RATE_TESTALL_CALLS",  "30"))
 RATE_TESTALL_WINDOW = int(os.getenv("GAIA_RATE_TESTALL_WINDOW", "60"))
 RATE_GUEST_CALLS  = int(os.getenv("GAIA_RATE_GUEST_CALLS",  "5"))
 RATE_GUEST_WINDOW = int(os.getenv("GAIA_RATE_GUEST_WINDOW", "60"))
+# ── Invitados ─────────────────────────────────────────────────────────────────
+# Margen antes de considerar abandonado a un invitado sin sesión viva. Entre el
+# alta del usuario y la de su sesión hay una ventana en la que todavía no tiene
+# ninguna: sin margen, la purga se lo llevaría en su primera petición.
+# Vive aquí y no en storage/guest.py porque quien lo lee es la purga del RGPD,
+# y guest.py ya importa esa purga — al revés se cerraría un ciclo de imports.
+GUEST_GRACE_SECONDS = int(os.getenv("GAIA_GUEST_GRACE_SECONDS", "3600"))
 # Recuperación de contraseña: límite estricto para prevenir spam SMTP masivo
 RATE_FORGOT_CALLS  = int(os.getenv("GAIA_RATE_FORGOT_CALLS",  "5"))    # intentos
 RATE_FORGOT_WINDOW = int(os.getenv("GAIA_RATE_FORGOT_WINDOW", "3600"))  # por hora

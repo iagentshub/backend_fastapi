@@ -1,15 +1,22 @@
 """Tests de memoria — casos no cubiertos: patch, guest, move_folder."""
 from __future__ import annotations
 
+import asyncio
+
 from app.auth.auth import create_token
-from app.storage.guest import new_guest_id
+from app.storage.guest import create_guest_user
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
 def _guest_client(client):
-    gid = new_guest_id()
-    token = create_token(gid)
-    client.cookies.set("ga_token", token)
+    """Invitado con fila en la BD y cookie puesta.
+
+    Antes bastaba con firmar un token para un id inventado: no había fila que
+    crear. Desde que el invitado es un usuario efímero, un token sin fila es una
+    credencial de alguien que no existe, y la respuesta correcta es 401.
+    """
+    gid = asyncio.run(create_guest_user())
+    client.cookies.set("ga_token", create_token(gid))
     return client, gid
 
 

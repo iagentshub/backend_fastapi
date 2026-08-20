@@ -114,3 +114,12 @@ SELECT id, created_at, last_seen_at, expires_at, revoked_at, revoked_reason, ip,
 FROM sessions
 WHERE user_id = ?
 ORDER BY created_at DESC;
+
+-- La conexión que el usuario eligió para cada agente. La columna se llama
+-- `username` por herencia y guarda el id: quien escribe la fila es
+-- `require_auth`, que devuelve el id.
+-- name: agent_preferences
+SELECT agent_id, connection_id, updated_at
+FROM user_agent_preferences
+WHERE username = ?
+ORDER BY updated_at DESC;

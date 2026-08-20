@@ -16,12 +16,6 @@ from app.models.agent import Agent
 from app.services.agent_access import agent_access
 from app.services.agent_presentation import agent_name_slug, apply_agent_locale
 from app.storage.agent_storage import AgentStorage
-from app.storage.guest import (
-    GuestKnowledgeAdapter,
-    GuestMemoryAdapter,
-    get_session,
-    is_guest,
-)
 from app.storage.knowledge import KnowledgeStorage
 from app.storage.memory_storage import MemoryStorage
 from app.storage.skill_storage import SkillStorage
@@ -40,23 +34,14 @@ async def export_agent(
     agent_id: str, fmt: str, ctx: GroupContext = Depends(require_group_session)
 ) -> Response:
     user = ctx.user
-    if is_guest(user):
-        session = get_session(user)
-        agent = next(
-            (item for item in session.agents if item.get("id") == agent_id), None
-        ) or await _agents.get(agent_id, scope="public")
-        memory_store = GuestMemoryAdapter(session)
-        knowledge_store: Any = GuestKnowledgeAdapter(session)
-    else:
-        agent = await _agents.get(agent_id)
-        memory_store = _memory
-        knowledge_store = _knowledge
+    agent = await _agents.get(agent_id)
+    memory_store = _memory
+    knowledge_store: Any = _knowledge
     if not agent:
         raise APIError(
             404, "not_found", "Agente no encontrado", extra={"resource": "agent"}
         )
-    if not is_guest(user):
-        await agent_access.assert_can_read(agent_id, agent, ctx)
+    await agent_access.assert_can_read(agent_id, agent, ctx)
     agent = apply_agent_locale(agent, get_locale(), AGENTS_DIR)
 
     resolved_skills: list[dict[str, Any]] = []
@@ -81,12 +66,7 @@ async def export_agent(
             )
 
     memory_file = agent.get("memory_file") or f"{agent_id}.md"
-    if is_guest(user):
-        memory_content = (await memory_store.get(memory_file) or "").strip()
-    else:
-        memory_content = (
-            await memory_store.get(memory_file, owner_id=user) or ""
-        ).strip()
+    memory_content = (await memory_store.get(memory_file, owner_id=user) or "").strip()
 
     if fmt == "openai":
         skills_text = "".join(

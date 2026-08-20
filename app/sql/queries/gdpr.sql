@@ -122,6 +122,14 @@ WHERE username = ?;
 DELETE FROM groups
 WHERE created_by = ?;
 
+-- name: delete_agent_preferences
+-- La columna se llama `username` por herencia, pero lo que guarda es el id del
+-- usuario: quien escribe la fila es `require_auth`, que devuelve el id. Estaba
+-- fuera de la purga —como el resto de tablas indexadas por username— y dejaba
+-- atrás la conexión preferida de una cuenta ya borrada.
+DELETE FROM user_agent_preferences
+WHERE username = ?;
+
 -- name: delete_sessions
 DELETE FROM sessions
 WHERE user_id = ?;

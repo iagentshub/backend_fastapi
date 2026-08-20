@@ -8,7 +8,7 @@ from typing import Any, List, Literal
 from fastapi import Depends
 from pydantic import BaseModel, Field, model_validator
 
-from app.api.routes.auth import require_auth
+from app.api.routes.auth import require_session
 from app.api.routes.settings._router import router
 from app.api.routes.settings._shared import (
     _get_prefs,
@@ -59,14 +59,14 @@ class DashboardLayoutV2Update(BaseModel):
         return self
 
 @router.get("/dashboard-layout")
-async def get_dashboard_layout(username: str = Depends(require_auth)) -> dict:
+async def get_dashboard_layout(username: str = Depends(require_session)) -> dict:
     prefs = await _get_prefs(username)
     return {"layout": prefs.get("dashboard_layout", None)}
 
 @router.put("/dashboard-layout")
 async def update_dashboard_layout(
     body: DashboardLayoutUpdate,
-    username: str = Depends(require_auth),
+    username: str = Depends(require_session),
 ) -> dict:
     unknown = [w for w in body.layout if w not in _KNOWN_WIDGETS]
     if unknown:
@@ -82,7 +82,7 @@ async def update_dashboard_layout(
     return {"layout": body.layout}
 
 @router.get("/dashboard-layout-v2")
-async def get_dashboard_layout_v2(username: str = Depends(require_auth)) -> dict:
+async def get_dashboard_layout_v2(username: str = Depends(require_session)) -> dict:
     prefs = await _get_prefs(username)
     stored = prefs.get("dashboard_layout_v2")
     if not isinstance(stored, dict) or stored.get("version") != 2:
@@ -92,7 +92,7 @@ async def get_dashboard_layout_v2(username: str = Depends(require_auth)) -> dict
 @router.put("/dashboard-layout-v2")
 async def update_dashboard_layout_v2(
     body: DashboardLayoutV2Update,
-    username: str = Depends(require_auth),
+    username: str = Depends(require_session),
 ) -> dict:
     payload = body.model_dump()
     # Mantener el layout histórico sincronizado permite que clientes antiguos
@@ -105,14 +105,14 @@ async def update_dashboard_layout_v2(
     return payload
 
 @router.get("/dashboard-config")
-async def get_dashboard_config(username: str = Depends(require_auth)) -> dict:
+async def get_dashboard_config(username: str = Depends(require_session)) -> dict:
     prefs = await _get_prefs(username)
     return {"config": prefs.get("dashboard_config", {})}
 
 @router.put("/dashboard-config")
 async def update_dashboard_config(
     body: DashboardConfigUpdate,
-    username: str = Depends(require_auth),
+    username: str = Depends(require_session),
 ) -> dict:
     prefs = await _get_prefs(username)
     prefs["dashboard_config"] = body.config

@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
-from datetime import datetime, timezone
 from pathlib import PurePosixPath
 from typing import Any, Dict, List, Optional
 
@@ -31,43 +30,15 @@ from app.models.request_bodies import (
     KnowledgeUrlBody,
     LabelsBody,
 )
-from app.pagination.materialized import paginate_materialized
 from app.pagination.models import OffsetParams
 from app.services.knowledge_listing import list_authenticated_knowledge
-from app.storage.guest import get_session, is_guest
 from app.storage.knowledge import (
     extract_document_text,
     fetch_url_text,
 )
-from app.storage.skill_storage import (
-    ensure_origin_label,
-)
 from app.utils import flog
-from app.utils.generators import generate_id
 from app.utils.origin import assert_resource_writable
 
-
-def _guest_item(
-    *, type: str, title: str, source: str, content: str, labels: List[str]
-) -> Dict[str, Any]:
-    now = datetime.now(timezone.utc).isoformat()
-    return {
-        "id": generate_id(16),
-        "name": title,
-        "resource_type": "knowledge",
-        "description": "",
-        "icon": "",
-        "scope": "private",
-        "labels": labels,
-        "is_active": True,
-        "type": type,
-        "title": title,
-        "source": source,
-        "content": content,
-        "char_count": len(content),
-        "created_at": now,
-        "updated_at": now,
-    }
 
 @router.get("", response_model=List[Dict[str, Any]])
 async def list_items(
@@ -79,14 +50,6 @@ async def list_items(
     response: Response = None,  # type: ignore[assignment]
     ctx: GroupContext = Depends(require_group_session),
 ) -> List[Dict[str, Any]]:
-    user = ctx.user
-    if is_guest(user):
-        items = get_session(user).knowledge
-        filtered = [i for i in items if not type or i["type"] == type]
-        filtered = paginate_materialized(
-            filtered, limit=limit, offset=offset, response=response
-        )
-        return filtered
     return await list_authenticated_knowledge(
         _storage,
         ctx=ctx,
@@ -109,7 +72,7 @@ async def add_text(
     source = str(body.get("source") or title).strip()
     labels = _content_labels(
         body,
-        allow_origin=not is_guest(user) and await get_user_role(user) == "admin",
+        allow_origin=await get_user_role(user) == "admin",
     )
     if not title:
         raise APIError(
@@ -119,16 +82,6 @@ async def add_text(
         raise APIError(
             422, "invalid_field", "Contenido requerido", extra={"field": "content"}
         )
-    if is_guest(user):
-        labels = ensure_origin_label(
-            ["private", *[label for label in labels if label != "public"]],
-            "community",
-        )
-        item = _guest_item(
-            type="text", title=title, source=source, content=content, labels=labels
-        )
-        get_session(user).knowledge.append(item)
-        return item
     owner = await _owner(user, group_id) or group_id
     item = await _storage.save(
         type="text",
@@ -157,7 +110,7 @@ async def add_url(
     title = str(body.get("title") or "").strip() or url
     labels = _content_labels(
         body,
-        allow_origin=not is_guest(user) and await get_user_role(user) == "admin",
+        allow_origin=await get_user_role(user) == "admin",
     )
     if not url:
         raise APIError(422, "invalid_field", "URL requerida", extra={"field": "url"})
@@ -171,16 +124,6 @@ async def add_url(
         raise APIError(
             422, "url_text_extraction_failed", "No se pudo extraer texto de la URL"
         )
-    if is_guest(user):
-        labels = ensure_origin_label(
-            ["private", *[label for label in labels if label != "public"]],
-            "community",
-        )
-        item = _guest_item(
-            type="url", title=title, source=url, content=content, labels=labels
-        )
-        get_session(user).knowledge.append(item)
-        return item
     owner = await _owner(user, group_id) or group_id
     item = await _storage.save(
         type="url",
@@ -216,7 +159,7 @@ async def upload_document(
         ) from exc
     content_labels = _content_labels(
         {"labels": parsed_labels},
-        allow_origin=not is_guest(user) and await get_user_role(user) == "admin",
+        allow_origin=await get_user_role(user) == "admin",
     )
     filename = file.filename or "documento"
     unsafe_reason = _pack_skip_reason(PurePosixPath(filename).name)
@@ -259,23 +202,6 @@ async def upload_document(
         content = _catalogued_file_content(
             filename, file.content_type or "", len(content_bytes)
         )
-    if is_guest(user):
-        content_labels = ensure_origin_label(
-            [
-                "private",
-                *[label for label in content_labels if label != "public"],
-            ],
-            "community",
-        )
-        item = _guest_item(
-            type="document",
-            title=filename,
-            source=filename,
-            content=content,
-            labels=content_labels,
-        )
-        get_session(user).knowledge.append(item)
-        return item
     owner = await _owner(user, group_id) or group_id
     item = await _storage.save(
         type="document",
@@ -302,8 +228,6 @@ async def update_item(
     body: KnowledgeEditBody,
     ctx: GroupContext = Depends(require_group_session),
 ) -> Dict[str, Any]:
-    if is_guest(ctx.user):
-        raise APIError(403, "forbidden", "Los invitados no pueden editar conocimiento")
     item = await _storage.get(item_id)
     if item is None:
         raise APIError(
@@ -344,8 +268,6 @@ async def update_item_labels(
     body: LabelsBody,
     ctx: GroupContext = Depends(require_group_session),
 ) -> Dict[str, Any]:
-    if is_guest(ctx.user):
-        raise APIError(403, "forbidden", "Los invitados no pueden editar etiquetas")
     item = await _storage.get(item_id)
     if item is None:
         raise APIError(
@@ -375,15 +297,6 @@ async def delete_item(
     ctx: GroupContext = Depends(require_group_session),
 ) -> Dict[str, bool]:
     user, group_id = ctx.user, ctx.group_id
-    if is_guest(user):
-        s = get_session(user)
-        before = len(s.knowledge)
-        s.knowledge = [i for i in s.knowledge if i["id"] != item_id]
-        if len(s.knowledge) == before:
-            raise APIError(
-                404, "not_found", "Item no encontrado", extra={"resource": "item"}
-            )
-        return {"ok": True}
     item = await _storage.get(item_id)
     if item:
         assert_resource_writable(item, "knowledge")

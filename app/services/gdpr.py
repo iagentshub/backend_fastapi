@@ -29,6 +29,7 @@ _RESOURCE_FILES = (
     ("memory.json", "queries/gdpr_export:memory_files"),
     ("stars.json", "queries/gdpr_export:stars"),
     ("sessions.json", "queries/gdpr_export:sessions"),
+    ("agent_preferences.json", "queries/gdpr_export:agent_preferences"),
 )
 
 

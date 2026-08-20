@@ -56,6 +56,7 @@ from app.config.startup_checks.checks import (
     _check_data_dir,
     _check_email_verify,
     _check_github_oauth,
+    _check_guest_demo,
     _check_jwt,
     _check_maintenance_intervals,
     _check_rate_limit_ip_ceiling,
@@ -95,6 +96,7 @@ def run_checks() -> list[ConfigCheck]:
         _check_trusted_proxies(),
         _check_secure_cookies(),
         _check_rate_limit_ip_ceiling(),
+        _check_guest_demo(),
         _check_body_limit(settings),
         _check_maintenance_intervals(),
     ]

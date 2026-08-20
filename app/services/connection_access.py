@@ -12,7 +12,6 @@ from app.models.llm_orchestration import (
 from app.storage.connection_storage import ConnectionStorage
 from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
-from app.storage.guest import get_session, is_guest
 from app.storage.llm_orchestration_bindings import LLMOrchestrationBindingStorage
 from app.storage.llm_orchestrations import LLMOrchestrationStorage
 
@@ -35,8 +34,6 @@ class ConnectionAccessService:
     async def list_accessible(
         self, user: str, group_id: str, *, include_shared: bool = True
     ) -> List[Dict[str, Any]]:
-        if is_guest(user):
-            return list(get_session(user).connections)
         connections = await self._connections.list(group_id)
         for connection in connections:
             connection["owner_id"] = group_id

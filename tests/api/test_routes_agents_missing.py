@@ -660,9 +660,11 @@ def test_chat_guest_agent_not_found(client):
     assert r.status_code == 404
 
 
-# ── tool_storage: gating de invitado (Fase 1.5) ────────────────────────────────
-# Tool no está en el allowlist de GuestSession (a diferencia de skills/prompts):
-# un invitado nunca debe recibir contenido de tools inyectado en el chat.
+# ── tool_storage en el chat ───────────────────────────────────────────────────
+# Esto era el gating del invitado: sus tools no existían —GuestSession no las
+# contemplaba— y el chat recibía `tool_storage=None` para no inyectarle
+# contenido que no podía tener. Desde que el invitado es un usuario efímero, las
+# tools son suyas como las de cualquiera y el chat las recibe igual.
 
 
 def test_chat_tool_storage_passed_for_registered_user(admin_client):
@@ -687,7 +689,7 @@ def test_chat_tool_storage_passed_for_registered_user(admin_client):
     assert captured_kwargs.get("tool_storage") is not None
 
 
-def test_chat_guest_tool_storage_is_none(client):
+def test_chat_guest_tool_storage_passed_too(client):
     _setup_guest(client)
     conn = _create_connection(client)
     agent = _create_agent(
@@ -707,7 +709,7 @@ def test_chat_guest_tool_storage_is_none(client):
         )
 
     assert r.status_code == 200
-    assert captured_kwargs.get("tool_storage") is None
+    assert captured_kwargs.get("tool_storage") is not None
 
 
 # ── save_agent rechaza skills/knowledge ajenos ────────────────────────────────

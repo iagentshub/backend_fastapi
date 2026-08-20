@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 
 from app.auth.auth import create_token
-from app.storage.guest import new_guest_id
+from app.storage.guest import create_guest_user
 
 _PAYLOAD = {"name": "Skill Test", "description": "desc", "content": "contenido"}
 
@@ -14,7 +14,13 @@ _PAYLOAD = {"name": "Skill Test", "description": "desc", "content": "contenido"}
 
 
 def _guest_client(client):
-    gid = new_guest_id()
+    """Invitado con fila en la BD y cookie puesta.
+
+    Antes bastaba con firmar un token para un id inventado: no había fila que
+    crear. Desde que el invitado es un usuario efímero, un token sin fila es una
+    credencial de alguien que no existe, y la respuesta correcta es 401.
+    """
+    gid = asyncio.run(create_guest_user())
     client.cookies.set("ga_token", create_token(gid))
     return client, gid
 
@@ -118,20 +124,28 @@ def test_guest_private_skills_are_isolated_by_session(client):
     assert created.json()["id"] not in {skill["id"] for skill in private.json()}
 
 
-def test_guest_private_skill_is_not_written_to_database(client):
-    from app.storage.db import open_db
+def test_guest_private_skill_se_escribe_en_la_base_de_datos(client):
+    """Lo contrario de lo que este test comprobaba: antes el recurso del
+    invitado vivía en un dict del proceso y desaparecía al cambiar de worker.
+    Que llegue a la tabla es la corrección."""
+    from app.storage.db import PH, open_db
 
-    async def _count() -> int:
+    async def _filas(owner: str) -> int:
+        # Del invitado, no de la tabla entera: contar el total haría depender el
+        # test del orden en que pytest baraja los ficheros.
         async with open_db() as conn:
-            return int(await conn.fetchval("SELECT COUNT(*) FROM skills"))
+            return int(
+                await conn.fetchval(
+                    f"SELECT COUNT(*) FROM skills WHERE owner_id={PH}", (owner,)
+                )
+            )
 
-    before = asyncio.run(_count())
-    _guest_client(client)
+    _, gid = _guest_client(client)
+    assert asyncio.run(_filas(gid)) == 0
     created = client.post("/api/skills/private", json=_PAYLOAD)
-    after = asyncio.run(_count())
 
     assert created.status_code == 200
-    assert after == before
+    assert asyncio.run(_filas(gid)) == 1
 
 
 def test_guest_save_public_skill_forbidden(client):

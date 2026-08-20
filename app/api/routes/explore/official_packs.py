@@ -7,7 +7,7 @@ from typing import List, Optional
 
 from fastapi import Depends, Query
 
-from app.api.routes.auth import require_auth, require_session
+from app.api.routes.auth import require_session
 from app.api.routes.explore._router import router
 from app.api.routes.explore._shared import (
     _validate_relation,
@@ -87,7 +87,7 @@ async def explore_official_pack_detail(
 async def link_official_pack(
     source_id: str,
     body: LinkOfficialPackRequest,
-    username: str = Depends(require_auth),
+    username: str = Depends(require_session),
 ) -> LinkOfficialPackResult:
     try:
         result = await _official_packs.link(username, source_id, body)

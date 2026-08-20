@@ -9,7 +9,6 @@ from fastapi import APIRouter, Depends, Query, Response
 
 from app.api.routes.auth import (
     GroupContext,
-    require_group,
     require_group_session,
 )
 from app.auth.auth import get_user_role
@@ -29,12 +28,10 @@ from app.storage.connection_storage import ConnectionStorage
 from app.storage.db import DB_ERRORS, IS_PG, open_db
 from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
-from app.storage.guest import get_session, is_guest
 from app.storage.knowledge import KnowledgeStorage
 from app.storage.llm_orchestrations import LLMOrchestrationStorage
 from app.storage.skill_storage import SkillStorage
 from app.utils import flog
-from app.utils.generators import generate_id
 from app.utils.origin import assert_resource_writable, compute_origin_type
 
 router = APIRouter(prefix="/api/connections", tags=["connections"])
@@ -210,7 +207,7 @@ async def _ollama_conns_to_models(
 
 @router.get("/raw")
 async def list_connections_raw(
-    ctx: GroupContext = Depends(require_group),
+    ctx: GroupContext = Depends(require_group_session),
 ) -> List[Dict[str, Any]]:
     """Devuelve las conexiones tal como están en BD, sin expansión de modelos Ollama.
     Usado por el perfil para gestionar credenciales base."""
@@ -230,7 +227,7 @@ async def list_connections(
 ) -> List[Dict[str, Any]]:
     user, active_group_id = ctx.user, ctx.group_id
 
-    if requested_group_id is not None and not is_guest(user):
+    if requested_group_id is not None:
         role = await get_user_role(user)
         if role != "admin" and not await _groups.can_access(requested_group_id, user):
             raise APIError(403, "forbidden", "Sin acceso a este grupo")
@@ -257,8 +254,7 @@ async def list_connections(
         )
     else:
         raw = await _resolve_connections(user, active_group_id)
-        if not is_guest(user):
-            raw.extend(await _list_orchestration_connections(user, active_group_id))
+        raw.extend(await _list_orchestration_connections(user, active_group_id))
 
     if not include_inactive:
         raw = [c for c in raw if c.get("is_active", True)]
@@ -269,11 +265,7 @@ async def list_connections(
 
     non_ollama = [c for c in raw if c.get("type") != "ollama"]
     ollama_raw = [c for c in raw if c.get("type") == "ollama"]
-    if (
-        active_group_id != user
-        and not is_guest(user)
-        and await get_user_role(user) != "admin"
-    ):
+    if active_group_id != user and await get_user_role(user) != "admin":
         # Las conexiones personales del usuario (incluidas aquí por
         # _list_accessible como cortesía al estar en un group de equipo)
         # no deben pasar por el permiso de RECURSO DE EQUIPO: son suyas,
@@ -345,28 +337,6 @@ async def save_connection(
         labels = ["private"] + labels
     payload["labels"] = labels
 
-    if is_guest(user):
-        s = get_session(user)
-        guest_id = payload.get("id")
-        if guest_id and not any(c.get("id") == guest_id for c in s.connections):
-            guest_id = None
-        conn_id = guest_id or generate_id()
-        conn: Dict[str, Any] = {
-            **payload,
-            "id": conn_id,
-            "name": str(
-                payload.get("name")
-                or payload.get("label")
-                or payload.get("type")
-                or conn_id
-            ).strip(),
-            "resource_type": "connection",
-            "scope": "private",
-            "is_active": True,
-        }
-        s.connections = [c for c in s.connections if c.get("id") != conn["id"]]
-        s.connections.append(conn)
-        return {k: v for k, v in conn.items() if k != "api_key"}
     conn_id_in_payload = payload.get("id")
     owner = user
     existing = None
@@ -397,7 +367,7 @@ async def save_connection(
 @router.get("/tokens-daily")
 async def get_tokens_daily(
     days: int = 14,
-    ctx: GroupContext = Depends(require_group),
+    ctx: GroupContext = Depends(require_group_session),
 ) -> List[Dict[str, Any]]:
     import datetime as _dt
 
@@ -443,24 +413,18 @@ async def get_connection(
     conn_id: str, ctx: GroupContext = Depends(require_group_session)
 ) -> Dict[str, Any]:
     user, group_id = ctx.user, ctx.group_id
-    if is_guest(user):
-        conn = next(
-            (c for c in get_session(user).connections if c.get("id") == conn_id), None
-        )
+    role = await get_user_role(user)
+    if role == "admin":
+        conn = await _storage.get(conn_id, None)
     else:
-        role = await get_user_role(user)
-        if role == "admin":
-            conn = await _storage.get(conn_id, None)
-        else:
-            conn = await _get_conn_any(conn_id, user, group_id)
+        conn = await _get_conn_any(conn_id, user, group_id)
     if not conn:
         raise APIError(
             404, "not_found", "Conexión no encontrada", extra={"resource": "connection"}
         )
     if (
         group_id != user
-        and not is_guest(user)
-        and await get_user_role(user) != "admin"
+        and role != "admin"
         and conn.get("owner_id") != user
         and not await _groups.has_resource_permission(
             group_id, user, "connections", conn_id, "direct"
@@ -476,18 +440,6 @@ async def delete_connection(
     conn_id: str, ctx: GroupContext = Depends(require_group_session)
 ) -> Dict[str, Any]:
     user, group_id = ctx.user, ctx.group_id
-    if is_guest(user):
-        s = get_session(user)
-        before = len(s.connections)
-        s.connections = [c for c in s.connections if c.get("id") != conn_id]
-        if len(s.connections) == before:
-            raise APIError(
-                404,
-                "not_found",
-                "Conexión no encontrada",
-                extra={"resource": "connection"},
-            )
-        return {"ok": True}
     existing = await _get_conn_any(conn_id, user, group_id)
     if existing:
         assert_resource_writable(existing, "connection")
@@ -507,10 +459,6 @@ async def _set_connection_active(
     conn_id: str, active: bool, ctx: GroupContext
 ) -> Dict[str, Any]:
     user, group_id = ctx.user, ctx.group_id
-    if is_guest(user):
-        raise APIError(
-            403, "forbidden", "Los invitados no pueden desactivar conexiones"
-        )
     existing = await _get_conn_any(conn_id, user, group_id)
     if existing:
         assert_resource_writable(existing, "connection")
@@ -529,13 +477,13 @@ async def _set_connection_active(
 
 @router.post("/{conn_id}/activate")
 async def activate_connection(
-    conn_id: str, ctx: GroupContext = Depends(require_group)
+    conn_id: str, ctx: GroupContext = Depends(require_group_session)
 ) -> Dict[str, Any]:
     return await _set_connection_active(conn_id, True, ctx)
 
 
 @router.post("/{conn_id}/deactivate")
 async def deactivate_connection(
-    conn_id: str, ctx: GroupContext = Depends(require_group)
+    conn_id: str, ctx: GroupContext = Depends(require_group_session)
 ) -> Dict[str, Any]:
     return await _set_connection_active(conn_id, False, ctx)

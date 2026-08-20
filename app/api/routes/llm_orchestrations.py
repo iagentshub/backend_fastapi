@@ -7,7 +7,7 @@ from typing import Any, Dict, Literal
 from fastapi import APIRouter, Depends, Query
 from pydantic import BaseModel, Field, model_validator
 
-from app.api.routes.auth import GroupContext, require_group
+from app.api.routes.auth import GroupContext, require_group_session
 from app.config.data import AGENTS_DIR
 from app.config.providers import OPENAI_COMPAT_URLS
 from app.errors import APIError
@@ -152,7 +152,7 @@ async def _validate_connections(body: LLMOrchestrationBody, ctx: GroupContext) -
 @router.get("")
 async def list_llm_orchestrations(
     include_inactive: bool = Query(default=False),
-    ctx: GroupContext = Depends(require_group),
+    ctx: GroupContext = Depends(require_group_session),
 ) -> list[Dict[str, Any]]:
     items: list[Dict[str, Any]] = []
     for owner_id in {ctx.user, ctx.group_id}:
@@ -176,7 +176,7 @@ async def list_llm_orchestrations(
 
 @router.get("/{item_id}")
 async def get_llm_orchestration(
-    item_id: str, ctx: GroupContext = Depends(require_group)
+    item_id: str, ctx: GroupContext = Depends(require_group_session)
 ) -> Dict[str, Any]:
     return await _accessible(item_id, ctx)
 
@@ -185,7 +185,7 @@ async def get_llm_orchestration(
 async def save_llm_orchestration_binding(
     item_id: str,
     body: LLMOrchestrationBindingBody,
-    ctx: GroupContext = Depends(require_group),
+    ctx: GroupContext = Depends(require_group_session),
 ) -> Dict[str, Any]:
     item = await _accessible(item_id, ctx)
     if not item.get("_shared"):
@@ -247,7 +247,7 @@ async def save_llm_orchestration_binding(
 
 @router.post("")
 async def save_llm_orchestration(
-    body: LLMOrchestrationBody, ctx: GroupContext = Depends(require_group)
+    body: LLMOrchestrationBody, ctx: GroupContext = Depends(require_group_session)
 ) -> Dict[str, Any]:
     await _validate_connections(body, ctx)
     item_id = body.id
@@ -268,7 +268,7 @@ async def save_llm_orchestration(
 
 @router.delete("/{item_id}")
 async def delete_llm_orchestration(
-    item_id: str, ctx: GroupContext = Depends(require_group)
+    item_id: str, ctx: GroupContext = Depends(require_group_session)
 ) -> Dict[str, bool]:
     item = await _owned(item_id, ctx)
     assert_resource_writable(item, "llm_orchestration")
@@ -310,13 +310,13 @@ async def _set_active(item_id: str, active: bool, ctx: GroupContext) -> Dict[str
 
 @router.post("/{item_id}/activate")
 async def activate_llm_orchestration(
-    item_id: str, ctx: GroupContext = Depends(require_group)
+    item_id: str, ctx: GroupContext = Depends(require_group_session)
 ) -> Dict[str, Any]:
     return await _set_active(item_id, True, ctx)
 
 
 @router.post("/{item_id}/deactivate")
 async def deactivate_llm_orchestration(
-    item_id: str, ctx: GroupContext = Depends(require_group)
+    item_id: str, ctx: GroupContext = Depends(require_group_session)
 ) -> Dict[str, Any]:
     return await _set_active(item_id, False, ctx)

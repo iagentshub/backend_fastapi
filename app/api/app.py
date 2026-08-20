@@ -46,7 +46,7 @@ from app.api.routes import (
 )
 from app.api.routes.admin import admin_router
 from app.auth.auth import ensure_admin_user
-from app.auth.gdpr import purge_expired_deletions
+from app.auth.gdpr import purge_expired_deletions, purge_expired_guests
 from app.config import data as _cfg
 from app.config.cors import CORS_ORIGINS
 from app.config.maintenance import (
@@ -79,13 +79,21 @@ def _dev_mode() -> bool:
 
 
 async def _gdpr_purge_loop() -> None:
-    """Purga cuentas con el período de gracia expirado. Cadencia en config."""
+    """Purga cuentas con el período de gracia expirado. Cadencia en config.
+
+    Barre también los invitados abandonados: es la misma escoba —borrar cuentas
+    que ya no deben existir, con la misma rutina— y darle bucle propio habría
+    sido un `asyncio.sleep` más por worker sin nada que lo justifique.
+    """
     while True:
         await asyncio.sleep(GDPR_PURGE_SECONDS)
         try:
             n = await purge_expired_deletions()
             if n:
                 flog.ok(f"[gdpr] {n} cuenta(s) eliminadas definitivamente")
+            invitados = await purge_expired_guests()
+            if invitados:
+                flog.ok(f"[guest] {invitados} invitado(s) abandonados purgados")
         except Exception as exc:  # noqa: BLE001
             # Bucle de fondo: si esta ronda falla, la siguiente reintenta en
             # 6 h. Ancho a propósito — dejar morir la tarea sería peor.

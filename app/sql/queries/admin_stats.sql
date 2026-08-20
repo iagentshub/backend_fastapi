@@ -34,8 +34,11 @@ WHERE table_name=? AND table_schema='public'
 ORDER BY ordinal_position;
 
 -- name: user_counts
+-- Sin invitados: son efímeros y contarlos haría que el total del panel subiera
+-- y bajara solo, sin que nadie se hubiera dado de alta ni de baja.
 SELECT COUNT(*), SUM(CASE WHEN is_active=1 THEN 1 ELSE 0 END), SUM(CASE WHEN is_verified=1 THEN 1 ELSE 0 END)
-FROM users;
+FROM users
+WHERE role <> 'guest';
 
 -- name: connection_totals
 SELECT COUNT(*), COALESCE(SUM(tokens_in),0), COALESCE(SUM(tokens_out),0)

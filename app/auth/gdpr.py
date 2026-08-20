@@ -162,6 +162,9 @@ async def purge_user_data(username: str) -> None:
                     sql("queries/gdpr:delete_accounts"), (user_id,)
                 )
                 await conn.execute(
+                    sql("queries/gdpr:delete_agent_preferences"), (user_id,)
+                )
+                await conn.execute(
                     sql("queries/gdpr:delete_sessions"), (user_id,)
                 )
                 await conn.execute(
@@ -185,6 +188,44 @@ async def purge_user_data(username: str) -> None:
 
     await _asyncio.to_thread(_purge_user_files, user_id)
     flog.ok(f"[gdpr] Purga completa de {public_username}")
+
+
+async def purge_expired_guests() -> int:
+    """Borra los invitados abandonados. Devuelve cuántos.
+
+    Abandonado es el invitado sin ninguna sesión viva —cerró la pestaña sin
+    pasar por logout, o su sesión caducó— pasado el margen de gracia. El
+    criterio es ese y no un TTL fijo desde el alta a propósito: quien sigue
+    trabajando renueva su sesión, y un TTL le habría borrado el trabajo por
+    debajo en mitad de la demo.
+
+    El borrado es el mismo del RGPD, sin excepciones: para el invitado no es una
+    cortesía, es su contrato — todo lo que crea desaparece con la sesión.
+    """
+    # Por módulo, no por valor: los tests ajustan el margen en caliente y un
+    # `from ... import GUEST_GRACE_SECONDS` congelaría el de importación.
+    import app.config.session as _session
+
+    limite = (
+        datetime.now(timezone.utc) - timedelta(seconds=_session.GUEST_GRACE_SECONDS)
+    ).isoformat()
+    ahora = generate_date()
+    async with open_db() as conn:
+        rows = await conn.fetchall(
+            sql("queries/guest:expired_guests"), (limite, ahora)
+        )
+    ids = [r[0] for r in rows]
+
+    for guest_id in ids:
+        try:
+            await purge_user_data(guest_id)
+        except Exception as exc:  # noqa: BLE001
+            # Igual que la purga por lotes del RGPD: que un invitado falle no
+            # puede dejar sin barrer a los demás, y con el tope de sesiones de
+            # por medio no barrer significa cerrar la demo a quien llegue.
+            flog.error(f"[guest] No se pudo purgar {guest_id}: {exc}")
+
+    return len(ids)
 
 
 async def purge_expired_deletions() -> int:

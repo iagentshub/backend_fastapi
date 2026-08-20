@@ -13,9 +13,11 @@ ORDER BY updated_at DESC
 LIMIT 1;
 
 -- name: user_id_by_username
+-- Sin invitados: resuelve el username de un perfil que se va a seguir, y no se
+-- sigue a una cuenta que se borra al cerrar su sesión.
 SELECT id
 FROM users
-WHERE username = ?;
+WHERE username = ? AND role <> 'guest';
 
 -- name: follow_insert_pg
 INSERT INTO user_follows (follower, following)

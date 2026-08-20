@@ -105,22 +105,45 @@ class _DBHandler(logging.Handler):
         self._descartados = 0
         self._stop = threading.Event()
         self._flusher: threading.Thread | None = None
+        self._flush_interval = flush_interval
         # Solo para PostgreSQL: loop y hilo propios del logger (ver _pg_loop).
         self._loop: asyncio.AbstractEventLoop | None = None
         self._loop_thread: threading.Thread | None = None
         if db_path:
             db_path.parent.mkdir(parents=True, exist_ok=True)
             self._init_schema()
-        # Con lote de 1 la escritura ya es inmediata: un hilo que despierta cada
-        # segundo para no encontrar nada solo gasta.
-        if self._batch_size > 1 and flush_interval > 0:
-            self._flusher = threading.Thread(
-                target=self._flush_loop,
-                args=(flush_interval,),
-                name="flog-flush",
-                daemon=True,
-            )
-            self._flusher.start()
+        self._ensure_flusher()
+
+    def _ensure_flusher(self) -> None:
+        """Arranca el hilo de volcado si no está vivo.
+
+        No basta con arrancarlo en el constructor: **uvicorn lo mata al
+        arrancar**. `Config.configure_logging()` llama a `dictConfig`, que
+        empieza por `_clearExistingHandlers()` → `logging.shutdown()` sobre todo
+        handler ya registrado, y nuestro `close()` corta el hilo. El handler
+        sobrevive —el logger sigue teniéndolo— pero se queda sin quien vuelque:
+        a partir de ahí solo se escribía al llenar el lote de 50 o al llegar un
+        ERROR, así que en una instalación tranquila las últimas hasta 49 líneas
+        no aparecían en el visor de logs, y un SIGKILL se las llevaba.
+
+        Medido: con `GAIA_WORKERS=1`, tras arrancar el servidor el hilo
+        `flog-flush` ya no figuraba en `threading.enumerate()`.
+
+        Con lote de 1 la escritura ya es inmediata: un hilo que despierta cada
+        segundo para no encontrar nada solo gasta.
+        """
+        if self._batch_size <= 1 or self._flush_interval <= 0:
+            return
+        if self._flusher is not None and self._flusher.is_alive():
+            return
+        self._stop.clear()
+        self._flusher = threading.Thread(
+            target=self._flush_loop,
+            args=(self._flush_interval,),
+            name="flog-flush",
+            daemon=True,
+        )
+        self._flusher.start()
 
     def _flush_loop(self, interval: float) -> None:
         """Vuelca lo pendiente cada `interval` segundos.
@@ -281,6 +304,10 @@ class _DBHandler(logging.Handler):
             self._flush_locked()
 
     def emit(self, record: logging.LogRecord) -> None:
+        # Quien haya reconfigurado el logging por debajo (uvicorn lo hace al
+        # arrancar) deja el hilo de volcado muerto; aquí se recupera. Es un
+        # `is_alive()` por línea, que es leer un flag.
+        self._ensure_flusher()
         try:
             fila = self._row(record)
         except Exception:  # noqa: BLE001

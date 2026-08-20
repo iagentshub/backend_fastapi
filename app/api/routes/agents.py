@@ -9,7 +9,6 @@ from fastapi import APIRouter, Depends, Query, Response
 
 from app.api.routes.auth import (
     GroupContext,
-    require_group,
     require_group_session,
 )
 from app.auth.auth import get_user_role
@@ -18,12 +17,12 @@ from app.errors import APIError
 from app.middleware.locale import get_locale
 from app.models.llm_orchestration import orchestration_id_from_connection
 from app.models.request_bodies import AgentPayload
-from app.pagination.materialized import paginate_materialized
 from app.pagination.models import OffsetParams
 from app.services.agent_access import agent_access
 from app.services.agent_listing import list_authenticated_agents
 from app.services.agent_presentation import apply_agent_locale
 from app.services.agent_presentation import validate_agent_scope as _check_scope
+from app.services.publishing import assert_can_publish
 from app.sql import sql
 from app.storage.agent_storage import AgentStorage
 from app.storage.chat import ChatStorage
@@ -31,10 +30,6 @@ from app.storage.connection_storage import ConnectionStorage
 from app.storage.db import open_db
 from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
-from app.storage.guest import (
-    get_session,
-    is_guest,
-)
 from app.storage.knowledge import KnowledgeStorage
 from app.storage.knowledge_packs import KnowledgePackStorage
 from app.storage.memory_storage import MemoryStorage
@@ -47,7 +42,6 @@ from app.storage.skill_storage import (
 )
 from app.storage.tool_storage import ToolStorage
 from app.utils import flog
-from app.utils.generators import generate_id
 from app.utils.origin import assert_resource_writable, compute_origin_type
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
@@ -211,25 +205,6 @@ async def list_agents(
 ) -> List[Dict[str, Any]]:
     _check_scope(scope)
     locale = get_locale()
-    user = ctx.user
-    if is_guest(user):
-        s = get_session(user)
-        public = await _agents.list("public") if scope in ("public", "all") else []
-        private = s.agents if scope in ("private", "all") else []
-        items = public + private
-        if not include_inactive:
-            items = [agent for agent in items if agent.get("is_active", True)]
-        if label:
-            items = [a for a in items if label in (a.get("labels") or [])]
-        items = paginate_materialized(
-            items, limit=limit, offset=offset, response=response
-        )
-        result: List[Dict[str, Any]] = []
-        for a in items:
-            a = _apply_locale(a, locale)
-            a["origin_type"] = compute_origin_type(a)
-            result.append(a)
-        return result
     return await list_authenticated_agents(
         _agents,
         ctx=ctx,
@@ -251,11 +226,7 @@ async def save_agent(
     payload = body.payload()
     requested_public_dependencies = payload.pop("publish_dependencies", None)
     connection_id = str(payload.get("connection_id") or "").strip()
-    if (
-        connection_id
-        and orchestration_id_from_connection(connection_id)
-        and not is_guest(ctx.user)
-    ):
+    if connection_id and orchestration_id_from_connection(connection_id):
         from app.services.connection_access import connection_access
 
         if not await connection_access.get_accessible(
@@ -272,33 +243,8 @@ async def save_agent(
         raise APIError(
             400, "invalid_field", "Scope no válido", extra={"field": "scope"}
         )
-    if is_guest(user):
-        labels = [
-            str(label) for label in (payload.get("labels") or ["private"]) if label
-        ]
-        invalid = [label for label in labels if label == "official"]
-        if invalid:
-            raise APIError(
-                422,
-                "invalid_field",
-                "El origen del recurso solo puede definirlo un administrador",
-                extra={"field": "labels", "invalid": invalid},
-            )
-        payload["labels"] = ensure_origin_label(labels, "community")
-        s = get_session(user)
-        guest_id = payload.get("id")
-        if guest_id and not any(a.get("id") == guest_id for a in s.agents):
-            guest_id = None
-        agent: Dict[str, Any] = {
-            **payload,
-            "id": guest_id or generate_id(),
-            "resource_type": "agent",
-            "scope": "private",
-            "is_active": True,
-        }
-        s.agents = [a for a in s.agents if a.get("id") != agent["id"]]
-        s.agents.append(agent)
-        return agent
+    if scope == "public":
+        assert_can_publish(user)
     role = await get_user_role(user)
     labels = [str(label) for label in (payload.get("labels") or [scope]) if label]
     invalid = (
@@ -457,18 +403,6 @@ async def get_agent(
     agent_id: str, ctx: GroupContext = Depends(require_group_session)
 ) -> Dict[str, Any]:
     user = ctx.user
-    if is_guest(user):
-        s = get_session(user)
-        a = next(
-            (a for a in s.agents if a.get("id") == agent_id), None
-        ) or await _agents.get(agent_id, scope="public")
-        if not a:
-            raise APIError(
-                404, "not_found", "Agente no encontrado", extra={"resource": "agent"}
-            )
-        a = _apply_locale(a, get_locale())
-        a["origin_type"] = compute_origin_type(a)
-        return a
     a = await _agents.get(agent_id)
     if not a:
         raise APIError(
@@ -489,15 +423,6 @@ async def delete_agent(
     agent_id: str, ctx: GroupContext = Depends(require_group_session)
 ) -> Dict[str, Any]:
     user, group_id = ctx.user, ctx.group_id
-    if is_guest(user):
-        s = get_session(user)
-        before = len(s.agents)
-        s.agents = [a for a in s.agents if a.get("id") != agent_id]
-        if len(s.agents) == before:
-            raise APIError(
-                404, "not_found", "Agente no encontrado", extra={"resource": "agent"}
-            )
-        return {"ok": True}
     a = await _agents.get(agent_id)
     if a:
         assert_resource_writable(a, "agent")
@@ -522,8 +447,6 @@ async def _set_agent_active(
     agent_id: str, active: bool, ctx: GroupContext
 ) -> Dict[str, Any]:
     user, group_id = ctx.user, ctx.group_id
-    if is_guest(user):
-        raise APIError(403, "forbidden", "Los invitados no pueden desactivar agentes")
     a = await _agents.get(agent_id)
     if not a:
         raise APIError(
@@ -545,13 +468,13 @@ async def _set_agent_active(
 
 @router.post("/{agent_id}/activate")
 async def activate_agent(
-    agent_id: str, ctx: GroupContext = Depends(require_group)
+    agent_id: str, ctx: GroupContext = Depends(require_group_session)
 ) -> Dict[str, Any]:
     return await _set_agent_active(agent_id, True, ctx)
 
 
 @router.post("/{agent_id}/deactivate")
 async def deactivate_agent(
-    agent_id: str, ctx: GroupContext = Depends(require_group)
+    agent_id: str, ctx: GroupContext = Depends(require_group_session)
 ) -> Dict[str, Any]:
     return await _set_agent_active(agent_id, False, ctx)

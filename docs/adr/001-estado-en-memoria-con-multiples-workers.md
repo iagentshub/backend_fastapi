@@ -1,7 +1,9 @@
 # 001 · Estado en memoria con múltiples workers
 
 - **Fecha**: 2026-08-16 (la decisión es anterior; esto solo la saca del código)
-- **Estado**: aceptada; la parte del rate limiter la cierra el [009](009-cuota-compartida-y-por-principal.md)
+- **Estado**: superada en sus dos mitades. El rate limiter lo cierra el
+  [009](009-cuota-compartida-y-por-principal.md); las sesiones de invitado, el
+  [012](012-el-invitado-es-un-usuario-efimero.md)
 - **Afecta a**: `main.py`, `app/middleware/ratelimit.py`, `app/storage/guest.py`,
   `app/config/server.py`, y a cualquier despliegue con `GAIA_WORKERS > 1`
 
@@ -28,6 +30,9 @@ límite efectivo era el declarado multiplicado por `WORKERS`: con el default de
 **Sesiones de invitado**: no se persisten. `main.py` emite un `flog.warning` en
 el arranque cuando `GAIA_WORKERS > 1` y el modo invitado está activo, indicando
 el tope real de sesiones. El fallo sigue existiendo, pero deja de ser silencioso.
+**Esto ya no describe el código**: desde el [012](012-el-invitado-es-un-usuario-efimero.md)
+el invitado es un usuario efímero en la BD, que los workers comparten, y el
+aviso se retiró junto con el `dict`.
 
 **Rate limiter**: el constructor reparte la cuota entre procesos
 (`math.ceil(calls / _WORKERS)`), **redondeando hacia arriba**. Con `calls=5` y 4
@@ -47,7 +52,10 @@ tablas e índices en paralelo contra una BD recién creada.
 - **Persistir la sesión de invitado en la BD** — cambia su contrato de demo
   efímera, obliga a contemplarla en el borrado RGPD y añade filas de usuarios no
   registrados con su coste de limpieza. Es una decisión de producto, no técnica,
-  y no está tomada.
+  y no está tomada. **Se tomó después**, y es justo lo que hace el
+  [012](012-el-invitado-es-un-usuario-efimero.md): el borrado RGPD resultó ser
+  la parte fácil —ya existía y bastaba con llamarlo—, y a cambio el invitado
+  puede hacer lo mismo que cualquiera.
 - **Afinidad de sesión en el proxy** — más barata y resuelve el síntoma del
   invitado, pero no el del rate limiter ni el tope de sesiones.
 - **Contador de rate limit fuera del proceso (Redis/BD)** — es lo correcto si el
@@ -64,6 +72,7 @@ tablas e índices en paralelo contra una BD recién creada.
   El reparto sigue vivo para los limiters sin nombre estable, que hoy son solo
   los de los tests.
 - Con `GAIA_WORKERS > 1` y sin sticky sessions, el invitado pierde su trabajo
-  entre peticiones. Está avisado en el arranque, no resuelto.
+  entre peticiones. Está avisado en el arranque, no resuelto. **Resuelto en el
+  [012](012-el-invitado-es-un-usuario-efimero.md)**.
 - Cualquier estado nuevo en memoria de proceso hereda este problema. Antes de
   añadir uno, decidir explícitamente qué pasa con N workers.

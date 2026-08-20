@@ -65,8 +65,11 @@ SET password_hash = ?
 WHERE id = ? OR username = ?;
 
 -- name: list_users
+-- Sin los invitados: son usuarios efímeros que se borran solos, y en el panel
+-- de administración serían ruido que aparece y desaparece entre dos recargas.
 SELECT *
 FROM users
+WHERE role <> 'guest'
 ORDER BY created_at ASC;
 
 -- name: set_password_by_username

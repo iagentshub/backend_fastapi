@@ -90,9 +90,16 @@ def test_token_invalido_se_distingue_de_anonimo():
     assert invalido == "?invalid"
 
 
-def test_invitado_sin_token():
-    assert RequestLoggerMiddleware._username_for_log(_request({"ga_guest": "1"})) == (
-        "guest"
+def test_el_invitado_se_registra_con_su_id():
+    """El invitado no tiene cookie propia: viaja en `ga_token` como todos.
+
+    Este test congelaba una cookie `ga_guest` que ningún emisor puso nunca, y de
+    paso daba por bueno registrar a todos los invitados como "guest". Su id los
+    distingue, que es lo que se necesita para seguir a uno por el log.
+    """
+    token = create_token("guest:ab12cd34ef56")
+    assert RequestLoggerMiddleware._username_for_log(_request({"ga_token": token})) == (
+        "guest:ab12cd34ef56"
     )
 
 

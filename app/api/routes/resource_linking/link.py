@@ -14,7 +14,7 @@ from typing import Any, Dict
 
 from fastapi import Depends
 
-from app.api.routes.auth import require_auth
+from app.api.routes.auth import require_session
 from app.api.routes.resource_linking._router import router
 from app.api.routes.resource_linking._shared import (
     _agents_store,
@@ -45,7 +45,7 @@ from app.utils.generators import generate_id
 @router.post("/api/knowledge/{source_id}/link")
 async def link_knowledge(
     source_id: str,
-    username: str = Depends(require_auth),
+    username: str = Depends(require_session),
 ) -> Dict[str, Any]:
     knowledge = _knowledge_store
     source = await knowledge.get(source_id)
@@ -110,7 +110,7 @@ async def link_knowledge(
 async def link_agent(
     scope: str,
     source_id: str,
-    username: str = Depends(require_auth),
+    username: str = Depends(require_session),
 ) -> Dict[str, Any]:
     agents = _agents_store
     source = await agents.get(source_id, scope)
@@ -334,7 +334,7 @@ async def _link_resource(tipo: str, scope: str, source_id: str, username: str) -
 async def link_skill(
     scope: str,
     source_id: str,
-    username: str = Depends(require_auth),
+    username: str = Depends(require_session),
 ) -> Dict[str, Any]:
     return await _link_resource("skill", scope, source_id, username)
 
@@ -342,7 +342,7 @@ async def link_skill(
 async def link_tool(
     scope: str,
     source_id: str,
-    username: str = Depends(require_auth),
+    username: str = Depends(require_session),
 ) -> Dict[str, Any]:
     return await _link_resource("tool", scope, source_id, username)
 
@@ -350,7 +350,7 @@ async def link_tool(
 async def link_prompt(
     scope: str,
     source_id: str,
-    username: str = Depends(require_auth),
+    username: str = Depends(require_session),
 ) -> Dict[str, Any]:
     return await _link_resource("prompt", scope, source_id, username)
 
@@ -437,6 +437,6 @@ async def _duplicate_workflow(source_id: str, username: str) -> Dict[str, Any]:
 
 @router.post("/api/workflows/{source_id}/link")
 async def link_workflow(
-    source_id: str, username: str = Depends(require_auth)
+    source_id: str, username: str = Depends(require_session)
 ) -> Dict[str, Any]:
     return await _duplicate_workflow(source_id, username)

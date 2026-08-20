@@ -117,6 +117,22 @@ def test_https_sin_proxies_de_confianza_avisa(settings, monkeypatch):
     assert _check("trusted_proxies").severity == "warning"
 
 
+def test_sin_cupo_de_invitados_avisa(settings, monkeypatch):
+    """A 0 la demo queda apagada y el alta responde 503, sin que nada más lo
+    diga: la ruta sigue publicada y el cliente sigue ofreciendo el botón."""
+    import app.storage.guest as guest_mod
+
+    monkeypatch.setattr(guest_mod, "MAX_SESSIONS", 0)
+    assert _check("guest_demo").severity == "warning"
+
+
+def test_con_cupo_de_invitados_esta_bien(settings, monkeypatch):
+    import app.storage.guest as guest_mod
+
+    monkeypatch.setattr(guest_mod, "MAX_SESSIONS", 200)
+    assert _check("guest_demo").severity == "ok"
+
+
 # ── El informe ────────────────────────────────────────────────────────────────
 
 

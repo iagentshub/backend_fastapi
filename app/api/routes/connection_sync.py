@@ -6,7 +6,7 @@ from typing import Any, Dict
 
 from fastapi import APIRouter, Depends
 
-from app.api.routes.auth import GroupContext, require_group
+from app.api.routes.auth import GroupContext, require_group_session
 from app.auth.auth import get_user_role
 from app.config.session import RATE_IP_FACTOR
 from app.errors import APIError
@@ -45,7 +45,7 @@ async def _get_conn_any(
 @router.post("/{conn_id}/hub-sync")
 async def hub_sync(
     conn_id: str,
-    ctx: GroupContext = Depends(require_group),
+    ctx: GroupContext = Depends(require_group_session),
     _rl: None = Depends(_hub_sync_limiter),  # N2: prevenir amplificación HTTP
 ) -> Dict[str, Any]:
     """Sincroniza agentes, skills, conocimiento y conexiones desde un hub remoto."""
@@ -71,7 +71,7 @@ async def hub_sync(
 @router.post("/{conn_id}/import-models")
 async def import_models(
     conn_id: str,
-    ctx: GroupContext = Depends(require_group),
+    ctx: GroupContext = Depends(require_group_session),
 ) -> Dict[str, Any]:
     """Descubre modelos de la conexión-credencial y crea una conexión por modelo."""
     user, group_id = ctx.user, ctx.group_id

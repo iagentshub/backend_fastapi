@@ -9,7 +9,7 @@ from datetime import timezone as _timezone
 from fastapi import Depends
 from pydantic import BaseModel, Field, model_validator
 
-from app.api.routes.auth import require_admin, require_auth
+from app.api.routes.auth import require_admin, require_session
 from app.api.routes.settings._router import router
 from app.api.routes.settings._shared import (
     _DEFAULTS,
@@ -110,7 +110,7 @@ async def delete_notification_banner(
 
 @router.get("/notification-banners/active")
 async def get_active_notification_banners(
-    username: str = Depends(require_auth),
+    username: str = Depends(require_session),
 ) -> list[dict]:
     """Banners vigentes ahora, con el mensaje ya resuelto en el idioma del
     usuario autenticado — no se exponen ambos idiomas al cliente."""

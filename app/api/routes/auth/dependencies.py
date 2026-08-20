@@ -64,7 +64,10 @@ _active_cache: dict[str, tuple[bool, str | None, str, float]] = {}
 async def _get_user_auth_state(username: str) -> tuple[bool, str | None, str]:
     """Devuelve (is_active, password_changed_at, role). Usa caché con TTL de 60 s.
 
-    Los usuarios guest son siempre activos y no tienen password_changed_at.
+    El invitado se resuelve sin consultar: su fila existe, pero dice exactamente
+    esto —activa, sin contraseña, rol `guest`— y esta función está en el camino
+    de cada request. Que exista o no lo comprueba `_resolve_principal`, que sí
+    lee la fila.
     """
     if is_guest(username):
         return True, None, "guest"
@@ -232,12 +235,13 @@ async def _resolve_principal(
 ) -> tuple[str, str, str, Optional[str]]:
     """Credencial → (user_id, legacy_personal_id, role, gid).
 
-    El invitado no tiene fila en `users`, así que su identidad hace de ambos ids.
+    El invitado se resuelve igual que cualquiera: desde que es un usuario
+    efímero en `users`, su fila es la que dice si sigue existiendo. El atajo que
+    devolvía su identidad sin consultar dejaba operar a un invitado ya purgado
+    con una cookie todavía en el navegador.
     """
     identity, issued_at, gid = await _identify(ga_token, authorization)
     role = await _assert_account_ok(identity, issued_at)
-    if is_guest(identity):
-        return identity, identity, role, gid
     user = await get_user_by_identity(identity)
     if not user:
         raise APIError(401, "invalid_token", "Token inválido o expirado")
@@ -312,13 +316,23 @@ async def _resolve_group(
 # Dependencies concretas. El default exige cuenta registrada: un invitado que
 # llegue a un endpoint que no lo contemple recibe 403 en vez de entrar.
 #
-# El allowlist no se decidió a ojo: un endpoint que contiene una rama
-# `is_guest(...)` es consciente del invitado por diseño, y son exactamente los
-# que trabajan sobre los cinco campos de GuestSession (connections, agents,
-# skills, knowledge, memory) más el chat y GET /me. Esos 32 usan
-# require_session / require_group_session. Los otros 106 —billing, settings,
-# social, sharing, users, accounts, workflows, groups— nunca miraron si quien
-# llamaba era invitado, que es precisamente lo que los hacía inseguros.
+# El allowlist **se declara aquí** y lo fija `tests/api/test_guest_boundary.py`.
+# Antes se derivaba: «endpoint con rama `is_guest(...)`» era exactamente el
+# conjunto que sabía trabajar contra la GuestSession en memoria. Esa regla murió
+# con la GuestSession — el invitado es un usuario efímero y usa el mismo
+# almacenamiento que todos—, así que la frontera ya no se deduce del código: es
+# una decisión de producto escrita en un test.
+#
+# Abierto al invitado: **su espacio personal completo**. Agentes, skills,
+# prompts, tools, knowledge y packs, conexiones y orquestaciones, memoria,
+# workflows, versiones, chats guardados, preferencias y el catálogo público de
+# Explorar.
+#
+# Cerrado: lo que no es suyo o no tiene sentido sin cuenta —admin, users,
+# billing y checkout, settings de plataforma, cuentas OAuth externas, PATs y el
+# emparejamiento de VS Code (credenciales de largo recorrido que sobrevivirían a
+# la sesión), grupos, social y publicar en Explorar (un invitado publicando deja
+# en la vitrina recursos que desaparecen al expirar).
 require_auth = require_role("standard")
 require_group = require_group_role("standard")
 

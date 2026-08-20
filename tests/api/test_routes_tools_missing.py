@@ -127,26 +127,40 @@ def test_download_binary_requires_auth(client):
 
 
 # ── Invitados ────────────────────────────────────────────────────────────────
-# GuestSession no contempla tools (ver docstring de tools.py): a diferencia de
-# skills/prompts, subir binarios ejecutables desde una sesión de demo efímera
-# no aporta nada al producto — las rutas exigen cuenta registrada.
+# Las tools estuvieron cerradas al invitado mientras su sesión era un dict en
+# memoria: GuestSession no las contemplaba y escribir la rama habría sido
+# duplicar el handler. Desde que el invitado es un usuario efímero usa el mismo
+# almacenamiento que todos, y las tools son parte de su espacio personal.
 
 
-def test_guest_cannot_list_tools(client):
+def _guest_client(client):
+    import asyncio
+
     from app.auth.auth import create_token
-    from app.storage.guest import new_guest_id
+    from app.storage.guest import create_guest_user
 
-    gid = new_guest_id()
+    gid = asyncio.run(create_guest_user())
     client.cookies.set("ga_token", create_token(gid))
+    return gid
+
+
+def test_guest_lista_sus_tools(client):
+    _guest_client(client)
     r = client.get("/api/tools")
-    assert r.status_code == 403
+    assert r.status_code == 200
+    assert r.json() == []
 
 
-def test_guest_cannot_save_tool(client):
-    from app.auth.auth import create_token
-    from app.storage.guest import new_guest_id
-
-    gid = new_guest_id()
-    client.cookies.set("ga_token", create_token(gid))
+def test_guest_guarda_una_tool_privada(client):
+    _guest_client(client)
     r = client.post("/api/tools/private", json=_PAYLOAD)
+    assert r.status_code == 200, r.text
+    assert any(t["id"] == r.json()["id"] for t in client.get("/api/tools").json())
+
+
+def test_guest_no_publica_una_tool(client):
+    """Publicar sí sigue cerrado: lo que publicase se desvanece con su sesión."""
+    _guest_client(client)
+    r = client.post("/api/tools/public", json=_PAYLOAD)
     assert r.status_code == 403
+    assert r.json()["detail"]["code"] == "guest_cannot_publish"

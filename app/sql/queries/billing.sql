@@ -51,8 +51,10 @@ WHERE la.subscription_id = ?
 ORDER BY la.status ASC, la.assigned_at ASC;
 
 -- name: list_users
+-- Sin invitados: no tienen licencia ni pueden tenerla.
 SELECT id, username, email, role, is_active
 FROM users
+WHERE role <> 'guest'
 ORDER BY username ASC;
 
 -- name: user_exists

@@ -6,16 +6,15 @@ from typing import Any, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, Query, Response
 
-from app.api.routes.auth import GroupContext, require_group, require_group_session
+from app.api.routes.auth import GroupContext, require_group_session
 from app.auth.auth import get_user_role
 from app.errors import APIError
 from app.models.request_bodies import CatalogResourcePayload
-from app.pagination.materialized import paginate_materialized
 from app.pagination.models import OffsetParams
+from app.services.publishing import assert_can_publish
 from app.services.scoped_resource_listing import list_authenticated_scoped_resources
 from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
-from app.storage.guest import get_session, is_guest
 from app.storage.prompt_storage import PROMPT_ALIAS_RE, PromptStorage
 from app.storage.resource_versions import ResourceVersionStorage
 from app.storage.skill_storage import (
@@ -24,7 +23,6 @@ from app.storage.skill_storage import (
     ensure_origin_label,
 )
 from app.utils import flog
-from app.utils.generators import generate_id
 from app.utils.origin import assert_resource_writable, compute_origin_type
 
 router = APIRouter(prefix="/api/prompts", tags=["prompts"])
@@ -63,21 +61,7 @@ async def list_prompts(
     response: Response = None,  # type: ignore[assignment]
     ctx: GroupContext = Depends(require_group_session),
 ) -> List[Dict[str, Any]]:
-    user = ctx.user
     _check_scope(scope)
-    if is_guest(user):
-        s_obj = get_session(user)
-        public = await _storage.list("public") if scope in ("public", "all") else []
-        private = s_obj.prompts if scope in ("private", "all") else []
-        items = public + private
-        if not include_inactive:
-            items = [pr for pr in items if pr.get("is_active", True)]
-        for pr in items:
-            _mark_origin(pr, user, ctx.group_id)
-        items = paginate_materialized(
-            items, limit=limit, offset=offset, response=response
-        )
-        return items
     return await list_authenticated_scoped_resources(
         _storage,
         ctx=ctx,
@@ -96,16 +80,6 @@ async def get_prompt(
 ) -> Dict[str, Any]:
     user = ctx.user
     _check_scope(scope)
-    if is_guest(user) and scope == "private":
-        pr = next(
-            (p for p in get_session(user).prompts if p.get("id") == prompt_id), None
-        )
-        if not pr:
-            raise APIError(
-                404, "not_found", "Prompt no encontrado", extra={"resource": "prompt"}
-            )
-        _mark_origin(pr, user, ctx.group_id)
-        return pr
     pr = await _storage.get(scope, prompt_id)
     if not pr:
         raise APIError(
@@ -114,7 +88,7 @@ async def get_prompt(
 
     # Control de acceso: prompts privados solo para su propietario, admin o
     # miembros de un group al que el prompt está compartido.
-    if scope == "private" and not is_guest(user):
+    if scope == "private":
         user_group = ctx.group_id
         owner_id = pr.get("owner_id")
         if owner_id not in (user, user_group) and await get_user_role(user) != "admin":
@@ -143,8 +117,10 @@ async def save_prompt(
 ) -> Dict[str, Any]:
     user, group_id = ctx.user, ctx.group_id
     _check_scope(scope)
+    if scope == "public":
+        assert_can_publish(user)
     payload = body.payload()
-    role = None if is_guest(user) else await get_user_role(user)
+    role = await get_user_role(user)
     allowed_labels = (
         SKILL_LABELS
         if role == "admin"
@@ -202,27 +178,6 @@ async def save_prompt(
             extra={"field": "alias"},
         )
     payload["alias"] = alias
-    if is_guest(user):
-        if scope == "public":
-            raise APIError(
-                403,
-                "guest_public_prompt_edit_forbidden",
-                "Los invitados no pueden modificar prompts públicos",
-            )
-        s = get_session(user)
-        guest_id = payload.get("id")
-        if guest_id and not any(pr.get("id") == guest_id for pr in s.prompts):
-            guest_id = None
-        prompt: Dict[str, Any] = {
-            **payload,
-            "id": guest_id or generate_id(),
-            "resource_type": "prompt",
-            "scope": "private",
-            "is_active": True,
-        }
-        s.prompts = [pr for pr in s.prompts if pr.get("id") != prompt["id"]]
-        s.prompts.append(prompt)
-        return prompt
     prompt_id_in_payload = payload.get("id")
     existing = None
     if prompt_id_in_payload:
@@ -266,21 +221,8 @@ async def delete_prompt(
 ) -> Dict[str, Any]:
     user, group_id = ctx.user, ctx.group_id
     _check_scope(scope)
-    if is_guest(user):
-        if scope == "public":
-            raise APIError(
-                403,
-                "guest_public_prompt_delete_forbidden",
-                "Los invitados no pueden eliminar prompts públicos",
-            )
-        s = get_session(user)
-        before = len(s.prompts)
-        s.prompts = [pr for pr in s.prompts if pr.get("id") != prompt_id]
-        if len(s.prompts) == before:
-            raise APIError(
-                404, "not_found", "Prompt no encontrado", extra={"resource": "prompt"}
-            )
-        return {"ok": True}
+    if scope == "public":
+        assert_can_publish(user)
     # Ownership check before delete
     pr = await _storage.get_any(prompt_id)
     if pr:
@@ -316,8 +258,6 @@ async def _set_prompt_active(
     prompt_id: str, active: bool, ctx: GroupContext
 ) -> Dict[str, Any]:
     user, group_id = ctx.user, ctx.group_id
-    if is_guest(user):
-        raise APIError(403, "forbidden", "Los invitados no pueden desactivar prompts")
     pr = await _storage.get_any(prompt_id)
     if not pr:
         raise APIError(
@@ -339,13 +279,13 @@ async def _set_prompt_active(
 
 @router.post("/{prompt_id}/activate")
 async def activate_prompt(
-    prompt_id: str, ctx: GroupContext = Depends(require_group)
+    prompt_id: str, ctx: GroupContext = Depends(require_group_session)
 ) -> Dict[str, Any]:
     return await _set_prompt_active(prompt_id, True, ctx)
 
 
 @router.post("/{prompt_id}/deactivate")
 async def deactivate_prompt(
-    prompt_id: str, ctx: GroupContext = Depends(require_group)
+    prompt_id: str, ctx: GroupContext = Depends(require_group_session)
 ) -> Dict[str, Any]:
     return await _set_prompt_active(prompt_id, False, ctx)

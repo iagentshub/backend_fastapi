@@ -11,7 +11,7 @@ from typing import Any, Dict
 
 from fastapi import Depends, HTTPException
 
-from app.api.routes.auth import require_auth
+from app.api.routes.auth import require_session
 from app.api.routes.resource_linking._router import router
 from app.api.routes.resource_linking._shared import (
     _agents_store,
@@ -33,7 +33,7 @@ from app.storage.db import open_db
 @router.post("/api/agents/private/{agent_id}/sync")
 async def sync_linked_agent(
     agent_id: str,
-    username: str = Depends(require_auth),
+    username: str = Depends(require_session),
 ) -> Dict[str, Any]:
     agents = _agents_store
     local = await agents.get(agent_id, "private")
@@ -102,7 +102,7 @@ async def sync_linked_agent(
 @router.post("/api/skills/private/{skill_id}/sync")
 async def sync_linked_skill(
     skill_id: str,
-    username: str = Depends(require_auth),
+    username: str = Depends(require_session),
 ) -> Dict[str, Any]:
     skills = _skills_store
     local = await skills.get("private", skill_id)
@@ -150,7 +150,7 @@ async def sync_linked_skill(
 @router.post("/api/tools/private/{tool_id}/sync")
 async def sync_linked_tool(
     tool_id: str,
-    username: str = Depends(require_auth),
+    username: str = Depends(require_session),
 ) -> Dict[str, Any]:
     tools = _tools_store
     local = await tools.get("private", tool_id)
@@ -201,7 +201,7 @@ async def sync_linked_tool(
 @router.post("/api/prompts/private/{prompt_id}/sync")
 async def sync_linked_prompt(
     prompt_id: str,
-    username: str = Depends(require_auth),
+    username: str = Depends(require_session),
 ) -> Dict[str, Any]:
     prompts = _prompts_store
     local = await prompts.get("private", prompt_id)

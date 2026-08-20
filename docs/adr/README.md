@@ -16,8 +16,7 @@ Se queda **en el código** cuando el porqué es local a la línea siguiente —
 explica una constante concreta y solo tiene sentido junto a ella. Ejemplos que
 se quedaron donde estaban: `_EXCLUIDAS` en `app/auth/user_lookup.py`,
 `BCRYPT_ROUNDS` en `app/config/session.py`, `_COMPLETADAS` en
-`app/storage/migration.py`, el allowlist de invitados en
-`app/api/routes/auth/dependencies.py`.
+`app/storage/migration.py`.
 
 Donde se movió un bloque, queda en el código una línea `# Ver docs/adr/NNN-….md`.
 
@@ -36,6 +35,7 @@ Donde se movió un bloque, queda en el código una línea `# Ver docs/adr/NNN-�
 | [009](009-cuota-compartida-y-por-principal.md) | La cuota de rate limit se comparte entre workers y se cuenta por principal |
 | [010](010-el-grafo-se-arma-en-el-cliente.md) | El backend entrega relaciones; el grafo lo arma el cliente |
 | [011](011-un-solo-limite-de-tamano-y-lo-pone-el-admin.md) | Un solo límite de tamaño de petición, y lo pone el administrador |
+| [012](012-el-invitado-es-un-usuario-efimero.md) | El invitado es un usuario efímero, no un dict en memoria |
 
 ## Plantilla
 

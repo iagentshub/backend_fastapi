@@ -8,7 +8,7 @@ from typing import Optional
 from fastapi import Depends
 from pydantic import BaseModel
 
-from app.api.routes.auth import require_auth
+from app.api.routes.auth import require_session
 from app.api.routes.settings._router import router
 from app.api.routes.settings._shared import (
     VALID_LANGUAGES,
@@ -26,14 +26,14 @@ class SettingsUpdate(BaseModel):
     language: Optional[str] = None
 
 @router.get("")
-async def get_settings(username: str = Depends(require_auth)) -> dict:
+async def get_settings(username: str = Depends(require_session)) -> dict:
     prefs = await _get_prefs(username)
     return _settings_response(prefs)
 
 @router.put("")
 async def update_settings(
     body: SettingsUpdate,
-    username: str = Depends(require_auth),
+    username: str = Depends(require_session),
 ) -> dict:
     prefs = await _get_prefs(username)
     if body.theme is not None:

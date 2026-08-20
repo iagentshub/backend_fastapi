@@ -35,7 +35,6 @@ from app.errors import APIError
 from app.models.request_bodies import (
     KnowledgePackUploadSessionBody,
 )
-from app.storage.guest import is_guest
 from app.storage.knowledge import (
     extract_document_text,
 )
@@ -47,8 +46,6 @@ async def create_pack_upload_session(
     body: KnowledgePackUploadSessionBody,
     ctx: GroupContext = Depends(require_group_session),
 ) -> Dict[str, Any]:
-    if is_guest(ctx.user):
-        raise APIError(403, "forbidden", "Los invitados no pueden crear packs")
     name = str(body.name or "").strip()
     description = str(body.description or "").strip()
     total_files = int(body.total_files or 0)

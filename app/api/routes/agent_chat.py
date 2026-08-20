@@ -27,12 +27,6 @@ from app.storage.chat import ChatStorage
 from app.storage.connection_storage import ConnectionStorage
 from app.storage.db import PH, open_db
 from app.storage.groups import GroupStorage
-from app.storage.guest import (
-    GuestKnowledgeAdapter,
-    GuestMemoryAdapter,
-    get_session,
-    is_guest,
-)
 from app.storage.knowledge import KnowledgeStorage
 from app.storage.knowledge_packs import KnowledgePackStorage
 from app.storage.memory_storage import MemoryStorage
@@ -84,13 +78,7 @@ async def chat(
     _rl: None = Depends(_chat_limiter),
 ) -> StreamingResponse:
     user, group_id = ctx.user, ctx.group_id
-    if is_guest(user):
-        s = get_session(user)
-        a = next(
-            (a for a in s.agents if a.get("id") == agent_id), None
-        ) or await _agents.get(agent_id, scope="public")
-    else:
-        a = await _agents.get(agent_id)
+    a = await _agents.get(agent_id)
     if not a:
         raise APIError(
             404, "not_found", "Agente no encontrado", extra={"resource": "agent"}
@@ -103,8 +91,7 @@ async def chat(
             extra={"resource": "agent"},
         )
     role = await get_user_role(user)
-    if not is_guest(user):
-        await _assert_can_read_agent(agent_id, a, ctx)
+    await _assert_can_read_agent(agent_id, a, ctx)
     a = _apply_locale(a, get_locale())
 
     body = body.payload()
@@ -115,19 +102,18 @@ async def chat(
     # usuario): se resuelve y autoriza aquí (no dentro de stream_chat) porque
     # requiere consultar permisos de grupo, ajenos al servicio de chat.
     attached_knowledge: List[Dict[str, Any]] = []
-    if not is_guest(user):
-        requested_ids = [
-            str(kid) for kid in (body.get("attached_knowledge_ids") or []) if kid
-        ][:5]
-        for kid in requested_ids:
-            item = await _knowledge.get(kid, owner_id=user)
-            if not item and group_id != user:
-                if await _groups.has_resource_permission(
-                    group_id, user, "knowledge", kid, "view"
-                ):
-                    item = await _knowledge.get(kid, owner_id=None)
-            if item:
-                attached_knowledge.append(item)
+    requested_ids = [
+        str(kid) for kid in (body.get("attached_knowledge_ids") or []) if kid
+    ][:5]
+    for kid in requested_ids:
+        item = await _knowledge.get(kid, owner_id=user)
+        if not item and group_id != user:
+            if await _groups.has_resource_permission(
+                group_id, user, "knowledge", kid, "view"
+            ):
+                item = await _knowledge.get(kid, owner_id=None)
+        if item:
+            attached_knowledge.append(item)
 
     # Toda selección es un connection_id. Las orquestaciones se resuelven como
     # conexiones virtuales para que el agente no conozca tipos de destino.
@@ -136,15 +122,14 @@ async def chat(
     # Preferencia por usuario/agente: también debe aplicarse al propietario.
     # La extensión usa esto para cambiar de modelo sin modificar el agente ni
     # la conexión predeterminada para los demás usuarios.
-    if not is_guest(user):
-        async with open_db() as _pref_conn:
-            _pref_row = await _pref_conn.fetchone(
-                f"SELECT connection_id FROM user_agent_preferences "
-                f"WHERE username={PH} AND agent_id={PH}",
-                (user, agent_id),
-            )
-        if _pref_row and _pref_row["connection_id"]:
-            raw_conn_id = _pref_row["connection_id"]
+    async with open_db() as _pref_conn:
+        _pref_row = await _pref_conn.fetchone(
+            f"SELECT connection_id FROM user_agent_preferences "
+            f"WHERE username={PH} AND agent_id={PH}",
+            (user, agent_id),
+        )
+    if _pref_row and _pref_row["connection_id"]:
+        raw_conn_id = _pref_row["connection_id"]
 
     if "::" in raw_conn_id:
         base_conn_id, ollama_model = raw_conn_id.split("::", 1)
@@ -152,8 +137,7 @@ async def chat(
         base_conn_id, ollama_model = raw_conn_id, None
 
     if (
-        not is_guest(user)
-        and group_id != user
+        group_id != user
         and role != "admin"
         and base_conn_id
         and not orchestration_id_from_connection(base_conn_id)
@@ -167,7 +151,7 @@ async def chat(
             "No tienes permiso para usar esta conexión mediante agentes",
         )
 
-    if not is_guest(user) and group_id != user and role != "admin":
+    if group_id != user and role != "admin":
         for operation_connection_id in a.get("op_connections") or []:
             operation_connection_id = str(operation_connection_id).split("::", 1)[0]
             if operation_connection_id and not await _groups.has_resource_permission(
@@ -186,24 +170,16 @@ async def chat(
                     ),
                 )
 
-    if is_guest(user):
-        s = get_session(user)
-        conn = next((c for c in s.connections if c.get("id") == base_conn_id), None)
-        memory_store = GuestMemoryAdapter(s)
-        knowledge_store = GuestKnowledgeAdapter(s)
-    else:
-        conn = None
-        if base_conn_id:
-            if role == "admin" and not orchestration_id_from_connection(base_conn_id):
-                conn = await _conns.get(base_conn_id, None)
-            else:
-                from app.services.connection_access import connection_access
+    conn = None
+    if base_conn_id:
+        if role == "admin" and not orchestration_id_from_connection(base_conn_id):
+            conn = await _conns.get(base_conn_id, None)
+        else:
+            from app.services.connection_access import connection_access
 
-                conn = await connection_access.get_accessible(
-                    base_conn_id, user, group_id
-                )
-        memory_store = _memory
-        knowledge_store = _knowledge
+            conn = await connection_access.get_accessible(base_conn_id, user, group_id)
+    memory_store = _memory
+    knowledge_store = _knowledge
 
     if conn and ollama_model:
         conn = {**conn, "model": ollama_model}
@@ -244,7 +220,7 @@ async def chat(
 
     done_event: List[dict] = []
 
-    history_user_id = None if is_guest(user) else user
+    history_user_id = user
 
     async def _gen():
         try:
@@ -259,9 +235,9 @@ async def chat(
                     _chat,
                     history_user_id,
                     conversation_id or None,
-                    knowledge_pack_storage=None if is_guest(user) else _knowledge_packs,
-                    prompt_storage=None if is_guest(user) else _prompts,
-                    tool_storage=None if is_guest(user) else _tools,
+                    knowledge_pack_storage=_knowledge_packs,
+                    prompt_storage=_prompts,
+                    tool_storage=_tools,
                     attached_knowledge=attached_knowledge,
                     llm_lease=llm_lease,
                 )
@@ -277,7 +253,7 @@ async def chat(
                     _chat,
                     history_user_id,
                     conversation_id or None,
-                    knowledge_pack_storage=None if is_guest(user) else _knowledge_packs,
+                    knowledge_pack_storage=_knowledge_packs,
                     prompt_storage=_prompts,
                     tool_storage=_tools,
                     attached_knowledge=attached_knowledge,
@@ -316,21 +292,18 @@ async def chat(
             tokens = ev.get("tokens") or {}
             tok_in = int(tokens.get("in") or 0)
             tok_out = int(tokens.get("out") or 0)
-        if not is_guest(user):
-            if usage_by_connection:
-                for usage_connection_id, usage in usage_by_connection.items():
-                    usage_in = int(usage.get("in") or 0)
-                    usage_out = int(usage.get("out") or 0)
-                    if usage_in or usage_out:
-                        await _conns.add_tokens(
-                            usage_connection_id, usage_in, usage_out
-                        )
-            elif base_conn_id and (tok_in or tok_out):
-                await _conns.add_tokens(base_conn_id, tok_in, tok_out)
-            if (tok_in or tok_out) and a.get("scope", "private") == "private":
-                await _agents.add_tokens(
-                    agent_id, tok_in, tok_out, owner_id=a.get("owner_id")
-                )
+        if usage_by_connection:
+            for usage_connection_id, usage in usage_by_connection.items():
+                usage_in = int(usage.get("in") or 0)
+                usage_out = int(usage.get("out") or 0)
+                if usage_in or usage_out:
+                    await _conns.add_tokens(usage_connection_id, usage_in, usage_out)
+        elif base_conn_id and (tok_in or tok_out):
+            await _conns.add_tokens(base_conn_id, tok_in, tok_out)
+        if (tok_in or tok_out) and a.get("scope", "private") == "private":
+            await _agents.add_tokens(
+                agent_id, tok_in, tok_out, owner_id=a.get("owner_id")
+            )
             if ev.get("type") != "done":
                 return
             if conversation_id:

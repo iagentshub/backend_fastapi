@@ -113,3 +113,17 @@ def test_ningun_bucle_conserva_su_intervalo_escrito_a_mano():
             if re.search(r"asyncio\.sleep\(\s*\d+\s*\*\s*\d+", linea):
                 culpables.append(f"{fichero.relative_to(raiz)}:{n}")
     assert not culpables, f"Intervalos escritos en el bucle: {culpables}"
+
+
+def test_la_purga_de_invitados_tiene_quien_la_llame():
+    """El barrido de invitados abandonados cuelga del bucle del RGPD.
+
+    No estrenó bucle propio —habría sido un `asyncio.sleep` más por worker— y
+    por eso puede quedarse sin conductor sin que nada falle: los invitados sin
+    sesión se acumularían hasta agotar el tope y la demo se cerraría sola.
+    """
+    import inspect
+
+    from app.api.app import _gdpr_purge_loop
+
+    assert "purge_expired_guests" in inspect.getsource(_gdpr_purge_loop)

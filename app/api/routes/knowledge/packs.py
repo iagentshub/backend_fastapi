@@ -35,7 +35,6 @@ from app.models.request_bodies import (
     KnowledgePackEditBody,
     LabelsBody,
 )
-from app.storage.guest import is_guest
 from app.storage.knowledge import (
     extract_document_text,
 )
@@ -49,8 +48,6 @@ async def list_packs(
     ctx: GroupContext = Depends(require_group_session),
 ) -> List[Dict[str, Any]]:
     user = ctx.user
-    if is_guest(user):
-        return []
     role = await get_user_role(user)
     if requested_group_id is not None:
         if role != "admin" and not await _groups.can_access(requested_group_id, user):
@@ -95,13 +92,6 @@ async def upload_pack(
     ctx: GroupContext = Depends(require_group_session),
 ) -> Dict[str, Any]:
     user, group_id = ctx.user, ctx.group_id
-    if is_guest(user):
-        raise APIError(
-            403,
-            "forbidden",
-            "Los invitados no pueden crear packs de conocimiento",
-            extra={"resource": "knowledge_pack"},
-        )
     pack_name = name.strip()
     if not pack_name:
         raise APIError(
