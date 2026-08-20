@@ -5,7 +5,6 @@ Una sesión es tres cookies y una fila revocable: quien abre sesión pasa por
 `docs/adr/008-sesiones-revocables.md`.
 """
 
-
 from __future__ import annotations
 
 from typing import Any
@@ -59,6 +58,7 @@ router = APIRouter()
 
 _sessions = SessionStorage()
 
+
 class RegisterBody(BaseModel):
     username: str | None = Field(default=None, max_length=32)
     email: str | None = Field(default=None, max_length=254)
@@ -68,10 +68,12 @@ class RegisterBody(BaseModel):
     country: str | None = None
     phone: str | None = None
 
+
 class LoginBody(BaseModel):
     identifier: str | None = Field(default=None, max_length=254)
     email: str | None = Field(default=None, max_length=254)
     password: str | None = Field(default=None, max_length=128)
+
 
 _register_limiter = RateLimiter(
     calls=REGISTER_MAX,
@@ -100,6 +102,7 @@ _refresh_limiter = RateLimiter(
     shared=True,
     name="auth-refresh",
 )
+
 
 @router.post("/register")
 async def register(
@@ -181,6 +184,7 @@ async def register(
     await open_session(response, user["id"], request)
     return {"ok": True, "email": email, "pending_verification": False}
 
+
 @router.post("/login")
 async def login(
     body: LoginBody,
@@ -195,7 +199,14 @@ async def login(
     _ip = _client_ip(request)
 
     if not identifier or not password:
-        flog.warning("[login] FAIL razón=campos_vacíos", ip=_ip)
+        flog.audit(
+            "auth.login.rejected",
+            outcome="DENIED",
+            details={"reason": "missing_credentials"},
+            summary="[login] Rechazado: faltan credenciales",
+            ip=_ip,
+            username="-",
+        )
         raise APIError(
             400, "missing_credentials", "Usuario o email y contraseña requeridos"
         )
@@ -204,16 +215,50 @@ async def login(
 
     user = await get_user_by_login(identifier)
     if not user or not user.get("password_hash"):
-        flog.warning("[login] FAIL razón=usuario_no_encontrado", ip=_ip)
+        flog.audit(
+            "auth.login.rejected",
+            outcome="DENIED",
+            details={"reason": "invalid_credentials"},
+            summary="[login] Rechazado: credenciales incorrectas",
+            ip=_ip,
+            username="-",
+        )
         raise APIError(401, "invalid_credentials", "Credenciales incorrectas")
     if not await verify_password_async(password, user["password_hash"]):
-        flog.warning("[login] FAIL razón=contraseña_incorrecta", ip=_ip)
+        flog.audit(
+            "auth.login.rejected",
+            resource_type="user",
+            resource_id=user["username"],
+            outcome="DENIED",
+            details={"reason": "invalid_credentials"},
+            summary="[login] Rechazado: credenciales incorrectas",
+            ip=_ip,
+            username="-",
+        )
         raise APIError(401, "invalid_credentials", "Credenciales incorrectas")
     if not user.get("is_active", 1):
-        flog.warning("[login] FAIL razón=cuenta_desactivada", ip=_ip)
+        flog.audit(
+            "auth.login.rejected",
+            resource_type="user",
+            resource_id=user["username"],
+            outcome="DENIED",
+            details={"reason": "account_disabled"},
+            summary="[login] Rechazado: cuenta desactivada",
+            ip=_ip,
+            username="-",
+        )
         raise APIError(403, "account_disabled", "Cuenta desactivada")
     if EMAIL_VERIFY_ENABLED and not user.get("is_verified", 1):
-        flog.warning("[login] FAIL razón=pendiente_verificación", ip=_ip)
+        flog.audit(
+            "auth.login.rejected",
+            resource_type="user",
+            resource_id=user["username"],
+            outcome="DENIED",
+            details={"reason": "email_not_verified"},
+            summary="[login] Rechazado: cuenta pendiente de verificación",
+            ip=_ip,
+            username="-",
+        )
         raise APIError(
             403,
             "email_not_verified",
@@ -222,12 +267,16 @@ async def login(
 
     await _sessions.purge_expired()
     await open_session(response, user["id"], request)
-    flog.ok(
-        f"[login] OK usuario={user['username']}",
+    flog.audit(
+        "auth.login.succeeded",
+        resource_type="user",
+        resource_id=user["username"],
+        summary=f"[login] Sesión iniciada por {user['username']}",
         ip=_ip,
         username=user["username"],
     )
     return {"ok": True, "username": user["username"]}
+
 
 @router.get("/verify")
 async def verify_email(
@@ -247,6 +296,7 @@ async def verify_email(
         )
     await open_session(response, user["id"], request)
     return {"ok": True, "username": username}
+
 
 async def _cerrar_invitado_previo(ga_token: str | None) -> None:
     """Un invitado por navegador: el alta cierra y borra el anterior.
@@ -295,6 +345,7 @@ async def guest_login(
     )
     return {"ok": True, "username": guest_id}
 
+
 @router.post("/logout")
 async def logout(
     response: Response,
@@ -321,6 +372,7 @@ async def logout(
     clear_session_cookies(response)
     return {"ok": True}
 
+
 @router.post("/refresh")
 async def refresh_session(
     request: Request,
@@ -344,7 +396,9 @@ async def refresh_session(
     except RefreshReuse:
         # Dos clientes con el mismo refresh: uno de los dos lo robó y no hay
         # forma de saber cuál. La sesión ya ha caído dentro de rotate().
-        flog.warning("[auth] refresh reutilizado: sesión revocada", ip=_client_ip(request))
+        flog.warning(
+            "[auth] refresh reutilizado: sesión revocada", ip=_client_ip(request)
+        )
         clear_session_cookies(response)
         raise APIError(
             401, "session_revoked", "Sesión cerrada o revocada. Vuelve a entrar."
@@ -364,6 +418,7 @@ async def refresh_session(
     set_session_cookies(response, token, refresh=nuevo_refresh)
     return {"ok": True}
 
+
 @router.get("/sessions")
 async def list_sessions(
     user_id: str = Depends(require_session),
@@ -373,6 +428,7 @@ async def list_sessions(
     claims = decode_claims(ga_token) if ga_token else None
     actual = claims.session_id if claims else None
     return {"sessions": await _sessions.list_for_user(user_id, current_id=actual)}
+
 
 @router.delete("/sessions/{session_id}")
 async def revoke_session(
@@ -385,6 +441,7 @@ async def revoke_session(
             404, "not_found", "Sesión no encontrada", extra={"resource": "session"}
         )
     return {"ok": True}
+
 
 @router.delete("/sessions")
 async def revoke_other_sessions(

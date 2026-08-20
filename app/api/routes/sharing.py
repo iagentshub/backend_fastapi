@@ -30,6 +30,7 @@ from app.storage.prompt_storage import PromptStorage
 from app.storage.skill_storage import SkillStorage
 from app.storage.tool_storage import ToolStorage
 from app.storage.workflows import WorkflowStorage
+from app.utils import flog
 from app.utils.origin import is_linked_resource
 
 router = APIRouter(prefix="/api/sharing", tags=["sharing"])
@@ -400,6 +401,15 @@ async def share_resource_with_group(
             resource_id, group_id, ctx.user, ctx.group_id
         )
 
+    flog.audit(
+        "sharing.created",
+        resource_type=resource_type,
+        resource_id=resource_id,
+        details={"group_id": group_id, "cascaded_count": len(cascaded)},
+        summary=f"{ctx.user} compartió {resource_type}:{resource_id}",
+        username=ctx.user,
+    )
+
     return {"ok": True, "cascaded": cascaded}
 
 
@@ -447,7 +457,7 @@ async def unshare_resource_from_group(
                 "Solo el propietario del recurso o del grupo puede descompartirlo",
             )
 
-    await _shares.unshare_from_group(resource_type, resource_id, group_id)
+    unshared = await _shares.unshare_from_group(resource_type, resource_id, group_id)
 
     # Lo que entró con el recurso sale con él: sin esto, el usuario cree haber
     # revocado el acceso —el agente ya no aparece— mientras sus skills y sus
@@ -458,5 +468,19 @@ async def unshare_resource_from_group(
         removed, kept = await _cascade_unshare_agent(resource_id, group_id)
     elif resource_type == "workflow":
         removed, kept = await _cascade_unshare_workflow(resource_id, group_id)
+
+    if unshared:
+        flog.audit(
+            "sharing.revoked",
+            resource_type=resource_type,
+            resource_id=resource_id,
+            details={
+                "group_id": group_id,
+                "uncascaded_count": len(removed),
+                "kept_count": len(kept),
+            },
+            summary=f"{ctx.user} revocó el acceso a {resource_type}:{resource_id}",
+            username=ctx.user,
+        )
 
     return {"ok": True, "uncascaded": removed, "kept": kept}

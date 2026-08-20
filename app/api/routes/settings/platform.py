@@ -4,7 +4,6 @@
 Flutter el límite de subida en vez de llevar su propia copia del número.
 """
 
-
 from __future__ import annotations
 
 from typing import Optional
@@ -14,11 +13,7 @@ from pydantic import BaseModel
 
 from app.api.routes.auth import require_admin
 from app.api.routes.settings._router import router
-from app.api.routes.settings._shared import (
-    VALID_THEMES,
-    _get_prefs,
-    _save_prefs,
-)
+from app.api.routes.settings._shared import VALID_THEMES
 from app.errors import APIError
 from app.services.platform_settings import (
     _VALID_REGISTRATION,
@@ -29,20 +24,26 @@ from app.services.platform_settings import (
 
 class AdminSettingsUpdate(BaseModel):
     log_retention_days: Optional[int] = None
+    audit_log_retention_days: Optional[int] = None
+
 
 @router.get("/admin")
-async def get_admin_settings(username: str = Depends(require_admin)) -> dict:
-    """Devuelve la configuración exclusiva de admin (p.ej. retención de logs)."""
-    prefs = await _get_prefs(username)
-    return {"log_retention_days": int(prefs.get("log_retention_days", 30))}
+async def get_admin_settings(_: str = Depends(require_admin)) -> dict:
+    """Alias histórico del subconjunto global de retención."""
+    cfg = _read_platform_cfg()
+    return {
+        "log_retention_days": int(cfg.get("log_retention_days", 30)),
+        "audit_log_retention_days": int(cfg.get("audit_log_retention_days", 365)),
+    }
+
 
 @router.put("/admin")
 async def update_admin_settings(
     body: AdminSettingsUpdate,
-    username: str = Depends(require_admin),
+    _: str = Depends(require_admin),
 ) -> dict:
-    """Actualiza la configuración exclusiva de admin."""
-    prefs = await _get_prefs(username)
+    """Actualiza el mismo estado global que usa la purga y edita Flutter."""
+    cfg = _read_platform_cfg()
     if body.log_retention_days is not None:
         if not (1 <= body.log_retention_days <= 365):
             raise APIError(
@@ -51,9 +52,22 @@ async def update_admin_settings(
                 "log_retention_days debe estar entre 1 y 365",
                 extra={"field": "log_retention_days"},
             )
-        prefs["log_retention_days"] = body.log_retention_days
-    await _save_prefs(username, prefs)
-    return {"log_retention_days": int(prefs.get("log_retention_days", 30))}
+        cfg["log_retention_days"] = body.log_retention_days
+    if body.audit_log_retention_days is not None:
+        if not (1 <= body.audit_log_retention_days <= 3650):
+            raise APIError(
+                422,
+                "invalid_field",
+                "audit_log_retention_days debe estar entre 1 y 3650",
+                extra={"field": "audit_log_retention_days"},
+            )
+        cfg["audit_log_retention_days"] = body.audit_log_retention_days
+    _write_platform_cfg(cfg)
+    return {
+        "log_retention_days": int(cfg.get("log_retention_days", 30)),
+        "audit_log_retention_days": int(cfg.get("audit_log_retention_days", 365)),
+    }
+
 
 class PlatformConfigUpdate(BaseModel):
     billing_enabled: Optional[bool] = None
@@ -66,6 +80,7 @@ class PlatformConfigUpdate(BaseModel):
     users_can_configure_theme: Optional[bool] = None
     default_theme: Optional[str] = None
     log_retention_days: Optional[int] = None
+    audit_log_retention_days: Optional[int] = None
     landing_enabled: Optional[bool] = None
     stress_max_concurrency: Optional[int] = None
     oauth_google_enabled: Optional[bool] = None
@@ -74,6 +89,7 @@ class PlatformConfigUpdate(BaseModel):
     oauth_github_enabled: Optional[bool] = None
     splash_cycles: Optional[int] = None
     splash_end_on_logo: Optional[bool] = None
+
 
 @router.get("/platform/public")
 async def get_platform_config_public() -> dict:
@@ -118,10 +134,12 @@ async def get_platform_config_public() -> dict:
         "max_request_bytes": cfg.get("max_request_bytes", 0),
     }
 
+
 @router.get("/platform")
 async def get_platform_config(_: str = Depends(require_admin)) -> dict:
     """Devuelve la configuración global de la plataforma (solo admin)."""
     return _read_platform_cfg()
+
 
 @router.put("/platform")
 async def update_platform_config(
@@ -175,6 +193,15 @@ async def update_platform_config(
             "invalid_field",
             "log_retention_days debe estar entre 1 y 365",
             extra={"field": "log_retention_days"},
+        )
+    if "audit_log_retention_days" in update and not (
+        1 <= update["audit_log_retention_days"] <= 3650
+    ):
+        raise APIError(
+            422,
+            "invalid_field",
+            "audit_log_retention_days debe estar entre 1 y 3650",
+            extra={"field": "audit_log_retention_days"},
         )
     # Solo un default de UI (prefill del slider "Concurrencia máx" en Centinel)
     # — no limita lo que un test concreto puede pedir, así que no está ligado

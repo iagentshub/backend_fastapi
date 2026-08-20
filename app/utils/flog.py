@@ -4,10 +4,12 @@ from __future__ import annotations
 
 import asyncio
 import atexit
+import json
 import logging
 import logging.handlers
 import os
 import queue
+import re
 import sqlite3
 import sys
 import threading
@@ -15,6 +17,7 @@ import time
 from contextvars import ContextVar, Token
 from datetime import datetime
 from pathlib import Path
+from typing import Any, Mapping
 
 # La configuración de la escritura por lotes vive con el resto de la del
 # backend. `app/config/logging.py` no importa nada del proyecto justamente para
@@ -46,6 +49,13 @@ _request_log_context: ContextVar[tuple[str, str] | None] = ContextVar(
     "request_log_context", default=None
 )
 
+_AUDIT_OUTCOMES = frozenset({"SUCCESS", "DENIED", "FAILURE"})
+_AUDIT_ACTION_RE = re.compile(r"^[a-z0-9]+(?:[._-][a-z0-9]+)*$")
+_AUDIT_FORBIDDEN_DETAIL_KEYS = frozenset(
+    {"password", "token", "secret", "api_key", "apikey", "prompt", "content"}
+)
+_AUDIT_DETAILS_MAX_CHARS = 8192
+
 
 def set_request_context(*, ip: str, username: str) -> Token:
     """Asocia origen y actor verificados a la petición en curso."""
@@ -68,11 +78,12 @@ def _extra(ip: str | None, username: str | None, source: str) -> dict[str, str]:
         "source": source or "BE",
     }
 
+
 def _log_schema() -> str:
     """El DDL de ``app_logs``, extraído del esquema real. Aquí no vive una copia.
 
-    Había una segunda definición de la tabla en este módulo, con dos índices
-    frente a los seis de ``schema.py``. No rompía nada —los ``CREATE INDEX IF
+    Había una segunda definición de la tabla en este módulo, con menos índices
+    que el esquema canónico. No rompía nada —los ``CREATE INDEX IF
     NOT EXISTS`` del esquema principal se ejecutan después y completan lo que
     falta—, pero era la copia de flog la que creaba la tabla en un arranque
     limpio (el handler se construye al importar, antes de ``init_db``), y los
@@ -197,7 +208,30 @@ class _DBHandler(logging.Handler):
         try:
             conn = sqlite3.connect(self._db, check_same_thread=False)
             conn.execute("PRAGMA journal_mode=WAL")
-            conn.executescript(_log_schema())
+            schema = _log_schema()
+            conn.execute(schema.split(";", 1)[0])
+            # CREATE TABLE IF NOT EXISTS no amplía una tabla antigua. flog se
+            # construye antes que init_db, así que debe poder escribir también
+            # durante el arranque que aplica la migración 32.
+            columns = {
+                str(row[1]) for row in conn.execute("PRAGMA table_info(app_logs)")
+            }
+            for column, definition in {
+                "category": "TEXT NOT NULL DEFAULT 'DIAGNOSTIC'",
+                "action": "TEXT",
+                "resource_type": "TEXT",
+                "resource_id": "TEXT",
+                "outcome": "TEXT",
+                "details_json": "TEXT",
+            }.items():
+                if column not in columns:
+                    conn.execute(
+                        f"ALTER TABLE app_logs ADD COLUMN {column} {definition}"
+                    )
+            # Con las columnas ya presentes, aplica también todos los índices
+            # declarados en el esquema canónico.
+            conn.executescript(schema)
+            conn.commit()
             conn.close()
         except Exception:  # noqa: BLE001
             # Ancho a propósito: es el logger arrancando. Cualquier fallo aquí
@@ -236,7 +270,25 @@ class _DBHandler(logging.Handler):
                 import asyncpg  # type: ignore[import]
 
                 async def _open():
-                    return await asyncpg.connect(os.environ.get("DATABASE_URL", ""))
+                    conn = await asyncpg.connect(os.environ.get("DATABASE_URL", ""))
+                    from app.storage.schema import tabla_ddl
+
+                    schema = tabla_ddl("app_logs", "pg")
+                    await conn.execute(schema.split(";", 1)[0])
+                    for column, definition in {
+                        "category": "TEXT NOT NULL DEFAULT 'DIAGNOSTIC'",
+                        "action": "TEXT",
+                        "resource_type": "TEXT",
+                        "resource_id": "TEXT",
+                        "outcome": "TEXT",
+                        "details_json": "TEXT",
+                    }.items():
+                        await conn.execute(
+                            "ALTER TABLE app_logs ADD COLUMN IF NOT EXISTS "
+                            f"{column} {definition}"
+                        )
+                    await conn.execute(schema)
+                    return conn
 
                 self._conn = self._run_pg(_open())
             else:
@@ -276,6 +328,12 @@ class _DBHandler(logging.Handler):
             record.levelname,
             getattr(record, "source", "BE") or "BE",
             record.getMessage(),
+            getattr(record, "category", "DIAGNOSTIC") or "DIAGNOSTIC",
+            getattr(record, "action", None),
+            getattr(record, "resource_type", None),
+            getattr(record, "resource_id", None),
+            getattr(record, "outcome", None),
+            getattr(record, "details_json", None),
         )
 
     def _run_pg(self, coro, timeout: float = 10.0):
@@ -285,12 +343,14 @@ class _DBHandler(logging.Handler):
 
     def _sql(self) -> str:
         if self._db:
-            marcadores = ", ".join(["?"] * 8)
+            marcadores = ", ".join(["?"] * 14)
         else:
             # asyncpg usa $1..$N posicionales, no %s.
-            marcadores = ", ".join(f"${i}" for i in range(1, 9))
+            marcadores = ", ".join(f"${i}" for i in range(1, 15))
         return (
-            "INSERT INTO app_logs (ts, date, time, ip, username, level, source, summary) "
+            "INSERT INTO app_logs (ts, date, time, ip, username, level, source, "
+            "summary, category, action, resource_type, resource_id, outcome, "
+            "details_json) "
             f"VALUES ({marcadores})"
         )
 
@@ -357,6 +417,7 @@ class _DBHandler(logging.Handler):
             if (
                 len(self._buffer) >= self._batch_size
                 or record.levelno >= _cfg.LOG_IMMEDIATE_LEVEL
+                or getattr(record, "category", "DIAGNOSTIC") == "AUDIT"
             ):
                 self._flush_locked()
 
@@ -536,3 +597,69 @@ def error(
     **kw,
 ) -> None:
     _L.error(msg, *a, extra=_extra(ip, username, source), **kw)
+
+
+def _validate_audit_details(value: Any, *, path: str = "details") -> None:
+    """Rechaza secretos y formas no JSON antes de persistir metadatos."""
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return
+    if isinstance(value, Mapping):
+        for raw_key, item in value.items():
+            key = str(raw_key).strip().lower()
+            if any(forbidden in key for forbidden in _AUDIT_FORBIDDEN_DETAIL_KEYS):
+                raise ValueError(
+                    f"Campo sensible no permitido en auditoría: {path}.{key}"
+                )
+            _validate_audit_details(item, path=f"{path}.{key}")
+        return
+    if isinstance(value, (list, tuple)):
+        for index, item in enumerate(value):
+            _validate_audit_details(item, path=f"{path}[{index}]")
+        return
+    raise TypeError(f"Valor no serializable en auditoría: {path}")
+
+
+def audit(
+    action: str,
+    *,
+    resource_type: str | None = None,
+    resource_id: str | None = None,
+    outcome: str = "SUCCESS",
+    details: Mapping[str, Any] | None = None,
+    summary: str | None = None,
+    ip: str | None = None,
+    username: str | None = None,
+) -> None:
+    """Registra un evento sensible estructurado dentro de ``app_logs``.
+
+    La categoría AUDIT obliga al handler a volcar el lote en cuanto procesa el
+    evento. El detalle se limita a JSON pequeño y rechaza claves que puedan
+    contener secretos o contenido completo.
+    """
+    normalized_action = action.strip().lower()
+    if not _AUDIT_ACTION_RE.fullmatch(normalized_action):
+        raise ValueError(f"Acción de auditoría inválida: {action!r}")
+    normalized_outcome = outcome.strip().upper()
+    if normalized_outcome not in _AUDIT_OUTCOMES:
+        raise ValueError(f"Resultado de auditoría inválido: {outcome!r}")
+    _validate_audit_details(details)
+    details_json = (
+        json.dumps(details, ensure_ascii=False, separators=(",", ":"), sort_keys=True)
+        if details
+        else None
+    )
+    if details_json and len(details_json) > _AUDIT_DETAILS_MAX_CHARS:
+        raise ValueError("El detalle de auditoría supera el límite de 8192 caracteres")
+    extra: dict[str, Any] = _extra(ip, username, "BE")
+    extra.update(
+        {
+            "category": "AUDIT",
+            "action": normalized_action,
+            "resource_type": resource_type or None,
+            "resource_id": resource_id or None,
+            "outcome": normalized_outcome,
+            "details_json": details_json,
+        }
+    )
+    level = _OK if normalized_outcome == "SUCCESS" else logging.WARNING
+    _L.log(level, summary or normalized_action, extra=extra)

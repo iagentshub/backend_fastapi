@@ -7,15 +7,21 @@ CREATE TABLE IF NOT EXISTS app_logs (
     username TEXT    NOT NULL DEFAULT '-',
     level    TEXT    NOT NULL,
     source   TEXT    NOT NULL DEFAULT 'BE',
-    summary  TEXT    NOT NULL
+    summary  TEXT    NOT NULL,
+    category TEXT    NOT NULL DEFAULT 'DIAGNOSTIC',
+    action   TEXT,
+    resource_type TEXT,
+    resource_id   TEXT,
+    outcome       TEXT,
+    details_json  TEXT
 );
--- Dos índices, no seis. El visor (app/api/routes/logs.py) siempre ordena por
--- `ts DESC` con LIMIT, y filtra `ip`, `username` y `summary` con LIKE '%x%':
--- el comodín inicial impide usar un B-tree, así que sus índices no se podían
--- elegir nunca. Los de `level` y `source` sí se elegían, y ahí estaba el daño:
--- al entrar por ellos se pierde el orden de `ts` y hay que ordenar el
--- resultado entero (18 ms para filtrar por fuente, frente a 0,06 con este
--- par). Medido sobre 200.000 filas con ERROR al 1%: la escritura baja un 66% y
--- la base ocupa un 27% menos. Ver docs/adr/007-sql-en-ficheros.md.
+-- Los dos índices base conservan el orden de página. `ip`, `username` y
+-- `summary` se filtran con LIKE '%x%', que no aprovecha un B-tree. Auditoría
+-- añade dos índices compuestos para sus filtros exactos. El de `action` es
+-- parcial para no indexar el NULL de cada línea de diagnóstico. Ver
+-- docs/adr/007-sql-en-ficheros.md para la retirada de los índices antiguos.
 CREATE INDEX IF NOT EXISTS idx_al_ts       ON app_logs(ts DESC);
 CREATE INDEX IF NOT EXISTS idx_al_level_ts ON app_logs(level, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_al_category_ts ON app_logs(category, ts DESC);
+CREATE INDEX IF NOT EXISTS idx_al_action_ts   ON app_logs(action, ts DESC)
+WHERE action IS NOT NULL;

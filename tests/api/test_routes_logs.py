@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -21,7 +21,13 @@ CREATE TABLE IF NOT EXISTS app_logs (
     username TEXT    NOT NULL DEFAULT '-',
     level    TEXT    NOT NULL,
     source   TEXT    NOT NULL DEFAULT 'BE',
-    summary  TEXT    NOT NULL
+    summary  TEXT    NOT NULL,
+    category TEXT    NOT NULL DEFAULT 'DIAGNOSTIC',
+    action TEXT,
+    resource_type TEXT,
+    resource_id TEXT,
+    outcome TEXT,
+    details_json TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_al_ts ON app_logs(ts DESC);
 """
@@ -52,13 +58,35 @@ def _insert(
     level: str = "INFO",
     source: str = "BE",
     summary: str = "test entry",
+    category: str = "DIAGNOSTIC",
+    action: str | None = None,
+    resource_type: str | None = None,
+    resource_id: str | None = None,
+    outcome: str | None = None,
+    details_json: str | None = None,
 ) -> None:
     ts = datetime.strptime(f"{date} {time_}", "%Y-%m-%d %H:%M:%S").timestamp()
     conn = sqlite3.connect(str(db))
     conn.execute(
-        "INSERT INTO app_logs (ts, date, time, ip, username, level, source, summary) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-        (ts, date, time_, ip, username, level, source, summary),
+        "INSERT INTO app_logs (ts, date, time, ip, username, level, source, summary, "
+        "category, action, resource_type, resource_id, outcome, details_json) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        (
+            ts,
+            date,
+            time_,
+            ip,
+            username,
+            level,
+            source,
+            summary,
+            category,
+            action,
+            resource_type,
+            resource_id,
+            outcome,
+            details_json,
+        ),
     )
     conn.commit()
     conn.close()
@@ -87,7 +115,12 @@ def test_list_logs_unauthenticated(client):
 
 def test_list_logs_forbidden_non_admin(client, reset_rate_limiter):
     client.post(
-        "/api/auth/register", json={"username": "stduser", "email": "std@example.com", "password": "pass1234"}
+        "/api/auth/register",
+        json={
+            "username": "stduser",
+            "email": "std@example.com",
+            "password": "pass1234",
+        },
     )
     client.post(
         "/api/auth/login", json={"email": "std@example.com", "password": "pass1234"}
@@ -146,6 +179,31 @@ def test_list_logs_response_fields(admin_client, log_db):
     assert item["level"] == "WARNING"
     assert item["source"] == "FE"
     assert item["summary"] == "test action"
+    assert item["category"] == "DIAGNOSTIC"
+    assert item["action"] is None
+
+
+def test_filter_structured_audit_fields(admin_client, log_db):
+    _insert(
+        log_db,
+        date="2026-07-01",
+        category="AUDIT",
+        action="admin.impersonation.started",
+        resource_type="user",
+        resource_id="alice",
+        outcome="SUCCESS",
+        details_json='{"reason":"support"}',
+    )
+    _insert(log_db, date="2026-07-01", summary="diagnóstico")
+
+    response = admin_client.get(
+        "/api/admin/logs?category=audit&action=admin.impersonation.started"
+        "&resource_type=user&resource_id=alice&outcome=success"
+    )
+    assert response.status_code == 200
+    body = response.json()
+    assert body["total"] == 1
+    assert body["items"][0]["details_json"] == '{"reason":"support"}'
 
 
 # ── Filtro: date_from / date_to ───────────────────────────────────────────────
@@ -388,7 +446,11 @@ def test_summary_multiple_days_sorted_desc(admin_client, log_db):
 def test_summary_forbidden(client, reset_rate_limiter):
     client.post(
         "/api/auth/register",
-        json={"username": "stdsummary", "email": "stdsum@example.com", "password": "pass1234"},
+        json={
+            "username": "stdsummary",
+            "email": "stdsum@example.com",
+            "password": "pass1234",
+        },
     )
     client.post(
         "/api/auth/login", json={"email": "stdsum@example.com", "password": "pass1234"}
@@ -421,7 +483,20 @@ def test_export_returns_csv(admin_client, log_db):
 def test_export_csv_has_all_columns(admin_client, log_db):
     _insert(log_db, date="2026-07-01", summary="test")
     header = admin_client.get("/api/admin/logs/export").text.strip().split("\n")[0]
-    for col in ("Fecha", "Hora", "IP", "Usuario", "Nivel", "Fuente"):
+    for col in (
+        "Fecha",
+        "Hora",
+        "IP",
+        "Usuario",
+        "Nivel",
+        "Fuente",
+        "Categoría",
+        "Evento",
+        "Tipo de recurso",
+        "ID de recurso",
+        "Resultado",
+        "Detalle JSON",
+    ):
         assert col in header
 
 
@@ -479,7 +554,11 @@ def test_client_log_unauthenticated(client):
 def test_client_log_forbidden(client, reset_rate_limiter):
     client.post(
         "/api/auth/register",
-        json={"username": "stdclient", "email": "stdcl@example.com", "password": "pass1234"},
+        json={
+            "username": "stdclient",
+            "email": "stdcl@example.com",
+            "password": "pass1234",
+        },
     )
     client.post(
         "/api/auth/login", json={"email": "stdcl@example.com", "password": "pass1234"}
@@ -527,3 +606,23 @@ def test_purge_no_db_returns_zero(tmp_path, monkeypatch):
 
     monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path))
     assert asyncio.run(purge_old_logs(retention_days=7)) == 0
+
+
+def test_purge_uses_longer_retention_for_audit(log_db):
+    from app.api.routes.logs import purge_old_logs
+
+    old_diagnostic = (datetime.now() - timedelta(days=60)).strftime("%Y-%m-%d")
+    recent_audit = (datetime.now() - timedelta(days=100)).strftime("%Y-%m-%d")
+    old_audit = (datetime.now() - timedelta(days=400)).strftime("%Y-%m-%d")
+    _insert(log_db, date=old_diagnostic, summary="diag")
+    _insert(log_db, date=recent_audit, category="AUDIT", summary="keep audit")
+    _insert(log_db, date=old_audit, category="AUDIT", summary="purge audit")
+
+    asyncio.run(purge_old_logs(retention_days=30, audit_retention_days=365))
+
+    conn = sqlite3.connect(str(log_db))
+    summaries = {row[0] for row in conn.execute("SELECT summary FROM app_logs")}
+    conn.close()
+    assert "diag" not in summaries
+    assert "purge audit" not in summaries
+    assert "keep audit" in summaries

@@ -63,6 +63,54 @@ async def _chat_message_interrupted_pg(conn: Any) -> None:
     )
 
 
+async def _app_logs_structured_audit_sqlite(conn: Any) -> None:
+    """Añade metadatos auditables sin separar el registro central."""
+    columns = {
+        str(row[1])
+        for row in await conn.execute_fetchall("PRAGMA table_info(app_logs)")
+    }
+    definitions = {
+        "category": "TEXT NOT NULL DEFAULT 'DIAGNOSTIC'",
+        "action": "TEXT",
+        "resource_type": "TEXT",
+        "resource_id": "TEXT",
+        "outcome": "TEXT",
+        "details_json": "TEXT",
+    }
+    for column, definition in definitions.items():
+        if column not in columns:
+            await conn.execute(f"ALTER TABLE app_logs ADD COLUMN {column} {definition}")
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_al_category_ts ON app_logs(category, ts DESC)"
+    )
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_al_action_ts ON app_logs(action, ts DESC) "
+        "WHERE action IS NOT NULL"
+    )
+
+
+async def _app_logs_structured_audit_pg(conn: Any) -> None:
+    definitions = {
+        "category": "TEXT NOT NULL DEFAULT 'DIAGNOSTIC'",
+        "action": "TEXT",
+        "resource_type": "TEXT",
+        "resource_id": "TEXT",
+        "outcome": "TEXT",
+        "details_json": "TEXT",
+    }
+    for column, definition in definitions.items():
+        await conn.execute(
+            f"ALTER TABLE app_logs ADD COLUMN IF NOT EXISTS {column} {definition}"
+        )
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_al_category_ts ON app_logs(category, ts DESC)"
+    )
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_al_action_ts ON app_logs(action, ts DESC) "
+        "WHERE action IS NOT NULL"
+    )
+
+
 async def _remove_content_activation_sqlite(conn: Any) -> None:
     """Retira el borrado suave de skills, prompts y tools.
 

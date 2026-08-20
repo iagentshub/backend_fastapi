@@ -98,6 +98,33 @@ async def test_chat_interrupted_migration_updates_existing_messages(tmp_path):
     assert row[0][0] == 0
 
 
+async def test_app_logs_structured_audit_migration_is_idempotent(tmp_path):
+    from app.storage.migrations.steps.misc import _app_logs_structured_audit_sqlite
+
+    async with aiosqlite.connect(tmp_path / "logs.db") as conn:
+        await conn.execute(
+            "CREATE TABLE app_logs (id INTEGER PRIMARY KEY, ts REAL NOT NULL)"
+        )
+        await _app_logs_structured_audit_sqlite(conn)
+        await _app_logs_structured_audit_sqlite(conn)
+        columns = await conn.execute_fetchall("PRAGMA table_info(app_logs)")
+        indexes = await conn.execute_fetchall("PRAGMA index_list(app_logs)")
+
+    names = [str(row[1]) for row in columns]
+    assert names.count("category") == 1
+    assert set(names) >= {
+        "action",
+        "resource_type",
+        "resource_id",
+        "outcome",
+        "details_json",
+    }
+    assert {str(row[1]) for row in indexes} >= {
+        "idx_al_category_ts",
+        "idx_al_action_ts",
+    }
+
+
 async def test_knowledge_checksum_migration_backfills_objects_and_pack_bytes(tmp_path):
     from app.storage.migrations.steps.knowledge import _knowledge_item_checksums_sqlite
 

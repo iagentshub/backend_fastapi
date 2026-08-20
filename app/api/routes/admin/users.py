@@ -39,9 +39,7 @@ async def admin_list_users(
 ) -> list[dict[str, Any]]:
     users = await list_users()
     async with open_db() as conn:
-        token_rows = await conn.fetchall(
-            sql("queries/admin_users:tokens_per_owner")
-        )
+        token_rows = await conn.fetchall(sql("queries/admin_users:tokens_per_owner"))
     token_map = {r[0]: {"tokens_in": r[1], "tokens_out": r[2]} for r in token_rows}
     for u in users:
         tokens = token_map.get(u.get("id"), {"tokens_in": 0, "tokens_out": 0})
@@ -113,13 +111,46 @@ async def admin_patch_user(
             # botón. La fila de `users` no guarda hoy un idioma de interfaz, así
             # que se queda en el default hasta que exista ese campo.
             send_account_status_email(email, bool(updates["is_active"]), base_url)
+    if "role" in updates:
+        flog.audit(
+            "admin.user.role_changed",
+            resource_type="user",
+            resource_id=username,
+            details={
+                "from": target.get("role") if target else None,
+                "to": updates["role"],
+            },
+            summary=f"Rol de {username} actualizado por un administrador",
+            username=admin,
+        )
+    if "is_active" in updates:
+        flog.audit(
+            "admin.user.status_changed",
+            resource_type="user",
+            resource_id=username,
+            details={
+                "from": bool(target.get("is_active", 1)) if target else None,
+                "to": bool(updates["is_active"]),
+            },
+            summary=f"Estado de {username} actualizado por un administrador",
+            username=admin,
+        )
+    if new_pw:
+        flog.audit(
+            "admin.user.credential_rotated",
+            resource_type="user",
+            resource_id=username,
+            details={"credential_rotated": True},
+            summary=f"Credencial de {username} renovada por un administrador",
+            username=admin,
+        )
     return {"ok": True}
 
 
 @admin_router.post("/users")
 async def admin_create_user(
     body: AdminUserCreateBody,
-    _: str = Depends(require_admin),
+    admin: str = Depends(require_admin),
 ) -> dict[str, Any]:
     """Crea un usuario directamente desde el panel de admin.
 
@@ -201,7 +232,14 @@ async def admin_create_user(
     except Exception as exc:
         raise APIError(500, "internal_error", "Error interno del servidor.") from exc
 
-    flog.ok(f"Admin creó usuario: {email} (rol={role})")
+    flog.audit(
+        "admin.user.created",
+        resource_type="user",
+        resource_id=username,
+        details={"role": role},
+        summary=f"Usuario {username} creado por un administrador",
+        username=admin,
+    )
     return {"ok": True, "username": username, "email": email, "role": role}
 
 
@@ -218,6 +256,13 @@ async def admin_delete_user(
         raise APIError(
             404, "not_found", "Usuario no encontrado", extra={"resource": "user"}
         )
+    flog.audit(
+        "admin.user.deleted",
+        resource_type="user",
+        resource_id=username,
+        summary=f"Usuario {username} eliminado por un administrador",
+        username=admin,
+    )
     return {"ok": True}
 
 
@@ -244,13 +289,16 @@ async def admin_impersonate(
             "No se puede impersonar una cuenta desactivada",
         )
 
-    # N3: registrar la impersonación para auditoría de seguridad
-    flog.warning(f"[admin] IMPERSONACIÓN: admin={admin!r} → usuario={username!r}")
-
     # Sesión nueva para el usuario impersonado, en su group personal
     # (group_id=username por defecto). Es una sesión propia y revocable: sale
     # en la lista del impersonado y cerrarla corta la impersonación.
     await open_session(response, target_user["id"], request)
 
-    flog.ok(f"[admin] Token de impersonación creado exitosamente para {username!r}")
+    flog.audit(
+        "admin.impersonation.started",
+        resource_type="user",
+        resource_id=username,
+        summary=f"{admin} inició una sesión de impersonación como {username}",
+        username=admin,
+    )
     return {"ok": True, "username": username}

@@ -9,7 +9,6 @@ se congela al importar el módulo y los tests reescriben `DATA_DIR` después.
 Ver la sección «La trampa» de CLAUDE.md.
 """
 
-
 from __future__ import annotations
 
 from app.config.session import REGISTRATION_MODES
@@ -34,6 +33,7 @@ _PLATFORM_DEFAULTS: dict = {
     "users_can_configure_theme": True,
     "default_theme": "dark-red",
     "log_retention_days": 30,
+    "audit_log_retention_days": 365,
     "stress_max_concurrency": 0,  # máx peticiones en vuelo simultáneo en Centinel (0=sin límite)
     # Si está activo, "/" muestra una landing de presentación del proyecto en
     # vez de redirigir directo a /login/. Pensado para el despliegue SaaS
@@ -75,6 +75,7 @@ _PLATFORM_DEFAULTS: dict = {
 
 _VALID_REGISTRATION = REGISTRATION_MODES
 
+
 def _read_platform_cfg() -> dict:
     import json as _json
 
@@ -104,6 +105,7 @@ def _read_platform_cfg() -> dict:
 
         cfg["max_request_bytes"] = configured_max_bytes()
     return cfg
+
 
 def _write_platform_cfg(cfg: dict) -> None:
     import json as _json

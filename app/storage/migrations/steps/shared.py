@@ -69,7 +69,10 @@ async def _resource_social_page_index(conn: Any) -> None:
     )
 
 async def _app_logs_index_diet(conn: Any) -> None:
-    """De seis índices a dos en la tabla más escrita del sistema.
+    """De seis índices históricos a los dos índices base del visor.
+
+    La migración 32 añade después los índices estructurados de auditoría; no
+    recupera ninguno de los índices de texto que este paso retira.
 
     El visor de logs siempre ordena por `ts DESC` con LIMIT, y filtra `ip` y
     `username` con LIKE '%x%' — el comodín inicial impide usar un B-tree, así

@@ -282,6 +282,36 @@ def test_db_handler_crea_fichero(tmp_path):
     assert db.exists()
 
 
+def test_db_handler_amplia_un_app_logs_antiguo_antes_de_crear_indices(tmp_path):
+    db = tmp_path / "logs.sqlite3"
+    conn = sqlite3.connect(str(db))
+    conn.execute(
+        "CREATE TABLE app_logs (id INTEGER PRIMARY KEY, ts REAL NOT NULL, "
+        "date TEXT NOT NULL, time TEXT NOT NULL, ip TEXT NOT NULL, "
+        "username TEXT NOT NULL, level TEXT NOT NULL, source TEXT NOT NULL, "
+        "summary TEXT NOT NULL)"
+    )
+    conn.close()
+
+    h = _DBHandler(db, batch_size=100, flush_interval=0)
+    h.emit(
+        _make_record(
+            logging.INFO,
+            "evento",
+            category="AUDIT",
+            action="sharing.created",
+            outcome="SUCCESS",
+        )
+    )
+
+    conn = sqlite3.connect(str(db))
+    row = conn.execute("SELECT category, action, outcome FROM app_logs").fetchone()
+    indexes = {item[1] for item in conn.execute("PRAGMA index_list(app_logs)")}
+    conn.close()
+    assert row == ("AUDIT", "sharing.created", "SUCCESS")
+    assert {"idx_al_category_ts", "idx_al_action_ts"} <= indexes
+
+
 def test_db_handler_inserta_fila(tmp_path):
     db = tmp_path / "logs.sqlite3"
     h = _DBHandler(db)
@@ -488,9 +518,13 @@ def test_lote_conserva_orden_y_contenido(tmp_path):
     db = tmp_path / "logs.sqlite3"
     h = _DBHandler(db, batch_size=10, flush_interval=0)
     for i in range(10):
-        h.emit(_make_record(logging.INFO, f"linea {i}", ip=f"10.0.0.{i}", username=f"u{i}"))
+        h.emit(
+            _make_record(logging.INFO, f"linea {i}", ip=f"10.0.0.{i}", username=f"u{i}")
+        )
     conn = sqlite3.connect(str(db))
-    filas = conn.execute("SELECT summary, ip, username FROM app_logs ORDER BY ts").fetchall()
+    filas = conn.execute(
+        "SELECT summary, ip, username FROM app_logs ORDER BY ts"
+    ).fetchall()
     conn.close()
     assert len(filas) == 10
     for i, (resumen, ip, usuario) in enumerate(filas):
@@ -524,6 +558,44 @@ def test_error_no_espera_al_lote(tmp_path):
     assert _filas(db) == [], "el INFO no debería haber forzado la escritura"
     h.emit(_make_record(logging.ERROR, "algo explotó"))
     assert _filas(db) == ["rutina", "algo explotó"]
+
+
+def test_audit_es_estructurado_y_no_espera_al_lote(tmp_path):
+    db = tmp_path / "logs.sqlite3"
+    h = _DBHandler(db, batch_size=100, flush_interval=0)
+    h.emit(
+        _make_record(
+            logging.INFO,
+            "impersonación iniciada",
+            ip="1.2.3.4",
+            username="admin",
+            category="AUDIT",
+            action="admin.impersonation.started",
+            resource_type="user",
+            resource_id="alice",
+            outcome="SUCCESS",
+            details_json='{"reason":"support"}',
+        )
+    )
+    conn = sqlite3.connect(str(db))
+    row = conn.execute(
+        "SELECT category, action, resource_type, resource_id, outcome, details_json "
+        "FROM app_logs"
+    ).fetchone()
+    conn.close()
+    assert row == (
+        "AUDIT",
+        "admin.impersonation.started",
+        "user",
+        "alice",
+        "SUCCESS",
+        '{"reason":"support"}',
+    )
+
+
+def test_audit_rechaza_secretos_en_details():
+    with pytest.raises(ValueError, match="Campo sensible"):
+        flog_mod.audit("auth.login.succeeded", details={"access_token_hash": "no"})
 
 
 def test_close_vuelca_lo_pendiente(tmp_path):

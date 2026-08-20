@@ -334,6 +334,7 @@ def test_get_admin_settings_default(admin_client):
     r = admin_client.get("/api/settings/admin")
     assert r.status_code == 200
     assert r.json()["log_retention_days"] == 30
+    assert r.json()["audit_log_retention_days"] == 365
 
 
 # ---------------------------------------------------------------------------
@@ -346,6 +347,17 @@ def test_put_admin_settings_valid(admin_client):
     r = admin_client.put("/api/settings/admin", json={"log_retention_days": 90})
     assert r.status_code == 200
     assert r.json()["log_retention_days"] == 90
+
+
+def test_put_admin_settings_audit_retention(admin_client):
+    r = admin_client.put("/api/settings/admin", json={"audit_log_retention_days": 730})
+    assert r.status_code == 200
+    assert r.json()["audit_log_retention_days"] == 730
+
+
+def test_put_admin_settings_audit_retention_above_max_invalid(admin_client):
+    r = admin_client.put("/api/settings/admin", json={"audit_log_retention_days": 3651})
+    assert r.status_code == 422
 
 
 def test_put_admin_settings_min_value(admin_client):
@@ -558,9 +570,7 @@ def test_put_platform_config_oauth_github_toggle_hides_button_despite_client_id(
     credenciales — pero no debe tocar los endpoints /api/auth/github/*."""
     from unittest.mock import patch
 
-    r = admin_client.put(
-        "/api/settings/platform", json={"oauth_github_enabled": False}
-    )
+    r = admin_client.put("/api/settings/platform", json={"oauth_github_enabled": False})
     assert r.status_code == 200
     assert r.json()["oauth_github_enabled"] is False
 
@@ -681,9 +691,7 @@ def test_notification_banners_requires_admin(client):
 
 
 def test_admin_creates_and_lists_banner(admin_client):
-    r = admin_client.post(
-        "/api/settings/notification-banners", json=_banner_payload()
-    )
+    r = admin_client.post("/api/settings/notification-banners", json=_banner_payload())
     assert r.status_code == 200
     created = r.json()
     assert created["message"]["es"] == "Mantenimiento el viernes"
@@ -729,9 +737,7 @@ def test_admin_updates_and_deletes_banner(admin_client):
     assert updated.status_code == 200
     assert updated.json()["message"]["es"] == "Actualizado"
 
-    deleted = admin_client.delete(
-        f"/api/settings/notification-banners/{banner_id}"
-    )
+    deleted = admin_client.delete(f"/api/settings/notification-banners/{banner_id}")
     assert deleted.status_code == 200
     listed = admin_client.get("/api/settings/notification-banners").json()
     assert not any(b["id"] == banner_id for b in listed)
@@ -778,7 +784,9 @@ def test_active_banners_filters_by_date_and_language(admin_client, client):
 
     client.put("/api/settings", json={"language": "en"})
     active_en = client.get("/api/settings/notification-banners/active")
-    assert active_en.json() == [{"id": current["id"], "message": "Maintenance on Friday"}]
+    assert active_en.json() == [
+        {"id": current["id"], "message": "Maintenance on Friday"}
+    ]
 
 
 def test_platform_public_splash_defaults(client):

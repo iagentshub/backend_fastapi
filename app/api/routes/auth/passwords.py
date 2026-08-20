@@ -4,7 +4,6 @@ Cambiar la contraseña revoca la sesión (`_touch_password_changed_at`): sin eso
 un refresh robado sigue siendo válido después del cambio.
 """
 
-
 from __future__ import annotations
 
 from typing import Any
@@ -33,6 +32,7 @@ from app.errors import APIError
 from app.middleware.locale import get_locale
 from app.middleware.ratelimit import RateLimiter
 from app.services.email import send_reset_email
+from app.utils import flog
 from app.utils.net import client_ip as _client_ip
 from app.utils.validation import is_valid_email
 
@@ -42,13 +42,16 @@ router = APIRouter()
 class EmailBody(BaseModel):
     email: str | None = Field(default=None, max_length=254)
 
+
 class ResetPasswordBody(BaseModel):
     token: str | None = Field(default=None, max_length=512)
     password: str | None = Field(default=None, max_length=128)
 
+
 class ChangePasswordBody(BaseModel):
     current_password: str | None = Field(default=None, max_length=128)
     new_password: str | None = Field(default=None, max_length=128)
+
 
 _forgot_limiter = RateLimiter(
     calls=RATE_FORGOT_CALLS,
@@ -66,6 +69,7 @@ _reset_limiter = RateLimiter(
     name="auth-reset",
 )
 
+
 @router.post("/forgot-password")
 async def forgot_password(
     body: EmailBody,
@@ -81,6 +85,7 @@ async def forgot_password(
         send_reset_email(email, token, base_url, lang=get_locale())
     # Respuesta siempre igual para no revelar si el email existe
     return {"ok": True}
+
 
 @router.post("/reset-password")
 async def reset_password(
@@ -100,6 +105,7 @@ async def reset_password(
     if not await consume_reset_token(token, new_password):
         raise APIError(400, "invalid_reset_link", "Enlace inválido o expirado")
     return {"ok": True}
+
 
 @router.post("/change-password")
 async def change_password(
@@ -131,5 +137,14 @@ async def change_password(
     # fichero en vez de vaciarlo, lo que hacía que el siguiente arranque
     # regenerase la contraseña recién elegida.
     await set_own_password(username, new_pw)
+
+    audit_username = str(user.get("username") or username)
+    flog.audit(
+        "auth.password.changed",
+        resource_type="user",
+        resource_id=audit_username,
+        summary=f"Contraseña cambiada por {audit_username}",
+        username=audit_username,
+    )
 
     return {"ok": True}

@@ -42,6 +42,8 @@ from app.storage.migrations.steps.knowledge import (
     _remove_obsolete_knowledge_pack_items_sqlite,
 )
 from app.storage.migrations.steps.misc import (
+    _app_logs_structured_audit_pg,
+    _app_logs_structured_audit_sqlite,
     _chat_message_interrupted_pg,
     _chat_message_interrupted_sqlite,
     _connection_provider_accounts_pg,
@@ -118,6 +120,7 @@ MIGRATION_PAIRS: tuple[MigrationPair, ...] = (
     MigrationPair(29, "unused_indexes_audit", _unused_indexes_audit_sqlite, _unused_indexes_audit_pg),
     MigrationPair(30, "chat_message_interrupted", _chat_message_interrupted_sqlite, _chat_message_interrupted_pg),
     MigrationPair(31, "remove_content_activation", _remove_content_activation_sqlite, _remove_content_activation_pg),
+    MigrationPair(32, "app_logs_structured_audit", _app_logs_structured_audit_sqlite, _app_logs_structured_audit_pg),
 )
 
 __all__ = ["MIGRATION_PAIRS"]

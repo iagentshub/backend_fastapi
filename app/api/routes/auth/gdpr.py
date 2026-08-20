@@ -12,6 +12,7 @@ from app.auth.gdpr import cancel_user_deletion, get_owned_groups, schedule_user_
 from app.errors import APIError
 from app.middleware.locale import get_locale
 from app.models.request_bodies import TokenBody
+from app.utils import flog
 
 router = APIRouter()
 
@@ -42,6 +43,13 @@ async def request_account_deletion(
             extra={"groups": owned},
         )
     await schedule_user_deletion(username, lang=get_locale())
+    flog.audit(
+        "account.deletion.requested",
+        resource_type="user",
+        resource_id=username,
+        summary=f"{username} programó la eliminación de su cuenta",
+        username=username,
+    )
     return {"ok": True, "message": "Cuenta programada para eliminación en 30 días"}
 
 
