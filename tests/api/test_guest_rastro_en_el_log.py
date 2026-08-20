@@ -86,6 +86,11 @@ def test_el_log_del_invitado_sobrevive_a_su_borrado(client):
     flog.flush()
     antes = _lineas_de(guest_id)
     assert antes, "el invitado no dejó ninguna línea de log"
+    acciones = [(ip, texto) for ip, texto in antes if "Agente creado:" in texto]
+    assert acciones, "la acción de negocio no quedó atribuida al invitado"
+    assert acciones[0][0] not in ("", "-"), (
+        "la acción de negocio conservó el usuario, pero perdió la IP"
+    )
 
     asyncio.run(purge_user_data(guest_id))
     flog.flush()

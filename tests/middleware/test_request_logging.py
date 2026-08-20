@@ -7,6 +7,7 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from app.auth.passwords import create_token
+from app.middleware.csrf import CsrfMiddleware
 from app.middleware.request_logging import RequestLoggerMiddleware
 
 
@@ -24,6 +25,13 @@ def _request(cookies: dict[str, str] | None = None, path: str = "/api/agents"):
             "client": ("10.0.0.1", 1234),
         }
     )
+
+
+def test_logger_envuelve_los_middlewares_que_pueden_rechazar_acciones():
+    from app.api.app import create_app
+
+    middlewares = [item.cls for item in create_app().user_middleware]
+    assert middlewares.index(RequestLoggerMiddleware) < middlewares.index(CsrfMiddleware)
 
 
 # ── Identidad en el log: firma verificada ──────────────────────────────────────
@@ -105,6 +113,86 @@ def test_el_invitado_se_registra_con_su_id():
 
 def test_sin_cookies_es_anonimo():
     assert RequestLoggerMiddleware._username_for_log(_request()) == "-"
+
+
+@pytest.mark.asyncio
+async def test_eventos_de_la_ruta_heredan_ip_y_usuario(monkeypatch):
+    from app.utils import flog
+
+    vistos: list[dict[str, str]] = []
+    original_extra = flog._extra
+
+    def capturar(ip, username, source):
+        extra = original_extra(ip, username, source)
+        vistos.append(extra)
+        return extra
+
+    monkeypatch.setattr(flog, "_extra", capturar)
+    token = create_token("andres")
+    request = _request({"ga_token": token})
+
+    async def ruta(_request):
+        flog.ok("agente creado")
+        return Response(status_code=201)
+
+    response = await RequestLoggerMiddleware(None).dispatch(request, ruta)
+
+    assert response.status_code == 201
+    assert vistos[0]["ip"] == "10.0.0.1"
+    assert vistos[0]["username"] == "andres"
+
+
+@pytest.mark.asyncio
+async def test_peticion_anonima_atribuye_eventos_a_su_ip(monkeypatch):
+    from app.utils import flog
+
+    vistos: list[dict[str, str]] = []
+    original_extra = flog._extra
+
+    def capturar(ip, username, source):
+        extra = original_extra(ip, username, source)
+        vistos.append(extra)
+        return extra
+
+    monkeypatch.setattr(flog, "_extra", capturar)
+
+    async def ruta(_request):
+        flog.info("acción pública")
+        return Response(status_code=200)
+
+    await RequestLoggerMiddleware(None).dispatch(_request(), ruta)
+
+    assert vistos[0]["ip"] == "10.0.0.1"
+    assert vistos[0]["username"] == "-"
+
+
+@pytest.mark.asyncio
+async def test_excepcion_se_registra_y_limpia_el_contexto(monkeypatch):
+    from app.utils import flog
+
+    vistos: list[dict[str, str]] = []
+    original_extra = flog._extra
+
+    def capturar(ip, username, source):
+        extra = original_extra(ip, username, source)
+        vistos.append(extra)
+        return extra
+
+    monkeypatch.setattr(flog, "_extra", capturar)
+
+    async def ruta(_request):
+        raise RuntimeError("fallo de prueba")
+
+    with pytest.raises(RuntimeError, match="fallo de prueba"):
+        await RequestLoggerMiddleware(None).dispatch(_request(), ruta)
+
+    assert vistos[-1]["ip"] == "10.0.0.1"
+    assert vistos[-1]["username"] == "-"
+    assert original_extra(None, None, "BE") == {
+        "ip": "-",
+        "username": "-",
+        "source": "BE",
+    }
 
 
 # ── Silenciado de sondas de vida ───────────────────────────────────────────────

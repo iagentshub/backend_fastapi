@@ -12,6 +12,7 @@ import sqlite3
 import sys
 import threading
 import time
+from contextvars import ContextVar, Token
 from datetime import datetime
 from pathlib import Path
 
@@ -35,6 +36,37 @@ _LOG_QUEUE: "queue.Queue | None" = None
 # y otros módulos.
 _OK = _cfg.LOG_LEVEL_OK
 logging.addLevelName(_OK, "OK")
+
+# Actor y origen de la petición en curso. El middleware los fija una sola vez y
+# cualquier evento de negocio emitido dentro de esa petición los hereda. Un
+# ContextVar mantiene el aislamiento entre tareas async concurrentes; fuera de
+# una petición (arranque, mantenimiento, procesos de fondo) el valor correcto
+# sigue siendo "-".
+_request_log_context: ContextVar[tuple[str, str] | None] = ContextVar(
+    "request_log_context", default=None
+)
+
+
+def set_request_context(*, ip: str, username: str) -> Token:
+    """Asocia origen y actor verificados a la petición en curso."""
+    return _request_log_context.set((ip or "-", username or "-"))
+
+
+def reset_request_context(token: Token) -> None:
+    """Restaura el contexto anterior al terminar la petición."""
+    _request_log_context.reset(token)
+
+
+def _extra(ip: str | None, username: str | None, source: str) -> dict[str, str]:
+    context_ip, context_username = _request_log_context.get() or ("-", "-")
+    return {
+        # El valor explícito manda, incluso dentro de una petición. None es el
+        # único marcador de «hereda el contexto»; el string vacío conserva el
+        # comportamiento histórico y se normaliza a "-".
+        "ip": (context_ip if ip is None else ip) or "-",
+        "username": (context_username if username is None else username) or "-",
+        "source": source or "BE",
+    }
 
 def _log_schema() -> str:
     """El DDL de ``app_logs``, extraído del esquema real. Aquí no vive una copia.
@@ -452,56 +484,55 @@ def flush(timeout: float = 2.0) -> None:
 
 
 def debug(
-    msg: str, *a, ip: str = "-", username: str = "-", source: str = "BE", **kw
+    msg: str,
+    *a,
+    ip: str | None = None,
+    username: str | None = None,
+    source: str = "BE",
+    **kw,
 ) -> None:
-    _L.debug(
-        msg,
-        *a,
-        extra={"ip": ip or "-", "username": username or "-", "source": source},
-        **kw,
-    )
+    _L.debug(msg, *a, extra=_extra(ip, username, source), **kw)
 
 
 def info(
-    msg: str, *a, ip: str = "-", username: str = "-", source: str = "BE", **kw
+    msg: str,
+    *a,
+    ip: str | None = None,
+    username: str | None = None,
+    source: str = "BE",
+    **kw,
 ) -> None:
-    _L.info(
-        msg,
-        *a,
-        extra={"ip": ip or "-", "username": username or "-", "source": source},
-        **kw,
-    )
+    _L.info(msg, *a, extra=_extra(ip, username, source), **kw)
 
 
 def ok(
-    msg: str, *a, ip: str = "-", username: str = "-", source: str = "BE", **kw
+    msg: str,
+    *a,
+    ip: str | None = None,
+    username: str | None = None,
+    source: str = "BE",
+    **kw,
 ) -> None:
-    _L.log(
-        _OK,
-        msg,
-        *a,
-        extra={"ip": ip or "-", "username": username or "-", "source": source},
-        **kw,
-    )
+    _L.log(_OK, msg, *a, extra=_extra(ip, username, source), **kw)
 
 
 def warning(
-    msg: str, *a, ip: str = "-", username: str = "-", source: str = "BE", **kw
+    msg: str,
+    *a,
+    ip: str | None = None,
+    username: str | None = None,
+    source: str = "BE",
+    **kw,
 ) -> None:
-    _L.warning(
-        msg,
-        *a,
-        extra={"ip": ip or "-", "username": username or "-", "source": source},
-        **kw,
-    )
+    _L.warning(msg, *a, extra=_extra(ip, username, source), **kw)
 
 
 def error(
-    msg: str, *a, ip: str = "-", username: str = "-", source: str = "BE", **kw
+    msg: str,
+    *a,
+    ip: str | None = None,
+    username: str | None = None,
+    source: str = "BE",
+    **kw,
 ) -> None:
-    _L.error(
-        msg,
-        *a,
-        extra={"ip": ip or "-", "username": username or "-", "source": source},
-        **kw,
-    )
+    _L.error(msg, *a, extra=_extra(ip, username, source), **kw)

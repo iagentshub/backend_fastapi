@@ -190,6 +190,41 @@ def test_defaults_ip_username_son_guion(captured):
     assert "[-]" in _last_line(captured)
 
 
+def test_evento_de_negocio_hereda_actor_y_origen_de_la_peticion(captured):
+    from app.utils import flog
+
+    token = flog.set_request_context(ip="10.0.0.7", username="alice")
+    try:
+        info("agente creado")
+    finally:
+        flog.reset_request_context(token)
+
+    line = _last_line(captured)
+    assert "[10.0.0.7] [alice]" in line
+
+
+def test_contexto_de_peticion_no_se_filtra_al_trabajo_de_fondo(captured):
+    from app.utils import flog
+
+    token = flog.set_request_context(ip="10.0.0.7", username="alice")
+    flog.reset_request_context(token)
+    info("mantenimiento")
+
+    assert "[-] [-]" in _last_line(captured)
+
+
+def test_actor_y_origen_explicitos_mandan_sobre_el_contexto(captured):
+    from app.utils import flog
+
+    token = flog.set_request_context(ip="10.0.0.7", username="alice")
+    try:
+        info("alta invitado", ip="10.0.0.8", username="guest:123")
+    finally:
+        flog.reset_request_context(token)
+
+    assert "[10.0.0.8] [guest:123]" in _last_line(captured)
+
+
 def test_multiples_llamadas_acumulan(captured):
     info("linea 1")
     info("linea 2")

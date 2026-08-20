@@ -181,7 +181,6 @@ def create_app() -> FastAPI:
         lifespan=_lifespan,
     )
 
-    app.add_middleware(RequestLoggerMiddleware)
     # Sin argumentos: el límite lo decide el administrador en caliente. La
     # excepción por prefijo que había aquí para el avatar era código muerto —
     # nginx cortaba la petición muy por debajo antes de que llegara.
@@ -192,6 +191,10 @@ def create_app() -> FastAPI:
     # Antes que CORSMiddleware, que al añadirse el último envuelve a todos: así
     # el preflight OPTIONS lo resuelve CORS y no llega a la puerta anti-CSRF.
     app.add_middleware(CsrfMiddleware)
+    # Starlette envuelve en orden inverso: aquí queda por fuera de CSRF,
+    # licencias, límites y rutas. Así también atribuye los rechazos emitidos por
+    # esos middlewares; CORS permanece por fuera para resolver sus preflights.
+    app.add_middleware(RequestLoggerMiddleware)
     app.add_middleware(
         CORSMiddleware,
         allow_origins=CORS_ORIGINS,

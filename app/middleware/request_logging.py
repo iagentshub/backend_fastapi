@@ -21,18 +21,30 @@ class RequestLoggerMiddleware(BaseHTTPMiddleware):
         call_next: RequestResponseEndpoint,
     ) -> Response:
         started_at = time.perf_counter()
-        response = await call_next(request)
-        elapsed_ms = (time.perf_counter() - started_at) * 1000
+        username = self._username_for_log(request)
+        ip = client_ip(request) or "-"
+        token = flog.set_request_context(ip=ip, username=username)
+        try:
+            response = await call_next(request)
+        except Exception:
+            elapsed_ms = (time.perf_counter() - started_at) * 1000
+            flog.error(
+                f"{request.method} {request.url.path} → 500 ({elapsed_ms:.0f}ms)",
+                exc_info=True,
+            )
+            raise
+        finally:
+            flog.reset_request_context(token)
 
         if self._silenciar(request, response):
             return response
 
-        username = self._username_for_log(request)
+        elapsed_ms = (time.perf_counter() - started_at) * 1000
         message = (
             f"{request.method} {request.url.path} → {response.status_code} "
             f"({elapsed_ms:.0f}ms)"
         )
-        context = {"ip": client_ip(request) or "-", "username": username}
+        context = {"ip": ip, "username": username}
         if response.status_code >= 500:
             flog.error(message, **context)
         elif response.status_code >= 400:
