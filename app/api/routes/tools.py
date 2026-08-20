@@ -94,7 +94,6 @@ async def list_tools(
     scope: str = "all",
     owner_scope: str = "group",
     group_id: Optional[str] = None,
-    include_inactive: bool = False,
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
     response: Response = None,  # type: ignore[assignment]
@@ -105,7 +104,6 @@ async def list_tools(
         _storage,
         ctx=ctx,
         scope=scope,
-        include_inactive=include_inactive,
         page=OffsetParams(limit=limit, offset=offset),
         response=response,
         requested_group_id=group_id,
@@ -274,41 +272,6 @@ async def delete_tool(
     return {"ok": True}
 
 
-async def _set_tool_active(
-    tool_id: str, active: bool, ctx: GroupContext
-) -> Dict[str, Any]:
-    user, group_id = ctx.user, ctx.group_id
-    tl = await _storage.get_any(tool_id)
-    if not tl:
-        raise APIError(
-            404, "not_found", "Tool no encontrada", extra={"resource": "tool"}
-        )
-    assert_resource_writable(tl, "tool")
-    role = await get_user_role(user)
-    if role != "admin" and tl.get("owner_id") not in (group_id, None):
-        raise APIError(403, "forbidden", "Solo el propietario puede cambiar el estado")
-    owner = None if role == "admin" else group_id
-    if not await _storage.set_active(tool_id, owner, active):
-        raise APIError(
-            404, "not_found", "Tool no encontrada", extra={"resource": "tool"}
-        )
-    estado = "activada" if active else "desactivada"
-    flog.info(f"Tool {estado}: {tool_id} {tl.get('name', '')!r}", username=user)
-    return {"ok": True, "is_active": active}
-
-
-@router.post("/{tool_id}/activate")
-async def activate_tool(
-    tool_id: str, ctx: GroupContext = Depends(require_group_session)
-) -> Dict[str, Any]:
-    return await _set_tool_active(tool_id, True, ctx)
-
-
-@router.post("/{tool_id}/deactivate")
-async def deactivate_tool(
-    tool_id: str, ctx: GroupContext = Depends(require_group_session)
-) -> Dict[str, Any]:
-    return await _set_tool_active(tool_id, False, ctx)
 
 
 # ── Binario (solo tools cpp) — subida/descarga en dos pasos ─────────────────

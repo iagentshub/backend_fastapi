@@ -141,16 +141,6 @@ def test_other_user_cannot_edit_or_delete_public_prompt(admin_client):
     assert deleted.status_code == 403
 
 
-def test_activate_deactivate_prompt(admin_client):
-    created = admin_client.post("/api/prompts/private", json=_PROMPT_PAYLOAD).json()
-    r = admin_client.post(f"/api/prompts/{created['id']}/deactivate")
-    assert r.status_code == 200
-    assert r.json()["is_active"] is False
-    r = admin_client.post(f"/api/prompts/{created['id']}/activate")
-    assert r.status_code == 200
-    assert r.json()["is_active"] is True
-
-
 def test_prompts_requires_auth(client):
     r = client.get("/api/prompts")
     assert r.status_code == 401

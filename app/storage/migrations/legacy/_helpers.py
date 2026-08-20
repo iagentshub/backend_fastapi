@@ -31,7 +31,6 @@ _SCHEMA_INDEX_DEPS: list[tuple[str, str, str]] = [
 # Tablas de recursos que reciben el borrado suave (is_active + deactivated_at)
 _RESOURCE_TABLES: tuple[str, ...] = (
     "agents",
-    "skills",
     "connections",
     "knowledge_items",
     "agent_workflows",

@@ -1,10 +1,8 @@
 """Base común de los almacenes de recursos gestionados por el usuario.
 
-Aporta el comportamiento transversal a agentes, skills, conexiones,
-conocimientos y workflows:
+Aporta el comportamiento transversal a los recursos gestionados por el usuario:
 
-- borrado suave / reactivación (``set_active``) sobre ``is_active`` +
-  ``deactivated_at``, con el predicado ``owner_id`` incorporado;
+- borrado suave / reactivación para los recursos operativos que lo exponen;
 - sincronización del índice transversal de etiquetas (``resource_labels``).
 
 El SQL específico de cada tabla (blob vs columnas, PK simple vs compuesta,

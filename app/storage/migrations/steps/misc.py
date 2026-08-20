@@ -63,6 +63,31 @@ async def _chat_message_interrupted_pg(conn: Any) -> None:
     )
 
 
+async def _remove_content_activation_sqlite(conn: Any) -> None:
+    """Retira el borrado suave de skills, prompts y tools.
+
+    Estos recursos son contenido reutilizable: su uso se controla enlazándolos
+    o desenlazándolos de un agente, no mediante un interruptor global.
+    """
+    for table in ("skills", "prompts", "tools"):
+        columns = {
+            str(row[1])
+            for row in await conn.execute_fetchall(f"PRAGMA table_info({table})")
+        }
+        if "deactivated_at" in columns:
+            await conn.execute(f"ALTER TABLE {table} DROP COLUMN deactivated_at")
+        if "is_active" in columns:
+            await conn.execute(f"ALTER TABLE {table} DROP COLUMN is_active")
+
+
+async def _remove_content_activation_pg(conn: Any) -> None:
+    for table in ("skills", "prompts", "tools"):
+        await conn.execute(
+            f"ALTER TABLE {table} DROP COLUMN IF EXISTS deactivated_at, "
+            "DROP COLUMN IF EXISTS is_active"
+        )
+
+
 async def _resource_origin_labels_sqlite(conn: Any) -> None:
     for table in ("agents", "skills", "prompts", "tools"):
         rows = await conn.execute_fetchall(f"SELECT id, owner_id, data FROM {table}")

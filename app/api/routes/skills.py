@@ -57,7 +57,6 @@ async def list_skills(
     scope: str = "all",
     owner_scope: str = "group",
     group_id: Optional[str] = None,
-    include_inactive: bool = False,
     limit: int = Query(50, ge=1, le=100),
     offset: int = Query(0, ge=0),
     response: Response = None,  # type: ignore[assignment]
@@ -68,7 +67,6 @@ async def list_skills(
         _storage,
         ctx=ctx,
         scope=scope,
-        include_inactive=include_inactive,
         page=OffsetParams(limit=limit, offset=offset),
         response=response,
         requested_group_id=group_id,
@@ -256,40 +254,3 @@ async def delete_skill(
         f"Skill borrada: {skill_id} {(sk or {}).get('name', '')!r}", username=user
     )
     return {"ok": True}
-
-
-async def _set_skill_active(
-    skill_id: str, active: bool, ctx: GroupContext
-) -> Dict[str, Any]:
-    user, group_id = ctx.user, ctx.group_id
-    sk = await _storage.get_any(skill_id)
-    if not sk:
-        raise APIError(
-            404, "not_found", "Skill no encontrada", extra={"resource": "skill"}
-        )
-    assert_resource_writable(sk, "skill")
-    role = await get_user_role(user)
-    if role != "admin" and sk.get("owner_id") not in (group_id, None):
-        raise APIError(403, "forbidden", "Solo el propietario puede cambiar el estado")
-    owner = None if role == "admin" else group_id
-    if not await _storage.set_active(skill_id, owner, active):
-        raise APIError(
-            404, "not_found", "Skill no encontrada", extra={"resource": "skill"}
-        )
-    estado = "activada" if active else "desactivada"
-    flog.info(f"Skill {estado}: {skill_id} {sk.get('name', '')!r}", username=user)
-    return {"ok": True, "is_active": active}
-
-
-@router.post("/{skill_id}/activate")
-async def activate_skill(
-    skill_id: str, ctx: GroupContext = Depends(require_group_session)
-) -> Dict[str, Any]:
-    return await _set_skill_active(skill_id, True, ctx)
-
-
-@router.post("/{skill_id}/deactivate")
-async def deactivate_skill(
-    skill_id: str, ctx: GroupContext = Depends(require_group_session)
-) -> Dict[str, Any]:
-    return await _set_skill_active(skill_id, False, ctx)

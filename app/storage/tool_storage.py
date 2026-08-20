@@ -49,7 +49,6 @@ class ToolStorage(ResourceStorage):
         user: str,
         active_group_id: str,
         scope: str,
-        include_inactive: bool,
         page: OffsetParams,
         requested_group_id: str | None = None,
     ) -> OffsetPage[Dict[str, Any]]:
@@ -60,8 +59,7 @@ class ToolStorage(ResourceStorage):
                 "resource_row.id, resource_row.owner_id, resource_row.name, "
                 "resource_row.language, resource_row.scope, resource_row.data, "
                 "resource_row.binary_filename, resource_row.binary_size, "
-                "resource_row.binary_uploaded_at, resource_row.is_active, "
-                "resource_row.deactivated_at, resource_row.created_at, "
+                "resource_row.binary_uploaded_at, resource_row.created_at, "
                 "resource_row.updated_at"
             ),
             resource_type=self.resource_type,
@@ -72,7 +70,7 @@ class ToolStorage(ResourceStorage):
             user=user,
             active_group_id=active_group_id,
             scope=scope,
-            include_inactive=include_inactive,
+            include_inactive=None,
             page=page,
             requested_group_id=requested_group_id,
         )
@@ -93,8 +91,6 @@ class ToolStorage(ResourceStorage):
         now = _now()
         created_at = str(data.get("created_at") or now)
         updated_at = str(data.get("updated_at") or now)
-        is_active = 1 if data.get("is_active", True) else 0
-        deactivated_at = data.get("deactivated_at")
         # language, content y las columnas de binario tienen columna propia —
         # no duplicar en el JSON de meta.
         meta = {
@@ -126,8 +122,6 @@ class ToolStorage(ResourceStorage):
                     binary_filename,
                     binary_size,
                     binary_uploaded_at,
-                    is_active,
-                    deactivated_at,
                     created_at,
                     updated_at,
                 ),
@@ -149,8 +143,6 @@ class ToolStorage(ResourceStorage):
                     binary_filename,
                     binary_size,
                     binary_uploaded_at,
-                    is_active,
-                    deactivated_at,
                     created_at,
                     updated_at,
                 ),
@@ -175,8 +167,6 @@ class ToolStorage(ResourceStorage):
                 "updated_at": row["updated_at"],
             }
         )
-        d["is_active"] = bool(row["is_active"])
-        d["deactivated_at"] = row["deactivated_at"]
         owner = row["owner_id"]
         d["owner_id"] = None if owner == _PUBLIC_OWNER else owner
         return d
@@ -221,8 +211,8 @@ class ToolStorage(ResourceStorage):
             )
             row = await conn.fetchone(
                 "SELECT id, owner_id, name, language, scope, data, content, binary_b64, "
-                "binary_filename, binary_size, binary_uploaded_at, is_active, "
-                "deactivated_at, created_at, updated_at "
+                "binary_filename, binary_size, binary_uploaded_at, "
+                "created_at, updated_at "
                 f"FROM tools WHERE id=? AND scope=?{owner_filter} LIMIT 1",
                 params,
             )
@@ -235,8 +225,8 @@ class ToolStorage(ResourceStorage):
                 )
                 row = await conn.fetchone(
                     "SELECT id, owner_id, name, language, scope, data, content, binary_b64, "
-                    "binary_filename, binary_size, binary_uploaded_at, is_active, "
-                    "deactivated_at, created_at, updated_at "
+                    "binary_filename, binary_size, binary_uploaded_at, "
+                    "created_at, updated_at "
                     f"FROM tools WHERE id=? AND scope=?{owner_filter} LIMIT 1",
                     slug_params,
                 )
@@ -298,8 +288,7 @@ class ToolStorage(ResourceStorage):
         content = "" if language == "cpp" else str(payload.get("content") or "").strip()
         # Preservar los campos de binario a través de ediciones que solo tocan
         # texto (nombre/descripción/labels): sin esto, un upsert sin estos
-        # campos en el payload resetearía el binario ya subido a NULL — mismo
-        # mecanismo que ya preserva is_active/deactivated_at en este storage.
+        # campos en el payload resetearía el binario ya subido a NULL.
         binary_b64 = (
             payload["binary_b64"]
             if "binary_b64" in payload
@@ -337,9 +326,6 @@ class ToolStorage(ResourceStorage):
             "owner_id": actual_owner,
             "created_at": existing.get("created_at", now) if existing else now,
             "updated_at": now,
-            # Conservar el borrado suave a través de las ediciones.
-            "is_active": existing.get("is_active", True) if existing else True,
-            "deactivated_at": existing.get("deactivated_at") if existing else None,
         }
         if conn is not None:
             await self._upsert(conn, tool_id, actual_owner, scope, data)

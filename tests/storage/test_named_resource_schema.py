@@ -34,7 +34,6 @@ _COMMON_RESOURCE_KEYS = {
     "scope",
     "owner_id",
     "labels",
-    "is_active",
     "created_at",
     "updated_at",
 }
@@ -69,6 +68,9 @@ async def test_all_managed_resources_expose_common_contract(
 
     for resource in resources:
         assert _COMMON_RESOURCE_KEYS <= resource.keys()
+    assert "is_active" not in resources[1]
+    for resource in (resources[0], resources[2], resources[3], resources[4]):
+        assert resource["is_active"] is True
 
 
 async def test_named_resources_store_metadata_once(patch_data_dir):  # noqa: ARG001

@@ -29,7 +29,7 @@ async def list_scoped_resource_page(
     user: str,
     active_group_id: str,
     scope: str,
-    include_inactive: bool,
+    include_inactive: bool | None,
     page: OffsetParams,
     requested_group_id: str | None = None,
     extra_filters: tuple[VisibilityFilter, ...] = (),
@@ -49,7 +49,7 @@ async def list_scoped_resource_page(
     if scope in ("public", "private"):
         clauses.append(f"{alias}.scope = ?")
         params.append(scope)
-    if not include_inactive:
+    if include_inactive is False:
         clauses.append(f"{alias}.is_active = 1")
     for extra_filter in extra_filters:
         clauses.append(extra_filter.sql)

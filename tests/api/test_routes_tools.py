@@ -155,20 +155,6 @@ def test_tools_requires_auth(client):
     assert r.status_code == 401
 
 
-# ── activate/deactivate ───────────────────────────────────────────────────────
-
-
-def test_deactivate_and_activate_tool(admin_client):
-    created = admin_client.post("/api/tools/private", json=_TOOL_PAYLOAD).json()
-    r = admin_client.post(f"/api/tools/{created['id']}/deactivate")
-    assert r.status_code == 200
-    assert r.json()["is_active"] is False
-
-    r = admin_client.post(f"/api/tools/{created['id']}/activate")
-    assert r.status_code == 200
-    assert r.json()["is_active"] is True
-
-
 # ── binario ────────────────────────────────────────────────────────────────────
 
 

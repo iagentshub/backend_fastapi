@@ -233,8 +233,6 @@ POST /api/llm-orchestrations/{item_id}/activate
 POST /api/llm-orchestrations/{item_id}/deactivate
 POST /api/memory/{filename}
 POST /api/prompts/private/{prompt_id}/sync
-POST /api/prompts/{prompt_id}/activate
-POST /api/prompts/{prompt_id}/deactivate
 POST /api/prompts/{scope}
 POST /api/prompts/{scope}/{source_id}/link
 POST /api/resources/{resource_type}/{resource_id}/versions/{version}/restore
@@ -244,14 +242,10 @@ POST /api/skill-builder/chat
 POST /api/skills/private/{skill_id}/sync
 POST /api/skills/{scope}
 POST /api/skills/{scope}/{source_id}/link
-POST /api/skills/{skill_id}/activate
-POST /api/skills/{skill_id}/deactivate
 POST /api/tools/private/{tool_id}/sync
 POST /api/tools/{scope}
 POST /api/tools/{scope}/{source_id}/link
 POST /api/tools/{scope}/{tool_id}/binary
-POST /api/tools/{tool_id}/activate
-POST /api/tools/{tool_id}/deactivate
 POST /api/users/{target}/follow
 POST /api/workflow-runs/{run_id}/cancel
 POST /api/workflows

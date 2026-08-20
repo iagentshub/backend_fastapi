@@ -52,6 +52,8 @@ from app.storage.migrations.steps.misc import (
     _group_share_cascade_flag_sqlite,
     _public_agents_in_social_catalog_pg,
     _public_agents_in_social_catalog_sqlite,
+    _remove_content_activation_pg,
+    _remove_content_activation_sqlite,
     _resource_origin_labels_pg,
     _resource_origin_labels_sqlite,
     _unused_indexes_audit_pg,
@@ -115,6 +117,7 @@ MIGRATION_PAIRS: tuple[MigrationPair, ...] = (
     MigrationPair(28, "gdpr_orphan_resources", _gdpr_orphan_resources_sqlite, _gdpr_orphan_resources_pg),
     MigrationPair(29, "unused_indexes_audit", _unused_indexes_audit_sqlite, _unused_indexes_audit_pg),
     MigrationPair(30, "chat_message_interrupted", _chat_message_interrupted_sqlite, _chat_message_interrupted_pg),
+    MigrationPair(31, "remove_content_activation", _remove_content_activation_sqlite, _remove_content_activation_pg),
 )
 
 __all__ = ["MIGRATION_PAIRS"]

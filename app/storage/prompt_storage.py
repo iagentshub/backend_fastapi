@@ -40,7 +40,6 @@ class PromptStorage(ResourceStorage):
         user: str,
         active_group_id: str,
         scope: str,
-        include_inactive: bool,
         page: OffsetParams,
         requested_group_id: str | None = None,
     ) -> OffsetPage[Dict[str, Any]]:
@@ -50,7 +49,6 @@ class PromptStorage(ResourceStorage):
             columns=(
                 "resource_row.id, resource_row.owner_id, resource_row.name, "
                 "resource_row.alias, resource_row.scope, resource_row.data, "
-                "resource_row.is_active, resource_row.deactivated_at, "
                 "resource_row.created_at, resource_row.updated_at"
             ),
             resource_type=self.resource_type,
@@ -61,7 +59,7 @@ class PromptStorage(ResourceStorage):
             user=user,
             active_group_id=active_group_id,
             scope=scope,
-            include_inactive=include_inactive,
+            include_inactive=None,
             page=page,
             requested_group_id=requested_group_id,
         )
@@ -78,8 +76,6 @@ class PromptStorage(ResourceStorage):
         now = _now()
         created_at = str(data.get("created_at") or now)
         updated_at = str(data.get("updated_at") or now)
-        is_active = 1 if data.get("is_active", True) else 0
-        deactivated_at = data.get("deactivated_at")
         # alias y content tienen columna propia — no duplicar en el JSON de meta.
         meta = {k: v for k, v in data.items() if k not in ("content", "alias")}
         meta_json = _compact_resource_data(meta)
@@ -94,8 +90,6 @@ class PromptStorage(ResourceStorage):
                     scope,
                     meta_json,
                     content,
-                    is_active,
-                    deactivated_at,
                     created_at,
                     updated_at,
                 ),
@@ -113,8 +107,6 @@ class PromptStorage(ResourceStorage):
                     scope,
                     meta_json,
                     content,
-                    is_active,
-                    deactivated_at,
                     created_at,
                     updated_at,
                 ),
@@ -135,8 +127,6 @@ class PromptStorage(ResourceStorage):
                 "updated_at": row["updated_at"],
             }
         )
-        d["is_active"] = bool(row["is_active"])
-        d["deactivated_at"] = row["deactivated_at"]
         owner = row["owner_id"]
         d["owner_id"] = None if owner == _PUBLIC_OWNER else owner
         return d
@@ -182,8 +172,8 @@ class PromptStorage(ResourceStorage):
                 else (prompt_id, scope)
             )
             row = await conn.fetchone(
-                "SELECT id, owner_id, name, alias, scope, data, content, is_active, "
-                "deactivated_at, created_at, updated_at "
+                "SELECT id, owner_id, name, alias, scope, data, content, "
+                "created_at, updated_at "
                 f"FROM prompts WHERE id=? AND scope=?{owner_filter} LIMIT 1",
                 params,
             )
@@ -278,9 +268,6 @@ class PromptStorage(ResourceStorage):
             "owner_id": actual_owner,
             "created_at": existing.get("created_at", now) if existing else now,
             "updated_at": now,
-            # Conservar el borrado suave a través de las ediciones.
-            "is_active": existing.get("is_active", True) if existing else True,
-            "deactivated_at": existing.get("deactivated_at") if existing else None,
         }
         if conn is not None:
             if not assume_new:

@@ -10,8 +10,6 @@ CREATE TABLE IF NOT EXISTS tools (
     binary_filename    TEXT,
     binary_size        INTEGER,
     binary_uploaded_at TEXT,
-    is_active   @BOOL@ NOT NULL DEFAULT 1,
-    deactivated_at TEXT,
     official_source_id    TEXT,
     -- Trazabilidad de solo escritura. La lectura viva es
     -- resource_source_links.component_key. Ver agents.sql.

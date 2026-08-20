@@ -56,16 +56,6 @@ def test_delete_nonexistent_tool(admin_client):
     assert r.status_code == 404
 
 
-def test_activate_nonexistent_tool(admin_client):
-    r = admin_client.post("/api/tools/nonexistent/activate")
-    assert r.status_code == 404
-
-
-def test_deactivate_nonexistent_tool(admin_client):
-    r = admin_client.post("/api/tools/nonexistent/deactivate")
-    assert r.status_code == 404
-
-
 def test_upload_binary_nonexistent_tool(admin_client):
     r = admin_client.post(
         "/api/tools/private/nonexistent/binary",

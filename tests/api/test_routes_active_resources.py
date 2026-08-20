@@ -1,5 +1,4 @@
-"""Borrado suave (activate/deactivate + include_inactive) en skills, conexiones
-y workflows."""
+"""Borrado suave en recursos operativos: conexiones y workflows."""
 
 from __future__ import annotations
 
@@ -12,27 +11,6 @@ def _login(client, username: str) -> str:
     asyncio.run(register_user(username, "pass1234", email=f"{username}@actres.test"))
     client.cookies.set("ga_token", create_token(username))
     return username
-
-
-# ── Skills ──────────────────────────────────────────────────────────────────
-
-
-def test_skill_deactivate_hides_and_reactivate(client):
-    _login(client, "actres_skill")
-    sk = client.post(
-        "/api/skills/private", json={"name": "Skill Desactivable", "content": "x"}
-    ).json()
-    assert sk["is_active"] is True
-
-    assert client.post(f"/api/skills/{sk['id']}/deactivate").status_code == 200
-    ids = [s["id"] for s in client.get("/api/skills").json()]
-    assert sk["id"] not in ids
-    ids_incl = [s["id"] for s in client.get("/api/skills?include_inactive=true").json()]
-    assert sk["id"] in ids_incl
-
-    assert client.post(f"/api/skills/{sk['id']}/activate").status_code == 200
-    ids = [s["id"] for s in client.get("/api/skills").json()]
-    assert sk["id"] in ids
 
 
 # ── Connections ─────────────────────────────────────────────────────────────

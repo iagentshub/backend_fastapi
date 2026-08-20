@@ -21,7 +21,6 @@ class VisiblePageStorage(Protocol):
         user: str,
         active_group_id: str,
         scope: str,
-        include_inactive: bool,
         page: OffsetParams,
         requested_group_id: str | None = None,
     ) -> Awaitable[OffsetPage[dict[str, Any]]]: ...
@@ -32,7 +31,6 @@ async def list_authenticated_scoped_resources(
     *,
     ctx: GroupContext,
     scope: str,
-    include_inactive: bool,
     page: OffsetParams,
     response: Response | None,
     requested_group_id: str | None,
@@ -51,7 +49,6 @@ async def list_authenticated_scoped_resources(
         user=ctx.user,
         active_group_id=ctx.group_id,
         scope=scope,
-        include_inactive=include_inactive,
         page=page,
         requested_group_id=requested_group_id,
     )
