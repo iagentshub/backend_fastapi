@@ -4,8 +4,6 @@
 instalación que nunca tuvo la tabla vieja.
 """
 
-
-
 from __future__ import annotations
 
 import json
@@ -32,10 +30,38 @@ async def _table_exists_sqlite(conn: Any, table: str) -> bool:
     )
     return bool(rows)
 
+
 async def _table_exists_pg(conn: Any, table: str) -> bool:
     """Ver el homónimo de sqlite.py: las tablas del catálogo oficial antiguo
     ya no forman parte del esquema, así que en una base nueva no existen."""
     return await conn.fetchval("SELECT to_regclass($1)", table) is not None
+
+
+async def _chat_message_interrupted_sqlite(conn: Any) -> None:
+    columns = {
+        str(row[1])
+        for row in await conn.execute_fetchall("PRAGMA table_info(messages)")
+    }
+    if "interrupted" not in columns:
+        await conn.execute(
+            "ALTER TABLE messages ADD COLUMN interrupted INTEGER NOT NULL DEFAULT 0"
+        )
+    if "usage_estimated" not in columns:
+        await conn.execute(
+            "ALTER TABLE messages ADD COLUMN usage_estimated INTEGER NOT NULL DEFAULT 0"
+        )
+
+
+async def _chat_message_interrupted_pg(conn: Any) -> None:
+    await conn.execute(
+        "ALTER TABLE messages ADD COLUMN IF NOT EXISTS "
+        "interrupted BOOLEAN NOT NULL DEFAULT FALSE"
+    )
+    await conn.execute(
+        "ALTER TABLE messages ADD COLUMN IF NOT EXISTS "
+        "usage_estimated BOOLEAN NOT NULL DEFAULT FALSE"
+    )
+
 
 async def _resource_origin_labels_sqlite(conn: Any) -> None:
     for table in ("agents", "skills", "prompts", "tools"):
@@ -80,6 +106,7 @@ async def _resource_origin_labels_sqlite(conn: Any) -> None:
             "(resource_type, resource_id, owner_id, label) "
             f"SELECT '{resource_type}', id, owner_id, 'community' FROM {table}"
         )
+
 
 async def _resource_origin_labels_pg(conn: Any) -> None:
     for table in ("agents", "skills", "prompts", "tools"):
@@ -151,6 +178,7 @@ async def _resource_origin_labels_pg(conn: Any) -> None:
             "ON CONFLICT (resource_type, resource_id, label) DO NOTHING"
         )
 
+
 async def _connection_provider_accounts_sqlite(conn: Any) -> None:
     columns = {
         str(row[1])
@@ -183,6 +211,7 @@ async def _connection_provider_accounts_sqlite(conn: Any) -> None:
         "CREATE INDEX IF NOT EXISTS idx_connections_provider_account "
         "ON connections(owner_id,provider_account_id)"
     )
+
 
 async def _connection_provider_accounts_pg(conn: Any) -> None:
     await conn.execute(
@@ -221,6 +250,7 @@ async def _connection_provider_accounts_pg(conn: Any) -> None:
         "ON connections(owner_id,provider_account_id)"
     )
 
+
 async def _public_agents_in_social_catalog_sqlite(conn: Any) -> None:
     """Repara agentes de usuario guardados como públicos pero no publicados.
 
@@ -255,6 +285,7 @@ async def _public_agents_in_social_catalog_sqlite(conn: Any) -> None:
           )
     """)
 
+
 async def _public_agents_in_social_catalog_pg(conn: Any) -> None:
     """Repara agentes de usuario públicos que quedaron fuera de Explore."""
     await conn.execute("""
@@ -280,6 +311,7 @@ async def _public_agents_in_social_catalog_pg(conn: Any) -> None:
           )
     """)
 
+
 async def _group_share_cascade_flag_sqlite(conn: Any) -> None:
     """Distingue lo compartido a mano de lo que arrastró un agente.
 
@@ -295,6 +327,7 @@ async def _group_share_cascade_flag_sqlite(conn: Any) -> None:
             "ADD COLUMN via_cascade INTEGER NOT NULL DEFAULT 0"
         )
 
+
 async def _group_share_cascade_flag_pg(conn: Any) -> None:
     """Distingue lo compartido a mano de lo que arrastró un agente.
 
@@ -306,6 +339,7 @@ async def _group_share_cascade_flag_pg(conn: Any) -> None:
         "ALTER TABLE resource_group_shares "
         "ADD COLUMN IF NOT EXISTS via_cascade INTEGER NOT NULL DEFAULT 0"
     )
+
 
 async def _gdpr_orphan_resources_sqlite(conn: Any) -> None:
     """Limpia lo que el borrado RGPD dejó atrás antes de conocer estas tablas."""
@@ -324,6 +358,7 @@ async def _gdpr_orphan_resources_sqlite(conn: Any) -> None:
             _DUEÑOS_SIN_CUENTA,
         )
 
+
 async def _gdpr_orphan_resources_pg(conn: Any) -> None:
     """Limpia lo que el borrado RGPD dejó atrás antes de conocer estas tablas."""
     total = await conn.fetchval("SELECT COUNT(*) FROM users")
@@ -338,6 +373,7 @@ async def _gdpr_orphan_resources_pg(conn: Any) -> None:
             f"AND {columna} <> ALL($1::text[])",
             list(_DUEÑOS_SIN_CUENTA),
         )
+
 
 async def _unused_indexes_audit_sqlite(conn: Any) -> None:
     """Retira tres índices que ninguna consulta elige.
@@ -371,6 +407,7 @@ async def _unused_indexes_audit_sqlite(conn: Any) -> None:
         "idx_tools_official",
     ):
         await conn.execute(f"DROP INDEX IF EXISTS {indice}")
+
 
 async def _unused_indexes_audit_pg(conn: Any) -> None:
     """Retira tres índices que ninguna consulta elige.

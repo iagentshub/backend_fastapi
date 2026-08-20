@@ -10,7 +10,6 @@ razonable. `_detalle_publico` decide qué se le cuenta del fallo sin filtrar la
 clave ni el host interno.
 """
 
-
 from __future__ import annotations
 
 import ipaddress
@@ -35,6 +34,7 @@ from app.config.providers import (
     OPENAI_COMPAT_URLS,
 )
 from app.config.security import PRIVATE_HOST_PREFIXES, assert_safe_url
+from app.services.chat._streaming import ProviderCancellation
 from app.utils import flog
 from app.utils.safe_http import safe_urlopen
 
@@ -42,6 +42,7 @@ _NVIDIA_DEEPSEEK_V4_MODELS = {
     "deepseek-ai/deepseek-v4-pro",
     "deepseek-ai/deepseek-v4-flash",
 }
+
 
 def _openai_compat_chat_url(conn_type: str, configured_url: str = "") -> str:
     """Accept either a provider base URL or a full chat-completions endpoint."""
@@ -78,12 +79,14 @@ def _openai_compat_chat_url(conn_type: str, configured_url: str = "") -> str:
 
     return urlunparse(parsed._replace(path=path, params="", query="", fragment=""))
 
+
 def _do_openai_stream(
     url: str,
     headers: Dict[str, str],
     payload: Dict[str, Any],
     timeout: Optional[int],
     on_token: Optional[Callable[[str], None]] = None,
+    cancellation: Optional[ProviderCancellation] = None,
 ) -> "tuple[str, int, int]":
     """Llama al endpoint OpenAI-compatible y devuelve (reply, tok_in, tok_out)."""
     data = json.dumps(payload).encode()
@@ -91,31 +94,43 @@ def _do_openai_stream(
     full_reply = ""
     tok_in = tok_out = 0
     with safe_urlopen(req, timeout=timeout) as resp:
-        for raw in resp:
-            line = raw.decode("utf-8", errors="replace").strip()
-            if not line.startswith("data: "):
-                continue
-            chunk = line[6:]
-            if chunk == "[DONE]":
-                break
-            try:
-                obj = json.loads(chunk)
-            except json.JSONDecodeError:
-                # Trama SSE que no es JSON (keep-alive del proveedor, línea
-                # partida). Se descarta sin registrar: esto corre una vez por
-                # token y logearlo llenaría el fichero de logs con cada chat.
-                continue
-            choices = obj.get("choices") or []
-            if choices:
-                token = choices[0].get("delta", {}).get("content") or ""
-                full_reply += token
-                if token and on_token is not None:
-                    on_token(token)
-            usage = obj.get("usage") or {}
-            if usage:
-                tok_in = usage.get("prompt_tokens", tok_in)
-                tok_out = usage.get("completion_tokens", tok_out)
+        if cancellation is not None:
+            cancellation.attach(resp)
+        try:
+            for raw in resp:
+                if cancellation is not None and cancellation.cancelled:
+                    break
+                line = raw.decode("utf-8", errors="replace").strip()
+                if not line.startswith("data: "):
+                    continue
+                chunk = line[6:]
+                if chunk == "[DONE]":
+                    break
+                try:
+                    obj = json.loads(chunk)
+                except json.JSONDecodeError:
+                    # Trama SSE que no es JSON (keep-alive del proveedor, línea
+                    # partida). Se descarta sin registrar: esto corre una vez por
+                    # token y logearlo llenaría el fichero de logs con cada chat.
+                    continue
+                choices = obj.get("choices") or []
+                if choices:
+                    token = choices[0].get("delta", {}).get("content") or ""
+                    full_reply += token
+                    if token and on_token is not None:
+                        on_token(token)
+                usage = obj.get("usage") or {}
+                if usage:
+                    tok_in = usage.get("prompt_tokens", tok_in)
+                    tok_out = usage.get("completion_tokens", tok_out)
+        except (OSError, ValueError):
+            if cancellation is None or not cancellation.cancelled:
+                raise
+        finally:
+            if cancellation is not None:
+                cancellation.detach(resp)
     return full_reply, tok_in, tok_out
+
 
 def _do_openai_stream_with_dns_retry(
     url: str,
@@ -123,9 +138,12 @@ def _do_openai_stream_with_dns_retry(
     payload: Dict[str, Any],
     timeout: Optional[int],
     on_token: Optional[Callable[[str], None]] = None,
+    cancellation: Optional[ProviderCancellation] = None,
 ) -> "tuple[str, int, int]":
     """Retry transient connection/gateway failures before any token is emitted."""
     for attempt in range(3):
+        if cancellation is not None and cancellation.cancelled:
+            return "", 0, 0
         emitted = False
 
         def _on_token(token: str) -> None:
@@ -135,17 +153,27 @@ def _do_openai_stream_with_dns_retry(
                 on_token(token)
 
         try:
-            return _do_openai_stream(url, headers, payload, timeout, _on_token)
+            return _do_openai_stream(
+                url, headers, payload, timeout, _on_token, cancellation
+            )
         except urllib.error.HTTPError as exc:
             transient_gateway = exc.code in (502, 503, 504)
             if emitted or not transient_gateway or attempt == 2:
                 raise
             exc.close()
-            time.sleep(attempt + 1)
+            if cancellation is not None:
+                if cancellation.wait(attempt + 1):
+                    return "", 0, 0
+            else:
+                time.sleep(attempt + 1)
         except TimeoutError:
             if emitted or attempt == 2:
                 raise
-            time.sleep(attempt + 1)
+            if cancellation is not None:
+                if cancellation.wait(attempt + 1):
+                    return "", 0, 0
+            else:
+                time.sleep(attempt + 1)
         except urllib.error.URLError as exc:
             reason = exc.reason
             errno = getattr(reason, "errno", None)
@@ -157,8 +185,13 @@ def _do_openai_stream_with_dns_retry(
             timeout_failure = isinstance(reason, TimeoutError)
             if emitted or not (dns_failure or timeout_failure) or attempt == 2:
                 raise
-            time.sleep(attempt + 1)
+            if cancellation is not None:
+                if cancellation.wait(attempt + 1):
+                    return "", 0, 0
+            else:
+                time.sleep(attempt + 1)
     raise RuntimeError("No se pudo contactar con el proveedor")
+
 
 def _do_claude_stream(
     url: str,
@@ -166,6 +199,7 @@ def _do_claude_stream(
     payload: Dict[str, Any],
     timeout: Optional[int],
     on_token: Optional[Callable[[str], None]] = None,
+    cancellation: Optional[ProviderCancellation] = None,
 ) -> "tuple[str, int, int]":
     """Llama a la API de Anthropic y devuelve (reply, tok_in, tok_out).
 
@@ -179,39 +213,49 @@ def _do_claude_stream(
     full_reply = ""
     tok_in = tok_out = 0
     with safe_urlopen(req, timeout=timeout) as resp:
-        for raw in resp:
-            line = raw.decode("utf-8", errors="replace").strip()
-            if not line.startswith("data: "):
-                continue
-            try:
-                obj = json.loads(line[6:])
-                ev_type = obj.get("type")
-                if ev_type == "message_start":
-                    usage = obj.get("message", {}).get("usage") or {}
-                    tok_in = usage.get("input_tokens", 0)
-                elif ev_type == "content_block_delta":
-                    token = obj.get("delta", {}).get("text", "")
-                    full_reply += token
-                    if token and on_token is not None:
-                        on_token(token)
-                elif ev_type == "message_delta":
-                    usage = obj.get("usage") or {}
-                    tok_out = usage.get("output_tokens", tok_out)
-            except (json.JSONDecodeError, AttributeError, TypeError) as exc:
-                flog.warning(f"[chat] Evento Anthropic inválido omitido: {exc}")
+        if cancellation is not None:
+            cancellation.attach(resp)
+        try:
+            for raw in resp:
+                if cancellation is not None and cancellation.cancelled:
+                    break
+                line = raw.decode("utf-8", errors="replace").strip()
+                if not line.startswith("data: "):
+                    continue
+                try:
+                    obj = json.loads(line[6:])
+                    ev_type = obj.get("type")
+                    if ev_type == "message_start":
+                        usage = obj.get("message", {}).get("usage") or {}
+                        tok_in = usage.get("input_tokens", 0)
+                    elif ev_type == "content_block_delta":
+                        token = obj.get("delta", {}).get("text", "")
+                        full_reply += token
+                        if token and on_token is not None:
+                            on_token(token)
+                    elif ev_type == "message_delta":
+                        usage = obj.get("usage") or {}
+                        tok_out = usage.get("output_tokens", tok_out)
+                except (json.JSONDecodeError, AttributeError, TypeError) as exc:
+                    flog.warning(f"[chat] Evento Anthropic inválido omitido: {exc}")
+        except (OSError, ValueError):
+            if cancellation is None or not cancellation.cancelled:
+                raise
+        finally:
+            if cancellation is not None:
+                cancellation.detach(resp)
     return full_reply, tok_in, tok_out
+
 
 def _do_ollama_call(
     host: str,
     payload: Dict[str, Any],
     timeout: Optional[int],
     api_key: str = "",
-    # on_token va EL ÚLTIMO y no es casualidad: _stream_tokens llama a
-    # fn(*args, _on_token), o sea que el callback entra como último posicional.
-    # Si se cuela un parámetro nuevo detrás, el callback aterriza en él —y aquí
-    # el de al lado es api_key, con lo que acabaría dentro de una cabecera
-    # Authorization sin que nada fallara a la vista.
+    # on_token y cancellation van al final porque _stream_tokens los añade a
+    # los argumentos posicionales después de api_key.
     on_token: Optional[Callable[[str], None]] = None,
+    cancellation: Optional[ProviderCancellation] = None,
 ) -> "tuple[str, int, int]":
     """Llama a Ollama y devuelve (reply, tok_in, tok_out).
 
@@ -233,27 +277,40 @@ def _do_ollama_call(
     full_reply = ""
     tok_in = tok_out = 0
     with urllib.request.urlopen(req, timeout=timeout) as resp:
-        for raw in resp:
-            line = raw.decode("utf-8", errors="replace").strip()
-            if not line:
-                continue
-            try:
-                obj = json.loads(line)
-            except ValueError:
-                continue
-            token = (obj.get("message") or {}).get("content") or ""
-            if token:
-                full_reply += token
-                if on_token is not None:
-                    on_token(token)
-            # El recuento solo viene en el último objeto, el que trae done:true.
-            # Se lee en todos por si alguna versión lo adelanta.
-            tok_in = obj.get("prompt_eval_count", tok_in)
-            tok_out = obj.get("eval_count", tok_out)
+        if cancellation is not None:
+            cancellation.attach(resp)
+        try:
+            for raw in resp:
+                if cancellation is not None and cancellation.cancelled:
+                    break
+                line = raw.decode("utf-8", errors="replace").strip()
+                if not line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except ValueError:
+                    continue
+                token = (obj.get("message") or {}).get("content") or ""
+                if token:
+                    full_reply += token
+                    if on_token is not None:
+                        on_token(token)
+                # El recuento solo viene en el último objeto, el que trae done:true.
+                # Se lee en todos por si alguna versión lo adelanta.
+                tok_in = obj.get("prompt_eval_count", tok_in)
+                tok_out = obj.get("eval_count", tok_out)
+        except (OSError, ValueError):
+            if cancellation is None or not cancellation.cancelled:
+                raise
+        finally:
+            if cancellation is not None:
+                cancellation.detach(resp)
     return full_reply, tok_in, tok_out
+
 
 class UnsafeProviderURL(ValueError):
     """La URL configurada en la conexión apunta a la red interna."""
+
 
 def _assert_provider_url(url: str) -> None:
     """SSRF: la URL de un proveedor la escribe el usuario y apunta fuera.
@@ -269,6 +326,7 @@ def _assert_provider_url(url: str) -> None:
         raise UnsafeProviderURL(
             f"La URL de la conexión no está permitida: {exc}"
         ) from exc
+
 
 # Claves donde los proveedores ponen el mensaje pensado para enseñar al usuario
 # ("modelo no encontrado", "cuota agotada"). Lo que no encaje en esta forma es
@@ -291,6 +349,7 @@ def _detalle_publico(body: str) -> str:
     if not isinstance(detail, str) or not detail.strip():
         return "sin detalle utilizable en la respuesta."
     return detail.strip()[:500]
+
 
 def _validate_ollama_host(host: str) -> None:
     """Rechaza hosts que apunten a rangos privados o de metadata de cloud (SSRF)."""

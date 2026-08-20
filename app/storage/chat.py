@@ -145,13 +145,25 @@ class ChatStorage:
         content: str,
         tokens_in: int = 0,
         tokens_out: int = 0,
+        interrupted: bool = False,
+        usage_estimated: bool = False,
     ) -> Dict[str, Any]:
         msg_id = generate_id(32)
         now = _now()
         async with open_db() as conn:
             await conn.execute(
                 sql("queries/chat:insert_message"),
-                (msg_id, conv_id, role, content, tokens_in, tokens_out, now),
+                (
+                    msg_id,
+                    conv_id,
+                    role,
+                    content,
+                    tokens_in,
+                    tokens_out,
+                    interrupted,
+                    usage_estimated,
+                    now,
+                ),
             )
             await conn.commit()
         return {
@@ -161,6 +173,8 @@ class ChatStorage:
             "content": content,
             "tokens_in": tokens_in,
             "tokens_out": tokens_out,
+            "interrupted": interrupted,
+            "usage_estimated": usage_estimated,
             "created_at": now,
         }
 
@@ -182,7 +196,8 @@ class ChatStorage:
         params.append(limit + 1)
         async with open_db() as conn:
             rows = await conn.fetchall(
-                "SELECT m.id, m.role, m.content, m.tokens_in, m.tokens_out, m.created_at "
+                "SELECT m.id, m.role, m.content, m.tokens_in, m.tokens_out, "
+                "m.interrupted, m.usage_estimated, m.created_at "
                 "FROM messages m WHERE m.conversation_id = ? "
                 "AND EXISTS (SELECT 1 FROM conversations c "
                 "WHERE c.id = ? AND c.user_id = ?) "
@@ -190,7 +205,14 @@ class ChatStorage:
                 + "ORDER BY m.created_at DESC, m.id DESC LIMIT ?",
                 tuple(params),
             )
-        newest_first = [dict(row) for row in rows[:limit]]
+        newest_first = [
+            {
+                **dict(row),
+                "interrupted": bool(row["interrupted"]),
+                "usage_estimated": bool(row["usage_estimated"]),
+            }
+            for row in rows[:limit]
+        ]
         has_more = len(rows) > limit
         next_cursor = None
         if has_more and newest_first:

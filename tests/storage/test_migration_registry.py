@@ -73,6 +73,31 @@ async def test_repeatable_migration_runs_again_but_is_recorded_once(tmp_path):
     assert count == 1
 
 
+async def test_chat_interrupted_migration_updates_existing_messages(tmp_path):
+    from app.storage.migrations.steps.misc import _chat_message_interrupted_sqlite
+
+    async with aiosqlite.connect(tmp_path / "chat-interrupted.db") as conn:
+        await conn.executescript("""
+            CREATE TABLE messages (
+                id TEXT PRIMARY KEY,
+                content TEXT NOT NULL
+            );
+            INSERT INTO messages VALUES ('old-message', 'completa');
+        """)
+
+        await _chat_message_interrupted_sqlite(conn)
+        await _chat_message_interrupted_sqlite(conn)
+        columns = await conn.execute_fetchall("PRAGMA table_info(messages)")
+        row = await conn.execute_fetchall(
+            "SELECT interrupted FROM messages WHERE id='old-message'"
+        )
+
+    names = [column[1] for column in columns]
+    assert names.count("interrupted") == 1
+    assert names.count("usage_estimated") == 1
+    assert row[0][0] == 0
+
+
 async def test_knowledge_checksum_migration_backfills_objects_and_pack_bytes(tmp_path):
     from app.storage.migrations.steps.knowledge import _knowledge_item_checksums_sqlite
 

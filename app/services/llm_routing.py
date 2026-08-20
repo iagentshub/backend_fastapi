@@ -6,7 +6,7 @@ import json
 from typing import Any, AsyncGenerator, Dict, List, Optional
 
 from app.models.agent import Agent
-from app.services.chat import stream_chat
+from app.services.chat import ChatStreamState, stream_chat
 from app.services.llm_executor import LLMLease
 from app.utils import flog
 
@@ -179,6 +179,7 @@ async def stream_orchestrated_chat(
     tool_storage: Any = None,
     attached_knowledge: Optional[List[Dict[str, Any]]] = None,
     llm_lease: LLMLease | None = None,
+    stream_state: ChatStreamState | None = None,
 ) -> AsyncGenerator[str, None]:
     if not isinstance(agent, Agent):
         agent = Agent.from_dict(agent)
@@ -290,6 +291,7 @@ async def stream_orchestrated_chat(
                 tool_storage=tool_storage,
                 attached_knowledge=attached_knowledge,
                 llm_lease=llm_lease,
+                stream_state=stream_state,
             ):
                 event = _event(frame)
                 if event and event.get("type") == "token":

@@ -8,11 +8,12 @@ durante un tiempo y el usuario veía la pantalla quieta hasta que llegaba la
 respuesta entera.
 """
 
-
 from __future__ import annotations
 
 import asyncio
 import json
+import threading
+from dataclasses import dataclass
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -30,14 +31,98 @@ from app.services.llm_executor import (
 )
 
 
+@dataclass
+class ChatStreamState:
+    """Resultado observable aunque el cliente cierre el SSE antes de ``done``."""
+
+    reply: str = ""
+    tokens_in: int = 0
+    tokens_out: int = 0
+    estimated_usage: bool = False
+    interrupted: bool = False
+    completed: bool = False
+    started: bool = False
+    connection_id: str = ""
+
+    def start(self, *, tokens_in: int, connection_id: str = "") -> None:
+        self.started = True
+        self.tokens_in = max(0, tokens_in)
+        self.estimated_usage = True
+        if connection_id:
+            self.connection_id = connection_id
+
+    def append_token(self, token: str) -> None:
+        self.reply += token
+        self.tokens_out = _estimate_tokens(self.reply)
+        self.estimated_usage = True
+
+    def finish(self, reply: str, tokens_in: int, tokens_out: int) -> None:
+        self.reply = reply
+        self.tokens_in = max(0, tokens_in)
+        self.tokens_out = max(0, tokens_out)
+        self.estimated_usage = False
+        self.completed = True
+
+    def interrupt(self) -> None:
+        if self.started and not self.completed:
+            self.interrupted = True
+
+
+class ProviderCancellation:
+    """Puente thread-safe entre la cancelación ASGI y el socket bloqueante."""
+
+    def __init__(self) -> None:
+        self._event = threading.Event()
+        self._lock = threading.Lock()
+        self._response: Any = None
+
+    @property
+    def cancelled(self) -> bool:
+        return self._event.is_set()
+
+    def attach(self, response: Any) -> None:
+        close_now = False
+        with self._lock:
+            if self._event.is_set():
+                close_now = True
+            else:
+                self._response = response
+        if close_now:
+            try:
+                response.close()
+            except (OSError, ValueError):
+                return
+
+    def detach(self, response: Any) -> None:
+        with self._lock:
+            if self._response is response:
+                self._response = None
+
+    def cancel(self) -> None:
+        self._event.set()
+        with self._lock:
+            response = self._response
+            self._response = None
+        if response is not None:
+            try:
+                response.close()
+            except (OSError, ValueError):
+                return
+
+    def wait(self, timeout: float) -> bool:
+        return self._event.wait(timeout)
+
+
 def _sse(data: Dict[str, Any]) -> str:
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
+
 
 async def _stream_tokens(
     out: "list[tuple[str, int, int]]",
     fn: Callable[..., "tuple[str, int, int]"],
     *args: Any,
     llm_lease: LLMLease | None = None,
+    stream_state: ChatStreamState | None = None,
 ) -> AsyncGenerator[str, None]:
     """Corre ``fn`` (bloqueante, urllib) en un hilo y va emitiendo su SSE.
 
@@ -56,32 +141,69 @@ async def _stream_tokens(
     def _on_token(token: str) -> None:
         loop.call_soon_threadsafe(token_queue.put_nowait, token)
 
+    cancellation = ProviderCancellation()
     provider_task = asyncio.create_task(
-        run_llm_blocking(fn, *args, _on_token, lease=llm_lease)
+        run_llm_blocking(fn, *args, _on_token, cancellation, lease=llm_lease)
     )
-    last_heartbeat = loop.time()
-    while not provider_task.done() or not token_queue.empty():
-        try:
-            token = await asyncio.wait_for(token_queue.get(), timeout=0.1)
-        except asyncio.TimeoutError:
-            # Algunos modelos de razonamiento tardan más de un minuto en
-            # producir el primer token. Mantener el SSE activo evita que nginx
-            # o el cliente confundan esa espera con un cuelgue.
-            if loop.time() - last_heartbeat >= 10:
-                yield ": keep-alive\n\n"
-                last_heartbeat = loop.time()
-            continue
-        yield _sse({"type": "token", "token": token})
+    completed = False
+    interrupted = False
+    try:
         last_heartbeat = loop.time()
-    out.append(await provider_task)
+        while not provider_task.done() or not token_queue.empty():
+            try:
+                token = await asyncio.wait_for(token_queue.get(), timeout=0.1)
+            except asyncio.TimeoutError:
+                # Algunos modelos de razonamiento tardan más de un minuto en
+                # producir el primer token. Mantener el SSE activo evita que nginx
+                # o el cliente confundan esa espera con un cuelgue.
+                if loop.time() - last_heartbeat >= 10:
+                    yield ": keep-alive\n\n"
+                    last_heartbeat = loop.time()
+                continue
+            if stream_state is not None:
+                stream_state.append_token(token)
+            yield _sse({"type": "token", "token": token})
+            last_heartbeat = loop.time()
+        result = await provider_task
+        out.append(result)
+        if stream_state is not None:
+            stream_state.finish(*result)
+        completed = True
+    except (asyncio.CancelledError, GeneratorExit):
+        interrupted = True
+        raise
+    finally:
+        if not completed:
+            if interrupted and stream_state is not None:
+                stream_state.interrupt()
+            cancellation.cancel()
+            # Cerrar la respuesta despierta normalmente al hilo de urllib. La
+            # espera se protege para que una segunda cancelación ASGI no vuelva
+            # a dejar la tarea huérfana; el slot se libera en invoke().
+            if not provider_task.done():
+                try:
+                    await asyncio.wait_for(asyncio.shield(provider_task), timeout=1.0)
+                except asyncio.CancelledError:
+                    provider_task.cancel()
+                except asyncio.TimeoutError:
+                    provider_task.cancel()
+                except (OSError, ValueError):
+                    # El cierre deliberado del socket puede despertar urllib
+                    # con cualquiera de estos errores; el estado parcial ya
+                    # quedó capturado antes de cerrar el transporte.
+                    if stream_state is not None:
+                        stream_state.interrupt()
+
 
 def _estimate_tokens(text: str) -> int:
     """Estimación rápida: ~4 chars por token (conservador)."""
     return max(1, len(text) // 4)
 
+
 _HISTORY_TOKEN_BUDGET = 20_000
 
 _CONTEXT_TOKEN_BUDGET = 60_000
+
 
 def _truncate_history(
     history: list,

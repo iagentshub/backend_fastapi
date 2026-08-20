@@ -29,13 +29,13 @@ DELETE FROM conversations
 WHERE id = ? AND user_id = ?;
 
 -- name: insert_message
-INSERT INTO messages (id, conversation_id, role, content, tokens_in, tokens_out, created_at)
-VALUES (?, ?, ?, ?, ?, ?, ?);
+INSERT INTO messages (id, conversation_id, role, content, tokens_in, tokens_out, interrupted, usage_estimated, created_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?);
 
 -- name: recent_context
-SELECT id, role, content, created_at
+SELECT id, role, content, interrupted, usage_estimated, created_at
 FROM (
-SELECT m.id, m.role, SUBSTR(m.content, 1, ?) AS content, m.created_at
+SELECT m.id, m.role, SUBSTR(m.content, 1, ?) AS content, m.interrupted, m.usage_estimated, m.created_at
 FROM messages m
 JOIN conversations c ON c.id = m.conversation_id
 WHERE c.user_id = ? AND c.agent_id = ? AND c.id != ?

@@ -557,6 +557,61 @@ def test_chat_with_conversation_id(admin_client):
     assert r.status_code == 200
 
 
+def test_chat_disconnect_persists_partial_turn_and_usage(admin_client):
+    from fastapi import Request
+
+    from app.api.routes.agent_chat import chat
+    from app.api.routes.auth import GroupContext
+    from app.models.request_bodies import AgentChatBody
+
+    conn = _create_connection(admin_client)
+    agent = _create_agent(
+        admin_client,
+        {"name": "Interrupted Agent", "connection_id": conn["id"]},
+    )
+    conversation = admin_client.post(
+        f"/api/chats/{agent['id']}", json={"title": ""}
+    ).json()
+
+    async def interrupted_stream(*args, stream_state, **kwargs):
+        stream_state.start(tokens_in=12, connection_id=conn["id"])
+        stream_state.append_token("Respuesta parcial")
+        yield 'data: {"type":"token","token":"Respuesta parcial"}\n\n'
+        await asyncio.Event().wait()
+
+    async def disconnect_after_first_frame() -> None:
+        response = await chat(
+            agent["id"],
+            Request({"type": "http"}),
+            AgentChatBody(
+                messages=[{"role": "user", "content": "Detén esto"}],
+                conversation_id=conversation["id"],
+            ),
+            GroupContext("testadmin", "testadmin"),
+            None,
+        )
+        frame = await response.body_iterator.__anext__()
+        assert "Respuesta parcial" in frame
+        await response.body_iterator.aclose()
+        assert response.background is not None
+        await response.background()
+
+    with patch("app.api.routes.agent_chat.stream_chat", new=interrupted_stream):
+        asyncio.run(disconnect_after_first_frame())
+
+    messages = admin_client.get(
+        f"/api/chats/{agent['id']}/{conversation['id']}"
+    ).json()
+    assert [message["content"] for message in messages] == [
+        "Detén esto",
+        "Respuesta parcial",
+    ]
+    assert messages[1]["interrupted"] is True
+    assert messages[1]["usage_estimated"] is True
+    assert messages[1]["tokens_in"] == 12
+    assert messages[1]["tokens_out"] > 0
+
+
 def test_chat_with_ollama_virtual_connection(admin_client):
     """connection_id con '::' separa base_conn y modelo Ollama (líneas 377-379, 395-396)."""
     conn = _create_connection(admin_client)

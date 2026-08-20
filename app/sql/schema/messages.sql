@@ -5,6 +5,8 @@ CREATE TABLE IF NOT EXISTS messages (
     content         TEXT NOT NULL,
     tokens_in       INTEGER NOT NULL DEFAULT 0,
     tokens_out      INTEGER NOT NULL DEFAULT 0,
+    interrupted     @BOOL@ NOT NULL DEFAULT 0,
+    usage_estimated @BOOL@ NOT NULL DEFAULT 0,
     created_at      TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_msg_conv

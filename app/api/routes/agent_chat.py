@@ -19,7 +19,7 @@ from app.models.llm_orchestration import orchestration_id_from_connection
 from app.models.request_bodies import AgentChatBody
 from app.services.agent_access import agent_access
 from app.services.agent_presentation import apply_agent_locale
-from app.services.chat import stream_chat
+from app.services.chat import ChatStreamState, stream_chat
 from app.services.llm_executor import try_acquire_llm_lease
 from app.services.llm_routing import stream_orchestrated_chat
 from app.storage.agent_storage import AgentStorage
@@ -219,10 +219,16 @@ async def chat(
     from starlette.background import BackgroundTask
 
     done_event: List[dict] = []
+    stream_state = ChatStreamState()
+    stream_state.start(
+        tokens_in=0,
+        connection_id="" if orchestration else base_conn_id,
+    )
 
     history_user_id = user
 
     async def _gen():
+        exhausted = False
         try:
             streamer = (
                 stream_chat(
@@ -240,6 +246,7 @@ async def chat(
                     tool_storage=_tools,
                     attached_knowledge=attached_knowledge,
                     llm_lease=llm_lease,
+                    stream_state=stream_state,
                 )
                 if orchestration is None
                 else stream_orchestrated_chat(
@@ -258,10 +265,10 @@ async def chat(
                     tool_storage=_tools,
                     attached_knowledge=attached_knowledge,
                     llm_lease=llm_lease,
+                    stream_state=stream_state,
                 )
             )
             async for chunk in streamer:
-                yield chunk
                 if chunk.startswith("data: "):
                     try:
                         ev = json.loads(chunk[6:].strip())
@@ -273,13 +280,35 @@ async def chat(
                         flog.warning(
                             f"[agents] Evento SSE inválido para {agent_id}: {exc}"
                         )
+                yield chunk
+            exhausted = True
         finally:
+            if not exhausted and not done_event:
+                stream_state.interrupt()
             llm_lease.release_if_unused()
 
     async def _on_done():
-        if not done_event:
+        if done_event:
+            ev = done_event[0]
+        elif stream_state.interrupted:
+            ev = {
+                "type": "interrupted",
+                "reply": stream_state.reply,
+                "tokens": {
+                    "in": stream_state.tokens_in,
+                    "out": stream_state.tokens_out,
+                },
+                "estimated_usage": stream_state.estimated_usage,
+            }
+            if orchestration and stream_state.connection_id:
+                ev["usage_by_connection"] = {
+                    stream_state.connection_id: {
+                        "in": stream_state.tokens_in,
+                        "out": stream_state.tokens_out,
+                    }
+                }
+        else:
             return
-        ev = done_event[0]
         usage_by_connection = ev.get("usage_by_connection") or {}
         if usage_by_connection:
             tok_in = sum(
@@ -304,27 +333,26 @@ async def chat(
             await _agents.add_tokens(
                 agent_id, tok_in, tok_out, owner_id=a.get("owner_id")
             )
-            if ev.get("type") != "done":
-                return
-            if conversation_id:
-                reply = ev.get("reply", "")
-                user_msg = next(
-                    (m for m in reversed(history) if m.get("role") == "user"), None
-                )
-                if user_msg:
-                    await _chat.add_message(
-                        conversation_id, "user", str(user_msg.get("content") or "")
-                    )
-                if reply:
-                    await _chat.add_message(
-                        conversation_id,
-                        "assistant",
-                        reply,
-                        tokens_in=tok_in,
-                        tokens_out=tok_out,
-                    )
-                    title = str(user_msg.get("content") or "")[:80] if user_msg else ""
-                    await _chat.touch_conversation(conversation_id, title)
+        if ev.get("type") not in {"done", "interrupted"} or not conversation_id:
+            return
+        reply = str(ev.get("reply") or "")
+        user_msg = next((m for m in reversed(history) if m.get("role") == "user"), None)
+        if user_msg:
+            await _chat.add_message(
+                conversation_id, "user", str(user_msg.get("content") or "")
+            )
+        if reply:
+            await _chat.add_message(
+                conversation_id,
+                "assistant",
+                reply,
+                tokens_in=tok_in,
+                tokens_out=tok_out,
+                interrupted=ev.get("type") == "interrupted",
+                usage_estimated=bool(ev.get("estimated_usage")),
+            )
+        title = str(user_msg.get("content") or "")[:80] if user_msg else ""
+        await _chat.touch_conversation(conversation_id, title)
 
     return StreamingResponse(
         _gen(),

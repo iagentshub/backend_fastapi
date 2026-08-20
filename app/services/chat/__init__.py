@@ -14,7 +14,6 @@ Los tests parchean `safe_urlopen` y `time.sleep` en `providers`, y
 nombres, no este.
 """
 
-
 from __future__ import annotations
 
 import urllib.error
@@ -48,6 +47,7 @@ from app.services.chat._protocols import (
 from app.services.chat._streaming import (
     _CONTEXT_TOKEN_BUDGET,
     _HISTORY_TOKEN_BUDGET,
+    ChatStreamState,
     _estimate_tokens,
     _sse,
     _stream_tokens,
@@ -69,7 +69,7 @@ from app.storage.crypto import UNREADABLE_FLAG
 from app.storage.db import DB_ERRORS
 from app.utils import flog
 
-__all__ = ["stream_chat", "UnsafeProviderURL"]
+__all__ = ["stream_chat", "ChatStreamState", "UnsafeProviderURL"]
 
 
 async def stream_chat(
@@ -88,6 +88,7 @@ async def stream_chat(
     tool_storage: Optional[_ToolStorage] = None,
     attached_knowledge: Optional[List[Dict[str, Any]]] = None,
     llm_lease: LLMLease | None = None,
+    stream_state: ChatStreamState | None = None,
 ) -> AsyncGenerator[str, None]:
     # asyncio estaba diferido aquí dentro. Es stdlib: no había ciclo que
     # romper, y _stream_tokens lo necesita a nivel de módulo.
@@ -322,6 +323,14 @@ async def stream_chat(
         max_context=_CONTEXT_TOKEN_BUDGET - output_reserve,
     )
     history_truncated = history != original_history
+    if stream_state is not None:
+        stream_state.start(
+            tokens_in=_sys_tokens
+            + sum(
+                _estimate_tokens(str(message.get("content", ""))) for message in history
+            ),
+            connection_id=str(conn.get("id") or ""),
+        )
 
     if truncated_sources or history_truncated:
         yield _sse(
@@ -380,6 +389,7 @@ async def stream_chat(
                 payload,
                 timeout,
                 llm_lease=llm_lease,
+                stream_state=stream_state,
             ):
                 yield frame
             reply, tok_in, tok_out = out[0]
@@ -414,6 +424,7 @@ async def stream_chat(
                 payload,
                 timeout,
                 llm_lease=llm_lease,
+                stream_state=stream_state,
             ):
                 yield frame
             reply, tok_in, tok_out = out[0]
@@ -441,6 +452,7 @@ async def stream_chat(
                 timeout,
                 ollama_api_key,
                 llm_lease=llm_lease,
+                stream_state=stream_state,
             ):
                 yield frame
             reply, tok_in, tok_out = out[0]

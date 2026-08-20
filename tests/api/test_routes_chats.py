@@ -175,6 +175,28 @@ def test_get_messages_includes_tokens(alice, patch_data_dir):
     assert msgs[1]["tokens_out"] == 6
 
 
+def test_get_messages_marks_interrupted_assistant_reply(alice, patch_data_dir):
+    conv = alice.post("/api/chats/agent-abc", json={"title": "Test"}).json()
+    storage = ChatStorage()
+    asyncio.run(
+        storage.add_message(
+            conv["id"],
+            "assistant",
+            "Respuesta parcial",
+            tokens_in=9,
+            tokens_out=4,
+            interrupted=True,
+            usage_estimated=True,
+        )
+    )
+
+    message = alice.get(f"/api/chats/agent-abc/{conv['id']}").json()[0]
+
+    assert message["content"] == "Respuesta parcial"
+    assert message["interrupted"] is True
+    assert message["usage_estimated"] is True
+
+
 def test_list_conversations_includes_token_totals(alice, patch_data_dir):
     """La lista de conversaciones trae el total de tokens (suma de sus
     mensajes) para poder mostrar consumo por chat sin leer los mensajes."""
