@@ -15,6 +15,7 @@ import tempfile
 import time
 from typing import Any, Callable, Dict, List
 
+from app.config.data import BASE_DIR
 from app.utils import flog
 
 # ── Configuración ────────────────────────────────────────────────────────────
@@ -23,9 +24,11 @@ CENTINEL_ENABLED: bool = os.getenv("CENTINEL_ENABLED", "true").lower() in (
     "true",
     "yes",
 )
-_BACKEND_DIR: str = os.path.abspath(
-    os.path.join(os.path.dirname(__file__), "..", "..", "..")
-)
+# Centinel antes era un único módulo bajo ``routes/``. Al dividirlo en el
+# paquete ``routes/centinel/``, calcular la raíz contando ``..`` dejó el cwd en
+# ``app/`` y pytest ya no encontraba ``tests/``. La raíz canónica del backend
+# vive en config.data y no depende de dónde esté este módulo.
+_BACKEND_DIR: str = str(BASE_DIR)
 
 
 # ── Estado global ────────────────────────────────────────────────────────────

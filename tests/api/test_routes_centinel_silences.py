@@ -3,15 +3,60 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from app.api.routes.centinel import _shared, _state
+from app.errors import APIError
 
 # Centinel es un paquete (`app/api/routes/centinel/`): el estado vive en
 # `_state` y los helpers en `_shared`. Los parches van al módulo donde se
 # resuelve el nombre, no al paquete, o no llegan a tener efecto.
+
+
+def test_centinel_backend_dir_contains_the_test_suite():
+    backend_dir = Path(_state._BACKEND_DIR)
+
+    assert (backend_dir / "app").is_dir()
+    assert (backend_dir / "tests").is_dir()
+
+
+def test_tree_discovery_collects_the_real_backend_suite():
+    from app.api.routes.centinel import run
+
+    tree = asyncio.run(run.get_tree("admin"))
+    files = [item for directory in tree["dirs"] for item in directory["files"]]
+
+    assert files
+    assert sum(item["count"] for item in files) > 0
+    assert any(
+        item["file"] == __file__.removeprefix(f"{_state._BACKEND_DIR}/")
+        for item in files
+    )
+
+
+def test_tree_discovery_does_not_hide_pytest_failures():
+    from app.api.routes.centinel import run
+
+    process = AsyncMock()
+    process.returncode = 4
+    process.communicate.return_value = (b"", b"ERROR: file or directory not found")
+
+    with (
+        patch.object(
+            run.asyncio,
+            "create_subprocess_exec",
+            new=AsyncMock(return_value=process),
+        ),
+        patch.object(run.flog, "error"),
+    ):
+        with pytest.raises(APIError) as raised:
+            asyncio.run(run.get_tree("admin"))
+
+    assert getattr(raised.value, "status_code", None) == 500
+    assert raised.value.detail["code"] == "internal_error"
 
 
 def test_broadcasts_keep_latest_event_for_slow_subscribers():

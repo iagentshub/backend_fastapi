@@ -66,13 +66,25 @@ async def get_tree(_: str = Depends(require_admin)) -> dict:
             "-q",
             "--no-header",
             stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.DEVNULL,
+            stderr=asyncio.subprocess.PIPE,
             cwd=_BACKEND_DIR,
         )
-        stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=30)
+        stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
+        if proc.returncode != 0:
+            flog.error(
+                "[centinel] pytest no pudo descubrir los tests "
+                f"(rc={proc.returncode}): {stderr.decode(errors='replace')[:500]}"
+            )
+            raise APIError(
+                500,
+                "internal_error",
+                "No se pudo descubrir la suite de tests",
+            )
         return _build_tree(stdout.decode().splitlines())
     except asyncio.TimeoutError:
         raise APIError(504, "upstream_error", "Timeout descubriendo tests")
+    except APIError:
+        raise
     except Exception as exc:  # noqa: BLE001
         # Descubrimiento de tests vía subproceso: se traduce a un 500 con el
         # motivo. Es una ruta solo-admin, así que str(exc) no se filtra fuera.
