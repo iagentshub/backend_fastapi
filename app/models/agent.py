@@ -274,7 +274,7 @@ class Agent(BaseResource):
 
         if fmt == "openai":
             payload = {
-                "model": self.model or "gpt-4o",
+                "model": self.model,
                 "name": self.name,
                 "description": self.description,
                 "instructions": self.system_prompt,

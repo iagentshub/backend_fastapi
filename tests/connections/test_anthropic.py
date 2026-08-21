@@ -21,7 +21,7 @@ def test_test_missing_api_key():
 
 
 def test_test_success():
-    mock_resp = _mock_response({"id": "msg_123", "type": "message"})
+    mock_resp = _mock_response({"data": [{"id": "available-model"}]})
     with patch("app.connections.anthropic.safe_urlopen", return_value=mock_resp):
         result = AnthropicProvider.test({"api_key": "sk-ant-fake"})
     assert result.ok is True

@@ -52,7 +52,7 @@ class OpenAIAgent(Agent):
 
     def export(self, fmt: str = "openai") -> tuple[str, str, str]:
         payload: dict = {
-            "model": self.model or "gpt-4o",
+            "model": self.model,
             "name": self.name,
             "description": self.description,
             "instructions": self.system_prompt,

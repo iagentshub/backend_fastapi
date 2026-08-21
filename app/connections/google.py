@@ -7,7 +7,7 @@ import urllib.error
 import urllib.request
 from typing import Any, Dict
 
-from app.config.providers import PROVIDER_BASE_URLS, PROVIDER_DEFAULT_MODELS
+from app.config.providers import PROVIDER_BASE_URLS
 from app.utils.safe_http import safe_urlopen
 
 from .base import BaseProvider, FieldDef, TestResult, register
@@ -22,9 +22,7 @@ class GoogleProvider(BaseProvider):
     icon = ""
     fields = [
         FieldDef("api_key", "API Key", "password", "AIza...", required=True),
-        FieldDef(
-            "model", "Modelo por defecto", "text", PROVIDER_DEFAULT_MODELS["gemini"]
-        ),
+        FieldDef("model", "Modelo", "text"),
         FieldDef("url", "URL", "text", default=f"{_BASE_URL}/openai/chat/completions"),
     ]
 

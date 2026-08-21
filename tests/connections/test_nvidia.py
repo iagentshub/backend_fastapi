@@ -5,7 +5,6 @@ import json
 import urllib.error
 from unittest.mock import MagicMock, patch
 
-from app.connections.base import TestResult as _TestResult
 from app.connections.nvidia import NvidiaProvider
 
 
@@ -25,30 +24,10 @@ def test_test_missing_api_key():
 
 
 def test_test_success():
-    mock_resp = _mock_response({"choices": [{"message": {"content": "hi"}}]})
-    with patch("app.connections.nvidia.safe_urlopen", return_value=mock_resp):
+    mock_resp = _mock_response({"data": [{"id": "available-model"}]})
+    with patch("app.connections.base.safe_urlopen", return_value=mock_resp):
         result = NvidiaProvider.test({"api_key": "nvapi-fake"})
     assert result.ok is True
-
-
-def test_test_uses_configured_model():
-    """El modelo configurado se valida en el catálogo sin generar una respuesta lenta."""
-    configured_model = "meta/llama-3.3-70b-instruct"
-
-    with (
-        patch.object(
-            NvidiaProvider,
-            "_probe_auth",
-            return_value=_TestResult(True, "OK"),
-        ),
-        patch.object(NvidiaProvider, "_model_available", return_value=True) as available,
-    ):
-        result = NvidiaProvider.test(
-            {"api_key": "nvapi-fake", "model": configured_model}
-        )
-
-    assert result.ok is True
-    available.assert_called_once_with("nvapi-fake", configured_model)
 
 
 def test_test_auth_error():
@@ -56,15 +35,16 @@ def test_test_auth_error():
         url="", code=401, msg="Unauthorized",
         hdrs=None, fp=None,  # type: ignore
     )
-    http_err.read = lambda: b'{"detail": "Invalid API key"}'
-    with patch("app.connections.nvidia.safe_urlopen", side_effect=http_err):
+    http_err.read = lambda: b'{"error": {"message": "Invalid API key"}}'
+    with patch("app.connections.base.safe_urlopen", side_effect=http_err):
         result = NvidiaProvider.test({"api_key": "nvapi-bad"})
     assert result.ok is False
-    assert "401" in result.message
+    assert result.message == "Error de autenticación"
+    assert result.detail == "Invalid API key"
 
 
 def test_test_connection_error():
-    with patch("app.connections.nvidia.safe_urlopen", side_effect=OSError("timeout")):
+    with patch("app.connections.base.safe_urlopen", side_effect=OSError("timeout")):
         result = NvidiaProvider.test({"api_key": "nvapi-fake"})
     assert result.ok is False
     assert "timeout" in result.detail

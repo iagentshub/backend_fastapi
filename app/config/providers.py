@@ -1,4 +1,8 @@
-"""Configuración de proveedores LLM — fuente única de verdad."""
+"""Configuración de proveedores LLM — fuente única de verdad.
+
+Catálogos de modelos revisados el 2026-08-21. Los IDs no viven en este
+fichero: se consultan en la API de cada proveedor con la credencial del usuario.
+"""
 from __future__ import annotations
 
 import os
@@ -26,15 +30,4 @@ OPENAI_COMPAT_URLS: dict[str, str] = {
     "nvidia":  f"{PROVIDER_BASE_URLS['nvidia']}/chat/completions",
 }
 
-PROVIDER_DEFAULT_MODELS: dict[str, str] = {
-    "openai":  "gpt-4o",
-    "gemini":  "gemini-2.0-flash",
-    "qwen":    "qwen-plus",
-    "grok":    "grok-3",
-    "claude":  "claude-sonnet-4-6",
-    "nvidia":  "meta/llama-3.1-8b-instruct",
-}
-
-# Modelo ligero para el test de conectividad de Anthropic (minimiza coste del ping)
-ANTHROPIC_TEST_MODEL = "claude-haiku-4-5-20251001"
 ANTHROPIC_API_VERSION = "2023-06-01"

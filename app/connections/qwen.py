@@ -3,7 +3,7 @@ from __future__ import annotations
 
 from typing import Any, Dict
 
-from app.config.providers import PROVIDER_BASE_URLS, PROVIDER_DEFAULT_MODELS
+from app.config.providers import PROVIDER_BASE_URLS
 
 from .base import BaseProvider, FieldDef, TestResult, register
 
@@ -17,7 +17,7 @@ class QwenProvider(BaseProvider):
     icon = ""
     fields = [
         FieldDef("api_key", "API Key", "password", "sk-...", required=True),
-        FieldDef("model", "Modelo por defecto", "text", PROVIDER_DEFAULT_MODELS["qwen"]),
+        FieldDef("model", "Modelo", "text"),
         FieldDef("url", "URL", "text", default=f"{_BASE_URL}/chat/completions"),
     ]
 

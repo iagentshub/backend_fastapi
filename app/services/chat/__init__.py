@@ -34,7 +34,6 @@ from app.config.providers import (
     ANTHROPIC_API_VERSION,
     OPENAI_COMPAT_URLS,
     PROVIDER_BASE_URLS,
-    PROVIDER_DEFAULT_MODELS,
 )
 from app.services.chat._protocols import (
     _ChatStorage,
@@ -118,10 +117,18 @@ async def stream_chat(
         )
         return
     api_key = str(conn.get("api_key") or "")
-    # Model: connection → agent → provider default
-    model = str(
-        conn.get("model") or agent.model or PROVIDER_DEFAULT_MODELS.get(conn_type) or ""
-    )
+    # El modelo siempre procede de una conexión sincronizada o del agente; los
+    # catálogos cambian demasiado deprisa para mantener un fallback en código.
+    model = str(conn.get("model") or agent.model or "")
+    if not model:
+        yield _sse(
+            {
+                "type": "error",
+                "code": "model_required",
+                "message": "Selecciona un modelo del catálogo del proveedor.",
+            }
+        )
+        return
     temperature = agent.temperature
     max_tokens = agent.max_tokens
     timeout = agent.timeout

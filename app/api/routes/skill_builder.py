@@ -12,7 +12,6 @@ from pydantic import BaseModel, Field
 
 from app.api.routes.auth import GroupContext, require_group_session
 from app.auth.auth import get_user_role
-from app.config.providers import PROVIDER_DEFAULT_MODELS
 from app.errors import APIError
 from app.models.agent import Agent
 from app.services.builder_progress import partial_progress
@@ -98,14 +97,10 @@ async def builder_chat(
         return StreamingResponse(imported_event(), media_type="text/event-stream")
 
     force_ready = should_force_ready(body.messages, body.mode)
-    builder_conn = conn
-    if str(conn.get("type") or "").lower() == "nvidia":
-        builder_conn = {**conn, "model": PROVIDER_DEFAULT_MODELS["nvidia"]}
-
     builder_agent = Agent(
         id="_skill_builder",
         name="Constructor de skills",
-        model=str(builder_conn.get("model") or ""),
+        model=str(conn.get("model") or ""),
         system_prompt=build_system_prompt(force_ready=force_ready, mode=body.mode),
         temperature=0.2,
         max_tokens=1400,
@@ -122,7 +117,7 @@ async def builder_chat(
             provider_error = ""
             last_progress: Dict[str, Any] = {}
             async for chunk in stream_chat(
-                builder_agent, builder_conn, attempt_history, None
+                builder_agent, conn, attempt_history, None
             ):
                 if chunk.startswith(":"):
                     yield chunk
