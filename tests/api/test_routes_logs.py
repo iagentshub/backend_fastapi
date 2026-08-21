@@ -162,6 +162,15 @@ def test_list_logs_sorted_newest_first(admin_client, log_db):
     assert items[0]["date"] >= items[-1]["date"]
 
 
+def test_list_logs_breaks_timestamp_ties_with_newest_id(admin_client, log_db):
+    _insert(log_db, date="2026-07-01", summary="first")
+    _insert(log_db, date="2026-07-01", summary="second")
+
+    items = admin_client.get("/api/admin/logs").json()["items"]
+
+    assert [item["summary"] for item in items] == ["second", "first"]
+
+
 def test_list_logs_response_fields(admin_client, log_db):
     _insert(
         log_db,

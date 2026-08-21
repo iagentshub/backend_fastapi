@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
@@ -108,6 +109,7 @@ def test_terminate_process_failure_is_non_fatal_and_visible():
     assert "no se pudo terminar proceso" in warning.call_args.args[0]
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="fcntl no está disponible en Windows")
 def test_read_centinel_state_invalid_json_returns_empty_and_warns(tmp_path):
     state_file = tmp_path / "centinel-state.json"
     state_file.write_text("no-es-json", encoding="utf-8")

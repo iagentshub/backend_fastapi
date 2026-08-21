@@ -491,7 +491,10 @@ def test_el_camino_completo_cola_a_bd_conserva_los_campos(tmp_path):
 def _filas(db) -> list[str]:
     conn = sqlite3.connect(str(db))
     try:
-        return [r[0] for r in conn.execute("SELECT summary FROM app_logs ORDER BY ts")]
+        return [
+            r[0]
+            for r in conn.execute("SELECT summary FROM app_logs ORDER BY ts, id")
+        ]
     finally:
         conn.close()
 
@@ -523,7 +526,7 @@ def test_lote_conserva_orden_y_contenido(tmp_path):
         )
     conn = sqlite3.connect(str(db))
     filas = conn.execute(
-        "SELECT summary, ip, username FROM app_logs ORDER BY ts"
+        "SELECT summary, ip, username FROM app_logs ORDER BY ts, id"
     ).fetchall()
     conn.close()
     assert len(filas) == 10

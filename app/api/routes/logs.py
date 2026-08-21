@@ -135,7 +135,7 @@ async def list_logs(
         rows = await conn.fetchall(
             f"SELECT id, ts, date, time, ip, username, level, source, summary, "
             f"category, action, resource_type, resource_id, outcome, details_json "
-            f"FROM app_logs {where} ORDER BY ts DESC LIMIT ? OFFSET ?",
+            f"FROM app_logs {where} ORDER BY ts DESC, id DESC LIMIT ? OFFSET ?",
             tuple(params + [page_size, offset]),
         )
     items = [dict(r) for r in rows]
@@ -184,7 +184,7 @@ async def export_logs(
         rows = await conn.fetchall(
             f"SELECT date, time, ip, username, level, source, category, action, "
             f"resource_type, resource_id, outcome, summary, details_json "
-            f"FROM app_logs {where} ORDER BY ts DESC",
+            f"FROM app_logs {where} ORDER BY ts DESC, id DESC",
             tuple(params),
         )
 
