@@ -729,17 +729,19 @@ def test_log_db_path_sin_env_usa_la_ruta_del_backend(monkeypatch):
     """Sin GAIA_DATA_DIR ya no se queda sin BD de logs.
 
     Devolvía None y `_build` interpretaba eso como «no hay handler de BD», así
-    que el backend arrancaba con normalidad —config/data.py sí tiene un valor
-    por defecto para la misma variable— pero /api/admin/logs salía siempre
+    que el backend arrancaba con normalidad —config/database.py sí tiene un valor
+    por defecto para la ruta— pero /api/admin/logs salía siempre
     vacío sin un solo mensaje que lo explicara.
     """
-    import app.config.data as cfg
-
     monkeypatch.delenv("GAIA_DATA_DIR", raising=False)
-    assert flog_mod.log_db_path() == cfg.DB_FILE
+    from app.config import database as database_config
+
+    assert flog_mod.log_db_path() == database_config.DB_FILE
 
 
 def test_log_db_path_con_env(monkeypatch, tmp_path):
-    monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path))
+    from app.config import database as database_config
+
+    monkeypatch.setattr(database_config, "DB_FILE", tmp_path / "hub.db")
     p = flog_mod.log_db_path()
     assert p == tmp_path / "hub.db"

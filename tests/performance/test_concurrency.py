@@ -1,9 +1,9 @@
 """Tests de concurrencia y rendimiento.
 
 Miden si las rutas críticas aguantan carga simultánea sin errores ni timeouts.
-No hay aserciones de speedup relativo: el SQLite singleton serializa los accesos
-incluso con run_in_executor (todos los threads esperan la misma conexión).
-En PostgreSQL (producción) sí hay speedup real gracias al pool de conexiones.
+No hay aserciones de speedup relativo: SQLite usa un pool pequeño por worker y
+WAL permite lectores concurrentes, pero las escrituras siguen serializadas por
+el motor. PostgreSQL (producción) escala mejor la carga mixta con su propio pool.
 
 Ejecutar solo estos tests:
     pytest tests/performance/ -v -s
@@ -29,12 +29,13 @@ import pytest
 def perf_app(perf_data_dir):
     """FastAPI app + token admin compartidos por todos los tests del módulo."""
     import app.config.data as cfg
+    import app.config.database as database_cfg
     import app.storage.db as db_mod
 
     db_file = perf_data_dir / "perf.db"
 
     cfg.DATA_DIR = perf_data_dir
-    cfg.DB_FILE = db_file
+    database_cfg.DB_FILE = db_file
     cfg.CONN_FILE = perf_data_dir / "connections" / "connections.json"
     cfg.AGENTS_DIR = perf_data_dir / "agents"
     cfg.SKILLS_DIR = perf_data_dir / "skills"
@@ -113,8 +114,8 @@ def _report(label: str, results: List[RequestResult]) -> None:
 
 
 # ── Constante de timeout absoluto por petición (ms) ───────────────────────────
-# SQLite serializa accesos (un thread a la vez) → el peor caso es N peticiones
-# en cola. Con N=20 y ~5ms por request el timeout es generoso pero acotado.
+# SQLite serializa las escrituras y limita las lecturas al pool por worker.
+# Con N=20 y ~5ms por request el timeout es generoso pero acotado.
 MAX_REQUEST_MS = 2000
 
 
@@ -280,10 +281,11 @@ async def test_latencia_no_degrada_entre_rafagas(perf_app):
 
 @pytest.mark.asyncio
 async def test_secuencial_vs_concurrente_informe(perf_app):
-    """Mide y muestra speedup concurrente vs secuencial (informativo, sin aserción de ratio).
+    """Mide y muestra speedup concurrente vs secuencial (informativo).
 
-    SQLite singleton: speedup ≈ 1× (serializado en capa DB).
-    PostgreSQL pool : speedup real proporcional a conexiones disponibles.
+    El pool SQLite permite lectores concurrentes hasta su tamaño, pero el
+    speedup de una ruta completa depende también de sus escrituras y CPU.
+    PostgreSQL escala mejor la carga mixta con conexiones disponibles.
     """
     app, token = perf_app
     N = 10
@@ -313,7 +315,7 @@ async def test_secuencial_vs_concurrente_informe(perf_app):
     print(f"\n  Secuencial : {t_seq:.1f}ms")
     print(f"  Concurrente: {t_con:.1f}ms")
     print(f"  Speedup    : {speedup:.2f}×")
-    print("  Nota: speedup≈1 es normal con SQLite singleton; en PostgreSQL será >1")
+    print("  Nota: el ratio es informativo; SQLite sigue serializando escrituras")
 
     assert all(r.status == 200 for r in con_results), (
         "Algunas peticiones concurrentes fallaron"

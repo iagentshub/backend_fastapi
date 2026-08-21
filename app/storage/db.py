@@ -1,7 +1,7 @@
 """Database connection manager — supports SQLite (default) and PostgreSQL (DATABASE_URL).
 
-IS_PG=False → aiosqlite, WAL mode, new connection per open_db() call.
-IS_PG=True  → asyncpg connection pool (min=2, max=20).
+IS_PG=False → aiosqlite, WAL mode, configured per-worker connection pool.
+IS_PG=True  → configured asyncpg connection pool.
 
 Public API:
     await init_db(sqlite_path)   — call once at app startup
@@ -11,12 +11,13 @@ Public API:
 
 from __future__ import annotations
 
-import os
+import asyncio
 import re
 from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import Any, AsyncGenerator, List, Optional, Tuple
 
+from app.config import database as database_config
 from app.storage.migrations.legacy import (
     _pre_migrate_sqlite,
     _rename_legacy_group_schema_pg,
@@ -29,11 +30,12 @@ from app.utils import flog
 
 # ── Backend detection ──────────────────────────────────────────────────────────
 
-DATABASE_URL: Optional[str] = os.environ.get("DATABASE_URL") or ""
-IS_PG: bool = bool(DATABASE_URL)
+# Estado del motor activo, expuesto para que los adaptadores SQL y los tests lo
+# consulten en tiempo de llamada. Su valor inicial sí procede de configuración.
+IS_PG: bool = database_config.uses_postgresql()
 
 # Placeholder for parameterised queries — always use ? (AsyncConn translates to $N for PG)
-PH: str = "?"
+PH: str = database_config.SQLITE_PARAMETER_PLACEHOLDER
 
 
 def _db_error_types() -> tuple[type[BaseException], ...]:
@@ -67,6 +69,96 @@ DB_ERRORS: tuple[type[BaseException], ...] = _db_error_types()
 
 _pg_pool: Any = None
 _sqlite_path: Optional[Path] = None
+_sqlite_pool: Optional[asyncio.Queue[Any]] = None
+_sqlite_connections: list[Any] = []
+
+
+async def _new_sqlite_connection(path: Path) -> Any:
+    """Crea una conexión lista para entrar al pool de este worker."""
+    import sqlite3
+
+    import aiosqlite  # type: ignore[import]
+
+    conn = await aiosqlite.connect(str(path))
+    try:
+        conn.row_factory = sqlite3.Row
+        # WAL es persistente y migrate_schema() ya lo fija una vez. Estos dos
+        # PRAGMA, en cambio, pertenecen a cada conexión y nunca pueden omitirse.
+        foreign_keys = "ON" if database_config.SQLITE_FOREIGN_KEYS else "OFF"
+        await conn.execute(f"PRAGMA foreign_keys={foreign_keys}")
+        await conn.execute(
+            f"PRAGMA busy_timeout={database_config.SQLITE_BUSY_TIMEOUT_MS}"
+        )
+    except BaseException:
+        await conn.close()
+        raise
+    return conn
+
+
+async def _close_sqlite_pool() -> None:
+    """Desactiva el pool primero y cierra todas sus conexiones una sola vez."""
+    global _sqlite_pool, _sqlite_connections
+    _sqlite_pool = None
+    connections = _sqlite_connections
+    _sqlite_connections = []
+    if connections:
+        await asyncio.gather(
+            *(conn.close() for conn in connections), return_exceptions=True
+        )
+
+
+async def _replace_sqlite_connection(conn: Any, pool: asyncio.Queue[Any]) -> None:
+    """Retira una conexión no reutilizable y repone la capacidad del pool."""
+    global _sqlite_connections
+    if conn in _sqlite_connections:
+        _sqlite_connections.remove(conn)
+    try:
+        await conn.close()
+    except Exception as exc:  # noqa: BLE001 - ya está descartada
+        flog.warning(f"[db] no se pudo cerrar la conexión SQLite descartada: {exc}")
+
+    if pool is not _sqlite_pool or _sqlite_path is None:
+        return
+    try:
+        replacement = await _new_sqlite_connection(_sqlite_path)
+    except Exception as exc:  # noqa: BLE001 - conservar el pool vivo si es posible
+        flog.error(f"[db] no se pudo reponer una conexión SQLite: {exc}")
+        return
+    _sqlite_connections.append(replacement)
+    pool.put_nowait(replacement)
+
+
+async def _release_sqlite_connection(conn: Any, pool: asyncio.Queue[Any]) -> None:
+    """Devuelve una conexión limpia o la sustituye si ya no es fiable."""
+    if pool is not _sqlite_pool:
+        try:
+            await conn.close()
+        except Exception as exc:  # noqa: BLE001 - el pool ya está cerrado
+            flog.warning(f"[db] no se pudo cerrar una conexión del pool anterior: {exc}")
+        return
+    try:
+        if conn.in_transaction:
+            await conn.rollback()
+    except Exception as exc:  # noqa: BLE001 - driver roto/cerrado: reemplazar
+        flog.warning(f"[db] conexión SQLite descartada al devolverla: {exc}")
+        await _replace_sqlite_connection(conn, pool)
+        return
+    pool.put_nowait(conn)
+
+
+async def _release_sqlite_connection_safely(
+    conn: Any, pool: asyncio.Queue[Any]
+) -> None:
+    """Completa la devolución incluso si se cancela la tarea que usaba la BD."""
+    try:
+        # Camino normal sin crear una Task por cada lectura. Si la cancelación
+        # ya se entregó dentro del bloque `yield`, los awaits del finally pueden
+        # completar; si llega justo durante el rollback, se recupera abajo.
+        await _release_sqlite_connection(conn, pool)
+    except asyncio.CancelledError:
+        cleanup = asyncio.create_task(_release_sqlite_connection(conn, pool))
+        await asyncio.shield(cleanup)
+        raise
 
 
 class AsyncConn:
@@ -170,7 +262,7 @@ async def migrate_schema(sqlite_path: Optional[Path] = None) -> None:
     if IS_PG:
         import asyncpg  # type: ignore[import]
 
-        conn = await asyncpg.connect(DATABASE_URL)
+        conn = await asyncpg.connect(database_config.database_url())
         try:
             async with conn.transaction():
                 await _rename_legacy_group_schema_pg(conn)
@@ -195,8 +287,11 @@ async def migrate_schema(sqlite_path: Optional[Path] = None) -> None:
         path.parent.mkdir(parents=True, exist_ok=True)
         async with aiosqlite.connect(str(path)) as conn:
             conn.row_factory = sqlite3.Row
-            await conn.execute("PRAGMA journal_mode=WAL")
-            await conn.execute("PRAGMA foreign_keys=ON")
+            await conn.execute(
+                f"PRAGMA journal_mode={database_config.SQLITE_JOURNAL_MODE}"
+            )
+            foreign_keys = "ON" if database_config.SQLITE_FOREIGN_KEYS else "OFF"
+            await conn.execute(f"PRAGMA foreign_keys={foreign_keys}")
             await _rename_legacy_group_schema_sqlite(conn)
             # Pre-migration: add columns that SCHEMA_SQLITE references in
             # CREATE INDEX statements BEFORE executescript runs. Without this,
@@ -217,8 +312,12 @@ async def init_db(sqlite_path: Optional[Path] = None) -> None:
     main.py tras migrar una sola vez en el proceso maestro antes de lanzar
     los workers) — ver migrate_schema() para el porqué.
     """
-    global _pg_pool, _sqlite_path
-    already_migrated = os.environ.get("GAIA_SCHEMA_MIGRATED") == "1"
+    global _pg_pool, _sqlite_path, _sqlite_pool, _sqlite_connections
+    already_migrated = database_config.schema_already_migrated()
+
+    # init_db() es idempotente: los tests y algunos ciclos de lifespan pueden
+    # reinicializar el mismo proceso. Nunca dejar hilos/conexiones anteriores.
+    await close_db_pool()
 
     if IS_PG:
         import asyncpg  # type: ignore[import]
@@ -226,10 +325,10 @@ async def init_db(sqlite_path: Optional[Path] = None) -> None:
         if not already_migrated:
             await migrate_schema()
         _pg_pool = await asyncpg.create_pool(
-            DATABASE_URL,
-            min_size=2,
-            max_size=20,
-            command_timeout=30,
+            database_config.database_url(),
+            min_size=database_config.POSTGRES_POOL_MIN_SIZE,
+            max_size=database_config.POSTGRES_POOL_MAX_SIZE,
+            command_timeout=database_config.POSTGRES_COMMAND_TIMEOUT_SECONDS,
         )
         flog.ok("[db] asyncpg pool iniciado")
     else:
@@ -241,7 +340,22 @@ async def init_db(sqlite_path: Optional[Path] = None) -> None:
             )
         if not already_migrated:
             await migrate_schema(_sqlite_path)
-        flog.ok("[db] aiosqlite inicializado")
+        size = database_config.sqlite_pool_size()
+        pool: asyncio.Queue[Any] = asyncio.Queue(maxsize=size)
+        connections: list[Any] = []
+        try:
+            for _ in range(size):
+                conn = await _new_sqlite_connection(_sqlite_path)
+                connections.append(conn)
+                pool.put_nowait(conn)
+        except BaseException:
+            await asyncio.gather(
+                *(conn.close() for conn in connections), return_exceptions=True
+            )
+            raise
+        _sqlite_connections = connections
+        _sqlite_pool = pool
+        flog.ok(f"[db] pool aiosqlite iniciado ({size} conexiones por worker)")
 
 
 async def close_db_pool() -> None:
@@ -251,6 +365,10 @@ async def close_db_pool() -> None:
         await _pg_pool.close()
         _pg_pool = None
         flog.info("[db] asyncpg pool cerrado")
+    had_sqlite_pool = _sqlite_pool is not None or bool(_sqlite_connections)
+    await _close_sqlite_pool()
+    if had_sqlite_pool:
+        flog.info("[db] pool aiosqlite cerrado")
 
 
 # ── Public context manager ─────────────────────────────────────────────────────
@@ -265,18 +383,14 @@ async def _open_db_cm() -> AsyncGenerator[AsyncConn, None]:
         async with _pg_pool.acquire() as conn:
             yield AsyncConn(conn, is_pg=True)
     else:
-        import sqlite3
-
-        import aiosqlite  # type: ignore[import]
-
-        if _sqlite_path is None:
-            raise RuntimeError("SQLite path not set — call init_db(path) at startup")
-        async with aiosqlite.connect(str(_sqlite_path)) as conn:
-            conn.row_factory = sqlite3.Row
-            await conn.execute("PRAGMA journal_mode=WAL")
-            await conn.execute("PRAGMA foreign_keys=ON")
-            await conn.execute("PRAGMA busy_timeout=5000")
+        pool = _sqlite_pool
+        if pool is None:
+            raise RuntimeError("SQLite pool not initialized — call init_db(path) at startup")
+        conn = await pool.get()
+        try:
             yield AsyncConn(conn, is_pg=False)
+        finally:
+            await _release_sqlite_connection_safely(conn, pool)
 
 
 def open_db() -> Any:

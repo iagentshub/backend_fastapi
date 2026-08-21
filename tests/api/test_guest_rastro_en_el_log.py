@@ -28,14 +28,14 @@ def log_en_la_bd_del_test(patch_data_dir, monkeypatch):
     que documenta CLAUDE.md). Sin esto, log y purga viven en bases distintas y
     el test no probaría nada de lo que dice.
     """
-    from app.config import data as cfg
+    from app.config import database as database_config
     from app.utils import flog
 
     handler = flog._DB_HANDLER
     assert handler is not None, "sin handler de BD no hay log que comprobar"
     handler.flush()
     handler._drop_conn()
-    monkeypatch.setattr(handler, "_db", str(cfg.DB_FILE))
+    monkeypatch.setattr(handler, "_db", str(database_config.DB_FILE))
     yield
     handler.flush()
     handler._drop_conn()

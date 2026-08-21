@@ -98,7 +98,7 @@ def log_db(tmp_path, monkeypatch):
 
     Los logs ya no usan un logs.sqlite3 separado — van en la misma hub.db que
     el resto de datos de la app. patch_data_dir (autouse) ya creó hub.db y
-    apuntó cfg.DB_FILE a él; aquí solo aseguramos que GAIA_DATA_DIR coincida
+    apuntó database_config.DB_FILE a él; aquí solo aseguramos que GAIA_DATA_DIR coincida
     y que la tabla app_logs exista antes de insertar filas.
     """
     monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path))

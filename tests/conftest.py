@@ -78,11 +78,12 @@ def patch_data_dir(tmp_data_dir, tmp_path, monkeypatch):
         encoding="utf-8",
     )
 
-    # Patch config module attrs — _cfg.DB_FILE is read dynamically by app lifespan
+    # Patch config module attrs; database_cfg.DB_FILE lo lee el lifespan.
     import app.config.data as cfg
+    import app.config.database as database_cfg
 
     monkeypatch.setattr(cfg, "DATA_DIR", tmp_data_dir)
-    monkeypatch.setattr(cfg, "DB_FILE", db_file)
+    monkeypatch.setattr(database_cfg, "DB_FILE", db_file)
     monkeypatch.setattr(
         cfg, "CONN_FILE", tmp_data_dir / "connections" / "connections.json"
     )

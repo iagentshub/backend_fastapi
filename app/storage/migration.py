@@ -3,8 +3,9 @@
 from __future__ import annotations
 
 import asyncio
-import os
 from abc import ABC, abstractmethod
+
+from app.config import database as database_config
 
 # El estado de migración es del PROCESO, no del objeto.
 #
@@ -38,7 +39,7 @@ def _bd_activa() -> str:
     from app.storage import db as _db
 
     return str(
-        getattr(_db, "_sqlite_path", "") or os.environ.get("DATABASE_URL", "") or "-"
+        getattr(_db, "_sqlite_path", "") or database_config.database_url() or "-"
     )
 
 

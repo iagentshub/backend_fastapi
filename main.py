@@ -6,7 +6,7 @@ import os
 
 import uvicorn
 
-from app.config import data as _cfg
+from app.config import database as _db_cfg
 from app.config.server import HOST, PORT, RELOAD, WORKERS
 from app.storage.db import migrate_schema
 
@@ -22,8 +22,8 @@ def main() -> None:
         # Una sola vez en el proceso maestro: si no, los workers competirían por
         # crear las mismas tablas/índices contra una DB recién creada.
         # Ver docs/adr/001-estado-en-memoria-con-multiples-workers.md
-        asyncio.run(migrate_schema(_cfg.DB_FILE))
-        os.environ["GAIA_SCHEMA_MIGRATED"] = "1"
+        asyncio.run(migrate_schema(_db_cfg.DB_FILE))
+        os.environ[_db_cfg.SCHEMA_MIGRATED_ENV] = "1"
 
     uvicorn.run(
         "app.api.app:create_app",

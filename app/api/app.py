@@ -47,7 +47,7 @@ from app.api.routes import (
 from app.api.routes.admin import admin_router
 from app.auth.auth import ensure_admin_user
 from app.auth.gdpr import purge_expired_deletions, purge_expired_guests
-from app.config import data as _cfg
+from app.config import database as _db_cfg
 from app.config.cors import CORS_ORIGINS
 from app.config.maintenance import (
     GDPR_PURGE_SECONDS,
@@ -145,7 +145,7 @@ async def _lifespan(app: FastAPI):
     _checks = log_startup_report()
     assert_config_ok(_checks)
 
-    await init_db(_cfg.DB_FILE)
+    await init_db(_db_cfg.DB_FILE)
     await ensure_admin_user()
     tasks = (
         asyncio.create_task(_gdpr_purge_loop(), name="gdpr-purge"),

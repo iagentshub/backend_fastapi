@@ -35,6 +35,7 @@ def perf_data_dir():
 def patch_data_dir(perf_data_dir, monkeypatch):  # type: ignore[override]
     """Redirige el entorno al directorio de rendimiento sin resetear entre tests."""
     import app.config.data as cfg
+    import app.config.database as database_cfg
     import app.storage.db as db_mod
 
     db_file = perf_data_dir / "perf.db"
@@ -43,7 +44,7 @@ def patch_data_dir(perf_data_dir, monkeypatch):  # type: ignore[override]
     monkeypatch.setenv("GAIA_DATA_DIR", str(perf_data_dir))
 
     monkeypatch.setattr(cfg, "DATA_DIR", perf_data_dir)
-    monkeypatch.setattr(cfg, "DB_FILE", db_file)
+    monkeypatch.setattr(database_cfg, "DB_FILE", db_file)
     monkeypatch.setattr(
         cfg, "CONN_FILE", perf_data_dir / "connections" / "connections.json"
     )
@@ -59,8 +60,12 @@ def patch_data_dir(perf_data_dir, monkeypatch):  # type: ignore[override]
     monkeypatch.setattr(db_mod, "IS_PG", False)
     monkeypatch.setattr(db_mod, "PH", "?")
 
-    # Initialize DB once for the module (path shared across tests in module)
-    if db_mod._sqlite_path != db_file:
-        asyncio.run(db_mod.init_db(db_file))
+    # El estado de la BD se comparte en disco, pero pytest crea un event loop
+    # por test. asyncio.Queue se liga al loop cuando hay espera por saturación,
+    # así que cada test necesita su pool nuevo igual que cada worker real.
+    asyncio.run(db_mod.close_db_pool())
+    asyncio.run(db_mod.init_db(db_file))
 
     yield
+
+    asyncio.run(db_mod.close_db_pool())

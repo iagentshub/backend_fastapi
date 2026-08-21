@@ -14,7 +14,6 @@ BASE_DIR = Path(__file__).parents[2]
 # a los tests, solo al servidor de desarrollo arrancado a mano.
 _default_data = BASE_DIR.parent / "iAgents" / "data"
 DATA_DIR      = Path(os.getenv("GAIA_DATA_DIR", str(_default_data)))
-DB_FILE       = DATA_DIR / "hub.db"
 AGENTS_DIR    = DATA_DIR / "agents"
 SKILLS_DIR    = DATA_DIR / "skills"
 MEMORY_DIR    = DATA_DIR / "memory"

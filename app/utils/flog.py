@@ -7,7 +7,6 @@ import atexit
 import json
 import logging
 import logging.handlers
-import os
 import queue
 import re
 import sqlite3
@@ -18,6 +17,8 @@ from contextvars import ContextVar, Token
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Mapping
+
+from app.config import database as _db_cfg
 
 # La configuración de la escritura por lotes vive con el resto de la del
 # backend. `app/config/logging.py` no importa nada del proyecto justamente para
@@ -207,7 +208,7 @@ class _DBHandler(logging.Handler):
         """Crea app_logs si hub.db aún no tiene la tabla (arranque previo a init_db)."""
         try:
             conn = sqlite3.connect(self._db, check_same_thread=False)
-            conn.execute("PRAGMA journal_mode=WAL")
+            conn.execute(f"PRAGMA journal_mode={_db_cfg.SQLITE_JOURNAL_MODE}")
             schema = _log_schema()
             conn.execute(schema.split(";", 1)[0])
             # CREATE TABLE IF NOT EXISTS no amplía una tabla antigua. flog se
@@ -270,7 +271,7 @@ class _DBHandler(logging.Handler):
                 import asyncpg  # type: ignore[import]
 
                 async def _open():
-                    conn = await asyncpg.connect(os.environ.get("DATABASE_URL", ""))
+                    conn = await asyncpg.connect(_db_cfg.database_url())
                     from app.storage.schema import tabla_ddl
 
                     schema = tabla_ddl("app_logs", "pg")
@@ -293,7 +294,7 @@ class _DBHandler(logging.Handler):
                 self._conn = self._run_pg(_open())
             else:
                 conn = sqlite3.connect(self._db, check_same_thread=False)
-                conn.execute("PRAGMA journal_mode=WAL")
+                conn.execute(f"PRAGMA journal_mode={_db_cfg.SQLITE_JOURNAL_MODE}")
                 self._conn = conn
         return self._conn
 
@@ -306,7 +307,10 @@ class _DBHandler(logging.Handler):
             else:
                 # asyncpg: cerrar es una corrutina y hay que ejecutarla en el
                 # loop del logger, no en el hilo que llama.
-                self._run_pg(self._conn.close(), timeout=5)  # type: ignore[attr-defined]
+                self._run_pg(  # type: ignore[attr-defined]
+                    self._conn.close(),
+                    timeout=_db_cfg.POSTGRES_LOG_CLOSE_TIMEOUT_SECONDS,
+                )
         except Exception:  # noqa: S110, BLE001
             # ponytail: silencio deliberado. Aquí se llega porque la conexión ya
             # falló; que cerrarla también falle no aporta nada, y logear desde el
@@ -336,7 +340,11 @@ class _DBHandler(logging.Handler):
             getattr(record, "details_json", None),
         )
 
-    def _run_pg(self, coro, timeout: float = 10.0):
+    def _run_pg(
+        self,
+        coro,
+        timeout: float = _db_cfg.POSTGRES_LOG_OPERATION_TIMEOUT_SECONDS,
+    ):
         """Ejecuta una corrutina en el loop del logger y espera el resultado."""
         futuro = asyncio.run_coroutine_threadsafe(coro, self._pg_loop())
         return futuro.result(timeout=timeout)
@@ -466,7 +474,7 @@ def log_db_path() -> Path | None:
     todo el mundo — y ``tests/test_ciclos_de_import.py`` vigila justo eso.
     """
     try:
-        from app.config.data import DB_FILE
+        from app.config.database import DB_FILE
     except Exception:  # noqa: BLE001
         # Si la configuración aún no se puede importar, el handler de stdout
         # sigue funcionando: quedarse sin logs en BD es mejor que no arrancar.
@@ -490,7 +498,7 @@ def _build() -> logging.Logger:
         # flog.info() desde un handler async ejecutaba un INSERT síncrono
         # dentro del event loop.
         db: logging.Handler | None = None
-        if os.environ.get("DATABASE_URL", "").strip():
+        if _db_cfg.uses_postgresql():
             db = _DBHandler(None)  # PostgreSQL: usa DATABASE_URL
         else:
             p = log_db_path()

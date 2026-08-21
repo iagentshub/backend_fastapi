@@ -36,6 +36,7 @@ from app.api.routes.centinel._state import (
     _subscribers,
     _update_centinel_state,
 )
+from app.config import database as database_config
 from app.errors import APIError
 from app.utils import flog
 from app.utils.generators import generate_id
@@ -331,7 +332,7 @@ async def _execute_run(run_id: str, target: str) -> None:
     # datos SQLite efímeras y vacías (ver conftest.py), haciendo que
     # init_db() se salte migrate_schema() y truene con "no such table".
     env = os.environ.copy()
-    env.pop("GAIA_SCHEMA_MIGRATED", None)
+    env.pop(database_config.SCHEMA_MIGRATED_ENV, None)
 
     ticker_task: Optional[asyncio.Task] = None
     try:
