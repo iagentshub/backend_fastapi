@@ -161,12 +161,12 @@ def test_save_agent_scan_import_payload(admin_client):
 
 
 def test_delete_agent_value_error_returns_403(admin_client):
-    """Si _agents.delete lanza ValueError (p.ej. scope público) → 403 (línea 183)."""
+    """Si el borrado admin lanza ValueError (p.ej. scope público) → 403."""
     agent = _create_agent(admin_client)
 
     with patch("app.api.routes.agents._agents") as mock_agents:
         mock_agents.get = AsyncMock(return_value=agent)
-        mock_agents.delete = AsyncMock(
+        mock_agents.delete_as_admin = AsyncMock(
             side_effect=ValueError("Los agentes públicos son de solo lectura")
         )
         r = admin_client.delete(f"/api/agents/{agent['id']}")

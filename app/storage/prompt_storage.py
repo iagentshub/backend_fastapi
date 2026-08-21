@@ -298,8 +298,30 @@ class PromptStorage(ResourceStorage):
         self,
         scope: str,
         prompt_id: str,
-        owner_id: Optional[str] = None,
+        owner_id: str,
+    ) -> bool:
+        """Borra un prompt únicamente cuando pertenece a ``owner_id``."""
+        if not owner_id:
+            raise ValueError("owner_id es obligatorio; usa delete_as_admin")
+        return await self._delete(scope, prompt_id, owner_id, allow_public=False)
+
+    async def delete_as_admin(
+        self,
+        scope: str,
+        prompt_id: str,
+        *,
         allow_public: bool = False,
+    ) -> bool:
+        """Borra sin filtro de propietario; solo para llamantes administrativos."""
+        return await self._delete(scope, prompt_id, None, allow_public=allow_public)
+
+    async def _delete(
+        self,
+        scope: str,
+        prompt_id: str,
+        owner_id: Optional[str],
+        *,
+        allow_public: bool,
     ) -> bool:
         if scope == "public" and owner_id is None and not allow_public:
             raise ValueError("Los prompts públicos de sistema son de solo lectura")

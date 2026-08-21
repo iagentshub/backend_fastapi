@@ -70,12 +70,24 @@ async def test_provider_account_is_relational_and_survives_normal_edit(storage):
 
 async def test_delete_existing(storage):
     conn = await storage.save({"type": "openai", "api_key": "sk-test"})
-    assert await storage.delete(conn["id"]) is True
+    assert await storage.delete(conn["id"], "admin") is True
     assert await storage.list() == []
 
 
 async def test_delete_nonexistent(storage):
-    assert await storage.delete("ghost-id") is False
+    assert await storage.delete("ghost-id", "admin") is False
+
+
+async def test_delete_rejects_missing_owner(storage):
+    with pytest.raises(ValueError, match="delete_as_admin"):
+        await storage.delete("ghost-id", None)
+
+
+async def test_delete_as_admin_keeps_explicit_admin_bypass(storage):
+    conn = await storage.save(
+        {"type": "openai", "api_key": "sk-test"}, owner_id="alice"
+    )
+    assert await storage.delete_as_admin(conn["id"]) is True
 
 
 async def test_add_tokens_accumulates(storage):

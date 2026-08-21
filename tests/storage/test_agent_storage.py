@@ -80,12 +80,17 @@ def test_save_preserves_created_at(storage):
 
 def test_delete_existing(storage):
     agent = asyncio.run(storage.save(_AGENT))
-    assert asyncio.run(storage.delete(agent["id"])) is True
+    assert asyncio.run(storage.delete(agent["id"], owner_id="admin")) is True
     assert asyncio.run(storage.list()) == []
 
 
 def test_delete_nonexistent(storage):
-    assert asyncio.run(storage.delete("ghost-agent")) is False
+    assert asyncio.run(storage.delete("ghost-agent", owner_id="admin")) is False
+
+
+def test_delete_rejects_missing_owner(storage):
+    with pytest.raises(ValueError, match="delete_as_admin"):
+        asyncio.run(storage.delete("ghost-agent", owner_id=None))
 
 
 def test_save_stores_owner_id(storage):
@@ -139,10 +144,10 @@ def test_delete_with_owner_id_rejects_non_owner(storage):
     assert asyncio.run(storage.get(agent["id"])) is not None
 
 
-def test_delete_without_owner_id_keeps_admin_bypass(storage):
-    """Sin owner_id (camino admin) se conserva el comportamiento actual."""
+def test_delete_as_admin_keeps_explicit_admin_bypass(storage):
+    """El bypass existe, pero tiene un nombre administrativo explícito."""
     agent = asyncio.run(storage.save(_AGENT, owner_id="alice"))
-    assert asyncio.run(storage.delete(agent["id"])) is True
+    assert asyncio.run(storage.delete_as_admin(agent["id"])) is True
 
 
 def test_add_tokens_with_owner_id_rejects_non_owner(storage):

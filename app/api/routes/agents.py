@@ -430,8 +430,12 @@ async def delete_agent(
     if a and role != "admin" and a.get("owner_id") != group_id:
         raise APIError(403, "forbidden", "No tienes permiso para eliminar este agente")
     try:
-        delete_owner = None if role == "admin" else group_id
-        if not await _agents.delete(agent_id, owner_id=delete_owner):
+        deleted = (
+            await _agents.delete_as_admin(agent_id)
+            if role == "admin"
+            else await _agents.delete(agent_id, owner_id=group_id)
+        )
+        if not deleted:
             raise APIError(
                 404, "not_found", "Agente no encontrado", extra={"resource": "agent"}
             )

@@ -268,7 +268,17 @@ class ConnectionStorage(ResourceStorage):
         await self.sync_labels(conn_id, owner_id, payload.get("labels") or [])
         return payload
 
-    async def delete(self, conn_id: str, owner_id: Optional[str] = None) -> bool:
+    async def delete(self, conn_id: str, owner_id: str) -> bool:
+        """Borra una conexión únicamente cuando pertenece a ``owner_id``."""
+        if not owner_id:
+            raise ValueError("owner_id es obligatorio; usa delete_as_admin")
+        return await self._delete(conn_id, owner_id)
+
+    async def delete_as_admin(self, conn_id: str) -> bool:
+        """Borra sin filtro de propietario; solo para llamantes administrativos."""
+        return await self._delete(conn_id, None)
+
+    async def _delete(self, conn_id: str, owner_id: Optional[str]) -> bool:
 
         async with open_db() as conn:
             if owner_id is None:

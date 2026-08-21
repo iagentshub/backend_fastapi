@@ -444,8 +444,12 @@ async def delete_connection(
     if existing:
         assert_resource_writable(existing, "connection")
     owner_id = await _owner(user, group_id)
-    deleted = await _storage.delete(conn_id, owner_id)
-    if not deleted and group_id != user:
+    deleted = (
+        await _storage.delete_as_admin(conn_id)
+        if owner_id is None
+        else await _storage.delete(conn_id, owner_id)
+    )
+    if not deleted and owner_id is not None and group_id != user:
         deleted = await _storage.delete(conn_id, user)
     if not deleted:
         raise APIError(

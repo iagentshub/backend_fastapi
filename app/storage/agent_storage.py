@@ -304,9 +304,31 @@ class AgentStorage(ResourceStorage):
     async def delete(
         self,
         agent_id: str,
+        owner_id: str,
         scope: Optional[str] = None,
-        owner_id: Optional[str] = None,
+    ) -> bool:
+        """Borra un agente no público del propietario indicado."""
+        if not owner_id:
+            raise ValueError("owner_id es obligatorio; usa delete_as_admin")
+        return await self._delete(agent_id, scope, owner_id, allow_public=False)
+
+    async def delete_as_admin(
+        self,
+        agent_id: str,
+        scope: Optional[str] = None,
+        *,
         allow_public: bool = False,
+    ) -> bool:
+        """Borra sin filtro de propietario; solo para llamantes administrativos."""
+        return await self._delete(agent_id, scope, None, allow_public=allow_public)
+
+    async def _delete(
+        self,
+        agent_id: str,
+        scope: Optional[str],
+        owner_id: Optional[str],
+        *,
+        allow_public: bool,
     ) -> bool:
         await self._ensure_migrated()
         if scope == "public" and not allow_public:

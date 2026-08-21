@@ -90,7 +90,7 @@ async def admin_delete_connection(
 ) -> dict[str, Any]:
     from app.storage.connection_storage import ConnectionStorage
 
-    if not await ConnectionStorage().delete(conn_id, owner_id=None):
+    if not await ConnectionStorage().delete_as_admin(conn_id):
         raise APIError(
             404, "not_found", "Conexión no encontrada", extra={"resource": "connection"}
         )
@@ -158,7 +158,7 @@ async def admin_delete_agent(
             "scope debe ser 'public' o 'private'",
             extra={"field": "scope"},
         )
-    deleted = await _agents.delete(agent_id, scope=scope, allow_public=True)
+    deleted = await _agents.delete_as_admin(agent_id, scope=scope, allow_public=True)
     if not deleted:
         raise APIError(
             404, "not_found", "Agente no encontrado", extra={"resource": "agent"}
@@ -226,7 +226,7 @@ async def admin_delete_prompt(
         raise APIError(
             404, "not_found", "Elemento no encontrado", extra={"resource": "item"}
         )
-    await storage.delete(prompt["scope"], item_id, owner_id=None, allow_public=True)
+    await storage.delete_as_admin(prompt["scope"], item_id, allow_public=True)
     return {"ok": True}
 
 

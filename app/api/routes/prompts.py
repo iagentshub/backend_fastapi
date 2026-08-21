@@ -240,7 +240,12 @@ async def delete_prompt(
             if scope == "public" and pr
             else (None if role == "admin" else group_id)
         )
-        if not await _storage.delete(scope, prompt_id, owner_id=delete_owner):
+        deleted = (
+            await _storage.delete_as_admin(scope, prompt_id)
+            if delete_owner is None
+            else await _storage.delete(scope, prompt_id, owner_id=delete_owner)
+        )
+        if not deleted:
             raise APIError(
                 404, "not_found", "Prompt no encontrado", extra={"resource": "prompt"}
             )

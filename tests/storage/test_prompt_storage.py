@@ -139,25 +139,32 @@ def test_list_shows_private_prompts(storage):
 
 def test_delete_private_prompt(storage):
     pr = asyncio.run(storage.save("private", _PROMPT))
-    assert asyncio.run(storage.delete("private", pr["id"])) is True
+    assert asyncio.run(storage.delete("private", pr["id"], owner_id="admin")) is True
     assert asyncio.run(storage.get("private", pr["id"])) is None
 
 
 def test_delete_system_public_raises(storage):
     with pytest.raises(ValueError, match="sistema"):
-        asyncio.run(storage.delete("public", "some-prompt"))
+        asyncio.run(storage.delete_as_admin("public", "some-prompt"))
 
 
 def test_delete_owned_public_prompt(storage):
     prompt = asyncio.run(storage.save("public", _PROMPT, owner_id="user-id"))
     assert (
-        asyncio.run(storage.delete("public", prompt["id"], owner_id="user-id"))
-        is True
+        asyncio.run(storage.delete("public", prompt["id"], owner_id="user-id")) is True
     )
 
 
 def test_delete_nonexistent_prompt(storage):
-    assert asyncio.run(storage.delete("private", "ghost-prompt")) is False
+    assert (
+        asyncio.run(storage.delete("private", "ghost-prompt", owner_id="admin"))
+        is False
+    )
+
+
+def test_delete_rejects_missing_owner(storage):
+    with pytest.raises(ValueError, match="delete_as_admin"):
+        asyncio.run(storage.delete("private", "ghost-prompt", owner_id=None))
 
 
 # ── owner_id + get_any ─────────────────────────────────────────────────────────
