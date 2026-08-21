@@ -179,6 +179,48 @@ def _check_billing(settings: dict) -> ConfigCheck:
         variables=_STRIPE_REQUIRED,
     )
 
+def _check_billing_tax(settings: dict) -> ConfigCheck:
+    """Impuestos sobre las suscripciones.
+
+    Apagarlo no rompe nada visible —la suscripción se cobra igual, sin IVA— y
+    ese es justo el motivo por el que tiene que salir en el informe: el
+    descuadre no aparece hasta la declaración.
+    """
+    variables = ("STRIPE_TAX",)
+    if not bool(settings.get("billing_enabled", False)):
+        return ConfigCheck(
+            key="billing_tax",
+            feature="Impuestos de las suscripciones (Stripe Tax)",
+            severity="ok",
+            detail="No aplica: la facturación está desactivada.",
+            variables=variables,
+        )
+    if not _billing.STRIPE_TAX_ENABLED:
+        return ConfigCheck(
+            key="billing_tax",
+            feature="Impuestos de las suscripciones (Stripe Tax)",
+            severity="warning",
+            detail=(
+                "Desactivado: se cobra el importe neto y no se repercute IVA. "
+                "Vendiendo servicios digitales dentro de la UE eso deja las "
+                "facturas incompletas y el importe cobrado por debajo del debido."
+            ),
+            variables=variables,
+        )
+    return ConfigCheck(
+        key="billing_tax",
+        feature="Impuestos de las suscripciones (Stripe Tax)",
+        severity="ok",
+        detail=(
+            "Activo. Exige en el panel de Stripe: Tax habilitado, las "
+            "obligaciones fiscales («registrations») declaradas, un tax_code en "
+            "el producto de asientos y tax_behavior en el precio del add-on "
+            "self-hosted. Si falta algo, el alta falla al crear la suscripción."
+        ),
+        variables=variables,
+    )
+
+
 def _check_selfhosted_prices(settings: dict) -> ConfigCheck:
     variables = ("STRIPE_PRICE_SELFHOSTED_MONTHLY", "STRIPE_PRICE_SELFHOSTED_ANNUAL")
     if not bool(settings.get("billing_enabled", False)):

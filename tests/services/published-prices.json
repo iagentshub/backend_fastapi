@@ -1,0 +1,40 @@
+{
+  "_aviso": [
+    "ESTE FICHERO EXISTE DOS VECES, BYTE A BYTE, EN DOS REPOSITORIOS:",
+    "  backend/tests/services/published-prices.json",
+    "  frontend_react/src/routes/public/published-prices.json",
+    "Cambia uno, cambia el otro.",
+    "",
+    "La fórmula de precios está duplicada —billing_pricing.py cobra,",
+    "pricing-model.ts anuncia— y hasta aquí nada comprobaba que dijeran lo",
+    "mismo: los tests de cada lado usaban SUS PROPIAS constantes, así que",
+    "cambiar DEV_PRICE de 9 a 12 en un solo repositorio pasaba las dos suites",
+    "y dejaba el precio anunciado por debajo del cobrado.",
+    "",
+    "Esta tabla son importes absolutos, no derivados. Tocar una constante en",
+    "cualquiera de los dos lados rompe la suite DE ESE LADO, con un mensaje",
+    "que recuerda actualizar el otro. No defiende de quien actualice los dos",
+    "mal a la vez; sí de quien olvide que el otro existe, que es el caso real.",
+    "",
+    "Los anclajes están comprobados contra lo que anuncia la página pública:",
+    "€9/mes y €90/año por un asiento, €4,50 de suelo a 100 asientos, y el",
+    "add-on self-hosted a €400/mes y €4.000/año."
+  ],
+  "moneda": "eur",
+  "casos": [
+    { "tier": "developer", "seats": 1,   "interval": "month", "self_hosted": false, "price_per_seat_cents": 900, "amount_cents": 900 },
+    { "tier": "developer", "seats": 1,   "interval": "year",  "self_hosted": false, "price_per_seat_cents": 900, "amount_cents": 9000 },
+    { "tier": "business",  "seats": 2,   "interval": "month", "self_hosted": false, "price_per_seat_cents": 747, "amount_cents": 1494 },
+    { "tier": "business",  "seats": 10,  "interval": "month", "self_hosted": false, "price_per_seat_cents": 723, "amount_cents": 7227 },
+    { "tier": "business",  "seats": 10,  "interval": "year",  "self_hosted": false, "price_per_seat_cents": 723, "amount_cents": 72273 },
+    { "tier": "business",  "seats": 50,  "interval": "month", "self_hosted": false, "price_per_seat_cents": 602, "amount_cents": 30076 },
+    { "tier": "business",  "seats": 100, "interval": "month", "self_hosted": false, "price_per_seat_cents": 450, "amount_cents": 45000 },
+    { "tier": "business",  "seats": 100, "interval": "year",  "self_hosted": false, "price_per_seat_cents": 450, "amount_cents": 450000 },
+    { "tier": "business",  "seats": 10,  "interval": "month", "self_hosted": true,  "price_per_seat_cents": 723, "amount_cents": 47227 },
+    { "tier": "business",  "seats": 10,  "interval": "year",  "self_hosted": true,  "price_per_seat_cents": 723, "amount_cents": 472273 }
+  ],
+  "add_on_self_hosted_cents": {
+    "month": 40000,
+    "year": 400000
+  }
+}

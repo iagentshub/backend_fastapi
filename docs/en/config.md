@@ -50,6 +50,35 @@ The same report lives in the admin panel under **Configuration → Configuration
 diagnostics**, and in `GET /api/admin/config-audit`. It shows variable **names**
 only, never their values.
 
+## Subscription tax
+
+Advertised prices are **net**: checkout asks for the billing country before the
+subscription is created, and Stripe Tax adds the VAT that country requires. A
+business in another member state that supplies a valid EU VAT number pays no
+VAT (reverse charge).
+
+The country cannot be asked for at the end. `payment_behavior="default_incomplete"`
+drafts the invoice at the same moment the subscription is created, so with no
+location Stripe answers `customer_tax_location_invalid` and there is no sign-up.
+That is why `POST /api/billing/subscribe` requires `country` (ISO 3166-1 alpha-2),
+accepts an optional `tax_id`, and returns `subtotal_cents`, `tax_cents` and
+`total_cents` taken from that invoice — which is what the customer sees before
+paying.
+
+| Variable | Default | Description |
+|---|---|---|
+| `STRIPE_TAX` | `true` | Set to `false` to charge the net amount with no VAT. |
+
+Enabling it here is not enough: dashboard.stripe.com needs **Tax enabled**, the
+country's tax registrations declared, a `tax_code` on the `STRIPE_PRODUCT_SEATS`
+product, and `tax_behavior` on the self-hosted add-on prices, which are fixed and
+not created from code. If any of those four is missing, sign-up fails when the
+subscription is created; the startup report is the reminder.
+
+Only EU VAT numbers (`eu_vat`) are registered. A customer outside the EU pays as
+a consumer, which is correct even for a business; widening it means adding types
+in `app/services/billing_tax.py`.
+
 ## Log writes
 
 Log records are written to the database **in batches**, not one by one: they are

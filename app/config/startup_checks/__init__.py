@@ -50,6 +50,7 @@ from app.config.startup_checks._model import (
 from app.config.startup_checks.checks import (
     _STRIPE_REQUIRED,  # noqa: F401 — lo itera tests/config/test_startup_checks.py
     _check_billing,
+    _check_billing_tax,
     _check_body_limit,
     _check_cors,
     _check_csrf,
@@ -89,6 +90,7 @@ def run_checks() -> list[ConfigCheck]:
         _check_smtp(),
         _check_email_verify(settings),
         _check_billing(settings),
+        _check_billing_tax(settings),
         _check_selfhosted_prices(settings),
         _check_registration_mode(),
         _check_csrf(),

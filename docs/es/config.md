@@ -50,6 +50,35 @@ El mismo informe está en el panel de administración, en **Configuración →
 Diagnóstico de configuración**, y en `GET /api/admin/config-audit`. Solo muestra
 **nombres** de variable, nunca sus valores.
 
+## Impuestos de las suscripciones
+
+El precio anunciado es el **neto**: el checkout pide el país de facturación
+antes de crear la suscripción y Stripe Tax suma encima el IVA que corresponda a
+ese país. Una empresa de otro Estado miembro que declare un NIF-IVA válido paga
+sin IVA, por inversión del sujeto pasivo.
+
+El país no se puede pedir al final. `payment_behavior="default_incomplete"` emite
+el borrador de factura en el mismo momento en que se crea la suscripción, así que
+sin ubicación Stripe responde `customer_tax_location_invalid` y no hay alta. Por
+eso `POST /api/billing/subscribe` exige `country` (ISO 3166-1 alfa-2) y acepta un
+`tax_id` opcional, y devuelve `subtotal_cents`, `tax_cents` y `total_cents`
+tomados de esa factura — que es lo que el cliente ve antes de pagar.
+
+| Variable | Por defecto | Descripción |
+|---|---|---|
+| `STRIPE_TAX` | `true` | A `false` se cobra el neto y no se repercute IVA. |
+
+Activarlo aquí no basta: en dashboard.stripe.com hacen falta **Tax habilitado**,
+las obligaciones fiscales (*registrations*) del país declaradas, un `tax_code` en
+el producto de `STRIPE_PRODUCT_SEATS` y `tax_behavior` en los precios del add-on
+self-hosted, que son fijos y no se crean desde el código. Si falta alguna de esas
+cuatro cosas, el alta falla al crear la suscripción; el arranque lo recuerda en el
+informe de configuración.
+
+Solo se registran NIF-IVA de la UE (`eu_vat`). Un cliente de fuera paga como
+consumidor, que es correcto aunque sea una empresa; ampliarlo es añadir tipos en
+`app/services/billing_tax.py`.
+
 ## Escritura de logs
 
 Los registros se escriben en la base de datos **por lotes**, no uno a uno: se

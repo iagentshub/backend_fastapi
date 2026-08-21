@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import hashlib
 import hmac
 import json
@@ -35,9 +36,18 @@ def _fake_subscription(
     self_hosted=False,
     cancel_at_period_end=False,
     price_amount=900,
+    subtotal=900,
+    tax=189,
 ):
     payment_intent = FakeStripeObject(client_secret="pi_secret_abc")
-    latest_invoice = FakeStripeObject(payment_intent=payment_intent)
+    # La factura la crea Stripe junto con la suscripción (default_incomplete) y
+    # ya trae el impuesto calculado: de ahí sale el desglose que ve el checkout.
+    latest_invoice = FakeStripeObject(
+        payment_intent=payment_intent,
+        subtotal=subtotal,
+        tax=tax,
+        total=subtotal + tax,
+    )
     return FakeStripeObject(
         id=sub_id,
         customer=customer,
@@ -56,6 +66,51 @@ def _fake_subscription(
             data=[FakeStripeObject(id="si_1", price=FakeStripeObject(unit_amount=price_amount))]
         ),
     )
+
+
+@contextlib.contextmanager
+def _stripe_alta(subscription=None, customer_id="cus_123", tax_ids=()):
+    """Las cuatro llamadas a Stripe que hace un alta, mockeadas juntas.
+
+    `Customer.modify` y `list_tax_ids` entraron con el IVA: el país de
+    facturación se escribe en el cliente antes de crear la suscripción, porque
+    sin ubicación Stripe no puede calcular el impuesto.
+    """
+    fake_sub = subscription if subscription is not None else _fake_subscription()
+    with patch.object(
+        stripe.Customer, "create", return_value=FakeStripeObject(id=customer_id)
+    ) as create_customer, patch.object(
+        stripe.Customer, "modify", return_value=FakeStripeObject(id=customer_id)
+    ) as modify_customer, patch.object(
+        stripe.Customer,
+        "list_tax_ids",
+        return_value=FakeStripeObject(
+            data=[FakeStripeObject(value=v) for v in tax_ids]
+        ),
+    ), patch.object(
+        stripe.Customer, "create_tax_id", return_value=FakeStripeObject(id="txi_1")
+    ) as create_tax_id, patch.object(
+        stripe.Subscription, "create", return_value=fake_sub
+    ) as create_sub:
+        yield {
+            "customer": create_customer,
+            "modify": modify_customer,
+            "tax_id": create_tax_id,
+            "subscription": create_sub,
+        }
+
+
+def _plan(**overrides):
+    """Cuerpo válido de /subscribe. El país es obligatorio desde el IVA."""
+    body = {
+        "tier": "developer",
+        "seats": 1,
+        "interval": "month",
+        "self_hosted": False,
+        "country": "ES",
+    }
+    body.update(overrides)
+    return body
 
 
 def _setup_user(client, username="alice"):
@@ -116,16 +171,14 @@ def test_subscribe_requires_auth(client):
 
 def test_subscribe_success_creates_customer_and_subscription(client):
     _setup_user(client, "alice")
-    fake_sub = _fake_subscription()
-    with patch.object(stripe.Customer, "create", return_value=FakeStripeObject(id="cus_123")) as mock_customer, \
-         patch.object(stripe.Subscription, "create", return_value=fake_sub) as mock_sub:
-        r = client.post("/api/billing/subscribe", json={"tier": "developer", "seats": 1, "interval": "month", "self_hosted": False})
+    with _stripe_alta() as mocks:
+        r = client.post("/api/billing/subscribe", json=_plan())
     assert r.status_code == 200, r.text
     body = r.json()
     assert body["subscription_id"] == "sub_123"
     assert body["client_secret"] == "pi_secret_abc"
-    mock_customer.assert_called_once()
-    mock_sub.assert_called_once()
+    mocks["customer"].assert_called_once()
+    mocks["subscription"].assert_called_once()
 
     state = client.get("/api/billing/subscription").json()
     assert state["tier"] == "developer"
@@ -134,19 +187,204 @@ def test_subscribe_success_creates_customer_and_subscription(client):
 
 def test_subscribe_seats_out_of_range(client):
     _setup_user(client, "alice")
-    r = client.post("/api/billing/subscribe", json={"tier": "business", "seats": 1, "interval": "month"})
+    r = client.post("/api/billing/subscribe", json=_plan(tier="business", seats=1))
     assert r.status_code == 400
 
 
 def test_subscribe_duplicate_active_subscription_409(client):
     _setup_user(client, "alice")
-    fake_sub = _fake_subscription()
-    with patch.object(stripe.Customer, "create", return_value=FakeStripeObject(id="cus_123")), \
-         patch.object(stripe.Subscription, "create", return_value=fake_sub):
-        r1 = client.post("/api/billing/subscribe", json={"tier": "developer", "seats": 1, "interval": "month"})
+    with _stripe_alta(_fake_subscription(status="active")):
+        r1 = client.post("/api/billing/subscribe", json=_plan())
         assert r1.status_code == 200
-        r2 = client.post("/api/billing/subscribe", json={"tier": "developer", "seats": 1, "interval": "month"})
+        r2 = client.post("/api/billing/subscribe", json=_plan())
     assert r2.status_code == 409
+
+
+def test_un_alta_sin_pagar_no_bloquea_el_siguiente_intento(client):
+    """Cambiar de país (o volver tras abandonar) tiene que poder reintentarse.
+
+    Una suscripción `incomplete` es un alta creada y nunca pagada, pero contaba
+    como activa: el segundo intento chocaba con un 409 que hablaba de una
+    suscripción que el usuario nunca tuvo. Además su factura ya lleva el
+    impuesto del país anterior, así que no se puede reutilizar.
+    """
+    _setup_user(client, "alice")
+    with _stripe_alta():
+        assert client.post("/api/billing/subscribe", json=_plan()).status_code == 200
+        with patch.object(stripe.Subscription, "delete") as mock_delete:
+            r2 = client.post("/api/billing/subscribe", json=_plan(country="FR"))
+    assert r2.status_code == 200, r2.text
+    mock_delete.assert_called_once_with("sub_123")
+
+
+def test_si_stripe_no_puede_cancelar_la_incompleta_el_alta_sigue(client):
+    """Que ya no exista al otro lado no puede dejar al usuario sin poder pagar."""
+    _setup_user(client, "alice")
+    with _stripe_alta():
+        assert client.post("/api/billing/subscribe", json=_plan()).status_code == 200
+        with patch.object(
+            stripe.Subscription,
+            "delete",
+            side_effect=stripe.error.InvalidRequestError("No such subscription", param="id"),
+        ):
+            r2 = client.post("/api/billing/subscribe", json=_plan(country="FR"))
+    assert r2.status_code == 200, r2.text
+
+
+# ── IVA (FIN-01) ─────────────────────────────────────────────────────────────
+# Hasta aquí se cobraba el importe neto: ni se repercutía IVA ni había forma de
+# declarar el NIF de una empresa de otro Estado miembro. Estos tests fijan las
+# dos direcciones — que el impuesto se calcule y que el desglose llegue al
+# cliente antes de pagar.
+
+
+def test_subscribe_exige_pais_de_facturacion(client):
+    """Sin país, Stripe no puede calcular el impuesto: se corta antes de llamar."""
+    _setup_user(client, "alice")
+    with _stripe_alta() as mocks:
+        r = client.post("/api/billing/subscribe", json=_plan(country=""))
+    assert r.status_code == 400
+    detail = r.json()["detail"]
+    assert detail["code"] == "invalid_field"
+    assert detail["field"] == "country"
+    mocks["subscription"].assert_not_called()
+
+
+def test_subscribe_rechaza_pais_que_no_es_iso(client):
+    _setup_user(client, "alice")
+    with _stripe_alta() as mocks:
+        r = client.post("/api/billing/subscribe", json=_plan(country="Es"))
+    assert r.status_code == 200, r.text  # "Es" se normaliza a "ES"
+    assert mocks["modify"].call_args.kwargs["address"] == {"country": "ES"}
+
+
+def test_subscribe_activa_el_impuesto_automatico_y_declara_el_comportamiento(client):
+    """automatic_tax sin tax_behavior en el precio es un error de Stripe entero."""
+    _setup_user(client, "alice")
+    with _stripe_alta() as mocks:
+        r = client.post("/api/billing/subscribe", json=_plan())
+    assert r.status_code == 200, r.text
+    kwargs = mocks["subscription"].call_args.kwargs
+    assert kwargs["automatic_tax"] == {"enabled": True}
+    assert kwargs["items"][0]["price_data"]["tax_behavior"] == "exclusive"
+    assert kwargs["metadata"]["country"] == "ES"
+
+
+def test_subscribe_escribe_el_pais_en_el_cliente_de_stripe(client):
+    """Es la dirección con la que se emite la factura, no solo un dato fiscal."""
+    _setup_user(client, "alice")
+    with _stripe_alta() as mocks:
+        client.post("/api/billing/subscribe", json=_plan(country="FR"))
+    mocks["modify"].assert_called_once()
+    assert mocks["modify"].call_args.kwargs["address"] == {"country": "FR"}
+
+
+def test_subscribe_registra_el_nif_intracomunitario(client):
+    _setup_user(client, "alice")
+    with _stripe_alta() as mocks:
+        r = client.post("/api/billing/subscribe", json=_plan(tax_id="A1234567 J"))
+    assert r.status_code == 200, r.text
+    mocks["tax_id"].assert_called_once()
+    kwargs = mocks["tax_id"].call_args.kwargs
+    assert kwargs["type"] == "eu_vat"
+    # Sin prefijo de país se le antepone el declarado, y se limpian espacios.
+    assert kwargs["value"] == "ESA1234567J"
+
+
+def test_subscribe_no_duplica_un_nif_ya_registrado(client):
+    """Stripe admite el mismo NIF dos veces sin quejarse; la factura no."""
+    _setup_user(client, "alice")
+    with _stripe_alta(tax_ids=("ESA1234567J",)) as mocks:
+        r = client.post("/api/billing/subscribe", json=_plan(tax_id="ESA1234567J"))
+    assert r.status_code == 200, r.text
+    mocks["tax_id"].assert_not_called()
+
+
+def test_subscribe_rechaza_nif_de_fuera_de_la_ue(client):
+    _setup_user(client, "alice")
+    with _stripe_alta() as mocks:
+        r = client.post("/api/billing/subscribe", json=_plan(country="US", tax_id="12-3456789"))
+    assert r.status_code == 400
+    assert r.json()["detail"]["code"] == "tax_id_country_unsupported"
+    mocks["subscription"].assert_not_called()
+
+
+def test_subscribe_sin_nif_no_llama_a_stripe_por_el_nif(client):
+    """El NIF es opcional: sin él se cobra como consumidor, con IVA."""
+    _setup_user(client, "alice")
+    with _stripe_alta() as mocks:
+        r = client.post("/api/billing/subscribe", json=_plan(country="US"))
+    assert r.status_code == 200, r.text
+    mocks["tax_id"].assert_not_called()
+
+
+def test_subscribe_devuelve_el_desglose_de_la_factura(client):
+    """Lo que se va a cobrar sale de Stripe, no de nuestra aritmética."""
+    _setup_user(client, "alice")
+    with _stripe_alta(_fake_subscription(subtotal=900, tax=189)):
+        r = client.post("/api/billing/subscribe", json=_plan())
+    body = r.json()
+    assert body["subtotal_cents"] == 900
+    assert body["tax_cents"] == 189
+    assert body["total_cents"] == 1089
+
+
+def test_subscribe_sin_totales_en_la_factura_cae_al_neto(client):
+    """Con Stripe Tax apagado la factura no trae desglose: el total es el neto."""
+    _setup_user(client, "alice")
+    sub = _fake_subscription()
+    sub["latest_invoice"] = FakeStripeObject(
+        payment_intent=FakeStripeObject(client_secret="pi_secret_abc")
+    )
+    with _stripe_alta(sub):
+        r = client.post("/api/billing/subscribe", json=_plan())
+    body = r.json()
+    assert body["subtotal_cents"] == 900
+    assert body["tax_cents"] == 0
+    assert body["total_cents"] == 900
+
+
+def test_error_fiscal_de_stripe_es_400_del_cliente_no_502(client):
+    """Un país que Stripe no sabe gravar lo corrige el usuario, no el servidor."""
+    _setup_user(client, "alice")
+    fallo = stripe.error.InvalidRequestError(
+        "Customer tax location invalid", param=None, code="customer_tax_location_invalid"
+    )
+    with patch.object(stripe.Customer, "create", return_value=FakeStripeObject(id="cus_123")), \
+         patch.object(stripe.Customer, "modify", side_effect=fallo):
+        r = client.post("/api/billing/subscribe", json=_plan())
+    assert r.status_code == 400
+    detail = r.json()["detail"]
+    assert detail["code"] == "invalid_tax_location"
+    assert detail["field"] == "country"
+
+
+def test_error_de_stripe_que_no_es_del_cliente_sigue_siendo_502(client):
+    _setup_user(client, "alice")
+    fallo = stripe.error.InvalidRequestError("No such product", param="product")
+    with patch.object(stripe.Customer, "create", return_value=FakeStripeObject(id="cus_123")), \
+         patch.object(stripe.Customer, "modify", side_effect=fallo):
+        r = client.post("/api/billing/subscribe", json=_plan())
+    assert r.status_code == 502
+    assert r.json()["detail"]["code"] == "upstream_error"
+
+
+def test_quote_dice_que_el_precio_no_lleva_impuesto(client):
+    """La página pública tiene que poder anunciar «IVA no incluido» sin duplicar la política."""
+    r = client.post("/api/billing/quote", json={"tier": "developer", "seats": 1, "interval": "month"})
+    assert r.status_code == 200
+    assert r.json()["tax_behavior"] == "exclusive"
+
+
+def test_change_seats_mantiene_el_tax_behavior(client):
+    """Un precio nuevo sin él deja la suscripción sin poder facturar el periodo siguiente."""
+    _setup_user(client, "alice")
+    _subscribe(client, tier="business", seats=10, interval="month")
+    with patch.object(stripe.Subscription, "retrieve", return_value=_fake_subscription(tier="business", seats=10)), \
+         patch.object(stripe.SubscriptionItem, "modify", return_value=FakeStripeObject(id="si_1")) as mock_item:
+        r = client.post("/api/billing/change-seats", json={"seats": 20})
+    assert r.status_code == 200, r.text
+    assert mock_item.call_args.kwargs["price_data"]["tax_behavior"] == "exclusive"
 
 
 # ── GET /subscription ─────────────────────────────────────────────────────────
@@ -163,14 +401,13 @@ def test_get_subscription_free_default(client):
 def _subscribe(client, **plan):
     billing_routes._subscribe_limiter._data.clear()
     fake_sub = _fake_subscription(**{k: v for k, v in plan.items() if k in ("tier", "seats", "interval", "self_hosted")})
-    with patch.object(stripe.Customer, "create", return_value=FakeStripeObject(id="cus_123")), \
-         patch.object(stripe.Subscription, "create", return_value=fake_sub):
-        r = client.post("/api/billing/subscribe", json={
-            "tier": plan.get("tier", "developer"),
-            "seats": plan.get("seats", 1),
-            "interval": plan.get("interval", "month"),
-            "self_hosted": plan.get("self_hosted", False),
-        })
+    with _stripe_alta(fake_sub):
+        r = client.post("/api/billing/subscribe", json=_plan(
+            tier=plan.get("tier", "developer"),
+            seats=plan.get("seats", 1),
+            interval=plan.get("interval", "month"),
+            self_hosted=plan.get("self_hosted", False),
+        ))
     assert r.status_code == 200, r.text
     return r.json()
 

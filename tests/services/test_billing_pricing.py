@@ -1,3 +1,6 @@
+import json
+from pathlib import Path
+
 import pytest
 
 from app.services import billing_pricing as bp
@@ -68,3 +71,39 @@ def test_enterprise_not_self_serve():
 def test_invalid_interval():
     with pytest.raises(InvalidPlanError):
         compute_total_cents("developer", 1, "week", False)
+
+
+# ── Precios publicados (REL-03) ───────────────────────────────────────────────
+# Todo lo de arriba comprueba la fórmula contra SUS PROPIAS constantes: subir
+# DEV_PRICE de 9 a 12 no rompía ni un test, aquí ni en frontend_react, y el
+# precio anunciado dejaba de ser el cobrado sin que nada lo dijera.
+#
+# `published-prices.json` son importes absolutos y el mismo fichero, byte a
+# byte, vive también en frontend_react/src/routes/public/. Ver su cabecera.
+
+_TABLA = json.loads(
+    (Path(__file__).parent / "published-prices.json").read_text(encoding="utf-8")
+)
+
+_RECORDATORIO = (
+    "Has cambiado la fórmula de precios. Actualiza published-prices.json en "
+    "ESTE repositorio y la copia idéntica de frontend_react/src/routes/public/, "
+    "o el precio anunciado dejará de ser el cobrado."
+)
+
+
+@pytest.mark.parametrize("caso", _TABLA["casos"], ids=lambda c: f"{c['tier']}-{c['seats']}-{c['interval']}-sh{int(c['self_hosted'])}")
+def test_la_formula_reproduce_los_precios_publicados(caso):
+    resultado = compute_total_cents(
+        caso["tier"], caso["seats"], caso["interval"], caso["self_hosted"]
+    )
+    assert resultado["price_per_seat_cents"] == caso["price_per_seat_cents"], _RECORDATORIO
+    assert resultado["amount_cents"] == caso["amount_cents"], _RECORDATORIO
+
+
+@pytest.mark.parametrize("interval,esperado", sorted(_TABLA["add_on_self_hosted_cents"].items()))
+def test_el_add_on_self_hosted_cuesta_lo_publicado(interval, esperado):
+    seats = 10
+    sin_sh = compute_total_cents("business", seats, interval, False)["amount_cents"]
+    con_sh = compute_total_cents("business", seats, interval, True)["amount_cents"]
+    assert con_sh - sin_sh == esperado, _RECORDATORIO

@@ -84,6 +84,27 @@ def test_billing_activo_y_completo_esta_bien(settings, monkeypatch):
     assert _check("billing").severity == "ok"
 
 
+def test_impuestos_desactivados_con_cobro_activo_avisa(settings, monkeypatch):
+    """No repercutir IVA no rompe nada visible: el descuadre sale al declarar."""
+    settings(billing_enabled=True)
+    monkeypatch.setattr(checks._billing, "STRIPE_TAX_ENABLED", False)
+    resultado = _check("billing_tax")
+    assert resultado.severity == "warning"
+    assert "STRIPE_TAX" in resultado.variables
+
+
+def test_impuestos_activos_esta_bien(settings, monkeypatch):
+    settings(billing_enabled=True)
+    monkeypatch.setattr(checks._billing, "STRIPE_TAX_ENABLED", True)
+    assert _check("billing_tax").severity == "ok"
+
+
+def test_sin_cobro_los_impuestos_no_aplican(settings, monkeypatch):
+    settings(billing_enabled=False)
+    monkeypatch.setattr(checks._billing, "STRIPE_TAX_ENABLED", False)
+    assert _check("billing_tax").severity == "ok"
+
+
 def test_modo_de_registro_invalido_es_error(settings, monkeypatch):
     """«cerrado» en vez de «closed» deja la instalación abierta a cualquiera."""
     monkeypatch.setattr(session_cfg, "REGISTRATION_MODE", "cerrado")
