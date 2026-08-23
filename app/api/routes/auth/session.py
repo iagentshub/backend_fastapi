@@ -25,7 +25,7 @@ from app.auth.auth import (
 )
 from app.auth.cookies import clear_session_cookies, set_session_cookies
 from app.auth.gdpr import purge_user_data
-from app.auth.passwords import create_token, decode_claims
+from app.auth.passwords import DUMMY_PASSWORD_HASH, create_token, decode_claims
 from app.auth.sessions import open_session
 from app.config.session import (
     EMAIL_VERIFY_ENABLED,
@@ -215,6 +215,9 @@ async def login(
 
     user = await get_user_by_login(identifier)
     if not user or not user.get("password_hash"):
+        # No salir antes de bcrypt: esa diferencia temporal revelaría si el
+        # identificador existe y si la cuenta tiene contraseña local u OAuth.
+        await verify_password_async(password, DUMMY_PASSWORD_HASH)
         flog.audit(
             "auth.login.rejected",
             outcome="DENIED",
@@ -236,6 +239,8 @@ async def login(
             username="-",
         )
         raise APIError(401, "invalid_credentials", "Credenciales incorrectas")
+    # Estas comprobaciones van deliberadamente después de bcrypt: solo quien
+    # conoce la contraseña puede descubrir el estado interno de la cuenta.
     if not user.get("is_active", 1):
         flog.audit(
             "auth.login.rejected",

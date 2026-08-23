@@ -88,6 +88,12 @@ def hash_password(plain: str) -> str:
     ).decode("utf-8")
 
 
+# Un login contra un usuario inexistente o una cuenta OAuth debe pagar el mismo
+# bcrypt que uno contra una cuenta local. Se genera una sola vez por proceso:
+# regenerarlo en cada petición sumaría el coste de crear la sal al de verificarla.
+DUMMY_PASSWORD_HASH = hash_password("")
+
+
 async def hash_password_async(plain: str) -> str:
     """Calcula bcrypt sin bloquear el event loop de FastAPI."""
     return await asyncio.to_thread(hash_password, plain)
