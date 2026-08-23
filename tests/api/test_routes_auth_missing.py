@@ -67,7 +67,7 @@ def test_require_group_invalid_token(client):
 # ── register — REGISTRATION_MODE closed (línea 104) ──────────────────────────
 
 def test_register_mode_closed(client, reset_rate_limiter):
-    with patch("app.api.routes.auth.session.REGISTRATION_MODE", "closed"):
+    with patch("app.config.session.REGISTRATION_MODE", "closed"):
         r = client.post("/api/auth/register", json={"email": "closed@test.com", "password": "pass1234"})
     assert r.status_code == 403
     assert r.json()["detail"]["code"] == "registration_disabled"
@@ -76,20 +76,19 @@ def test_register_mode_closed(client, reset_rate_limiter):
 # ── register — REGISTRATION_MODE invite (línea 106) ──────────────────────────
 
 def test_register_mode_invite(client, reset_rate_limiter):
-    with patch("app.api.routes.auth.session.REGISTRATION_MODE", "invite"):
+    with patch("app.config.session.REGISTRATION_MODE", "invite"):
         r = client.post("/api/auth/register", json={"email": "invite@test.com", "password": "pass1234"})
     assert r.status_code == 403
     assert r.json()["detail"]["code"] == "registration_invite_only"
 
 
-# ── register — EMAIL_VERIFY_ENABLED (líneas 134-136) ─────────────────────────
+# ── register — verificación de correo activa ─────────────────────────────────
 
 def test_register_email_verify_enabled_returns_pending(client, reset_rate_limiter):
-    """Con EMAIL_VERIFY_ENABLED=True el registro devuelve pending_verification=True."""
-    # Hay que parchear en ambos módulos: el de rutas (para el if de la respuesta)
-    # y el de auth (para que register_user_email genere el verify_token).
-    with patch("app.api.routes.auth.session.EMAIL_VERIFY_ENABLED", True), \
-         patch("app.auth.auth.EMAIL_VERIFY_ENABLED", True), \
+    """Con la verificación activa el registro devuelve pending_verification=True."""
+    # Un solo sitio desde que la ruta y `register_user_email` lo resuelven con
+    # `email_verify_enabled()`: antes había que parchear las dos copias.
+    with patch("app.config.session.EMAIL_VERIFY_ENABLED", True), \
          patch("app.api.routes.auth.session.send_verification_email"):
         r = client.post("/api/auth/register", json={
             "username": "pendingverify", "email": "pendingverify@test.com", "password": "pass1234"
@@ -121,7 +120,7 @@ def test_login_inactive_account(client):
     assert r.json()["detail"]["code"] == "account_disabled"
 
 
-# ── login — cuenta sin verificar con EMAIL_VERIFY_ENABLED (línea 158) ────────
+# ── login — cuenta sin verificar con la verificación activa ──────────────────
 
 def test_login_unverified_account(client):
     from app.auth.auth import register_user
@@ -137,7 +136,7 @@ def test_login_unverified_account(client):
             await conn.commit()
 
     asyncio.run(_setup())
-    with patch("app.api.routes.auth.session.EMAIL_VERIFY_ENABLED", True):
+    with patch("app.config.session.EMAIL_VERIFY_ENABLED", True):
         r = client.post("/api/auth/login", json={
             "email": "unverified@test.com", "password": "pass1234"
         })

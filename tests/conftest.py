@@ -140,21 +140,21 @@ def patch_data_dir(tmp_data_dir, tmp_path, monkeypatch):
     monkeypatch.setattr(agent_chat_routes, "AGENTS_DIR", tmp_data_dir / "agents")
     monkeypatch.setattr(agent_export_routes, "AGENTS_DIR", tmp_data_dir / "agents")
 
-    # Forzar REGISTRATION_MODE="open" en los tests para que client.post("/api/auth/register")
-    # funcione independientemente del entorno de producción (GAIA_REGISTRATION=closed/invite).
-    # auth.py es un paquete: REGISTRATION_MODE/EMAIL_VERIFY_ENABLED/SECURE_COOKIES
-    # se importan por valor en el submódulo session.py, no en __init__.py.
-    import app.api.routes.auth.session as auth_routes
+    # Forzar el modo de registro a "open" para que client.post("/api/auth/register")
+    # funcione sea cual sea GAIA_REGISTRATION en la máquina.
+    #
+    # Ya no se parchea la copia de session.py: el alta lo resuelve con
+    # `registration_mode()`, que lee settings.json y, si no lo dice, esta
+    # variable a través del módulo. El sitio a parchear es el original.
+    import app.config.session as session_cfg
 
-    monkeypatch.setattr(auth_routes, "REGISTRATION_MODE", "open")
+    monkeypatch.setattr(session_cfg, "REGISTRATION_MODE", "open")
 
-    # Forzar EMAIL_VERIFY_ENABLED=False para que el registro no quede en "pending"
-    # cuando GAIA_EMAIL_VERIFY=true en producción. Los tests que necesiten True
-    # lo parchean ellos mismos con unittest.mock.patch.
-    monkeypatch.setattr(auth_routes, "EMAIL_VERIFY_ENABLED", False)
-    import app.auth.auth as auth_mod
-
-    monkeypatch.setattr(auth_mod, "EMAIL_VERIFY_ENABLED", False)
+    # Verificación de correo apagada, para que el alta no quede en "pending"
+    # cuando GAIA_EMAIL_VERIFY=true en la máquina. Un solo sitio: la ruta y
+    # `register_user_email` lo resuelven con `email_verify_enabled()`, que sale
+    # de settings.json o, si calla, de esta variable.
+    monkeypatch.setattr(session_cfg, "EMAIL_VERIFY_ENABLED", False)
 
     # Forzar MAX_SESSIONS=200 antes de cada test: en producción
     # GAIA_MAX_GUEST_SESSIONS puede ser 0 (invitado desactivado), y entonces el

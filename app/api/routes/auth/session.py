@@ -28,19 +28,21 @@ from app.auth.gdpr import purge_user_data
 from app.auth.passwords import DUMMY_PASSWORD_HASH, create_token, decode_claims
 from app.auth.sessions import open_session
 from app.config.session import (
-    EMAIL_VERIFY_ENABLED,
     RATE_GUEST_CALLS,
     RATE_GUEST_WINDOW,
     RATE_REFRESH_CALLS,
     RATE_REFRESH_WINDOW,
     REGISTER_MAX,
     REGISTER_WINDOW,
-    REGISTRATION_MODE,
 )
 from app.errors import APIError
 from app.middleware.locale import get_locale
 from app.middleware.ratelimit import RateLimiter
 from app.services.email import send_verification_email
+from app.services.platform_settings import (
+    email_verify_enabled,
+    registration_mode,
+)
 from app.storage.guest import is_guest
 from app.storage.sessions import (
     REASON_LOGOUT,
@@ -108,9 +110,12 @@ _refresh_limiter = RateLimiter(
 async def register(
     body: RegisterBody, request: Request, response: Response
 ) -> dict[str, Any]:
-    if REGISTRATION_MODE == "closed":
+    # Se resuelve en cada petición, no al importar: el admin cambia el modo
+    # desde el panel y hasta ahora eso no llegaba aquí (ver registration_mode).
+    modo = registration_mode()
+    if modo == "closed":
         raise APIError(403, "registration_disabled", "El registro está desactivado.")
-    if REGISTRATION_MODE == "invite":
+    if modo == "invite":
         raise APIError(
             403,
             "registration_invite_only",
@@ -155,6 +160,9 @@ async def register(
             400, "password_too_short", "La contraseña debe tener al menos 8 caracteres"
         )
 
+    # Una sola lectura para toda la petición: quien genera el token y quien
+    # decide si sale el correo tienen que estar de acuerdo.
+    verificar = email_verify_enabled()
     try:
         username, verify_token = await register_user_email(
             username,
@@ -164,6 +172,7 @@ async def register(
             gender=gender,
             country=country,
             phone=phone,
+            verify_email=verificar,
         )
     except ValueError as exc:
         resource = "username" if "usuario" in str(exc).lower() else "email"
@@ -171,7 +180,7 @@ async def register(
             409, "already_exists", str(exc), extra={"resource": resource}
         ) from exc
 
-    if EMAIL_VERIFY_ENABLED and verify_token:
+    if verificar and verify_token:
         base_url = _public_base_url(request)
         # El idioma se resuelve AQUÍ: get_locale() es un ContextVar y el
         # envío se encola en un ThreadPoolExecutor donde ya no existe.
@@ -253,7 +262,7 @@ async def login(
             username="-",
         )
         raise APIError(403, "account_disabled", "Cuenta desactivada")
-    if EMAIL_VERIFY_ENABLED and not user.get("is_verified", 1):
+    if email_verify_enabled() and not user.get("is_verified", 1):
         flog.audit(
             "auth.login.rejected",
             resource_type="user",

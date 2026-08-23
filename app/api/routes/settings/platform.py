@@ -19,6 +19,7 @@ from app.services.platform_settings import (
     _VALID_REGISTRATION,
     _read_platform_cfg,
     _write_platform_cfg,
+    registration_mode,
 )
 
 
@@ -107,7 +108,10 @@ async def get_platform_config_public() -> dict:
         "api_version": 1,
         "billing_enabled": cfg.get("billing_enabled", False),
         "guest_enabled": cfg.get("guest_enabled", True),
-        "registration": cfg.get("registration", "open"),
+        # El mismo resolutor que usa el alta, no `cfg` en crudo: así el
+        # cliente nunca recibe un modo que el servidor no reconoce, y lo que
+        # enseña coincide siempre con lo que el endpoint va a hacer.
+        "registration": registration_mode(),
         "users_can_configure_theme": cfg.get("users_can_configure_theme", True),
         "default_theme": cfg.get("default_theme", "dark-red"),
         "landing_enabled": cfg.get("landing_enabled", False),
@@ -154,7 +158,7 @@ async def update_platform_config(
         raise APIError(
             422,
             "invalid_field",
-            "registration debe ser 'open' o 'closed'",
+            "registration debe ser 'open', 'closed' o 'invite'",
             extra={"field": "registration"},
         )
     if "default_theme" in update and update["default_theme"] not in VALID_THEMES:

@@ -171,15 +171,58 @@ def _read_platform_cfg() -> dict:
     for k in _PLATFORM_DEFAULTS:
         if k in raw:
             cfg[k] = raw[k]
+    # `app.config.session` se importa aquí dentro a propósito: los tests
+    # reescriben estos valores y un binding de módulo los congelaría. Ver «La
+    # trampa» en CLAUDE.md.
+    import app.config.session as session_cfg
+
     if "max_request_bytes" not in raw:
         # Su default no es el literal de arriba: sale de GAIA_BODY_MAX_BYTES por
         # la misma configuración que usa el middleware. Se lee del módulo para
         # que los tests y la configuración de arranque vean el valor vigente,
         # sin crear un ciclo entre el servicio y el middleware.
-        import app.config.session as session_cfg
-
         cfg["max_request_bytes"] = max(session_cfg.BODY_MAX_BYTES, 0)
+    if "registration" not in raw:
+        # Mismo caso: su default sale de GAIA_REGISTRATION, no del literal.
+        #
+        # Era un interruptor duplicado. El alta miraba SOLO la variable de
+        # entorno y los clientes SOLO este fichero, que es el que edita el
+        # panel de Admin: poner `registration: "closed"` escondía el formulario
+        # y dejaba POST /api/auth/register devolviendo 200 — una instalación
+        # «cerrada» seguía aceptando cuentas de cualquiera.
+        cfg["registration"] = session_cfg.REGISTRATION_MODE
+    if "email_verify" not in raw:
+        # Y lo propio con la verificación: activarla desde Admin no mandaba
+        # ningún correo, porque el alta solo miraba GAIA_EMAIL_VERIFY.
+        cfg["email_verify"] = session_cfg.EMAIL_VERIFY_ENABLED
     return cfg
+
+
+def registration_mode() -> str:
+    """Modo de registro en vigor: `open`, `closed` o `invite`.
+
+    El único sitio que lo resuelve. Lo que diga `settings.json` manda —es lo
+    que edita el panel de Admin— y, si no lo dice, vale `GAIA_REGISTRATION`.
+    Quien decide si se puede crear una cuenta y quien se lo cuenta a los
+    clientes tienen que leer de aquí los dos, o el interruptor miente.
+
+    Un modo que no existe se trata como `closed`. Antes un typo —`"cerrado"`
+    en vez de `"closed"`— no casaba con ninguna de las dos comparaciones y
+    dejaba el registro ABIERTO: la instalación que alguien creía cerrada
+    aceptaba cuentas de cualquiera. El chequeo de arranque ya lo avisa; esto
+    es lo que hace que el aviso no llegue tarde.
+    """
+    modo = str(_read_platform_cfg().get("registration") or "").lower()
+    return modo if modo in REGISTRATION_MODES else "closed"
+
+
+def email_verify_enabled() -> bool:
+    """Si al crear una cuenta hay que verificar el correo antes de entrar.
+
+    Mismo orden que [registration_mode]: `settings.json` manda y, si calla,
+    `GAIA_EMAIL_VERIFY`.
+    """
+    return bool(_read_platform_cfg().get("email_verify", False))
 
 
 def _write_platform_cfg(cfg: dict) -> None:

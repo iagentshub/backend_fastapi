@@ -38,7 +38,6 @@ from app.auth.user_lookup import (  # noqa: F401 - re-exportadas para compat
     get_user_by_username,
 )
 from app.config.data import DATA_DIR
-from app.config.session import EMAIL_VERIFY_ENABLED
 from app.sql import sql
 from app.storage.db import IS_PG, open_db
 from app.storage.guest import is_guest
@@ -83,10 +82,18 @@ async def register_user_email(
     country: Optional[str] = None,
     phone: Optional[str] = None,
     display_name: Optional[str] = None,
+    verify_email: bool = False,
 ) -> tuple[str, Optional[str]]:
     """Register a user with separate public username and private account email.
 
-    verification_token is None when EMAIL_VERIFY_ENABLED is False (user auto-verified).
+    `verification_token` es None salvo que [verify_email] sea cierto; con él
+    la cuenta nace sin verificar y con un token que hay que enviar por correo.
+
+    **El modo lo decide quien llama, no esta función.** La ruta de alta lo
+    resuelve una vez con `email_verify_enabled()` y lo pasa: así generar el
+    token y enviar el correo no pueden discrepar si el ajuste cambia a mitad
+    de la petición, y `app.auth` no tiene que conocer `app.services`, que es
+    por donde se colaba un ciclo de imports.
     """
     username = normalize_username(username)
     email = email.strip().lower()
@@ -103,7 +110,7 @@ async def register_user_email(
             now = generate_date()
             is_verified = 1
             token_hash: Optional[str] = None
-            if EMAIL_VERIFY_ENABLED:
+            if verify_email:
                 token = secrets.token_urlsafe(32)
                 token_hash = _hash_token(token)
                 is_verified = 0

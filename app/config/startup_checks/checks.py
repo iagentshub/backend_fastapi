@@ -251,8 +251,12 @@ def _check_selfhosted_prices(settings: dict) -> ConfigCheck:
         variables=variables,
     )
 
-def _check_registration_mode() -> ConfigCheck:
-    mode = _session.REGISTRATION_MODE
+def _check_registration_mode(settings: dict) -> ConfigCheck:
+    # El modo en vigor sale de settings.json si está, y si no de la variable:
+    # el mismo orden que resuelve `registration_mode()` para el alta. Mirar
+    # solo la variable haría que este panel dijera «open» en una instalación
+    # cerrada desde Admin.
+    mode = str(settings.get("registration", _session.REGISTRATION_MODE)).lower()
     if mode not in _session.REGISTRATION_MODES:
         return ConfigCheck(
             key="registration_mode",
@@ -260,8 +264,10 @@ def _check_registration_mode() -> ConfigCheck:
             severity="error",
             detail=(
                 f"{mode!r} no es un modo válido ({', '.join(sorted(_session.REGISTRATION_MODES))}). "
-                "El registro se comporta como abierto: un typo en «closed» deja "
-                "la instalación abierta a cualquiera."
+                "El registro se trata como cerrado y nadie puede crear una "
+                "cuenta hasta que el valor sea uno de los tres. Antes un typo "
+                "hacía lo contrario —dejaba la instalación abierta a "
+                "cualquiera—, así que revisa si esto era lo que querías."
             ),
             variables=("GAIA_REGISTRATION",),
         )

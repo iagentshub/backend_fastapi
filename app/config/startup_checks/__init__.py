@@ -92,7 +92,7 @@ def run_checks() -> list[ConfigCheck]:
         _check_billing(settings),
         _check_billing_tax(settings),
         _check_selfhosted_prices(settings),
-        _check_registration_mode(),
+        _check_registration_mode(settings),
         _check_csrf(),
         _check_github_oauth(),
         _check_trusted_proxies(),

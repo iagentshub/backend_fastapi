@@ -49,7 +49,7 @@ def strict_mode() -> bool:
     return os.getenv(_STRICT_ENV, "").lower() in ("1", "true", "yes")
 
 def _platform_settings() -> dict:
-    """`settings.json` — la fuente real de billing_enabled y email_verify.
+    """`settings.json` — la fuente real de billing_enabled, email_verify y registration.
 
     El panel de admin los escribe ahí, así que el entorno no basta para saber
     si una función está activa. Un fichero ausente o ilegible no es asunto de
