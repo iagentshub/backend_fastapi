@@ -1,6 +1,11 @@
 """Tests del RateLimiter."""
+
 from __future__ import annotations
 
+import importlib
+import pkgutil
+
+import pytest
 from fastapi import FastAPI, Request
 from fastapi.testclient import TestClient
 
@@ -43,6 +48,7 @@ def test_different_ips_independent(monkeypatch):
     # atributo local de net.py para que "testclient" sea considerado proxy
     # confiable y así poder distinguir las dos IPs del test.
     import app.utils.net as net_mod
+
     monkeypatch.setattr(net_mod, "TRUSTED_PROXIES", frozenset({"testclient"}))
 
     app = FastAPI()
@@ -124,9 +130,7 @@ def test_limiter_compartido_conserva_la_cuota_global(monkeypatch):
     import app.middleware.ratelimit as rl
 
     monkeypatch.setattr(rl, "_WORKERS", 8)
-    limiter = rl.RateLimiter(
-        calls=5, window=60, shared=True, name="test-auth-global"
-    )
+    limiter = rl.RateLimiter(calls=5, window=60, shared=True, name="test-auth-global")
     assert limiter._calls == 5
     assert limiter._shared is True
 
@@ -281,9 +285,6 @@ def test_ip_calls_invalido_se_rechaza():
 
 def _limiters_de_rutas():
     """Los RateLimiter declarados en app/api/routes, con su módulo."""
-    import importlib
-    import pkgutil
-
     import app.api.routes as routes_pkg
     from app.middleware.ratelimit import RateLimiter
 
@@ -307,9 +308,7 @@ def test_todo_limiter_de_ruta_comparte_su_cuota():
     """
     encontrados = _limiters_de_rutas()
     assert encontrados, "El recorrido no encontró ningún limiter: revisa el test"
-    en_memoria = [
-        f"{mod}.{attr}" for mod, attr, lim in encontrados if not lim._shared
-    ]
+    en_memoria = [f"{mod}.{attr}" for mod, attr, lim in encontrados if not lim._shared]
     assert not en_memoria, f"Limiters con contador de proceso: {en_memoria}"
 
 
@@ -348,6 +347,63 @@ def test_los_nombres_de_limiter_no_colisionan():
         por_nombre.setdefault(lim._name, set()).add(id(lim))
     repetidos = [n for n, ids in por_nombre.items() if len(ids) > 1]
     assert not repetidos, f"Nombre compartido por limiters distintos: {repetidos}"
+
+
+@pytest.mark.asyncio
+async def test_cuota_ponderada_cobra_el_coste_real():
+    limiter = RateLimiter(calls=5, window=60)
+    await limiter.consume_key("user:ana", cost=4)
+    with pytest.raises(Exception) as exc_info:
+        await limiter.consume_key("user:ana", cost=2)
+    assert getattr(exc_info.value, "status_code", None) == 429
+
+
+def test_todas_las_rutas_llm_declaran_cuota():
+    """Inventario de puertas activas al LLM, incluidas las indirectas de admin."""
+    from pathlib import Path
+
+    from app.api.app import create_app
+    from app.api.routes.llm_limits import (
+        interactive_llm_limiter,
+        workflow_start_limiter,
+    )
+
+    expected = {
+        "/api/agents/{agent_id}/chat": interactive_llm_limiter,
+        "/api/agent-builder/chat": interactive_llm_limiter,
+        "/api/skill-builder/chat": interactive_llm_limiter,
+        "/api/agents/{scope}/{agent_id}/try": interactive_llm_limiter,
+        "/api/workflows/{workflow_id}/run": workflow_start_limiter,
+        "/api/workflows/{workflow_id}/runs": workflow_start_limiter,
+    }
+    app = create_app()
+
+    def effective(routes):
+        for route in routes:
+            if hasattr(route, "original_router"):
+                yield from effective(route.original_router.routes)
+            else:
+                yield route
+
+    by_path = {getattr(route, "path", ""): route for route in effective(app.routes)}
+    missing = [
+        path
+        for path, limiter in expected.items()
+        if path not in by_path
+        or limiter
+        not in {dependency.call for dependency in by_path[path].dependant.dependencies}
+    ]
+    assert not missing, f"Rutas LLM sin cuota: {missing}"
+
+    official = (
+        Path(__file__).parents[1]
+        / "app"
+        / "api"
+        / "routes"
+        / "admin"
+        / "official_sources.py"
+    ).read_text(encoding="utf-8")
+    assert official.count("await official_llm_limiter(request)") == 3
 
 
 # ── Purga de ventanas vencidas ────────────────────────────────────────────────

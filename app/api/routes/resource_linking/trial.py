@@ -4,7 +4,6 @@ El módulo se llama `trial` y no `try_agent` para no chocar con el nombre del
 handler que contiene.
 """
 
-
 from __future__ import annotations
 
 import json
@@ -14,6 +13,7 @@ from fastapi import Depends
 from pydantic import BaseModel
 
 from app.api.routes.auth import GroupContext, require_group_session
+from app.api.routes.llm_limits import interactive_llm_limiter
 from app.api.routes.resource_linking._router import router
 from app.api.routes.resource_linking._shared import (
     _agents_store,
@@ -30,6 +30,7 @@ from app.sql import sql
 # monkeypatch de los tests no llega — ver
 # tests/storage/test_is_pg_en_tiempo_de_llamada.py.
 from app.storage.db import open_db
+from app.storage.resource_executions import ResourceExecutionStorage
 from app.utils import flog
 
 
@@ -37,12 +38,17 @@ class _AgentTryBody(BaseModel):
     connection_id: str
     message: str
 
+
+_executions = ResourceExecutionStorage()
+
+
 @router.post("/api/agents/{scope}/{agent_id}/try")
 async def try_agent(
     scope: str,
     agent_id: str,
     body: _AgentTryBody,
     ctx: GroupContext = Depends(require_group_session),
+    _rl: None = Depends(interactive_llm_limiter),
 ) -> Dict[str, Any]:
     """Prueba un agente público usando la connection propia del caller, sin guardar historial."""
 
@@ -69,6 +75,13 @@ async def try_agent(
         raise APIError(
             404, "not_found", "Agente no encontrado", extra={"resource": "agent"}
         )
+    if not agent_data.get("is_active", True):
+        raise APIError(
+            409,
+            "resource_inactive",
+            "Este agente está desactivado",
+            extra={"resource": "agent", "resource_id": agent_id},
+        )
 
     # Step 3: Resolve caller's connection (group first, then personal fallback)
     conn_storage = _conns_store
@@ -82,6 +95,13 @@ async def try_agent(
             "Connection no encontrada",
             extra={"resource": "connection"},
         )
+    if not conn_data.get("is_active", True):
+        raise APIError(
+            409,
+            "resource_inactive",
+            "La conexión seleccionada está desactivada",
+            extra={"resource": "connection", "resource_id": body.connection_id},
+        )
 
     # Step 4: Filter skills based on trial_missing_deps policy
     skills_storage = _skills_store
@@ -90,35 +110,58 @@ async def try_agent(
 
     accessible: list[str] = []
     for skill_id in agent_skills:
-        if await skills_storage.get("public", skill_id):
+        public_skill = await skills_storage.get("public", skill_id)
+        if public_skill and public_skill.get("is_active", True):
             accessible.append(skill_id)
             continue
         priv = await skills_storage.get("private", skill_id)
-        if priv and priv.get("owner_id") == ctx.group_id:
+        if (
+            priv
+            and priv.get("is_active", True)
+            and priv.get("owner_id") == ctx.group_id
+        ):
             accessible.append(skill_id)
             continue
         if trial_missing_deps == "warn":
             warnings.append(skill_id)
     agent_data = {**agent_data, "skills": accessible}
 
+    execution_lease = await _executions.acquire(
+        resource_type="agent",
+        resource_id=agent_id,
+        resource_owner=str(agent_data.get("owner_id") or scope),
+        started_by=ctx.user,
+    )
+    if execution_lease is None:
+        raise APIError(
+            409,
+            "resource_execution_in_progress",
+            "Este agente ya está en curso para tu usuario",
+            extra={"resource": "agent", "resource_id": agent_id},
+        )
+
     # Step 5: Stream chat and collect reply (no history saved)
     reply_parts: list[str] = []
-    async for chunk in stream_chat(
-        agent_data,
-        conn_data,
-        [{"role": "user", "content": body.message}],
-        skills_storage,
-        None,
-        None,
-    ):
-        if chunk.startswith("data:"):
-            try:
-                ev = json.loads(chunk[5:].strip())
-                if ev.get("type") == "chunk":
-                    reply_parts.append(ev.get("content", ""))
-            except (json.JSONDecodeError, AttributeError) as exc:
-                flog.warning(
-                    f"[resource-linking] Evento SSE inválido para {agent_id}: {exc}"
-                )
+    try:
+        async for chunk in stream_chat(
+            agent_data,
+            conn_data,
+            [{"role": "user", "content": body.message}],
+            skills_storage,
+            None,
+            None,
+        ):
+            await _executions.heartbeat(execution_lease)
+            if chunk.startswith("data:"):
+                try:
+                    ev = json.loads(chunk[5:].strip())
+                    if ev.get("type") == "chunk":
+                        reply_parts.append(ev.get("content", ""))
+                except (json.JSONDecodeError, AttributeError) as exc:
+                    flog.warning(
+                        f"[resource-linking] Evento SSE inválido para {agent_id}: {exc}"
+                    )
+    finally:
+        await _executions.safe_release(execution_lease)
 
     return {"reply": "".join(reply_parts), "warnings": warnings}

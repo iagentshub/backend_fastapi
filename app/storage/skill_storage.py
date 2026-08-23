@@ -130,6 +130,7 @@ class SkillStorage(ResourceStorage):
             columns=(
                 "resource_row.id, resource_row.owner_id, resource_row.name, "
                 "resource_row.category, resource_row.scope, resource_row.data, "
+                "resource_row.is_active, resource_row.deactivated_at, "
                 "resource_row.created_at, resource_row.updated_at"
             ),
             resource_type=self.resource_type,
@@ -203,7 +204,9 @@ class SkillStorage(ResourceStorage):
         # Skill tags are centrally defined metadata, not user-authored data.
         # Never persist arbitrary tags received from clients or legacy files.
         meta = {
-            k: v for k, v in data.items() if k not in ("content", "tags", "category")
+            k: v
+            for k, v in data.items()
+            if k not in ("content", "tags", "category", "is_active", "deactivated_at")
         }
         meta_json = _compact_resource_data(meta)
         if _db.IS_PG:
@@ -253,6 +256,8 @@ class SkillStorage(ResourceStorage):
                 "name": row["name"],
                 "resource_type": "skill",
                 "scope": row["scope"],
+                "is_active": bool(row["is_active"]),
+                "deactivated_at": row["deactivated_at"],
                 "created_at": row["created_at"],
                 "updated_at": row["updated_at"],
             }
@@ -270,9 +275,7 @@ class SkillStorage(ResourceStorage):
 
         async with open_db() as conn:
             if scope == "public":
-                rows = await conn.fetchall(
-                    sql("queries/skills:list_public")
-                )
+                rows = await conn.fetchall(sql("queries/skills:list_public"))
             elif scope == "private":
                 if owner_id:
                     rows = await conn.fetchall(
@@ -280,13 +283,9 @@ class SkillStorage(ResourceStorage):
                         (owner_id,),
                     )
                 else:
-                    rows = await conn.fetchall(
-                        sql("queries/skills:list_private")
-                    )
+                    rows = await conn.fetchall(sql("queries/skills:list_private"))
             else:  # all
-                rows = await conn.fetchall(
-                    sql("queries/skills:list_all")
-                )
+                rows = await conn.fetchall(sql("queries/skills:list_all"))
         return [self._row_to_dict(r, include_content=False) for r in rows]
 
     async def get(
@@ -303,7 +302,7 @@ class SkillStorage(ResourceStorage):
             )
             row = await conn.fetchone(
                 "SELECT id, owner_id, name, category, scope, data, content, "
-                "created_at, updated_at "
+                "is_active, deactivated_at, created_at, updated_at "
                 f"FROM skills WHERE id=? AND scope=?{owner_filter} LIMIT 1",
                 params,
             )
@@ -316,7 +315,7 @@ class SkillStorage(ResourceStorage):
                 )
                 row = await conn.fetchone(
                     "SELECT id, owner_id, name, category, scope, data, content, "
-                    "created_at, updated_at "
+                    "is_active, deactivated_at, created_at, updated_at "
                     f"FROM skills WHERE id=? AND scope=?{owner_filter} LIMIT 1",
                     slug_params,
                 )
@@ -385,6 +384,8 @@ class SkillStorage(ResourceStorage):
             "labels": labels,
             "scope": scope,
             "owner_id": actual_owner,
+            "is_active": existing.get("is_active", True) if existing else True,
+            "deactivated_at": existing.get("deactivated_at") if existing else None,
             "created_at": existing.get("created_at", now) if existing else now,
             "updated_at": now,
         }

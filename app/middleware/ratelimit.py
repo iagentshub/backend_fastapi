@@ -119,13 +119,26 @@ class RateLimiter:
             # dos de la misma cuota.
             await self._consume(f"ipwide:{_client_ip(request)}", self._ip_calls)
 
-    async def _consume(self, key: str, calls: int) -> None:
-        if self._shared:
-            await self._consume_shared(key, calls)
-        else:
-            self._consume_local(key, calls)
+    async def consume_key(
+        self, key: str, *, cost: int = 1, ip_key: str | None = None
+    ) -> None:
+        """Consume varias unidades sobre una clave ya autenticada."""
+        if cost <= 0:
+            raise ValueError("cost debe ser mayor que cero")
+        await self._consume_weighted(key, self._calls, cost)
+        if self._ip_calls is not None and ip_key:
+            await self._consume_weighted(f"ipwide:{ip_key}", self._ip_calls, cost)
 
-    def _consume_local(self, key: str, calls: int) -> None:
+    async def _consume(self, key: str, calls: int) -> None:
+        await self._consume_weighted(key, calls, 1)
+
+    async def _consume_weighted(self, key: str, calls: int, cost: int) -> None:
+        if self._shared:
+            await self._consume_shared(key, calls, cost)
+        else:
+            self._consume_local(key, calls, cost)
+
+    def _consume_local(self, key: str, calls: int, cost: int = 1) -> None:
         """Ventana deslizante en memoria del proceso.
 
         ponytail: el contador es por proceso y se pierde al reiniciar. Es la
@@ -140,23 +153,23 @@ class RateLimiter:
         while events and events[0] <= cutoff:
             events.popleft()
 
-        if len(events) >= calls:
+        if len(events) + cost > calls:
             self._reject(math.ceil(self._window - (now - events[0])))
-        events.append(now)
+        events.extend([now] * cost)
 
         # LRU acotado: elimina primero las claves que llevan más tiempo sin usarse.
         while len(self._data) > _MAX_IPS:
             self._data.popitem(last=False)
 
-    async def _consume_shared(self, key: str, calls: int) -> None:
+    async def _consume_shared(self, key: str, calls: int, cost: int = 1) -> None:
         """Consume una cuota fija en BD mediante un UPSERT atómico multiworker."""
         now = time.time()
         cutoff = now - self._window
         limiter_key = f"{self._name}:{key}"
         async with open_db() as conn:
             row = await conn.fetchone(
-                sql("queries/ratelimit:consume_window"),
-                (limiter_key, now, cutoff, cutoff),
+                sql("queries/ratelimit:consume_window_weighted"),
+                (limiter_key, now, cost, cutoff, cutoff, cost),
             )
             await conn.commit()
         count = int(row[0]) if row else calls + 1
@@ -192,9 +205,9 @@ async def purge_expired_windows() -> int:
         return 0
     cutoff = time.time() - horizon
     async with open_db() as conn:
-        deleted = await conn.fetchval(
-            sql("queries/ratelimit:count_expired"), (cutoff,)
-        ) or 0
+        deleted = (
+            await conn.fetchval(sql("queries/ratelimit:count_expired"), (cutoff,)) or 0
+        )
         if deleted:
             await conn.execute(sql("queries/ratelimit:purge_expired"), (cutoff,))
             await conn.commit()

@@ -54,7 +54,7 @@ def test_inspect_does_not_persist_source_but_legacy_import_does(monkeypatch) -> 
     )
 
     inspected = asyncio.run(
-        official_source_routes.admin_inspect_official_source(body, "admin-id")
+        official_source_routes.admin_inspect_official_source(object(), body, "admin-id")
     )
     assert inspected["id"] == "draft-id"
     assert saved == []
@@ -187,8 +187,7 @@ def test_external_markdown_reference_is_a_collapsible_log_notice() -> None:
             "level": "log",
             "code": "external_markdown_reference",
             "message": (
-                "reviewer: referencia fuera del repositorio "
-                "(../../shared/guide.md)"
+                "reviewer: referencia fuera del repositorio (../../shared/guide.md)"
             ),
         }
     ]
@@ -620,9 +619,7 @@ def test_llm_manifest_uses_real_files_and_typed_relations() -> None:
         async def report(event):
             progress.append(event)
 
-        result = await analyzer.analyze(
-            snapshot, "admin-llm", [], progress=report
-        )
+        result = await analyzer.analyze(snapshot, "admin-llm", [], progress=report)
         return result, progress
 
     result, progress = asyncio.run(run())
@@ -846,9 +843,9 @@ def test_existing_draft_discards_legacy_programming_language_labels(
                 "El grafo de dependencias contiene un ciclo",
             ],
         )
-        return await storage.get_draft(draft["id"]), await storage.get_all_draft_components(
+        return await storage.get_draft(
             draft["id"]
-        )
+        ), await storage.get_all_draft_components(draft["id"])
 
     draft, components = asyncio.run(run())
     assert draft["errors"] == ["El grafo de dependencias contiene un ciclo"]

@@ -16,10 +16,12 @@ import app.middleware.licenses as lic
 
 @pytest.fixture()
 def settings(tmp_path, monkeypatch):
-    """Apunta SETTINGS_FILE a un fichero temporal y limpia el caché del módulo."""
+    """Apunta SETTINGS_FILE a un fichero temporal y limpia el caché común."""
+    import app.config.data as cfg
+
     f = tmp_path / "settings.json"
-    monkeypatch.setattr(lic, "SETTINGS_FILE", f)
-    monkeypatch.setattr(lic, "_cache", None)
+    monkeypatch.setattr(cfg, "SETTINGS_FILE", f)
+    lic.invalidate_billing_cache()
 
     def write(**data) -> None:
         f.write_text(json.dumps(data), encoding="utf-8")
@@ -27,21 +29,14 @@ def settings(tmp_path, monkeypatch):
     return f, write
 
 
-def test_el_modulo_apunta_al_settings_de_los_tests():
-    """Guardia del binding: licenses.SETTINGS_FILE debe ser el de tmp_data_dir.
-
-    licenses.py importa SETTINGS_FILE por valor. Si el módulo se importa durante
-    la colección de pytest, el binding queda en el directorio de colección y
-    _billing_enabled() lee un fichero inexistente: la puerta de licencias no se
-    activa jamás y los tests que esperan 403 reciben 200 en silencio. El
-    conftest lo parchea; esto lo verifica.
-    """
+def test_licenses_usa_el_binding_dinamico_de_settings(settings):
+    """La puerta lee la ruta actual, aunque cambie después de importar licenses."""
     import app.config.data as cfg
 
-    assert lic.SETTINGS_FILE == cfg.SETTINGS_FILE
-    assert lic.SETTINGS_FILE.exists(), (
-        f"settings.json de los tests no existe en {lic.SETTINGS_FILE}"
-    )
+    f, write = settings
+    assert cfg.SETTINGS_FILE == f
+    write(billing_enabled=True)
+    assert lic._billing_enabled() is True
 
 
 def test_sin_fichero_no_hay_billing(settings):

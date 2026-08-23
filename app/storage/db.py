@@ -134,7 +134,9 @@ async def _release_sqlite_connection(conn: Any, pool: asyncio.Queue[Any]) -> Non
         try:
             await conn.close()
         except Exception as exc:  # noqa: BLE001 - el pool ya está cerrado
-            flog.warning(f"[db] no se pudo cerrar una conexión del pool anterior: {exc}")
+            flog.warning(
+                f"[db] no se pudo cerrar una conexión del pool anterior: {exc}"
+            )
         return
     try:
         if conn.in_transaction:
@@ -233,13 +235,15 @@ class AsyncConn:
             await self._conn.commit()
 
     @asynccontextmanager
-    async def transaction(self) -> AsyncGenerator[None, None]:
+    async def transaction(
+        self, *, immediate: bool = False
+    ) -> AsyncGenerator[None, None]:
         """Atomic block. For PG uses asyncpg transaction; for SQLite commits on exit."""
         if self._is_pg:
             async with self._conn.transaction():
                 yield
         else:
-            await self._conn.execute("BEGIN")
+            await self._conn.execute("BEGIN IMMEDIATE" if immediate else "BEGIN")
             try:
                 yield
             except Exception:
@@ -385,7 +389,9 @@ async def _open_db_cm() -> AsyncGenerator[AsyncConn, None]:
     else:
         pool = _sqlite_pool
         if pool is None:
-            raise RuntimeError("SQLite pool not initialized — call init_db(path) at startup")
+            raise RuntimeError(
+                "SQLite pool not initialized — call init_db(path) at startup"
+            )
         conn = await pool.get()
         try:
             yield AsyncConn(conn, is_pg=False)

@@ -9,6 +9,7 @@ from typing import Any
 
 from app.sql import sql
 from app.storage.db import open_db
+from app.storage.resource_executions import ResourceExecutionStorage
 from app.utils import now_iso
 from app.utils.generators import generate_id
 
@@ -16,6 +17,7 @@ ACTIVE_STATUSES = ("queued", "running", "cancelling")
 TERMINAL_STATUSES = ("cancelled", "completed", "failed")
 RETENTION_DAYS = max(1, int(os.getenv("GAIA_WORKFLOW_RUN_RETENTION_DAYS", "30")))
 HISTORY_LIMIT = max(1, int(os.getenv("GAIA_WORKFLOW_RUN_HISTORY_LIMIT", "100")))
+_resource_executions = ResourceExecutionStorage()
 
 
 class WorkflowRunStorage:
@@ -29,29 +31,30 @@ class WorkflowRunStorage:
         definition: dict[str, Any],
         agents: list[dict[str, Any]],
         input_text: str,
-    ) -> dict[str, Any]:
+        run_id: str | None = None,
+    ) -> dict[str, Any] | None:
         now = now_iso()
-        run_id = generate_id(24)
+        run_id = run_id or generate_id(24)
         total = len(definition.get("nodes") or [])
         async with open_db() as conn:
-            await conn.execute(
-                sql("queries/workflow_runs:insert_run"),
-                (
-                    run_id,
-                    workflow_id,
-                    started_by,
-                    group_id,
-                    workflow_name,
-                    json.dumps(definition, ensure_ascii=False),
-                    json.dumps(agents, ensure_ascii=False),
-                    input_text,
-                    total,
-                    now,
-                    now,
-                    now,
-                ),
-            )
-            await conn.commit()
+            async with conn.transaction():
+                await conn.execute(
+                    sql("queries/workflow_runs:insert_run"),
+                    (
+                        run_id,
+                        workflow_id,
+                        started_by,
+                        group_id,
+                        workflow_name,
+                        json.dumps(definition, ensure_ascii=False),
+                        json.dumps(agents, ensure_ascii=False),
+                        input_text,
+                        total,
+                        now,
+                        now,
+                        now,
+                    ),
+                )
         return (await self.get_for_user(run_id, started_by)) or {}
 
     async def get(self, run_id: str) -> dict[str, Any] | None:
@@ -67,7 +70,9 @@ class WorkflowRunStorage:
             )
         return self._decode(row) if row else None
 
-    async def list_for_user(self, username: str, limit: int = 100) -> list[dict[str, Any]]:
+    async def list_for_user(
+        self, username: str, limit: int = 100
+    ) -> list[dict[str, Any]]:
         async with open_db() as conn:
             active = await conn.fetchall(
                 sql("queries/workflow_runs:list_active_runs"),
@@ -93,7 +98,16 @@ class WorkflowRunStorage:
         async with open_db() as conn:
             await conn.execute(
                 sql("queries/workflow_runs:update_status"),
-                (status, error, final_output, now, now, started_at, finished_at, run_id),
+                (
+                    status,
+                    error,
+                    final_output,
+                    now,
+                    now,
+                    started_at,
+                    finished_at,
+                    run_id,
+                ),
             )
             await conn.commit()
 
@@ -135,7 +149,13 @@ class WorkflowRunStorage:
                     int(row["total_steps"]),
                     int(row["completed_steps"]) + completed_delta,
                 )
-                if event_type in {"stage_done", "evaluation_done", "workflow_done", "error", "cancelled"}:
+                if event_type in {
+                    "stage_done",
+                    "evaluation_done",
+                    "workflow_done",
+                    "error",
+                    "cancelled",
+                }:
                     active_node = None
                 await conn.execute(
                     sql("queries/workflow_runs:insert_event"),
@@ -170,7 +190,9 @@ class WorkflowRunStorage:
         return await self.get_for_user(run_id, username)
 
     async def purge(self) -> int:
-        cutoff = (datetime.now(timezone.utc) - timedelta(days=RETENTION_DAYS)).isoformat()
+        cutoff = (
+            datetime.now(timezone.utc) - timedelta(days=RETENTION_DAYS)
+        ).isoformat()
         async with open_db() as conn:
             old_rows = await conn.fetchall(
                 sql("queries/workflow_runs:finished_before"),
@@ -185,7 +207,9 @@ class WorkflowRunStorage:
                 )
                 remove.update(str(row["id"]) for row in rows[HISTORY_LIMIT:])
             for run_id in remove:
-                await conn.execute(sql("queries/workflow_runs:delete_events"), (run_id,))
+                await conn.execute(
+                    sql("queries/workflow_runs:delete_events"), (run_id,)
+                )
                 await conn.execute(sql("queries/workflow_runs:delete_run"), (run_id,))
             await conn.commit()
         return len(remove)
@@ -201,9 +225,16 @@ class WorkflowRunStorage:
             for row in rows:
                 await conn.execute(
                     sql("queries/workflow_runs:mark_failed"),
-                    ("Ejecución interrumpida porque el worker dejó de responder", now, now, row["id"]),
+                    (
+                        "Ejecución interrumpida porque el worker dejó de responder",
+                        now,
+                        now,
+                        row["id"],
+                    ),
                 )
             await conn.commit()
+        for row in rows:
+            await _resource_executions.safe_release_run(str(row["id"]))
         return len(rows)
 
     @staticmethod

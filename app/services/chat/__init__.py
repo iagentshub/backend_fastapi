@@ -149,7 +149,7 @@ async def stream_chat(
             break
         for scope in ("public", "private"):
             sk = await skill_storage.get(scope, sid)
-            if sk:
+            if sk and sk.get("is_active", True):
                 add_context(
                     "skill",
                     (f"\n\n## Skill: {sk.get('name', sid)}\n{sk.get('content', '')}"),
@@ -164,7 +164,7 @@ async def stream_chat(
             break
         for scope in ("public", "private"):
             t = await tool_storage.get(scope, tid)
-            if t:
+            if t and t.get("is_active", True):
                 language = str(t.get("language") or "")
                 name = t.get("name", tid)
                 if language == "cpp":
@@ -197,7 +197,7 @@ async def stream_chat(
     if knowledge_storage is not None and knowledge_pack_storage is not None:
         for pack_id in agent.knowledge_packs:
             pack = await knowledge_pack_storage.get(pack_id)
-            if not pack:
+            if not pack or not pack.get("is_active", True):
                 continue
             add_context(
                 "knowledge_pack",
@@ -206,7 +206,7 @@ async def stream_chat(
             for member in pack.get("items") or []:
                 knowledge_id = str(member.get("id") or "")
                 item = await knowledge_storage.get(knowledge_id)
-                if item and item.get("content"):
+                if item and item.get("is_active", True) and item.get("content"):
                     covered_knowledge_ids.add(knowledge_id)
                     add_context(
                         "knowledge_pack",
@@ -218,7 +218,7 @@ async def stream_chat(
             if kid in covered_knowledge_ids:
                 continue
             item = await knowledge_storage.get(kid)
-            if item and item.get("content"):
+            if item and item.get("is_active", True) and item.get("content"):
                 add_context(
                     "knowledge",
                     (
@@ -232,7 +232,7 @@ async def stream_chat(
     if attached_knowledge:
         for item in attached_knowledge:
             content = item.get("content")
-            if content:
+            if item.get("is_active", True) and content:
                 add_context(
                     "attached_knowledge",
                     (
@@ -264,7 +264,7 @@ async def stream_chat(
         }
         for alias in mentions:
             p = await prompt_storage.find_by_alias(alias, owner_id=user_id)
-            if p:
+            if p and p.get("is_active", True):
                 add_context(
                     "prompt",
                     f"\n\n## Prompt: {p.get('name', alias)}\n{p.get('content', '')}",

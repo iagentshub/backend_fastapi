@@ -495,6 +495,38 @@ def test_chat_capacity_exhausted_returns_429_before_sse(admin_client):
     assert response.json()["detail"]["code"] == "llm_capacity_exceeded"
 
 
+def test_chat_rejects_same_agent_already_running_for_user(admin_client):
+    from app.api.routes import agent_chat as agent_chat_routes
+    from app.storage.resource_executions import ResourceExecutionStorage
+
+    conn = _create_connection(admin_client)
+    agent = _create_agent(
+        admin_client, {"name": "Exclusive Agent", "connection_id": conn["id"]}
+    )
+    stored_agent = asyncio.run(agent_chat_routes._agents.get(agent["id"]))
+    assert stored_agent is not None
+    storage = ResourceExecutionStorage()
+    lease = asyncio.run(
+        storage.acquire(
+            resource_type="agent",
+            resource_id=agent["id"],
+            resource_owner=str(stored_agent["owner_id"]),
+            started_by=str(stored_agent["owner_id"]),
+        )
+    )
+    assert lease is not None
+    try:
+        response = admin_client.post(
+            f"/api/agents/{agent['id']}/chat",
+            json={"messages": [{"role": "user", "content": "Hola"}]},
+        )
+    finally:
+        asyncio.run(storage.release(lease))
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "resource_execution_in_progress"
+
+
 def test_chat_malformed_sse_event_warns_and_continues(admin_client):
     conn = _create_connection(admin_client)
     agent = _create_agent(

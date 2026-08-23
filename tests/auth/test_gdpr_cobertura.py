@@ -139,8 +139,11 @@ def test_la_exportación_entrega_los_mismos_recursos_que_borra_el_purgado():
         "llm_orchestration_bindings",
         # Código de emparejamiento de un solo uso y 60 segundos: es material de
         # autenticación efímero, no un dato portable.
-        "vscode_auth_codes",
-        "users",
+            "vscode_auth_codes",
+            # Lease efímero de exclusión mutua: no es contenido portable y se
+            # elimina al terminar la ejecución o a los cinco minutos sin latido.
+            "resource_executions",
+            "users",
     }
     faltan = _tablas_borradas() - exportadas - sin_exportar
     assert faltan == set(), (

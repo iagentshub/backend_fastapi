@@ -2,7 +2,7 @@
 
 Aporta el comportamiento transversal a los recursos gestionados por el usuario:
 
-- borrado suave / reactivación para los recursos operativos que lo exponen;
+- activación / desactivación para los recursos que exponen ese estado;
 - sincronización del índice transversal de etiquetas (``resource_labels``).
 
 El SQL específico de cada tabla (blob vs columnas, PK simple vs compuesta,

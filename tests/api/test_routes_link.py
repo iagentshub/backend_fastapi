@@ -550,12 +550,18 @@ def test_verified_admin_puede_marcar(admin_client):
     """Admin marca un recurso como verified; explore devuelve verified=True."""
     import asyncio
 
+    from app.config.data import AGENTS_DIR
+    from app.storage.agent_storage import AgentStorage
     from app.storage.db import open_db
 
     agent_id = "verify-agent-adm-001"
     agent_owner = "someone_else_verify_test"
 
     async def _insert():
+        await AgentStorage(AGENTS_DIR).save(
+            {"id": agent_id, "name": "Verified Agent Test", "labels": ["public"]},
+            owner_id=agent_owner,
+        )
         async with open_db() as conn:
             await conn.execute(
                 "INSERT OR IGNORE INTO resource_social "

@@ -2,13 +2,10 @@
 
 from __future__ import annotations
 
-import json
-
 from fastapi.responses import JSONResponse
 from starlette.middleware.base import BaseHTTPMiddleware
 
 from app.auth.auth import decode_token, get_user_by_identity, get_user_role
-from app.config.data import SETTINGS_FILE
 from app.storage.billing import BillingStorage
 from app.storage.guest import is_guest
 from app.utils import flog
@@ -23,42 +20,37 @@ _PROTECTED_PREFIXES = (
 )
 
 
-# Antes esto leía y parseaba settings.json entero en CADA petición —incluidas
-# las que el middleware iba a dejar pasar sin mirar—, síncrono y dentro del
-# event loop.
+# El caché del contenido de settings.json vive en app.services.platform_settings
+# y lo comparten los tres lectores. Aquí había uno propio, una variable global
+# invalidada solo desde la escritura: con `GAIA_WORKERS` procesos (4 por
+# defecto) el guardado del admin lo atiende uno, y los otros tres seguían
+# sirviendo el valor viejo hasta el reinicio. En una puerta de cobro eso es
+# «a algunos les sigue funcionando gratis», sin nada que lo delate.
 #
-# La invalidación es explícita, no por mtime: la resolución del mtime no es
-# fiable entre dos escrituras seguidas, y un falso acierto de caché aquí
-# significa dejar pasar a quien no tiene licencia. En una puerta de cobro eso
-# no se negocia. settings.json solo lo escribe _write_platform_cfg dentro del
-# proceso (el instalador y el entrypoint escriben antes de arrancar uvicorn),
-# así que ese único punto basta para mantener el caché al día.
-_cache: bool | None = None
+# La objeción de aquel comentario —el mtime en segundos no distingue dos
+# escrituras seguidas, y un falso acierto aquí deja pasar a quien no ha
+# pagado— sigue siendo válida y está atendida donde ahora vive el caché:
+# `st_mtime_ns`, más invalidación explícita en la escritura, más un TTL corto.
 
 
 def invalidate_billing_cache() -> None:
-    """A llamar tras escribir settings.json. Ver _write_platform_cfg."""
-    global _cache
-    _cache = None
+    """Compatibilidad: el caché es ahora el de platform_settings."""
+    from app.services.platform_settings import invalidate_platform_cfg_cache
+
+    invalidate_platform_cfg_cache()
 
 
 def _billing_enabled() -> bool:
-    global _cache
-    if _cache is None:
-        try:
-            data = json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
-            _cache = bool(data.get("billing_enabled", False))
-        except FileNotFoundError:
-            # Instalación sin settings.json: billing desactivado. Caso normal,
-            # no se registra ni se cachea (el fichero puede aparecer después).
-            return False
-        except (OSError, ValueError, AttributeError) as exc:
-            # Puerta cerrada, y sin cachearlo. Aquí sí se registra: esto es una
-            # puerta de cobro, y "a todo el mundo le funciona gratis" tiene que
-            # poder rastrearse hasta un settings.json ilegible.
-            flog.error(f"[licenses] Settings ilegibles, billing desactivado: {exc}")
-            return False
-    return _cache
+    from app.services.platform_settings import load_settings_raw
+
+    try:
+        return bool(load_settings_raw().get("billing_enabled", False))
+    except (OSError, ValueError, AttributeError) as exc:
+        # Puerta cerrada. Aquí se registra: esto es una puerta de cobro, y "a
+        # todo el mundo le funciona gratis" tiene que poder rastrearse hasta un
+        # settings.json ilegible.
+        flog.error(f"[licenses] Settings ilegibles, billing desactivado: {exc}")
+        return False
 
 
 class LicenseGateMiddleware(BaseHTTPMiddleware):

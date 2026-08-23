@@ -6,11 +6,15 @@ import asyncio
 import json
 from typing import Any, Dict, Literal
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.api.routes.auth import GroupContext, require_group_session
+from app.api.routes.llm_limits import (
+    workflow_node_quota,
+    workflow_start_limiter,
+)
 from app.auth.auth import get_user_role
 from app.config.data import AGENTS_DIR, SKILLS_DIR
 from app.errors import APIError
@@ -23,6 +27,7 @@ from app.services.workflow_validator import validate_workflow
 from app.storage.agent_storage import AgentStorage
 from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
+from app.storage.resource_executions import ResourceExecutionStorage
 from app.storage.resource_versions import ResourceVersionStorage
 from app.storage.skill_storage import (
     SKILL_ASSIGNABLE_LABELS,
@@ -32,6 +37,7 @@ from app.storage.skill_storage import (
 from app.storage.workflow_runs import TERMINAL_STATUSES, WorkflowRunStorage
 from app.storage.workflows import WorkflowStorage
 from app.utils import flog
+from app.utils.generators import generate_id
 from app.utils.origin import assert_resource_writable, compute_origin_type
 
 router = APIRouter(prefix="/api", tags=["resource-management"])
@@ -42,6 +48,7 @@ _workflows = WorkflowStorage()
 _shares = GroupShareStorage()
 _group_storage = GroupStorage()
 _workflow_runs = WorkflowRunStorage()
+_executions = ResourceExecutionStorage()
 
 
 class WorkflowBody(BaseModel):
@@ -363,10 +370,52 @@ async def _prepare_workflow_run(workflow_id: str, ctx: GroupContext):
             extra={"resource": "workflow"},
         ) from exc
 
+    # Validación previa al StreamingResponse: si se esperase a resolver el
+    # primer nodo dentro del SSE, el cliente recibiría HTTP 200 para un flujo
+    # que ya sabemos que no puede ejecutarse.
+    seen_agent_ids: set[str] = set()
+    for node in definition.get("nodes") or []:
+        agent_id = str(node.get("agent_id") or "")
+        if not agent_id or agent_id in seen_agent_ids:
+            continue
+        seen_agent_ids.add(agent_id)
+        agent = await _agents.get(agent_id)
+        if agent and not agent.get("is_active", True):
+            raise APIError(
+                409,
+                "resource_inactive",
+                f"El agente {agent.get('name') or agent_id} está desactivado",
+                extra={"resource": "agent", "resource_id": agent_id},
+            )
+        connection_id = str(
+            definition.get("llm_orchestration_connection_id")
+            or (agent or {}).get("connection_id")
+            or ""
+        )
+        if connection_id:
+            connection = await connection_access.get_accessible(
+                connection_id, ctx.user, ctx.group_id
+            )
+            if connection and not connection.get("is_active", True):
+                raise APIError(
+                    409,
+                    "resource_inactive",
+                    "Una conexión requerida por la orquestación está desactivada",
+                    extra={
+                        "resource": "connection",
+                        "resource_id": connection_id,
+                    },
+                )
+
     async def resolve(agent_id: str):
         agent = await _agents.get(agent_id)
         if not agent:
             raise RuntimeError(f"El agente {agent_id} no está disponible")
+        if not agent.get("is_active", True):
+            raise WorkflowPublicError(
+                "resource_inactive",
+                f"El agente {agent.get('name') or agent_id} está desactivado",
+            )
         if agent.get("owner_id") not in {ctx.user, ctx.group_id}:
             shared_agent = False
             for group in await _group_storage.list_for_user(ctx.user):
@@ -412,6 +461,11 @@ async def _prepare_workflow_run(workflow_id: str, ctx: GroupContext):
                 "upstream_error",
                 f"La conexión del agente {agent.get('name')} no está disponible",
             )
+        if not connection.get("is_active", True):
+            raise WorkflowPublicError(
+                "resource_inactive",
+                f"La conexión del agente {agent.get('name')} está desactivada",
+            )
         if connection.get("_llm_orchestration") and ctx.group_id != ctx.user:
             for target_id, target in (connection.get("_connections") or {}).items():
                 if target.get("owner_id") == ctx.user:
@@ -436,23 +490,45 @@ async def _prepare_workflow_run(workflow_id: str, ctx: GroupContext):
 @router.post("/workflows/{workflow_id}/run")
 async def run_saved_workflow(
     workflow_id: str,
+    request: Request,
     body: WorkflowRunBody,
     ctx: GroupContext = Depends(require_group_session),
+    _rl: None = Depends(workflow_start_limiter),
 ) -> StreamingResponse:
-    _, definition, resolve = await _prepare_workflow_run(workflow_id, ctx)
+    workflow, definition, resolve = await _prepare_workflow_run(workflow_id, ctx)
+    consume_quota = workflow_node_quota(request)
+    execution_lease = await _executions.acquire(
+        resource_type="workflow",
+        resource_id=workflow_id,
+        resource_owner=str(workflow.get("owner_id") or ctx.group_id),
+        started_by=ctx.user,
+    )
+    if execution_lease is None:
+        raise APIError(
+            409,
+            "resource_execution_in_progress",
+            "Este workflow ya está en curso para tu usuario",
+            extra={"resource": "workflow", "resource_id": workflow_id},
+        )
 
     async def events():
         try:
-            async for event in run_workflow(definition, body.input, resolve):
+            async for event in run_workflow(
+                definition, body.input, resolve, consume_quota=consume_quota
+            ):
                 if event.get("type") == "heartbeat":
+                    await _executions.heartbeat(execution_lease)
                     yield ": keep-alive\n\n"
                     continue
+                await _executions.heartbeat(execution_lease)
                 yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
         except Exception as exc:  # noqa: BLE001
             # El SSE ya empezó a emitir, así que el handler global de app.py
             # no puede intervenir: el fallo se convierte en trama de error.
             event = workflow_error_event(exc, context="workflow")
             yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        finally:
+            await _executions.safe_release(execution_lease)
 
     return StreamingResponse(
         events(),
@@ -467,8 +543,10 @@ async def run_saved_workflow(
 @router.post("/workflows/{workflow_id}/runs", status_code=202)
 async def start_saved_workflow_run(
     workflow_id: str,
+    request: Request,
     body: WorkflowRunBody,
     ctx: GroupContext = Depends(require_group_session),
+    _rl: None = Depends(workflow_start_limiter),
 ) -> Dict[str, Any]:
     workflow, definition, resolve = await _prepare_workflow_run(workflow_id, ctx)
     agent_snapshots: list[dict[str, Any]] = []
@@ -482,16 +560,52 @@ async def start_saved_workflow_run(
         agent_snapshots.append(
             {"id": agent_id, "name": (agent or {}).get("name") or agent_id}
         )
-    run = await _workflow_runs.create(
-        workflow_id=workflow_id,
+    run_id = generate_id(24)
+    execution_lease = await _executions.acquire(
+        resource_type="workflow",
+        resource_id=workflow_id,
+        resource_owner=str(workflow.get("owner_id") or ctx.group_id),
         started_by=ctx.user,
-        group_id=ctx.group_id,
-        workflow_name=str(workflow.get("name") or workflow_id),
-        definition=definition,
-        agents=agent_snapshots,
-        input_text=body.input,
+        run_id=run_id,
     )
-    start_workflow_run(run["id"], definition, body.input, resolve)
+    if execution_lease is None:
+        raise APIError(
+            409,
+            "resource_execution_in_progress",
+            "Este workflow ya está en curso para tu usuario",
+            extra={"resource": "workflow", "resource_id": workflow_id},
+        )
+    try:
+        run = await _workflow_runs.create(
+            workflow_id=workflow_id,
+            started_by=ctx.user,
+            group_id=ctx.group_id,
+            workflow_name=str(workflow.get("name") or workflow_id),
+            definition=definition,
+            agents=agent_snapshots,
+            input_text=body.input,
+            run_id=run_id,
+        )
+    except Exception:
+        await _executions.safe_release(execution_lease)
+        raise
+    try:
+        start_workflow_run(
+            run["id"],
+            definition,
+            body.input,
+            resolve,
+            workflow_node_quota(request),
+            execution_lease,
+        )
+    except Exception:
+        await _workflow_runs.set_status(
+            run["id"],
+            "failed",
+            error="No se pudo iniciar la tarea de ejecución",
+        )
+        await _executions.safe_release(execution_lease)
+        raise
     return run
 
 

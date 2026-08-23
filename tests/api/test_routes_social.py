@@ -78,6 +78,26 @@ def test_agente_publico_aparece_en_explore(client):
     assert found["category"] == "Coding"
 
 
+def test_agente_publico_desactivado_no_se_descubre_previsualiza_ni_enlaza(client):
+    _login(client, "explore_inactive_owner")
+    agent = _create_agent(client, "Agente público desactivado")
+    _make_agent_public(client, agent["id"])
+    client.post(f"/api/agents/{agent['id']}/deactivate")
+
+    _login(client, "explore_inactive_viewer")
+    catalog = client.get(
+        "/api/explore", params={"type": "agent", "q": agent["name"]}
+    )
+    preview = client.get(f"/api/explore/agent/{agent['id']}/preview")
+    linked = client.post(f"/api/agents/private/{agent['id']}/link")
+
+    assert catalog.status_code == 200
+    assert catalog.json() == []
+    assert preview.status_code == 404
+    assert linked.status_code == 409
+    assert linked.json()["detail"]["code"] == "resource_inactive"
+
+
 def test_crear_agente_publico_lo_publica_sin_segunda_peticion(client):
     owner = _login(client, "explore_direct_owner")
     response = client.post(
@@ -320,13 +340,13 @@ def test_explore_muestra_antes_un_agente_recien_publicado_sin_estrellas(client):
             await conn.execute(
                 "INSERT INTO resource_social (resource_type,resource_id,owner,name,"
                 "description,is_public,category,stars_count,updated_at) "
-                "VALUES ('agent','popular-old','other-owner','Orden reciente antiguo',"
+                "VALUES ('skill','popular-old','other-owner','Orden reciente antiguo',"
                 "'',1,'Coding',999,'2025-01-01T00:00:00Z')"
             )
             await conn.execute(
                 "INSERT INTO resource_social (resource_type,resource_id,owner,name,"
                 "description,is_public,category,stars_count,updated_at) "
-                "VALUES ('agent','new-no-stars','other-owner','Orden reciente nuevo',"
+                "VALUES ('skill','new-no-stars','other-owner','Orden reciente nuevo',"
                 "'',1,'Coding',0,'2026-01-01T00:00:00Z')"
             )
             await conn.commit()
@@ -612,6 +632,22 @@ def test_try_agente_publico_ok(client, monkeypatch):
     assert "warnings" in body
     assert isinstance(body["warnings"], list)
     assert any("Evento SSE inválido" in warning for warning in warnings)
+
+
+def test_try_agente_publico_desactivado_devuelve_409(client):
+    user = _login(client, "trytest_inactive")
+    agent = _create_agent(client, "Try Agent Inactive")
+    _make_agent_public(client, agent["id"])
+    conn_id = _create_connection_raw(user, f"conn-try-inactive-{agent['id'][:8]}")
+    client.post(f"/api/agents/{agent['id']}/deactivate")
+
+    response = client.post(
+        f"/api/agents/private/{agent['id']}/try",
+        json={"connection_id": conn_id, "message": "Hola"},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "resource_inactive"
 
 
 def test_try_agente_privado_devuelve_404(client):

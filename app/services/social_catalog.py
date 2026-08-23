@@ -29,6 +29,29 @@ CATEGORIES = [
 
 _PUBLIC_VAL = 1
 
+# La publicación se conserva al desactivar para recuperar estrellas y enlaces
+# al reactivar, pero un recurso inactivo no es descubrible ni enlazable.
+_ACTIVE_TABLES = {
+    "agent": "agents",
+    "skill": "skills",
+    "prompt": "prompts",
+    "tool": "tools",
+    "knowledge": "knowledge_items",
+    "knowledge_pack": "knowledge_packs",
+}
+PUBLICLY_AVAILABLE_SQL = (
+    "("
+    + " AND ".join(
+        f"(resource_social.resource_type != '{kind}' OR NOT EXISTS ("
+    f"SELECT 1 FROM\n{table} inactive_resource "
+        "WHERE inactive_resource.id = resource_social.resource_id "
+        "AND NOT inactive_resource.is_active))"
+        for kind, table in _ACTIVE_TABLES.items()
+    )
+    + ")"
+)
+
+
 async def _assert_public(resource_type: str, source_id: str) -> None:
     """Enlazar solo está disponible para contenido público del marketplace."""
     async with open_db() as conn:
@@ -36,8 +59,17 @@ async def _assert_public(resource_type: str, source_id: str) -> None:
             sql("queries/social:public_flag_exists"),
             (resource_type, source_id, _PUBLIC_VAL),
         )
+        table = _ACTIVE_TABLES.get(resource_type)
+        if row and table:
+            state = await conn.fetchone(
+                f"SELECT is_active FROM {table} WHERE id=? LIMIT 1",
+                (source_id,),
+            )
+            if state is not None and not state["is_active"]:
+                row = None
     if not row:
         raise APIError(403, "forbidden", "No tienes acceso a este recurso")
+
 
 def _check_category(cat: str) -> None:
     if cat not in CATEGORIES:
@@ -47,6 +79,7 @@ def _check_category(cat: str) -> None:
             f"Categoría inválida. Opciones: {CATEGORIES}",
             extra={"field": "category"},
         )
+
 
 def _assert_publicable(resource_labels: List[str], resource_type: str) -> None:
     """La label ``public`` manda: publicar sin ella no puede responder ``ok``.
@@ -71,6 +104,7 @@ def _assert_publicable(resource_labels: List[str], resource_type: str) -> None:
             extra={"resource": resource_type, "missing_label": "public"},
         )
 
+
 async def _assert_not_linked_copy(
     conn: Any, resource_type: str, resource_id: str, owner: str
 ) -> None:
@@ -86,6 +120,7 @@ async def _assert_not_linked_copy(
             "linked_copy_not_publishable",
             "No puedes publicar una copia enlazada de un recurso ajeno",
         )
+
 
 async def _upsert_social(
     conn: Any,

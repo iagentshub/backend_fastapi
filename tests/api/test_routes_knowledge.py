@@ -68,7 +68,9 @@ def test_list_items_filter_by_type(alice):
         "/api/knowledge/text", json={"title": "Texto", "content": "contenido de texto"}
     )
     # URL item via mock
-    with patch("app.api.routes.knowledge.items.fetch_url_text", return_value="contenido url"):
+    with patch(
+        "app.api.routes.knowledge.items.fetch_url_text", return_value="contenido url"
+    ):
         alice.post(
             "/api/knowledge/url", json={"url": "https://example.com", "title": "Web"}
         )
@@ -153,6 +155,27 @@ def test_upload_directory_as_knowledge_pack(alice):
     assert deploy["size_bytes"] == len(b"print('deploy')")
     assert deploy["mime_type"] == "text/x-python"
     assert deploy["checksum"] == hashlib.sha256(b"print('deploy')").hexdigest()
+
+
+def test_pack_deactivate_keeps_it_visible_and_reactivates(alice):
+    created = alice.post(
+        "/api/knowledge/packs",
+        data={"name": "Pack activable", "paths": '["manual.txt"]'},
+        files=[("files", ("manual.txt", b"contenido", "text/plain"))],
+    ).json()
+
+    response = alice.post(f"/api/knowledge/packs/{created['id']}/deactivate")
+    assert response.status_code == 200, response.text
+    assert response.json()["is_active"] is False
+    listed = alice.get("/api/knowledge/packs").json()
+    assert (
+        next(pack for pack in listed if pack["id"] == created["id"])["is_active"]
+        is False
+    )
+
+    response = alice.post(f"/api/knowledge/packs/{created['id']}/activate")
+    assert response.status_code == 200, response.text
+    assert response.json()["is_active"] is True
 
 
 def test_upload_pack_rejects_unsafe_relative_path(alice):
@@ -462,9 +485,7 @@ def test_group_owned_pack_can_be_published_as_one_unit(alice):
     )
     assert unpublished.status_code == 200
     assert (
-        alice.get(
-            f"/api/explore/knowledge_pack/{pack['id']}/relations"
-        ).status_code
+        alice.get(f"/api/explore/knowledge_pack/{pack['id']}/relations").status_code
         == 404
     )
 
@@ -593,12 +614,14 @@ def test_upload_image_document_uses_ocr(alice, monkeypatch):
     assert r.json()["size_bytes"] == 4
 
 
-def test_knowledge_has_no_active_toggle_and_labels_are_editable(alice):
+def test_knowledge_active_toggle_and_labels_are_editable(alice):
     item = alice.post(
         "/api/knowledge/text",
         json={"title": "Guía", "content": "Contenido"},
     ).json()
-    assert alice.post(f"/api/knowledge/{item['id']}/deactivate").status_code == 404
+    deactivated = alice.post(f"/api/knowledge/{item['id']}/deactivate")
+    assert deactivated.status_code == 200
+    assert deactivated.json()["is_active"] is False
 
     updated = alice.put(
         f"/api/knowledge/{item['id']}/labels",
@@ -624,6 +647,11 @@ def test_knowledge_has_no_active_toggle_and_labels_are_editable(alice):
         "production",
         "lang_es",
     ]
+    assert published.json()["is_active"] is False
+
+    activated = alice.post(f"/api/knowledge/{item['id']}/activate")
+    assert activated.status_code == 200
+    assert activated.json()["is_active"] is True
 
     _setup_user("knowledge_reader")
     _auth_client(alice, "knowledge_reader")

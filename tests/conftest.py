@@ -173,19 +173,11 @@ def patch_data_dir(tmp_data_dir, tmp_path, monkeypatch):
 
     monkeypatch.setattr(cookies_mod, "SECURE_COOKIES", False)
 
-    # licenses.py importa SETTINGS_FILE por valor, igual que auth.py (ver arriba).
-    # El binding se fija cuando se importa el módulo: si algo lo importa durante
-    # la COLECCIÓN de pytest —basta con que un fichero de test lo importe a nivel
-    # superior— queda apuntando al directorio de colección (conftest.py:22) en vez
-    # de a tmp_data_dir, y _billing_enabled() lee un settings.json que no existe:
-    # la puerta de licencias no se activa nunca y los tests que esperan 403 pasan
-    # a recibir 200. Parchearlo aquí lo hace independiente del orden de import.
+    # LicenseGate comparte ahora el lector de platform_settings. cfg.SETTINGS_FILE
+    # ya apunta al directorio aislado del test; solo hay que vaciar el caché
+    # compartido porque algunos tests escriben el JSON directamente.
     import app.middleware.licenses as licenses_mod
 
-    monkeypatch.setattr(licenses_mod, "SETTINGS_FILE", tmp_data_dir / "settings.json")
-
-    # Además, el caché de billing_enabled arranca limpio: varios tests escriben
-    # settings.json a mano, saltándose _write_platform_cfg (que es quien invalida).
     licenses_mod.invalidate_billing_cache()
 
     # Mismo caso para el límite de tamaño de petición: lo cachea su middleware

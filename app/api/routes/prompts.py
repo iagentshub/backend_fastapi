@@ -213,6 +213,44 @@ async def save_prompt(
         raise APIError(422, "invalid_prompt_data", msg) from e
 
 
+async def _set_prompt_active(
+    scope: str, prompt_id: str, active: bool, ctx: GroupContext
+) -> Dict[str, Any]:
+    _check_scope(scope)
+    prompt = await _storage.get(scope, prompt_id)
+    if prompt is None:
+        raise APIError(
+            404, "not_found", "Prompt no encontrado", extra={"resource": "prompt"}
+        )
+    assert_resource_writable(prompt, "prompt")
+    role = await get_user_role(ctx.user)
+    if role != "admin" and prompt.get("owner_id") not in {ctx.user, ctx.group_id}:
+        raise APIError(403, "forbidden", "No tienes permiso para modificar este prompt")
+    owner = None if role == "admin" else str(prompt["owner_id"])
+    if not await _storage.set_active(prompt_id, owner, active):
+        raise APIError(
+            404, "not_found", "Prompt no encontrado", extra={"resource": "prompt"}
+        )
+    return await _storage.get(scope, prompt_id) or {
+        "id": prompt_id,
+        "is_active": active,
+    }
+
+
+@router.post("/{scope}/{prompt_id}/activate")
+async def activate_prompt(
+    scope: str, prompt_id: str, ctx: GroupContext = Depends(require_group_session)
+) -> Dict[str, Any]:
+    return await _set_prompt_active(scope, prompt_id, True, ctx)
+
+
+@router.post("/{scope}/{prompt_id}/deactivate")
+async def deactivate_prompt(
+    scope: str, prompt_id: str, ctx: GroupContext = Depends(require_group_session)
+) -> Dict[str, Any]:
+    return await _set_prompt_active(scope, prompt_id, False, ctx)
+
+
 @router.delete("/{scope}/{prompt_id}")
 async def delete_prompt(
     scope: str, prompt_id: str, ctx: GroupContext = Depends(require_group_session)

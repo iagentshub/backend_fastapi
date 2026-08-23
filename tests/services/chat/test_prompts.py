@@ -25,7 +25,8 @@ def _prompt_storage_mock(prompts_by_id: dict) -> MagicMock:
     async def _find_by_alias(alias, owner_id=None):
         alias = alias.strip().lower()
         candidates = [
-            p for p in prompts_by_id.values()
+            p
+            for p in prompts_by_id.values()
             if str(p.get("alias", "")).lower() == alias
         ]
         for p in candidates:
@@ -62,7 +63,9 @@ async def test_prompt_mention_injected_into_system():
         sent_payloads.append(json.loads(req.data.decode()))
         return _sse_done_response()
 
-    with patch("app.connections.openai_compatible.safe_urlopen", side_effect=fake_urlopen):
+    with patch(
+        "app.connections.openai_compatible.safe_urlopen", side_effect=fake_urlopen
+    ):
         [
             e
             async for e in stream_chat(
@@ -76,6 +79,43 @@ async def test_prompt_mention_injected_into_system():
 
     system_message = sent_payloads[0]["messages"][0]["content"]
     assert "Resume el texto en 3 frases." in system_message
+
+
+async def test_inactive_prompt_mention_is_not_injected():
+    agent = _make_agent("openai")
+    conn = _make_conn("openai")
+    prompt_storage = _prompt_storage_mock(
+        {
+            "prompt-off": {
+                "id": "prompt-off",
+                "alias": "apagado",
+                "name": "Prompt apagado",
+                "content": "CONTENIDO_DESACTIVADO",
+                "is_active": False,
+            }
+        }
+    )
+    sent_payloads = []
+
+    def fake_urlopen(req, timeout):
+        sent_payloads.append(json.loads(req.data.decode()))
+        return _sse_done_response()
+
+    with patch(
+        "app.connections.openai_compatible.safe_urlopen", side_effect=fake_urlopen
+    ):
+        [
+            event
+            async for event in stream_chat(
+                agent,
+                conn,
+                [{"role": "user", "content": "Usa @apagado"}],
+                _skill_storage(),
+                prompt_storage=prompt_storage,
+            )
+        ]
+
+    assert "CONTENIDO_DESACTIVADO" not in sent_payloads[0]["messages"][0]["content"]
 
 
 async def test_prompt_mention_is_case_insensitive():
@@ -99,7 +139,9 @@ async def test_prompt_mention_is_case_insensitive():
         sent_payloads.append(json.loads(req.data.decode()))
         return _sse_done_response()
 
-    with patch("app.connections.openai_compatible.safe_urlopen", side_effect=fake_urlopen):
+    with patch(
+        "app.connections.openai_compatible.safe_urlopen", side_effect=fake_urlopen
+    ):
         [
             e
             async for e in stream_chat(
@@ -136,7 +178,9 @@ async def test_no_mention_does_not_inject_prompt():
         sent_payloads.append(json.loads(req.data.decode()))
         return _sse_done_response()
 
-    with patch("app.connections.openai_compatible.safe_urlopen", side_effect=fake_urlopen):
+    with patch(
+        "app.connections.openai_compatible.safe_urlopen", side_effect=fake_urlopen
+    ):
         [
             e
             async for e in stream_chat(
@@ -176,7 +220,9 @@ async def test_mention_of_prompt_not_in_agent_catalog_is_resolved():
         sent_payloads.append(json.loads(req.data.decode()))
         return _sse_done_response()
 
-    with patch("app.connections.openai_compatible.safe_urlopen", side_effect=fake_urlopen):
+    with patch(
+        "app.connections.openai_compatible.safe_urlopen", side_effect=fake_urlopen
+    ):
         [
             e
             async for e in stream_chat(
@@ -217,7 +263,9 @@ async def test_mention_of_own_private_prompt_not_in_agent_catalog_is_resolved():
         sent_payloads.append(json.loads(req.data.decode()))
         return _sse_done_response()
 
-    with patch("app.connections.openai_compatible.safe_urlopen", side_effect=fake_urlopen):
+    with patch(
+        "app.connections.openai_compatible.safe_urlopen", side_effect=fake_urlopen
+    ):
         [
             e
             async for e in stream_chat(
@@ -259,7 +307,9 @@ async def test_mention_of_other_owners_private_prompt_is_ignored():
         sent_payloads.append(json.loads(req.data.decode()))
         return _sse_done_response()
 
-    with patch("app.connections.openai_compatible.safe_urlopen", side_effect=fake_urlopen):
+    with patch(
+        "app.connections.openai_compatible.safe_urlopen", side_effect=fake_urlopen
+    ):
         [
             e
             async for e in stream_chat(
@@ -282,7 +332,10 @@ async def test_prompt_storage_none_does_not_break_stream_chat():
     agent["prompts"] = ["prompt-1"]
     conn = _make_conn("openai")
 
-    with patch("app.connections.openai_compatible.safe_urlopen", return_value=_sse_done_response()):
+    with patch(
+        "app.connections.openai_compatible.safe_urlopen",
+        return_value=_sse_done_response(),
+    ):
         events = [
             e
             async for e in stream_chat(

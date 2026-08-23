@@ -60,7 +60,8 @@ class ToolStorage(ResourceStorage):
                 "resource_row.language, resource_row.scope, resource_row.data, "
                 "resource_row.binary_filename, resource_row.binary_size, "
                 "resource_row.binary_uploaded_at, resource_row.created_at, "
-                "resource_row.updated_at"
+                "resource_row.updated_at, resource_row.is_active, "
+                "resource_row.deactivated_at"
             ),
             resource_type=self.resource_type,
             decode=lambda row: self._row_to_dict(row, include_content=False),
@@ -104,6 +105,8 @@ class ToolStorage(ResourceStorage):
                 "binary_filename",
                 "binary_size",
                 "binary_uploaded_at",
+                "is_active",
+                "deactivated_at",
             )
         }
         meta_json = _compact_resource_data(meta)
@@ -163,6 +166,8 @@ class ToolStorage(ResourceStorage):
                 "name": row["name"],
                 "resource_type": "tool",
                 "scope": row["scope"],
+                "is_active": bool(row["is_active"]),
+                "deactivated_at": row["deactivated_at"],
                 "created_at": row["created_at"],
                 "updated_at": row["updated_at"],
             }
@@ -180,9 +185,7 @@ class ToolStorage(ResourceStorage):
 
         async with open_db() as conn:
             if scope == "public":
-                rows = await conn.fetchall(
-                    sql("queries/tools:list_public")
-                )
+                rows = await conn.fetchall(sql("queries/tools:list_public"))
             elif scope == "private":
                 if owner_id:
                     rows = await conn.fetchall(
@@ -190,13 +193,9 @@ class ToolStorage(ResourceStorage):
                         (owner_id,),
                     )
                 else:
-                    rows = await conn.fetchall(
-                        sql("queries/tools:list_private")
-                    )
+                    rows = await conn.fetchall(sql("queries/tools:list_private"))
             else:  # all
-                rows = await conn.fetchall(
-                    sql("queries/tools:list_all")
-                )
+                rows = await conn.fetchall(sql("queries/tools:list_all"))
         return [self._row_to_dict(r, include_content=False) for r in rows]
 
     async def get(
@@ -212,7 +211,7 @@ class ToolStorage(ResourceStorage):
             row = await conn.fetchone(
                 "SELECT id, owner_id, name, language, scope, data, content, binary_b64, "
                 "binary_filename, binary_size, binary_uploaded_at, "
-                "created_at, updated_at "
+                "is_active, deactivated_at, created_at, updated_at "
                 f"FROM tools WHERE id=? AND scope=?{owner_filter} LIMIT 1",
                 params,
             )
@@ -226,7 +225,7 @@ class ToolStorage(ResourceStorage):
                 row = await conn.fetchone(
                     "SELECT id, owner_id, name, language, scope, data, content, binary_b64, "
                     "binary_filename, binary_size, binary_uploaded_at, "
-                    "created_at, updated_at "
+                    "is_active, deactivated_at, created_at, updated_at "
                     f"FROM tools WHERE id=? AND scope=?{owner_filter} LIMIT 1",
                     slug_params,
                 )
@@ -324,6 +323,8 @@ class ToolStorage(ResourceStorage):
             "labels": labels,
             "scope": scope,
             "owner_id": actual_owner,
+            "is_active": existing.get("is_active", True) if existing else True,
+            "deactivated_at": existing.get("deactivated_at") if existing else None,
             "created_at": existing.get("created_at", now) if existing else now,
             "updated_at": now,
         }
@@ -369,9 +370,7 @@ class ToolStorage(ResourceStorage):
                 )
                 if not row:
                     return False
-                await conn.execute(
-                    sql("queries/tools:delete_scoped"), (tool_id, scope)
-                )
+                await conn.execute(sql("queries/tools:delete_scoped"), (tool_id, scope))
             await conn.commit()
         await self.clear_labels(tool_id)
         return True
@@ -433,9 +432,7 @@ class ToolStorage(ResourceStorage):
                     (binary_b64, filename, size, now, now, tool_id, owner_id),
                 )
             else:
-                row = await conn.fetchone(
-                    sql("queries/tools:exists_any"), (tool_id,)
-                )
+                row = await conn.fetchone(sql("queries/tools:exists_any"), (tool_id,))
                 if not row:
                     return False
                 await conn.execute(

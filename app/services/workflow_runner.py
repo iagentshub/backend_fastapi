@@ -10,10 +10,18 @@ from typing import Any, AsyncGenerator, Awaitable, Callable, Dict, List, Set
 from app.models.agent import Agent
 from app.services.chat import stream_chat
 from app.services.llm_routing import stream_orchestrated_chat
+from app.services.resource_stores import (
+    _knowledge_packs_store,
+    _knowledge_store,
+    _prompts_store,
+    _skills_store,
+    _tools_store,
+)
 from app.services.workflow_errors import WorkflowPublicError
 from app.storage.connection_storage import ConnectionStorage
 
 AgentResolver = Callable[[str], Awaitable[tuple[Dict[str, Any], Dict[str, Any]]]]
+QuotaConsumer = Callable[[int], Awaitable[None]]
 WORKFLOW_HEARTBEAT_SECONDS = 10.0
 _connections = ConnectionStorage()
 
@@ -114,10 +122,23 @@ async def _agent_reply(
                     connection["_llm_orchestration"],
                     connection.get("_connections") or {},
                     history,
-                    None,
+                    _skills_store,
+                    knowledge_storage=_knowledge_store,
+                    knowledge_pack_storage=_knowledge_packs_store,
+                    prompt_storage=_prompts_store,
+                    tool_storage=_tools_store,
                 )
             else:
-                streamer = stream_chat(agent, connection, history, None)
+                streamer = stream_chat(
+                    agent,
+                    connection,
+                    history,
+                    _skills_store,
+                    knowledge_storage=_knowledge_store,
+                    knowledge_pack_storage=_knowledge_packs_store,
+                    prompt_storage=_prompts_store,
+                    tool_storage=_tools_store,
+                )
             async for chunk in streamer:
                 if not chunk.startswith("data: "):
                     continue
@@ -234,6 +255,8 @@ async def run_workflow(
     definition: Dict[str, Any],
     initial_input: str,
     resolve: AgentResolver,
+    *,
+    consume_quota: QuotaConsumer | None = None,
 ) -> AsyncGenerator[Dict[str, Any], None]:
     ordered_nodes = execution_order(definition)
     if len(ordered_nodes) != len(definition["nodes"]):
@@ -292,6 +315,11 @@ async def run_workflow(
                 "invalid_field",
                 "La orquestación no puede continuar por sus dependencias",
             )
+
+        # Se cobra trabajo ejecutado, no el mero arranque. Una tanda paralela
+        # consume tantas unidades como nodos va a enviar realmente al LLM.
+        if consume_quota is not None:
+            await consume_quota(len(ready))
 
         tasks: List[asyncio.Task[Any]] = []
         task_meta: List[tuple[Dict[str, Any], Agent, str, int, int | None]] = []

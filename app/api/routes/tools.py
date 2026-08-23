@@ -272,6 +272,39 @@ async def delete_tool(
     return {"ok": True}
 
 
+async def _set_tool_active(
+    scope: str, tool_id: str, active: bool, ctx: GroupContext
+) -> Dict[str, Any]:
+    _check_scope(scope)
+    tool = await _storage.get(scope, tool_id)
+    if tool is None:
+        raise APIError(
+            404, "not_found", "Tool no encontrada", extra={"resource": "tool"}
+        )
+    assert_resource_writable(tool, "tool")
+    role = await get_user_role(ctx.user)
+    if role != "admin" and tool.get("owner_id") not in {ctx.user, ctx.group_id}:
+        raise APIError(403, "forbidden", "No tienes permiso para modificar esta tool")
+    owner = None if role == "admin" else str(tool["owner_id"])
+    if not await _storage.set_active(tool_id, owner, active):
+        raise APIError(
+            404, "not_found", "Tool no encontrada", extra={"resource": "tool"}
+        )
+    return await _storage.get(scope, tool_id) or {"id": tool_id, "is_active": active}
+
+
+@router.post("/{scope}/{tool_id}/activate")
+async def activate_tool(
+    scope: str, tool_id: str, ctx: GroupContext = Depends(require_group_session)
+) -> Dict[str, Any]:
+    return await _set_tool_active(scope, tool_id, True, ctx)
+
+
+@router.post("/{scope}/{tool_id}/deactivate")
+async def deactivate_tool(
+    scope: str, tool_id: str, ctx: GroupContext = Depends(require_group_session)
+) -> Dict[str, Any]:
+    return await _set_tool_active(scope, tool_id, False, ctx)
 
 
 # ── Binario (solo tools cpp) — subida/descarga en dos pasos ─────────────────

@@ -49,6 +49,7 @@ class PromptStorage(ResourceStorage):
             columns=(
                 "resource_row.id, resource_row.owner_id, resource_row.name, "
                 "resource_row.alias, resource_row.scope, resource_row.data, "
+                "resource_row.is_active, resource_row.deactivated_at, "
                 "resource_row.created_at, resource_row.updated_at"
             ),
             resource_type=self.resource_type,
@@ -77,7 +78,11 @@ class PromptStorage(ResourceStorage):
         created_at = str(data.get("created_at") or now)
         updated_at = str(data.get("updated_at") or now)
         # alias y content tienen columna propia — no duplicar en el JSON de meta.
-        meta = {k: v for k, v in data.items() if k not in ("content", "alias")}
+        meta = {
+            k: v
+            for k, v in data.items()
+            if k not in ("content", "alias", "is_active", "deactivated_at")
+        }
         meta_json = _compact_resource_data(meta)
         if _db.IS_PG:
             await conn.execute(
@@ -123,6 +128,8 @@ class PromptStorage(ResourceStorage):
                 "name": row["name"],
                 "resource_type": "prompt",
                 "scope": row["scope"],
+                "is_active": bool(row["is_active"]),
+                "deactivated_at": row["deactivated_at"],
                 "created_at": row["created_at"],
                 "updated_at": row["updated_at"],
             }
@@ -140,9 +147,7 @@ class PromptStorage(ResourceStorage):
 
         async with open_db() as conn:
             if scope == "public":
-                rows = await conn.fetchall(
-                    sql("queries/prompts:list_public")
-                )
+                rows = await conn.fetchall(sql("queries/prompts:list_public"))
             elif scope == "private":
                 if owner_id:
                     rows = await conn.fetchall(
@@ -150,13 +155,9 @@ class PromptStorage(ResourceStorage):
                         (owner_id,),
                     )
                 else:
-                    rows = await conn.fetchall(
-                        sql("queries/prompts:list_private")
-                    )
+                    rows = await conn.fetchall(sql("queries/prompts:list_private"))
             else:  # all
-                rows = await conn.fetchall(
-                    sql("queries/prompts:list_all")
-                )
+                rows = await conn.fetchall(sql("queries/prompts:list_all"))
         return [self._row_to_dict(r, include_content=False) for r in rows]
 
     async def get(
@@ -173,7 +174,7 @@ class PromptStorage(ResourceStorage):
             )
             row = await conn.fetchone(
                 "SELECT id, owner_id, name, alias, scope, data, content, "
-                "created_at, updated_at "
+                "is_active, deactivated_at, created_at, updated_at "
                 f"FROM prompts WHERE id=? AND scope=?{owner_filter} LIMIT 1",
                 params,
             )
@@ -266,6 +267,8 @@ class PromptStorage(ResourceStorage):
             "labels": labels,
             "scope": scope,
             "owner_id": actual_owner,
+            "is_active": existing.get("is_active", True) if existing else True,
+            "deactivated_at": existing.get("deactivated_at") if existing else None,
             "created_at": existing.get("created_at", now) if existing else now,
             "updated_at": now,
         }

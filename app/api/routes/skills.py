@@ -217,6 +217,41 @@ async def save_skill(
         raise APIError(422, "invalid_skill_data", str(e))
 
 
+async def _set_skill_active(
+    scope: str, skill_id: str, active: bool, ctx: GroupContext
+) -> Dict[str, Any]:
+    _check_scope(scope)
+    skill = await _storage.get(scope, skill_id)
+    if skill is None:
+        raise APIError(
+            404, "not_found", "Skill no encontrada", extra={"resource": "skill"}
+        )
+    assert_resource_writable(skill, "skill")
+    role = await get_user_role(ctx.user)
+    if role != "admin" and skill.get("owner_id") not in {ctx.user, ctx.group_id}:
+        raise APIError(403, "forbidden", "No tienes permiso para modificar esta skill")
+    owner = None if role == "admin" else str(skill["owner_id"])
+    if not await _storage.set_active(skill_id, owner, active):
+        raise APIError(
+            404, "not_found", "Skill no encontrada", extra={"resource": "skill"}
+        )
+    return await _storage.get(scope, skill_id) or {"id": skill_id, "is_active": active}
+
+
+@router.post("/{scope}/{skill_id}/activate")
+async def activate_skill(
+    scope: str, skill_id: str, ctx: GroupContext = Depends(require_group_session)
+) -> Dict[str, Any]:
+    return await _set_skill_active(scope, skill_id, True, ctx)
+
+
+@router.post("/{scope}/{skill_id}/deactivate")
+async def deactivate_skill(
+    scope: str, skill_id: str, ctx: GroupContext = Depends(require_group_session)
+) -> Dict[str, Any]:
+    return await _set_skill_active(scope, skill_id, False, ctx)
+
+
 @router.delete("/{scope}/{skill_id}")
 async def delete_skill(
     scope: str, skill_id: str, ctx: GroupContext = Depends(require_group_session)

@@ -48,7 +48,7 @@ async def export_agent(
     for skill_id in agent.get("skills") or []:
         for scope in ("public", "private"):
             skill = await _skills.get(scope, skill_id)
-            if skill:
+            if skill and skill.get("is_active", True):
                 resolved_skills.append(skill)
                 break
 
@@ -56,7 +56,7 @@ async def export_agent(
     for knowledge_id in agent.get("knowledge") or []:
         try:
             item = await knowledge_store.get(knowledge_id)
-            if item:
+            if item and item.get("is_active", True):
                 resolved_knowledge.append(item)
         except Exception as exc:  # noqa: BLE001
             # El export no debe caerse por un item de knowledge ilegible: se

@@ -281,6 +281,40 @@ async def get_pack(
     return pack
 
 
+async def _set_pack_active(
+    pack_id: str, active: bool, ctx: GroupContext
+) -> Dict[str, Any]:
+    pack = await _packs.get(pack_id, include_items=False)
+    if pack is None:
+        raise APIError(
+            404, "not_found", "Pack no encontrado", extra={"resource": "knowledge_pack"}
+        )
+    assert_resource_writable(pack, "knowledge_pack")
+    role = await get_user_role(ctx.user)
+    if role != "admin" and pack.get("owner_id") not in {ctx.user, ctx.group_id}:
+        raise APIError(403, "forbidden", "Sin permisos sobre este pack")
+    owner = None if role == "admin" else str(pack["owner_id"])
+    if not await _packs.set_active(pack_id, owner, active):
+        raise APIError(
+            404, "not_found", "Pack no encontrado", extra={"resource": "knowledge_pack"}
+        )
+    return await _packs.get(pack_id) or {"id": pack_id, "is_active": active}
+
+
+@router.post("/packs/{pack_id}/activate")
+async def activate_pack(
+    pack_id: str, ctx: GroupContext = Depends(require_group_session)
+) -> Dict[str, Any]:
+    return await _set_pack_active(pack_id, True, ctx)
+
+
+@router.post("/packs/{pack_id}/deactivate")
+async def deactivate_pack(
+    pack_id: str, ctx: GroupContext = Depends(require_group_session)
+) -> Dict[str, Any]:
+    return await _set_pack_active(pack_id, False, ctx)
+
+
 @router.delete("/packs/{pack_id}")
 async def delete_pack(
     pack_id: str,

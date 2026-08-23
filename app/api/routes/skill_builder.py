@@ -11,6 +11,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.api.routes.auth import GroupContext, require_group_session
+from app.api.routes.llm_limits import interactive_llm_limiter
 from app.auth.auth import get_user_role
 from app.errors import APIError
 from app.models.agent import Agent
@@ -48,6 +49,7 @@ def _sse(data: Dict[str, Any]) -> str:
 async def builder_chat(
     body: SkillBuilderChatBody,
     ctx: GroupContext = Depends(require_group_session),
+    _rl: None = Depends(interactive_llm_limiter),
 ) -> StreamingResponse:
     user, group_id = ctx.user, ctx.group_id
     raw_conn_id = body.connection_id
@@ -85,6 +87,13 @@ async def builder_chat(
             "not_found",
             "La conexión seleccionada no existe o no está disponible",
             extra={"resource": "connection"},
+        )
+    if not conn.get("is_active", True):
+        raise APIError(
+            409,
+            "resource_inactive",
+            "La conexión seleccionada está desactivada",
+            extra={"resource": "connection", "resource_id": conn_id},
         )
 
     imported = build_from_skill_markdown(body.messages)

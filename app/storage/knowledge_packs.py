@@ -36,6 +36,33 @@ def _pack_dict(row: Any) -> Dict[str, Any]:
 
 
 class KnowledgePackStorage:
+    async def set_active(
+        self, pack_id: str, owner_id: Optional[str], active: bool
+    ) -> bool:
+        flag = 1 if active else 0
+        deactivated_at = None if active else generate_date()
+        owner_filter = " AND owner_id=?" if owner_id is not None else ""
+        params: tuple[Any, ...] = (
+            (flag, deactivated_at, pack_id, owner_id)
+            if owner_id is not None
+            else (flag, deactivated_at, pack_id)
+        )
+        async with open_db() as conn:
+            exists_params = (pack_id, owner_id) if owner_id is not None else (pack_id,)
+            row = await conn.fetchone(
+                f"SELECT id FROM knowledge_packs WHERE id=?{owner_filter} LIMIT 1",
+                exists_params,
+            )
+            if row is None:
+                return False
+            await conn.execute(
+                "UPDATE knowledge_packs SET is_active=?, deactivated_at=? "
+                f"WHERE id=?{owner_filter}",
+                params,
+            )
+            await conn.commit()
+        return True
+
     async def list(self, owner_id: Optional[str]) -> List[Dict[str, Any]]:
         query = """
             SELECT p.*,
@@ -274,7 +301,9 @@ class KnowledgePackStorage:
                 await conn.execute(
                     sql("queries/knowledge_packs:delete_pack_items"), (pack_id,)
                 )
-                await conn.execute(sql("queries/knowledge_packs:delete_pack"), (pack_id,))
+                await conn.execute(
+                    sql("queries/knowledge_packs:delete_pack"), (pack_id,)
+                )
         return True
 
     async def replace_items(

@@ -87,6 +87,7 @@ TABLAS: tuple[str, ...] = (
     "agent_workflows",
     "workflow_runs",
     "workflow_run_events",
+    "resource_executions",
     "llm_orchestrations",
     "llm_orchestration_bindings",
 )

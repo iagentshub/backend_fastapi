@@ -50,6 +50,31 @@ def test_deactivated_agent_chat_returns_409(client):
     assert r.json()["detail"]["code"] == "resource_inactive"
 
 
+def test_deactivated_connection_blocks_agent_chat(client):
+    _login(client, "act_chat_connection")
+    connection = client.post(
+        "/api/connections",
+        json={"name": "Conn chat", "type": "openai", "api_key": "sk-test"},
+    ).json()
+    agent = client.post(
+        "/api/agents",
+        json={"name": "Chat con conexión", "connection_id": connection["id"]},
+    ).json()
+    assert (
+        client.post(f"/api/connections/{connection['id']}/deactivate").status_code
+        == 200
+    )
+
+    response = client.post(
+        f"/api/agents/{agent['id']}/chat",
+        json={"messages": [{"role": "user", "content": "hola"}]},
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "resource_inactive"
+    assert response.json()["detail"]["resource"] == "connection"
+
+
 def test_reactivate_restores(client):
     _login(client, "act_restore")
     a = _create_agent(client, "Restaurable")

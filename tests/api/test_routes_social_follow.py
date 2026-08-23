@@ -22,12 +22,22 @@ def _insert_resource_social(owner, resource_id, is_public=True):
     import asyncio
 
     from app.auth.auth import get_user_by_username
+    from app.config.data import AGENTS_DIR
+    from app.storage.agent_storage import AgentStorage
     from app.storage.db import open_db
     pub_val = 1 if is_public else 0
 
     async def _do() -> None:
         user = await get_user_by_username(owner)
         assert user is not None
+        await AgentStorage(AGENTS_DIR).save(
+            {
+                "id": resource_id,
+                "name": f"Agent of {owner}",
+                "labels": ["public" if is_public else "private"],
+            },
+            owner_id=user["id"],
+        )
         async with open_db() as conn:
             await conn.execute(
                 "INSERT OR IGNORE INTO resource_social "

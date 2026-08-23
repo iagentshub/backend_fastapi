@@ -76,34 +76,109 @@ _PLATFORM_DEFAULTS: dict = {
 _VALID_REGISTRATION = REGISTRATION_MODES
 
 
-def _read_platform_cfg() -> dict:
+# Texto de settings.json cacheado, con la huella del fichero que lo validó:
+# (ruta, st_mtime_ns, st_size). Antes cada consulta leía y parseaba el fichero
+# entero, síncrono y dentro del event loop, y son veinte los sitios que lo
+# consultan — el login lo pide en cada carga y ahora también cada diez
+# segundos mientras esa pantalla está abierta.
+#
+# Se cachea el TEXTO, no el diccionario: `json.loads` por llamada devuelve
+# estructuras nuevas, y hay llamadores que mutan lo que reciben
+# (`banners.py` hace `cfg.setdefault(...).append(...)`). Cachear el dict les
+# dejaría escribir dentro de la caché.
+_raw_cache: tuple[tuple[str, int, int], str] | None = None
+
+# Red de seguridad por si la huella no cambiara (dos escrituras dentro de la
+# misma marca de tiempo y con el mismo tamaño). No es el mecanismo principal.
+_RAW_CACHE_TTL_S = 5.0
+_raw_cache_at = 0.0
+
+
+def invalidate_platform_cfg_cache() -> None:
+    """A llamar tras escribir settings.json. Ver [_write_platform_cfg]."""
+    global _raw_cache
+    _raw_cache = None
+
+
+def load_settings_raw() -> dict:
+    """JSON crudo de settings.json, sin defaults ni validación.
+
+    La validez del caché se comprueba con la huella del fichero
+    (`st_mtime_ns` y tamaño), **no solo** con la invalidación explícita de la
+    escritura. Esa diferencia es el motivo de este caché: uvicorn corre con
+    `GAIA_WORKERS` procesos (4 por defecto), así que el guardado del admin lo
+    atiende uno solo y la invalidación en memoria únicamente llega a ese. Los
+    demás servían el valor viejo **hasta el siguiente reinicio** —incluidos
+    `billing_enabled`, que es la puerta de cobro, y `max_request_bytes`—. Al
+    mirar la huella, el resto se entera en su siguiente lectura.
+
+    El caché anterior descartó el `mtime` a propósito, porque en segundos su
+    resolución no distingue dos escrituras seguidas y un falso acierto en una
+    puerta de cobro deja pasar a quien no ha pagado. Aquí se usa `st_mtime_ns`,
+    y además sigue habiendo invalidación explícita y un TTL corto: el `mtime`
+    es una comprobación de más, no la única.
+    """
+    global _raw_cache, _raw_cache_at
+
     import json as _json
+    import time as _time
 
     from app.config.data import SETTINGS_FILE
 
     try:
-        raw = _json.loads(SETTINGS_FILE.read_text(encoding="utf-8"))
+        stat = SETTINGS_FILE.stat()
+        huella = (str(SETTINGS_FILE), stat.st_mtime_ns, stat.st_size)
+    except OSError:
+        # Sin fichero no hay nada que cachear; el bloque de abajo decide qué
+        # devolver y lo registra si procede.
+        huella = None
+
+    ahora = _time.monotonic()
+    if (
+        huella is not None
+        and _raw_cache is not None
+        and _raw_cache[0] == huella
+        and ahora - _raw_cache_at < _RAW_CACHE_TTL_S
+    ):
+        try:
+            return _json.loads(_raw_cache[1])
+        except ValueError:  # pragma: no cover - lo cacheado ya se parseó una vez
+            _raw_cache = None
+
+    try:
+        texto = SETTINGS_FILE.read_text(encoding="utf-8")
+        raw = _json.loads(texto)
     except FileNotFoundError:
         # Instalación nueva: aún no se ha guardado nada. Silencio correcto.
-        raw = {}
+        return {}
     except (OSError, ValueError) as exc:
         # El fichero existe pero no se puede leer o no es JSON válido. Caer a
         # los defaults es lo correcto —el servidor tiene que arrancar—, pero
         # sin registro nadie relaciona "la plataforma perdió su configuración"
         # con un settings.json corrupto.
         flog.error(f"[settings] {SETTINGS_FILE} ilegible, se usan defaults: {exc}")
-        raw = {}
+        return {}
+
+    if huella is not None and isinstance(raw, dict):
+        _raw_cache = (huella, texto)
+        _raw_cache_at = ahora
+    return raw if isinstance(raw, dict) else {}
+
+
+def _read_platform_cfg() -> dict:
+    raw = load_settings_raw()
     cfg = dict(_PLATFORM_DEFAULTS)
     for k in _PLATFORM_DEFAULTS:
         if k in raw:
             cfg[k] = raw[k]
     if "max_request_bytes" not in raw:
         # Su default no es el literal de arriba: sale de GAIA_BODY_MAX_BYTES por
-        # el mismo lector que usa el middleware. Sin esto el panel enseñaría
-        # «sin límite» en una instalación que sí lo tiene puesto por entorno.
-        from app.middleware.body_limit import configured_max_bytes
+        # la misma configuración que usa el middleware. Se lee del módulo para
+        # que los tests y la configuración de arranque vean el valor vigente,
+        # sin crear un ciclo entre el servicio y el middleware.
+        import app.config.session as session_cfg
 
-        cfg["max_request_bytes"] = configured_max_bytes()
+        cfg["max_request_bytes"] = max(session_cfg.BODY_MAX_BYTES, 0)
     return cfg
 
 
@@ -132,11 +207,6 @@ def _write_platform_cfg(cfg: dict) -> None:
     SETTINGS_FILE.write_text(
         _json.dumps(existing, indent=2, ensure_ascii=False), encoding="utf-8"
     )
-    # billing_enabled vive en este fichero y LicenseGateMiddleware lo cachea.
-    from app.middleware.licenses import invalidate_billing_cache
-
-    invalidate_billing_cache()
-    # max_request_bytes también: mismo motivo, otro caché.
-    from app.middleware.body_limit import invalidate_body_limit_cache
-
-    invalidate_body_limit_cache()
+    # El caché del texto es de este módulo y lo comparten los tres lectores;
+    # `billing_enabled` y `max_request_bytes` ya no tienen el suyo propio.
+    invalidate_platform_cfg_cache()

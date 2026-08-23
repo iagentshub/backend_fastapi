@@ -107,9 +107,12 @@ def test_balanced_requires_router_and_is_exposed_as_a_connection(admin_client):
     assert agent.status_code == 200
     assert agent.json()["connection_id"] == virtual_id
     assert "llm_orchestration_id" not in agent.json()
-    assert admin_client.delete(
-        f"/api/llm-orchestrations/{orchestration['id']}"
-    ).status_code == 409
+    assert (
+        admin_client.delete(
+            f"/api/llm-orchestrations/{orchestration['id']}"
+        ).status_code
+        == 409
+    )
 
 
 def test_legacy_connection_preference_remains_compatible(admin_client):
@@ -125,9 +128,7 @@ def test_legacy_connection_preference_remains_compatible(admin_client):
         json={"connection_id": second["id"]},
     )
     assert legacy.status_code == 200
-    saved_legacy = admin_client.get(
-        f"/api/agents/{agent['id']}/preferences"
-    ).json()
+    saved_legacy = admin_client.get(f"/api/agents/{agent['id']}/preferences").json()
     assert saved_legacy == {
         "connection_id": second["id"],
     }
@@ -148,15 +149,16 @@ def test_legacy_connection_preference_remains_compatible(admin_client):
         json={"connection_id": f"llm-orchestration:{orchestration['id']}"},
     )
     assert routed.status_code == 200
-    saved_routed = admin_client.get(
-        f"/api/agents/{agent['id']}/preferences"
-    ).json()
+    saved_routed = admin_client.get(f"/api/agents/{agent['id']}/preferences").json()
     assert saved_routed == {
         "connection_id": f"llm-orchestration:{orchestration['id']}",
     }
-    assert admin_client.delete(
-        f"/api/llm-orchestrations/{orchestration['id']}"
-    ).status_code == 409
+    assert (
+        admin_client.delete(
+            f"/api/llm-orchestrations/{orchestration['id']}"
+        ).status_code
+        == 409
+    )
 
 
 def test_llm_orchestration_appears_only_in_admin_explore(admin_client):
@@ -173,14 +175,13 @@ def test_llm_orchestration_appears_only_in_admin_explore(admin_client):
             ],
         },
     ).json()
-    admin_items = admin_client.get(
-        "/api/admin/explore?type=llm_orchestration"
-    ).json()["items"]
+    admin_items = admin_client.get("/api/admin/explore?type=llm_orchestration").json()[
+        "items"
+    ]
     assert [entry["id"] for entry in admin_items] == [item["id"]]
     public_items = admin_client.get("/api/explore").json()
     assert all(
-        entry.get("resource_type") != "llm_orchestration"
-        for entry in public_items
+        entry.get("resource_type") != "llm_orchestration" for entry in public_items
     )
     assert item["id"] not in {
         entry.get("id") or entry.get("resource_id") for entry in public_items
@@ -224,8 +225,7 @@ def test_llm_orchestration_can_be_shared_privately_with_a_group(admin_client):
 
     public_items = admin_client.get("/api/explore").json()
     assert all(
-        entry.get("resource_type") != "llm_orchestration"
-        for entry in public_items
+        entry.get("resource_type") != "llm_orchestration" for entry in public_items
     )
 
 
@@ -249,18 +249,27 @@ def test_group_member_can_use_shared_orchestration_without_publication(
         },
     ).json()
     group = client.post("/api/groups", json={"name": "LLM routing team"}).json()
-    assert client.post(
-        f"/api/groups/{group['id']}/members",
-        json={"username": "llm_route_member", "role": "member"},
-    ).status_code == 200
-    assert client.post(
-        f"/api/sharing/llm_orchestration/{item['id']}",
-        json={"group_id": group["id"]},
-    ).status_code == 200
-    assert client.post(
-        f"/api/sharing/connection/{second['id']}",
-        json={"group_id": group["id"]},
-    ).status_code == 200
+    assert (
+        client.post(
+            f"/api/groups/{group['id']}/members",
+            json={"username": "llm_route_member", "role": "member"},
+        ).status_code
+        == 200
+    )
+    assert (
+        client.post(
+            f"/api/sharing/llm_orchestration/{item['id']}",
+            json={"group_id": group["id"]},
+        ).status_code
+        == 200
+    )
+    assert (
+        client.post(
+            f"/api/sharing/connection/{second['id']}",
+            json={"group_id": group["id"]},
+        ).status_code
+        == 200
+    )
 
     _as(client, "llm_route_member", group["id"])
     routes = client.get("/api/llm-orchestrations").json()
@@ -315,27 +324,25 @@ def test_group_member_can_use_shared_orchestration_without_publication(
     )
     assert workflow.status_code == 200
     assert (
-        workflow.json()["definition"]["llm_orchestration_connection_id"]
-        == virtual_id
+        workflow.json()["definition"]["llm_orchestration_connection_id"] == virtual_id
     )
 
-    async def inspect_run(_definition, _input, resolve):
+    async def inspect_run(_definition, _input, resolve, *, consume_quota=None):
         _, resolved = await resolve(agent.json()["id"])
         assert resolved["id"] == virtual_id
         assert set(resolved["_connections"]) == {member_first["id"], second["id"]}
         yield {"type": "workflow_done", "output": "ok"}
 
-    monkeypatch.setattr(
-        "app.api.routes.resource_management.run_workflow", inspect_run
-    )
+    monkeypatch.setattr("app.api.routes.resource_management.run_workflow", inspect_run)
     run = client.post(
         f"/api/workflows/{workflow.json()['id']}/run", json={"input": "hola"}
     )
     assert run.status_code == 200
     assert '"type": "workflow_done"' in run.text
-    assert client.post(
-        f"/api/connections/{member_first['id']}/deactivate"
-    ).status_code == 200
+    assert (
+        client.post(f"/api/connections/{member_first['id']}/deactivate").status_code
+        == 200
+    )
     available_connection_ids = {
         connection["id"] for connection in client.get("/api/connections").json()
     }

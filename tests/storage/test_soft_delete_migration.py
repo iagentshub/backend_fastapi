@@ -34,11 +34,12 @@ def test_resource_tables_have_soft_delete_columns(patch_data_dir):  # noqa: ARG0
         assert _column_types(table)["is_active"] == "INTEGER"
 
 
-def test_reusable_content_has_no_global_active_state(patch_data_dir):  # noqa: ARG001
+def test_reusable_content_has_global_active_state(patch_data_dir):  # noqa: ARG001
     for table in ("skills", "prompts", "tools"):
         cols = _columns(table)
-        assert "is_active" not in cols
-        assert "deactivated_at" not in cols
+        assert "is_active" in cols
+        assert "deactivated_at" in cols
+        assert _column_types(table)["is_active"] == "INTEGER"
 
 
 def test_resource_labels_table_exists(patch_data_dir):  # noqa: ARG001

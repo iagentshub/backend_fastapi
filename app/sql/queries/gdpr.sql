@@ -123,6 +123,10 @@ SELECT id
 FROM workflow_runs
 WHERE started_by = ?);
 
+-- name: delete_resource_executions
+DELETE FROM resource_executions
+WHERE started_by = ?;
+
 -- name: delete_workflow_runs
 DELETE FROM workflow_runs
 WHERE started_by = ?;

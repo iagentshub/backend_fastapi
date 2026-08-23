@@ -9,12 +9,11 @@ from fastapi import APIRouter, Depends, Request
 from fastapi.responses import StreamingResponse
 
 from app.api.routes.auth import GroupContext, require_group_session
+from app.api.routes.llm_limits import interactive_llm_limiter
 from app.auth.auth import get_user_role
 from app.config.data import AGENTS_DIR, MEMORY_DIR, SKILLS_DIR
-from app.config.session import RATE_CHAT_CALLS, RATE_CHAT_WINDOW, RATE_IP_FACTOR
 from app.errors import APIError
 from app.middleware.locale import get_locale
-from app.middleware.ratelimit import RateLimiter, principal_key
 from app.models.llm_orchestration import orchestration_id_from_connection
 from app.models.request_bodies import AgentChatBody
 from app.services.agent_access import agent_access
@@ -31,6 +30,7 @@ from app.storage.knowledge import KnowledgeStorage
 from app.storage.knowledge_packs import KnowledgePackStorage
 from app.storage.memory_storage import MemoryStorage
 from app.storage.prompt_storage import PromptStorage
+from app.storage.resource_executions import ResourceExecutionStorage
 from app.storage.skill_storage import SkillStorage
 from app.storage.tool_storage import ToolStorage
 from app.utils import flog
@@ -47,16 +47,7 @@ _groups = GroupStorage()
 _chat = ChatStorage()
 _knowledge = KnowledgeStorage()
 _knowledge_packs = KnowledgePackStorage()
-# Por usuario y no por IP: quien gasta la llamada al LLM es la cuenta, y detrás
-# de un NAT corporativo la IP es la de toda la oficina.
-_chat_limiter = RateLimiter(
-    calls=RATE_CHAT_CALLS,
-    window=RATE_CHAT_WINDOW,
-    key_func=principal_key,
-    shared=True,
-    name="agent-chat",
-    ip_calls=RATE_CHAT_CALLS * RATE_IP_FACTOR,
-)
+_executions = ResourceExecutionStorage()
 
 
 async def _assert_can_read_agent(
@@ -75,7 +66,7 @@ async def chat(
     request: Request,
     body: AgentChatBody,
     ctx: GroupContext = Depends(require_group_session),
-    _rl: None = Depends(_chat_limiter),
+    _rl: None = Depends(interactive_llm_limiter),
 ) -> StreamingResponse:
     user, group_id = ctx.user, ctx.group_id
     a = await _agents.get(agent_id)
@@ -112,6 +103,13 @@ async def chat(
                 group_id, user, "knowledge", kid, "view"
             ):
                 item = await _knowledge.get(kid, owner_id=None)
+        if item and not item.get("is_active", True):
+            raise APIError(
+                409,
+                "resource_inactive",
+                "El conocimiento adjunto está desactivado",
+                extra={"resource": "knowledge", "resource_id": kid},
+            )
         if item:
             attached_knowledge.append(item)
 
@@ -188,6 +186,13 @@ async def chat(
         raise APIError(
             422, "agent_no_connection", "El agente no tiene conexión configurada"
         )
+    if not conn.get("is_active", True):
+        raise APIError(
+            409,
+            "resource_inactive",
+            "La conexión del agente está desactivada",
+            extra={"resource": "connection", "resource_id": base_conn_id},
+        )
 
     orchestration = conn.get("_llm_orchestration")
     orchestration_connections = conn.get("_connections") or {}
@@ -202,10 +207,25 @@ async def chat(
                     "No tienes permiso para usar una conexión de la orquestación",
                 )
 
+    execution_lease = await _executions.acquire(
+        resource_type="agent",
+        resource_id=agent_id,
+        resource_owner=str(a.get("owner_id") or group_id),
+        started_by=user,
+    )
+    if execution_lease is None:
+        raise APIError(
+            409,
+            "resource_execution_in_progress",
+            "Este agente ya está en curso para tu usuario",
+            extra={"resource": "agent", "resource_id": agent_id},
+        )
+
     # Reservar antes de crear StreamingResponse permite responder con un 429
     # real. Si se esperase a iterar el generador, las cabeceras SSE ya serían 200.
     llm_lease = try_acquire_llm_lease()
     if llm_lease is None:
+        await _executions.safe_release(execution_lease)
         raise APIError(
             429,
             "llm_capacity_exceeded",
@@ -269,6 +289,7 @@ async def chat(
                 )
             )
             async for chunk in streamer:
+                await _executions.heartbeat(execution_lease)
                 if chunk.startswith("data: "):
                     try:
                         ev = json.loads(chunk[6:].strip())
@@ -286,6 +307,7 @@ async def chat(
             if not exhausted and not done_event:
                 stream_state.interrupt()
             llm_lease.release_if_unused()
+            await _executions.safe_release(execution_lease)
 
     async def _on_done():
         if done_event:

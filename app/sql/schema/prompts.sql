@@ -10,6 +10,8 @@ CREATE TABLE IF NOT EXISTS prompts (
     -- Trazabilidad de solo escritura. La lectura viva es
     -- resource_source_links.component_key. Ver agents.sql.
     official_component_id TEXT,
+    is_active   @BOOL@ NOT NULL DEFAULT 1,
+    deactivated_at TEXT,
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL,
     PRIMARY KEY (id, owner_id)

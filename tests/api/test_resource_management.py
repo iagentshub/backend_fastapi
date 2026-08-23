@@ -86,16 +86,14 @@ def test_workflow_global_llm_orchestration_overrides_agent_connection(
         },
     ).json()
 
-    async def inspect_run(_definition, _input, resolve):
+    async def inspect_run(_definition, _input, resolve, *, consume_quota=None):
         resolved_agent, resolved_connection = await resolve(agent["id"])
         assert resolved_agent["connection_id"] == agent_connection["id"]
         assert resolved_connection["id"] == virtual_id
         assert resolved_connection.get("_llm_orchestration")
         yield {"type": "workflow_done", "output": "ok"}
 
-    monkeypatch.setattr(
-        "app.api.routes.resource_management.run_workflow", inspect_run
-    )
+    monkeypatch.setattr("app.api.routes.resource_management.run_workflow", inspect_run)
     response = admin_client.post(
         f"/api/workflows/{workflow['id']}/run", json={"input": "hola"}
     )
@@ -119,7 +117,7 @@ def test_workflow_run_exposes_sse_heartbeat_headers(admin_client, monkeypatch):
         },
     ).json()
 
-    async def fake_run_workflow(_definition, _input, _resolve):
+    async def fake_run_workflow(_definition, _input, _resolve, *, consume_quota=None):
         yield {"type": "heartbeat"}
         yield {"type": "workflow_done", "output": "ok"}
 
@@ -143,7 +141,7 @@ def test_workflow_run_exposes_sse_heartbeat_headers(admin_client, monkeypatch):
 def test_workflow_sse_hides_unexpected_exception_details(admin_client, monkeypatch):
     workflow = _workflow_for_run(admin_client, "Flujo con fallo interno")
 
-    async def failing_workflow(_definition, _input, _resolve):
+    async def failing_workflow(_definition, _input, _resolve, *, consume_quota=None):
         if False:
             yield {}
         raise RuntimeError("secreto SQL /srv/private.db")
@@ -162,7 +160,7 @@ def test_workflow_sse_hides_unexpected_exception_details(admin_client, monkeypat
 def test_persisted_workflow_run_replays_after_start_response(admin_client, monkeypatch):
     workflow = _workflow_for_run(admin_client)
 
-    async def fake_run_workflow(_definition, _input, _resolve):
+    async def fake_run_workflow(_definition, _input, _resolve, *, consume_quota=None):
         yield {"type": "stage_started", "node_id": "one"}
         yield {"type": "stage_done", "node_id": "one", "output": "resultado"}
         yield {"type": "workflow_done", "output": "resultado"}
@@ -193,7 +191,7 @@ def test_persisted_workflow_run_is_cancelled_on_server(admin_client, monkeypatch
 
     workflow = _workflow_for_run(admin_client, "Flujo cancelable")
 
-    async def slow_run_workflow(_definition, _input, _resolve):
+    async def slow_run_workflow(_definition, _input, _resolve, *, consume_quota=None):
         yield {"type": "stage_started", "node_id": "one"}
         while True:
             await asyncio.sleep(0.02)
@@ -212,6 +210,107 @@ def test_persisted_workflow_run_is_cancelled_on_server(admin_client, monkeypatch
     assert cancelling.json()["status"] in {"cancelling", "cancelled"}
     cancelled = _wait_run(admin_client, started["id"], "cancelled")
     assert cancelled["finished_at"] is not None
+
+
+def test_same_workflow_is_one_execution_across_clients(admin_client, monkeypatch):
+    import asyncio
+
+    workflow = _workflow_for_run(admin_client, "Flujo exclusivo")
+
+    async def slow_run_workflow(_definition, _input, _resolve, *, consume_quota=None):
+        while True:
+            await asyncio.sleep(0.02)
+            yield {"type": "heartbeat"}
+
+    monkeypatch.setattr(
+        "app.services.workflow_run_executor.run_workflow", slow_run_workflow
+    )
+    first = admin_client.post(
+        f"/api/workflows/{workflow['id']}/runs", json={"input": "primera"}
+    )
+    assert first.status_code == 202
+    run_id = first.json()["id"]
+    _wait_run(admin_client, run_id, "running")
+
+    state = admin_client.get("/api/resource-executions")
+    assert state.status_code == 200
+    assert state.json()[0]["status"] == "in_progress"
+    assert workflow["id"] in state.json()[0]["resource_ids"]
+
+    duplicate = admin_client.post(
+        f"/api/workflows/{workflow['id']}/runs", json={"input": "segunda"}
+    )
+    assert duplicate.status_code == 409
+    assert duplicate.json()["detail"]["code"] == "resource_execution_in_progress"
+
+    admin_client.post(f"/api/workflow-runs/{run_id}/cancel")
+    _wait_run(admin_client, run_id, "cancelled")
+    assert admin_client.get("/api/resource-executions").json() == []
+
+
+def test_running_workflow_does_not_lock_chat_with_its_agent(
+    admin_client, monkeypatch
+):
+    import asyncio
+
+    connection = admin_client.post(
+        "/api/connections",
+        json={
+            "type": "openai",
+            "label": "Chat paralelo al workflow",
+            "api_key": "sk-test",
+            "model": "gpt-4o-mini",
+        },
+    ).json()
+    agent = admin_client.post(
+        "/api/agents",
+        json={
+            "name": "Agente compartido con workflow",
+            "connection_id": connection["id"],
+        },
+    ).json()
+    workflow = admin_client.post(
+        "/api/workflows",
+        json={
+            "name": "Workflow que usa el agente",
+            "definition": {
+                "nodes": [{"id": "one", "agent_id": agent["id"]}],
+                "edges": [],
+            },
+        },
+    ).json()
+
+    async def slow_run_workflow(_definition, _input, _resolve, *, consume_quota=None):
+        while True:
+            await asyncio.sleep(0.02)
+            yield {"type": "heartbeat"}
+
+    async def fake_stream_chat(*args, **kwargs):
+        yield (
+            'data: {"type":"done","reply":"ok",'
+            '"tokens":{"in":0,"out":0}}\n\n'
+        )
+
+    monkeypatch.setattr(
+        "app.services.workflow_run_executor.run_workflow", slow_run_workflow
+    )
+    monkeypatch.setattr("app.api.routes.agent_chat.stream_chat", fake_stream_chat)
+    started = admin_client.post(
+        f"/api/workflows/{workflow['id']}/runs", json={"input": "prueba"}
+    )
+    assert started.status_code == 202
+    run_id = started.json()["id"]
+    _wait_run(admin_client, run_id, "running")
+
+    chat = admin_client.post(
+        f"/api/agents/{agent['id']}/chat",
+        json={"messages": [{"role": "user", "content": "hola"}]},
+    )
+    assert chat.status_code == 200
+    assert '"type":"done"' in chat.text
+
+    admin_client.post(f"/api/workflow-runs/{run_id}/cancel")
+    _wait_run(admin_client, run_id, "cancelled")
 
 
 def test_missing_workflow_run_endpoints_return_structured_404(admin_client):

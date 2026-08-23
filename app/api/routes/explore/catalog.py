@@ -4,7 +4,6 @@
 ya enlacé»: sin ese filtro el catálogo repetía al usuario lo que ya era suyo.
 """
 
-
 from __future__ import annotations
 
 import json
@@ -26,7 +25,7 @@ from app.config.content_languages import (
 )
 from app.errors import APIError
 from app.pagination.http import LINKED_HEADER, TOTAL_HEADER
-from app.services.social_catalog import _PUBLIC_VAL
+from app.services.social_catalog import _PUBLIC_VAL, PUBLICLY_AVAILABLE_SQL
 from app.sql import sql
 from app.storage.agent_storage import AgentStorage
 from app.storage.db import open_db
@@ -75,6 +74,7 @@ _LINKED_BY_REQUESTER = (
     "AND mine.resource_type = resource_social.resource_type)"
 )
 
+
 @router.get("/api/explore")
 async def explore(
     type: Optional[str] = None,
@@ -103,6 +103,7 @@ async def explore(
         conditions: List[str] = [
             "is_public = ?",
             "(owner != ? OR labels LIKE '%\"official\"%')",
+            PUBLICLY_AVAILABLE_SQL,
         ]
         params: List[Any] = [_PUBLIC_VAL, username]
         if not include_official:
@@ -246,6 +247,7 @@ async def explore(
     await _add_owner_usernames(rows)
     return rows
 
+
 @router.get("/api/explore/{resource_type}/{resource_id}/preview")
 async def explore_preview(
     resource_type: str,
@@ -283,11 +285,18 @@ async def explore_preview(
 
     if resource_type == "agent":
         agent = await _agents.get(resource_id)
+        if not agent or not agent.get("is_active", True):
+            raise APIError(
+                404,
+                "not_found",
+                "Recurso no encontrado o no es público",
+                extra={"resource": "agent"},
+            )
         if agent:
             skill_names = []
             for sid in agent.get("skills", []):
                 sk = await _skills.get_any(sid)
-                if not sk:
+                if not sk or not sk.get("is_active", True):
                     continue
                 # No revelar nombres de skills privadas ajenas en la vista
                 # previa pública, aunque el agente que las usa sí sea público.
@@ -303,7 +312,7 @@ async def explore_preview(
             knowledge_titles = []
             for kid in agent.get("knowledge", []):
                 item = await _knowledge.get(kid)
-                if not item:
+                if not item or not item.get("is_active", True):
                     continue
                 if not await _shares.is_accessible(
                     _groups,
@@ -317,7 +326,7 @@ async def explore_preview(
             prompt_names = []
             for pid in agent.get("prompts", []):
                 pr = await _prompts.get_any(pid)
-                if not pr:
+                if not pr or not pr.get("is_active", True):
                     continue
                 # No revelar nombres de prompts privados ajenos en la vista
                 # previa pública, aunque el agente que los usa sí sea público.
@@ -333,7 +342,7 @@ async def explore_preview(
             tool_names = []
             for tid in agent.get("tools", []):
                 tl = await _tools.get_any(tid)
-                if not tl:
+                if not tl or not tl.get("is_active", True):
                     continue
                 # No revelar nombres de tools privadas ajenas en la vista
                 # previa pública, aunque el agente que las usa sí sea público.
@@ -357,42 +366,72 @@ async def explore_preview(
 
     elif resource_type == "skill":
         sk = await _skills.get_any(resource_id)
-        if sk:
-            base["body"] = (sk.get("body") or "")[:3000]
-            base["parameters"] = sk.get("parameters", [])
-            base["icon"] = sk.get("icon", "")
+        if not sk or not sk.get("is_active", True):
+            raise APIError(
+                404,
+                "not_found",
+                "Recurso no encontrado o no es público",
+                extra={"resource": "skill"},
+            )
+        base["body"] = (sk.get("body") or "")[:3000]
+        base["parameters"] = sk.get("parameters", [])
+        base["icon"] = sk.get("icon", "")
 
     elif resource_type == "prompt":
         pr = await _prompts.get_any(resource_id)
-        if pr:
-            base["content"] = (pr.get("content") or "")[:3000]
-            base["alias"] = pr.get("alias", "")
-            base["icon"] = pr.get("icon", "")
+        if not pr or not pr.get("is_active", True):
+            raise APIError(
+                404,
+                "not_found",
+                "Recurso no encontrado o no es público",
+                extra={"resource": "prompt"},
+            )
+        base["content"] = (pr.get("content") or "")[:3000]
+        base["alias"] = pr.get("alias", "")
+        base["icon"] = pr.get("icon", "")
 
     elif resource_type == "tool":
         tl = await _tools.get_any(resource_id)
-        if tl:
-            base["language"] = tl.get("language", "")
-            base["binary_filename"] = tl.get("binary_filename")
-            base["binary_size"] = tl.get("binary_size")
-            base["icon"] = tl.get("icon", "")
-            if tl.get("language") != "cpp":
-                base["content"] = (tl.get("content") or "")[:3000]
+        if not tl or not tl.get("is_active", True):
+            raise APIError(
+                404,
+                "not_found",
+                "Recurso no encontrado o no es público",
+                extra={"resource": "tool"},
+            )
+        base["language"] = tl.get("language", "")
+        base["binary_filename"] = tl.get("binary_filename")
+        base["binary_size"] = tl.get("binary_size")
+        base["icon"] = tl.get("icon", "")
+        if tl.get("language") != "cpp":
+            base["content"] = (tl.get("content") or "")[:3000]
 
     elif resource_type == "knowledge":
         item = await _knowledge.get(resource_id)
-        if item:
-            base["content"] = (item.get("content") or "")[:2000]
-            base["type"] = item.get("type", "")
-            base["source"] = item.get("source", "")
-            base["char_count"] = item.get("char_count", 0)
+        if not item or not item.get("is_active", True):
+            raise APIError(
+                404,
+                "not_found",
+                "Recurso no encontrado o no es público",
+                extra={"resource": "knowledge"},
+            )
+        base["content"] = (item.get("content") or "")[:2000]
+        base["type"] = item.get("type", "")
+        base["source"] = item.get("source", "")
+        base["char_count"] = item.get("char_count", 0)
 
     elif resource_type == "knowledge_pack":
         pack = await _knowledge_packs.get(resource_id)
-        if pack:
-            base["file_count"] = pack.get("file_count", 0)
-            base["size_bytes"] = pack.get("size_bytes", 0)
-            base["items"] = pack.get("items", [])
+        if not pack or not pack.get("is_active", True):
+            raise APIError(
+                404,
+                "not_found",
+                "Recurso no encontrado o no es público",
+                extra={"resource": "knowledge_pack"},
+            )
+        base["file_count"] = pack.get("file_count", 0)
+        base["size_bytes"] = pack.get("size_bytes", 0)
+        base["items"] = pack.get("items", [])
 
     elif resource_type == "workflow":
         workflow = await _workflows.get_any(resource_id)
@@ -411,7 +450,9 @@ async def explore_preview(
 
     return base
 
+
 _GRAPH_TYPES = {"agent", "workflow", "knowledge_pack"}
+
 
 def _validar_tipo_de_grafo(resource_type: str) -> None:
     if resource_type not in _GRAPH_TYPES:
@@ -421,6 +462,7 @@ def _validar_tipo_de_grafo(resource_type: str) -> None:
             "Este tipo de recurso no dispone de grafo público",
             extra={"field": "resource_type"},
         )
+
 
 @router.get("/api/explore/{resource_type}/{resource_id}/relations")
 async def explore_resource_relations(

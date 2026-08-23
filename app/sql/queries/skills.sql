@@ -20,25 +20,25 @@ UPDATE
 SET name=excluded.name, category=excluded.category, scope=excluded.scope, data=excluded.data, content=excluded.content, updated_at=excluded.updated_at;
 
 -- name: list_public
-SELECT id, owner_id, name, category, scope, data, content, created_at, updated_at
+SELECT id, owner_id, name, category, scope, data, content, is_active, deactivated_at, created_at, updated_at
 FROM skills
 WHERE scope='public'
 ORDER BY created_at ASC;
 
 -- name: list_private_by_owner
-SELECT id, owner_id, name, category, scope, data, content, created_at, updated_at
+SELECT id, owner_id, name, category, scope, data, content, is_active, deactivated_at, created_at, updated_at
 FROM skills
 WHERE scope='private' AND owner_id=?
 ORDER BY created_at ASC;
 
 -- name: list_private
-SELECT id, owner_id, name, category, scope, data, content, created_at, updated_at
+SELECT id, owner_id, name, category, scope, data, content, is_active, deactivated_at, created_at, updated_at
 FROM skills
 WHERE scope='private'
 ORDER BY created_at ASC;
 
 -- name: list_all
-SELECT id, owner_id, name, category, scope, data, content, created_at, updated_at
+SELECT id, owner_id, name, category, scope, data, content, is_active, deactivated_at, created_at, updated_at
 FROM skills
 ORDER BY created_at ASC;
 

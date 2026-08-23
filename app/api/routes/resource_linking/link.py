@@ -118,6 +118,13 @@ async def link_agent(
         raise APIError(
             404, "not_found", "Agente no encontrado", extra={"resource": "agent"}
         )
+    if not source.get("is_active", True):
+        raise APIError(
+            409,
+            "resource_inactive",
+            "Este agente está desactivado",
+            extra={"resource": "agent", "resource_id": source_id},
+        )
 
     source_owner = source.get("owner_id") or ""
     if scope != "public":

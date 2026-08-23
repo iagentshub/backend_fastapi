@@ -23,7 +23,7 @@ def _agent(agent_id):
 async def _events(definition, monkeypatch, replies):
     pending = {key: list(values) for key, values in replies.items()}
 
-    async def fake_stream_chat(agent, _connection, _messages, _history):
+    async def fake_stream_chat(agent, _connection, _messages, _history, **_kwargs):
         reply = pending[agent.id].pop(0)
         yield f"data: {json.dumps({'type': 'done', 'reply': reply})}\n\n"
 
@@ -48,9 +48,7 @@ def test_accepts_legacy_linear_workflow():
             "edges": [{"source": "a", "target": "b"}],
         }
     )
-    assert result["edges"] == [
-        {"source": "a", "target": "b", "type": "sequence"}
-    ]
+    assert result["edges"] == [{"source": "a", "target": "b", "type": "sequence"}]
     assert [node["kind"] for node in result["nodes"]] == ["agent", "agent"]
 
 
@@ -150,7 +148,7 @@ def test_accepts_parallel_branches_with_single_join():
 async def test_parallel_branches_are_merged_for_the_join(monkeypatch):
     received = {}
 
-    async def fake_stream_chat(agent, _connection, messages, _history):
+    async def fake_stream_chat(agent, _connection, messages, _history, **_kwargs):
         received[agent.id] = messages[0]["content"]
         yield f"data: {json.dumps({'type': 'done', 'reply': f'output-{agent.id}'})}\n\n"
 
@@ -169,9 +167,7 @@ async def test_parallel_branches_are_merged_for_the_join(monkeypatch):
         }
     )
     monkeypatch.setattr("app.services.workflow_runner.stream_chat", fake_stream_chat)
-    events = [
-        event async for event in run_workflow(definition, "entrada", resolve)
-    ]
+    events = [event async for event in run_workflow(definition, "entrada", resolve)]
 
     started = [event["node_id"] for event in events if event["type"] == "stage_started"]
     assert started == ["a", "b", "c", "d"]
@@ -183,11 +179,46 @@ async def test_parallel_branches_are_merged_for_the_join(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_workflow_charges_nodes_that_are_really_executed(monkeypatch):
+    costs = []
+
+    async def consume(cost):
+        costs.append(cost)
+
+    async def fake_stream_chat(agent, _connection, _messages, _history, **_kwargs):
+        yield f"data: {json.dumps({'type': 'done', 'reply': agent.id})}\n\n"
+
+    async def resolve(agent_id):
+        return _agent(agent_id), {"id": f"connection-{agent_id}"}
+
+    definition = validate_workflow(
+        {
+            "nodes": [_node("a"), _node("b"), _node("c"), _node("d")],
+            "edges": [
+                {"source": "a", "target": "b"},
+                {"source": "a", "target": "c"},
+                {"source": "b", "target": "d"},
+                {"source": "c", "target": "d"},
+            ],
+        }
+    )
+    monkeypatch.setattr("app.services.workflow_runner.stream_chat", fake_stream_chat)
+    events = [
+        event
+        async for event in run_workflow(
+            definition, "entrada", resolve, consume_quota=consume
+        )
+    ]
+    assert events[-1]["type"] == "workflow_done"
+    assert costs == [1, 2, 1]
+
+
+@pytest.mark.asyncio
 async def test_independent_branches_execute_concurrently(monkeypatch):
     active = 0
     maximum_active = 0
 
-    async def fake_stream_chat(agent, _connection, _messages, _history):
+    async def fake_stream_chat(agent, _connection, _messages, _history, **_kwargs):
         nonlocal active, maximum_active
         active += 1
         maximum_active = max(maximum_active, active)
@@ -240,7 +271,7 @@ async def test_independent_branches_execute_concurrently(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_long_stage_emits_heartbeats(monkeypatch):
-    async def fake_stream_chat(agent, _connection, _messages, _history):
+    async def fake_stream_chat(agent, _connection, _messages, _history, **_kwargs):
         await asyncio.sleep(0.03)
         yield f"data: {json.dumps({'type': 'done', 'reply': f'output-{agent.id}'})}\n\n"
 
@@ -265,7 +296,7 @@ async def test_long_stage_emits_heartbeats(monkeypatch):
 async def test_empty_agent_reply_is_retried(monkeypatch):
     attempts = 0
 
-    async def fake_stream_chat(agent, _connection, _messages, _history):
+    async def fake_stream_chat(agent, _connection, _messages, _history, **_kwargs):
         nonlocal attempts
         attempts += 1
         reply = "" if attempts == 1 else f"output-{agent.id}"
@@ -315,7 +346,9 @@ async def test_llm_orchestration_workflow_accounts_router_and_executor(monkeypat
 
 
 @pytest.mark.asyncio
-async def test_gate_can_repeat_one_branch_without_rerunning_approved_sibling(monkeypatch):
+async def test_gate_can_repeat_one_branch_without_rerunning_approved_sibling(
+    monkeypatch,
+):
     events = await _events(
         {
             "nodes": [
@@ -355,13 +388,9 @@ async def test_gate_can_repeat_one_branch_without_rerunning_approved_sibling(mon
             ],
         },
     )
-    completed = [
-        event["node_id"] for event in events if event["type"] == "stage_done"
-    ]
+    completed = [event["node_id"] for event in events if event["type"] == "stage_done"]
     assert completed == ["start", "developer", "security", "developer"]
-    assert events[-1]["output"].startswith(
-        "Resultados paralelos que debes consolidar"
-    )
+    assert events[-1]["output"].startswith("Resultados paralelos que debes consolidar")
 
 
 def test_rejects_duplicate_edges():
@@ -596,7 +625,9 @@ async def test_evaluator_rejects_then_approves(monkeypatch):
             ],
         },
     )
-    assert [event["iteration"] for event in events if event["type"] == "evaluation_done"] == [
+    assert [
+        event["iteration"] for event in events if event["type"] == "evaluation_done"
+    ] == [
         1,
         2,
     ]

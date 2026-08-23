@@ -14,15 +14,10 @@ Ver docs/adr/011-un-solo-limite-de-tamano-y-lo-pone-el-admin.md
 
 from __future__ import annotations
 
-import json
-
 from fastapi.responses import JSONResponse
 from starlette.types import ASGIApp, Receive, Scope, Send
 
-# Los módulos enteros, no sus símbolos: SETTINGS_FILE y BODY_MAX_BYTES se
-# resuelven al importar y los tests (y el panel de admin, que reescribe
-# settings.json en caliente) necesitan ver el valor de ahora.
-import app.config.data as _data
+# El módulo entero, no su símbolo: los tests reescriben BODY_MAX_BYTES.
 import app.config.session as _session
 from app.utils import flog
 
@@ -30,45 +25,27 @@ from app.utils import flog
 # pasar cualquier cuerpo sin contar un solo byte.
 UNLIMITED = 0
 
-# Mismo trato que el caché de billing en licenses.py: se invalida a mano desde
-# _write_platform_cfg, no por mtime. Aquí un acierto falso solo aplica un límite
-# viejo durante lo que tarde el siguiente guardado, pero leer y parsear
-# settings.json en CADA petición —síncrono, dentro del event loop— es
-# exactamente lo que aquel caché vino a quitar.
-_cache: int | None = None
-
-
 def invalidate_body_limit_cache() -> None:
-    """A llamar tras escribir settings.json. Ver _write_platform_cfg."""
-    global _cache
-    _cache = None
+    """Compatibilidad: el caché es ahora el de platform_settings."""
+    from app.services.platform_settings import invalidate_platform_cfg_cache
+
+    invalidate_platform_cfg_cache()
 
 
 def configured_max_bytes() -> int:
     """Límite efectivo en bytes; `UNLIMITED` (0) si no hay ninguno."""
-    global _cache
-    if _cache is None:
-        try:
-            data = json.loads(_data.SETTINGS_FILE.read_text(encoding="utf-8"))
-            raw = data.get("max_request_bytes", _session.BODY_MAX_BYTES)
-        except FileNotFoundError:
-            # Instalación sin settings.json: manda el entorno. No se cachea,
-            # el fichero puede aparecer después.
-            return max(_session.BODY_MAX_BYTES, UNLIMITED)
-        except (OSError, ValueError, AttributeError) as exc:
-            # Un settings.json ilegible no puede dejar la puerta abierta en
-            # silencio: se cae al valor del entorno y queda registrado.
-            flog.error(f"[body_limit] Settings ilegibles, se usa el entorno: {exc}")
-            return max(_session.BODY_MAX_BYTES, UNLIMITED)
-        try:
-            _cache = max(int(raw), UNLIMITED)
-        except (TypeError, ValueError):
-            flog.error(
-                f"[body_limit] max_request_bytes no es un número ({raw!r}), "
-                "se usa el valor del entorno"
-            )
-            _cache = max(_session.BODY_MAX_BYTES, UNLIMITED)
-    return _cache
+    from app.services.platform_settings import load_settings_raw
+
+    data = load_settings_raw()
+    raw = data.get("max_request_bytes", _session.BODY_MAX_BYTES)
+    try:
+        return max(int(raw), UNLIMITED)
+    except (TypeError, ValueError):
+        flog.error(
+            f"[body_limit] max_request_bytes no es un número ({raw!r}), "
+            "se usa el valor del entorno"
+        )
+        return max(_session.BODY_MAX_BYTES, UNLIMITED)
 
 
 class _RequestBodyTooLarge(Exception):

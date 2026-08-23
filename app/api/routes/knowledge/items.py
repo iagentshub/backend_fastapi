@@ -321,3 +321,37 @@ async def delete_item(
         is_public=False,
     )
     return {"ok": True}
+
+
+async def _set_item_active(
+    item_id: str, active: bool, ctx: GroupContext
+) -> Dict[str, Any]:
+    item = await _storage.get(item_id)
+    if item is None:
+        raise APIError(
+            404, "not_found", "Item no encontrado", extra={"resource": "item"}
+        )
+    assert_resource_writable(item, "knowledge")
+    role = await get_user_role(ctx.user)
+    if role != "admin" and item.get("owner_id") not in {ctx.user, ctx.group_id}:
+        raise APIError(403, "forbidden", "Sin permisos sobre este conocimiento")
+    owner = None if role == "admin" else str(item["owner_id"])
+    if not await _storage.set_active(item_id, owner, active):
+        raise APIError(
+            404, "not_found", "Item no encontrado", extra={"resource": "item"}
+        )
+    return await _storage.get(item_id) or {"id": item_id, "is_active": active}
+
+
+@router.post("/{item_id}/activate")
+async def activate_item(
+    item_id: str, ctx: GroupContext = Depends(require_group_session)
+) -> Dict[str, Any]:
+    return await _set_item_active(item_id, True, ctx)
+
+
+@router.post("/{item_id}/deactivate")
+async def deactivate_item(
+    item_id: str, ctx: GroupContext = Depends(require_group_session)
+) -> Dict[str, Any]:
+    return await _set_item_active(item_id, False, ctx)

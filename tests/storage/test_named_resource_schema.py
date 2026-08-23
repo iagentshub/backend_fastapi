@@ -68,8 +68,7 @@ async def test_all_managed_resources_expose_common_contract(
 
     for resource in resources:
         assert _COMMON_RESOURCE_KEYS <= resource.keys()
-    assert "is_active" not in resources[1]
-    for resource in (resources[0], resources[2], resources[3], resources[4]):
+    for resource in resources:
         assert resource["is_active"] is True
 
 

@@ -136,6 +136,32 @@ async def _remove_content_activation_pg(conn: Any) -> None:
         )
 
 
+async def _content_activation_sqlite(conn: Any) -> None:
+    """Restaura el interruptor global de contenido reutilizable."""
+    for table in ("skills", "prompts", "tools"):
+        columns = {
+            str(row[1])
+            for row in await conn.execute_fetchall(f"PRAGMA table_info({table})")
+        }
+        if "is_active" not in columns:
+            await conn.execute(
+                f"ALTER TABLE {table} ADD COLUMN is_active INTEGER NOT NULL DEFAULT 1"
+            )
+        if "deactivated_at" not in columns:
+            await conn.execute(f"ALTER TABLE {table} ADD COLUMN deactivated_at TEXT")
+
+
+async def _content_activation_pg(conn: Any) -> None:
+    for table in ("skills", "prompts", "tools"):
+        await conn.execute(
+            f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS "
+            "is_active SMALLINT NOT NULL DEFAULT 1"
+        )
+        await conn.execute(
+            f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS deactivated_at TEXT"
+        )
+
+
 async def _resource_origin_labels_sqlite(conn: Any) -> None:
     for table in ("agents", "skills", "prompts", "tools"):
         rows = await conn.execute_fetchall(f"SELECT id, owner_id, data FROM {table}")
@@ -456,10 +482,7 @@ async def _gdpr_legacy_owner_orphans_sqlite(conn: Any) -> None:
         return
 
     reservados = ",".join("?" for _ in _DUEÑOS_SIN_CUENTA)
-    condicion = (
-        "NOT IN (SELECT id FROM users) "
-        f"AND {{columna}} NOT IN ({reservados})"
-    )
+    condicion = f"NOT IN (SELECT id FROM users) AND {{columna}} NOT IN ({reservados})"
 
     # Dependencias antes que padres, también cuando foreign_keys está apagado.
     await conn.execute(
@@ -489,8 +512,7 @@ async def _gdpr_legacy_owner_orphans_sqlite(conn: Any) -> None:
         ("subscriptions", "username"),
     ):
         await conn.execute(
-            f"DELETE FROM {tabla} WHERE {columna} "
-            + condicion.format(columna=columna),
+            f"DELETE FROM {tabla} WHERE {columna} " + condicion.format(columna=columna),
             _DUEÑOS_SIN_CUENTA,
         )
 
@@ -500,9 +522,7 @@ async def _gdpr_legacy_owner_orphans_pg(conn: Any) -> None:
     if not await conn.fetchval("SELECT COUNT(*) FROM users"):
         return
 
-    condicion = (
-        "NOT IN (SELECT id FROM users) AND {columna} <> ALL($1::text[])"
-    )
+    condicion = "NOT IN (SELECT id FROM users) AND {columna} <> ALL($1::text[])"
     reservados = list(_DUEÑOS_SIN_CUENTA)
     await conn.execute(
         "DELETE FROM workflow_run_events WHERE run_id IN ("
@@ -531,8 +551,7 @@ async def _gdpr_legacy_owner_orphans_pg(conn: Any) -> None:
         ("subscriptions", "username"),
     ):
         await conn.execute(
-            f"DELETE FROM {tabla} WHERE {columna} "
-            + condicion.format(columna=columna),
+            f"DELETE FROM {tabla} WHERE {columna} " + condicion.format(columna=columna),
             reservados,
         )
 

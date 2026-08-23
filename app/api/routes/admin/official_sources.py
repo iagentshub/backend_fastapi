@@ -11,12 +11,13 @@ import asyncio
 import json
 from typing import Any, AsyncIterator, Dict, List, Literal, Optional
 
-from fastapi import Depends
+from fastapi import Depends, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.api.routes.admin._router import admin_router
 from app.api.routes.auth import require_admin
+from app.api.routes.llm_limits import official_llm_limiter
 from app.errors import APIError
 from app.models.official_source import INTERNAL_SOURCE_ID, MATERIALIZABLE_TYPES
 from app.services.official_source_drafts import OfficialImportDraftService
@@ -198,8 +199,12 @@ async def admin_import_official_source(
 
 @admin_router.post("/official-sources/inspect")
 async def admin_inspect_official_source(
-    body: ImportSourceBody, admin: str = Depends(require_admin)
+    request: Request,
+    body: ImportSourceBody,
+    admin: str = Depends(require_admin),
 ) -> Dict[str, Any]:
+    if body.import_mode == "llm":
+        await official_llm_limiter(request)
     try:
         draft = await _drafts.inspect(
             body.repository_url,
@@ -218,9 +223,13 @@ async def admin_inspect_official_source(
 
 @admin_router.post("/official-sources/inspect-stream")
 async def admin_inspect_official_source_stream(
-    body: ImportSourceBody, admin: str = Depends(require_admin)
+    request: Request,
+    body: ImportSourceBody,
+    admin: str = Depends(require_admin),
 ) -> StreamingResponse:
     """Inspección larga con progreso SSE y latidos para evitar timeouts."""
+    if body.import_mode == "llm":
+        await official_llm_limiter(request)
 
     async def generate() -> AsyncIterator[str]:
         queue: asyncio.Queue[Dict[str, Any]] = asyncio.Queue()
@@ -250,8 +259,7 @@ async def admin_inspect_official_source_stream(
                 # str(exc)), pero el motivo real tiene que quedar en el log o
                 # "no se pudo completar" no es diagnosticable.
                 flog.error(
-                    f"[official-sources] Análisis fallido: "
-                    f"{type(exc).__name__}: {exc}"
+                    f"[official-sources] Análisis fallido: {type(exc).__name__}: {exc}"
                 )
                 await queue.put(
                     {
@@ -319,11 +327,15 @@ async def admin_update_official_source(
 @admin_router.post("/official-sources/{source_id}/sync")
 async def admin_sync_official_source(
     source_id: str,
+    request: Request,
     body: SyncSourceBody | None = None,
     admin: str = Depends(require_admin),
 ) -> Dict[str, Any]:
-    if not await _storage.get_source(source_id):
+    source = await _storage.get_source(source_id)
+    if not source:
         raise _not_found()
+    if source.get("import_mode") == "llm":
+        await official_llm_limiter(request)
     try:
         draft = await _drafts.inspect_source(source_id, admin)
         if body is None or body.component_ids is None:

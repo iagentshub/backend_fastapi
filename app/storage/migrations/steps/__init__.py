@@ -48,6 +48,8 @@ from app.storage.migrations.steps.misc import (
     _chat_message_interrupted_sqlite,
     _connection_provider_accounts_pg,
     _connection_provider_accounts_sqlite,
+    _content_activation_pg,
+    _content_activation_sqlite,
     _gdpr_legacy_owner_orphans_pg,
     _gdpr_legacy_owner_orphans_sqlite,
     _gdpr_orphan_resources_pg,
@@ -85,6 +87,7 @@ from app.storage.migrations.steps.shared import (
     _app_logs_index_diet,
     _drop_redundant_indexes,
     _pagination_indexes,
+    _resource_execution_leases,
     _resource_social_origin_index,
     _resource_social_page_index,
 )
@@ -124,6 +127,8 @@ MIGRATION_PAIRS: tuple[MigrationPair, ...] = (
     MigrationPair(31, "remove_content_activation", _remove_content_activation_sqlite, _remove_content_activation_pg),
     MigrationPair(32, "app_logs_structured_audit", _app_logs_structured_audit_sqlite, _app_logs_structured_audit_pg),
     MigrationPair(33, "gdpr_legacy_owner_orphans", _gdpr_legacy_owner_orphans_sqlite, _gdpr_legacy_owner_orphans_pg),
+    MigrationPair(34, "resource_execution_leases", _resource_execution_leases, _resource_execution_leases),
+    MigrationPair(35, "content_activation", _content_activation_sqlite, _content_activation_pg),
 )
 
 __all__ = ["MIGRATION_PAIRS"]

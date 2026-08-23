@@ -8,12 +8,17 @@ from typing import Any
 
 from app.config.maintenance import WORKFLOW_PURGE_SECONDS, WORKFLOW_TICK_SECONDS
 from app.services.workflow_errors import workflow_error_event
-from app.services.workflow_runner import run_workflow
+from app.services.workflow_runner import QuotaConsumer, run_workflow
+from app.storage.resource_executions import (
+    ResourceExecutionLease,
+    ResourceExecutionStorage,
+)
 from app.storage.workflow_runs import WorkflowRunStorage
 from app.utils import flog
 
 AgentResolver = Callable[[str], Any]
 _storage = WorkflowRunStorage()
+_executions = ResourceExecutionStorage()
 _tasks: set[asyncio.Task[None]] = set()
 
 
@@ -22,9 +27,18 @@ def start_workflow_run(
     definition: dict[str, Any],
     input_text: str,
     resolve: AgentResolver,
+    consume_quota: QuotaConsumer,
+    execution_lease: ResourceExecutionLease,
 ) -> None:
     task = asyncio.create_task(
-        _drive(run_id, definition, input_text, resolve),
+        _drive(
+            run_id,
+            definition,
+            input_text,
+            resolve,
+            consume_quota,
+            execution_lease,
+        ),
         name=f"workflow-run-{run_id}",
     )
     _tasks.add(task)
@@ -36,12 +50,18 @@ async def _consume(
     definition: dict[str, Any],
     input_text: str,
     resolve: AgentResolver,
+    consume_quota: QuotaConsumer,
+    execution_lease: ResourceExecutionLease,
 ) -> str | None:
     final_output: str | None = None
-    async for event in run_workflow(definition, input_text, resolve):
+    async for event in run_workflow(
+        definition, input_text, resolve, consume_quota=consume_quota
+    ):
         if event.get("type") == "heartbeat":
             await _storage.touch(run_id)
+            await _executions.heartbeat(execution_lease)
             continue
+        await _executions.heartbeat(execution_lease)
         await _storage.append_event(run_id, event)
         if event.get("type") == "workflow_done":
             final_output = event.get("output")
@@ -53,6 +73,8 @@ async def _drive(
     definition: dict[str, Any],
     input_text: str,
     resolve: AgentResolver,
+    consume_quota: QuotaConsumer,
+    execution_lease: ResourceExecutionLease,
 ) -> None:
     execution: asyncio.Task[str | None] | None = None
     try:
@@ -64,7 +86,14 @@ async def _drive(
             return
 
         execution = asyncio.create_task(
-            _consume(run_id, definition, input_text, resolve),
+            _consume(
+                run_id,
+                definition,
+                input_text,
+                resolve,
+                consume_quota,
+                execution_lease,
+            ),
             name=f"workflow-run-body-{run_id}",
         )
         while not execution.done():
@@ -108,6 +137,8 @@ async def _drive(
             flog.error(
                 f"[workflow-run] No se pudo persistir el fallo de {run_id}: {persist_exc}"
             )
+    finally:
+        await _executions.safe_release(execution_lease)
 
 
 async def stop_workflow_runs() -> None:
@@ -133,3 +164,4 @@ async def workflow_run_maintenance_loop() -> None:
         if purge_tick >= cada:
             purge_tick = 0
             await _storage.purge()
+            await _executions.purge_stale()

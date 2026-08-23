@@ -41,7 +41,7 @@ async def _publicar(marca: str, resource_id: str, owner: str) -> None:
         await conn.execute(
             "INSERT INTO resource_social (resource_type,resource_id,owner,name,"
             "description,is_public,category,stars_count,updated_at) "
-            "VALUES ('agent',?,?,?,'',1,'Coding',0,?)",
+            "VALUES ('skill',?,?,?,'',1,'Coding',0,?)",
             (resource_id, owner, f"{marca} {resource_id}", _INSTANTE),
         )
         await conn.commit()
@@ -54,7 +54,7 @@ async def _enlazar(marca: str, origen_id: str, origen_owner: str, mio: str) -> N
             "INSERT INTO resource_social (resource_type,resource_id,owner,name,"
             "description,is_public,category,stars_count,linked_to_user,"
             "linked_to_id,updated_at) "
-            "VALUES ('agent',?,?,?,'',0,'Coding',0,?,?,?)",
+            "VALUES ('skill',?,?,?,'',0,'Coding',0,?,?,?)",
             (
                 f"copia-{origen_id}",
                 mio,
@@ -73,7 +73,7 @@ def _ids(respuesta) -> set[str]:
 
 
 def _preparar(client) -> tuple[str, str, str]:
-    """Publica dos agentes ajenos y enlaza uno. Devuelve (marca, nuevo, tenido)."""
+    """Publica dos recursos ajenos y enlaza uno. Devuelve marca, nuevo y tenido."""
     usuario = f"relacion{uuid4().hex[:6]}"
     _registrar(client, usuario)
     marca = f"rel{uuid4().hex[:6]}"

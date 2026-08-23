@@ -34,6 +34,7 @@ from app.api.routes import (
     logs,
     memory,
     prompts,
+    resource_executions,
     resource_linking,
     resource_management,
     settings,
@@ -316,6 +317,7 @@ def create_app() -> FastAPI:
     app.include_router(agent_builder.router)
     app.include_router(skill_builder.router)
     app.include_router(resource_management.router)
+    app.include_router(resource_executions.router)
     app.include_router(social.router)
     app.include_router(explore.router)
     app.include_router(resource_linking.router)

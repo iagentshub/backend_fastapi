@@ -16,7 +16,7 @@ from app.api.routes.explore._shared import (
 from app.api.routes.social._router import _social_limiter
 from app.errors import APIError
 from app.pagination.http import TOTAL_HEADER
-from app.services.social_catalog import _PUBLIC_VAL
+from app.services.social_catalog import _PUBLIC_VAL, PUBLICLY_AVAILABLE_SQL
 from app.sql import sql
 from app.storage.db import IS_PG, open_db
 
@@ -96,7 +96,11 @@ async def user_resources(
         # Las publicaciones nuevas usan el id interno; las creadas antes de la
         # migracion de identidad conservan el username en owner. El perfil
         # publico debe mostrar ambas sin exigir republicar los recursos.
-        conditions: List[str] = ["is_public = ?", "owner IN (?, ?)"]
+        conditions: List[str] = [
+            "is_public = ?",
+            "owner IN (?, ?)",
+            PUBLICLY_AVAILABLE_SQL,
+        ]
         params: List[Any] = [_PUBLIC_VAL, target_id, target_username]
         if type and type != "all":
             conditions.append("resource_type = ?")
@@ -220,6 +224,7 @@ async def get_feed(
         conditions: List[str] = [
             "owner IN (SELECT following FROM user_follows WHERE follower = ?)",
             "is_public = ?",
+            PUBLICLY_AVAILABLE_SQL,
         ]
         params: List[Any] = [username, _PUBLIC_VAL]
         if type and type != "all":

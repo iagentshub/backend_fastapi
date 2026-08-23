@@ -37,8 +37,8 @@ async def _sembrar_catalogo_empatado(marca: str, cuantos: int) -> None:
             await conn.execute(
                 "INSERT INTO resource_social (resource_type,resource_id,owner,name,"
                 "description,is_public,category,stars_count,updated_at) "
-                "VALUES ('agent',?,'catalog-owner',?,'',1,'Coding',7,?)",
-                (f"{marca}-{i:03d}", f"{marca} agente {i}", _MISMO_INSTANTE),
+                "VALUES ('skill',?,'catalog-owner',?,'',1,'Coding',7,?)",
+                (f"{marca}-{i:03d}", f"{marca} skill {i}", _MISMO_INSTANTE),
             )
         await conn.commit()
 
@@ -120,7 +120,7 @@ def test_el_feed_pagina_sin_repetir_filas_empatadas(client):
                 await conn.execute(
                     "INSERT INTO resource_social (resource_type,resource_id,owner,"
                     "name,description,is_public,category,stars_count,updated_at) "
-                    "VALUES ('agent',?,?,?,'',1,'Coding',0,?)",
+                    "VALUES ('skill',?,?,?,'',1,'Coding',0,?)",
                     (f"{marca}-{i:03d}", autor, f"{marca} {i}", _MISMO_INSTANTE),
                 )
             await conn.commit()

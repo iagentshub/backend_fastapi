@@ -1,18 +1,19 @@
 """Configuración de sesión: tokens, expiración, registro y seguridad."""
+
 from __future__ import annotations
 
 import os
 
-JWT_SECRET_ENV   = "GAIA_AGENTS_SECRET"
-JWT_ALGORITHM    = "HS256"
+JWT_SECRET_ENV = "GAIA_AGENTS_SECRET"
+JWT_ALGORITHM = "HS256"
 
 # Procedencia del token. No aportan nada mientras el secreto se use para una
 # sola cosa, pero son la defensa estándar contra reutilizar un token emitido
 # por otro sistema que comparta secreto (p. ej. si en el futuro se firma algo
 # más con la misma clave). Se emiten desde la migración a PyJWT; la validación
 # es tolerante con los tokens anteriores, que no los llevan.
-JWT_ISSUER       = "iagentshub"
-JWT_AUDIENCE     = "iagentshub-api"
+JWT_ISSUER = "iagentshub"
+JWT_AUDIENCE = "iagentshub-api"
 
 # ── Access token y refresh ────────────────────────────────────────────────────
 # El access token dura minutos y el refresh horas. Ver docs/adr/008-sesiones-
@@ -37,11 +38,13 @@ ACCESS_MAX_AGE_SECONDS = ACCESS_EXPIRE_MINUTES * 60
 # Quien impone la caducidad es el `exp` del JWT, que el navegador no puede tocar.
 JWT_MAX_AGE_SECONDS = JWT_EXPIRE_HOURS * 60 * 60
 
-JWT_UNSAFE_SECRETS: frozenset[str] = frozenset({
-    "",
-    "REEMPLAZAR_O_USAR_GAIA_AGENTS_SECRET",
-    "cambia_esto_en_produccion",
-})
+JWT_UNSAFE_SECRETS: frozenset[str] = frozenset(
+    {
+        "",
+        "REEMPLAZAR_O_USAR_GAIA_AGENTS_SECRET",
+        "cambia_esto_en_produccion",
+    }
+)
 
 # Coste de bcrypt. 12 rondas ≈ 235 ms por hash: es el valor correcto en
 # producción —235 ms de CPU por login, y `hash_password_async` ya lo saca del
@@ -55,11 +58,11 @@ JWT_UNSAFE_SECRETS: frozenset[str] = frozenset({
 # hash lleva su coste dentro, así que solo afecta a los nuevos.
 BCRYPT_ROUNDS = max(4, min(int(os.getenv("GAIA_BCRYPT_ROUNDS", "12")), 16))
 
-LOGIN_WINDOW    = int(os.getenv("GAIA_LOGIN_WINDOW",    "300"))   # segundos
-LOGIN_MAX_FAILS = int(os.getenv("GAIA_LOGIN_MAX_FAILS", "5"))     # intentos fallidos
+LOGIN_WINDOW = int(os.getenv("GAIA_LOGIN_WINDOW", "300"))  # segundos
+LOGIN_MAX_FAILS = int(os.getenv("GAIA_LOGIN_MAX_FAILS", "5"))  # intentos fallidos
 
 REGISTER_WINDOW = int(os.getenv("GAIA_REGISTER_WINDOW", "3600"))  # segundos
-REGISTER_MAX    = int(os.getenv("GAIA_REGISTER_MAX",    "5"))     # registros por ventana
+REGISTER_MAX = int(os.getenv("GAIA_REGISTER_MAX", "5"))  # registros por ventana
 
 # ── Registro ──────────────────────────────────────────────────────────────────
 # open   → cualquiera puede registrarse (default, backward-compatible)
@@ -133,7 +136,7 @@ SMTP_USER: str = os.getenv("GAIA_SMTP_USER", "")
 SMTP_PASS: str = os.getenv("GAIA_SMTP_PASS", "")
 SMTP_FROM: str = os.getenv("GAIA_SMTP_FROM", "") or os.getenv("GAIA_SMTP_USER", "")
 # Modo TLS: "starttls" (587, recomendado), "ssl" (465), "none" (25, solo redes internas)
-SMTP_TLS: str  = os.getenv("GAIA_SMTP_TLS", "starttls").lower()
+SMTP_TLS: str = os.getenv("GAIA_SMTP_TLS", "starttls").lower()
 
 PASSWORD_RESET_EXPIRE_HOURS: int = int(os.getenv("GAIA_RESET_EXPIRE_HOURS", "1"))
 
@@ -143,13 +146,21 @@ PASSWORD_RESET_EXPIRE_HOURS: int = int(os.getenv("GAIA_RESET_EXPIRE_HOURS", "1")
 WEBMAIL_URL: str = os.getenv("GAIA_WEBMAIL_URL", "")
 
 # ── Rate limiting ─────────────────────────────────────────────────────────────
-RATE_CHAT_CALLS  = int(os.getenv("GAIA_RATE_CHAT_CALLS",  "30"))   # peticiones
-RATE_CHAT_WINDOW = int(os.getenv("GAIA_RATE_CHAT_WINDOW", "60"))   # por segundos
-RATE_TEST_CALLS     = int(os.getenv("GAIA_RATE_TEST_CALLS",     "10"))
-RATE_TEST_WINDOW    = int(os.getenv("GAIA_RATE_TEST_WINDOW",    "60"))
-RATE_TESTALL_CALLS  = int(os.getenv("GAIA_RATE_TESTALL_CALLS",  "30"))
+RATE_CHAT_CALLS = int(os.getenv("GAIA_RATE_CHAT_CALLS", "30"))  # peticiones
+RATE_CHAT_WINDOW = int(os.getenv("GAIA_RATE_CHAT_WINDOW", "60"))  # por segundos
+# Todas las puertas interactivas al LLM comparten la cuota histórica del chat.
+# Mantener GAIA_RATE_CHAT_* conserva la configuración de instalaciones existentes.
+RATE_WORKFLOW_START_CALLS = int(os.getenv("GAIA_RATE_WORKFLOW_START_CALLS", "5"))
+RATE_WORKFLOW_START_WINDOW = int(os.getenv("GAIA_RATE_WORKFLOW_START_WINDOW", "60"))
+RATE_WORKFLOW_NODE_CALLS = int(os.getenv("GAIA_RATE_WORKFLOW_NODE_CALLS", "600"))
+RATE_WORKFLOW_NODE_WINDOW = int(os.getenv("GAIA_RATE_WORKFLOW_NODE_WINDOW", "3600"))
+RATE_OFFICIAL_LLM_CALLS = int(os.getenv("GAIA_RATE_OFFICIAL_LLM_CALLS", "5"))
+RATE_OFFICIAL_LLM_WINDOW = int(os.getenv("GAIA_RATE_OFFICIAL_LLM_WINDOW", "3600"))
+RATE_TEST_CALLS = int(os.getenv("GAIA_RATE_TEST_CALLS", "10"))
+RATE_TEST_WINDOW = int(os.getenv("GAIA_RATE_TEST_WINDOW", "60"))
+RATE_TESTALL_CALLS = int(os.getenv("GAIA_RATE_TESTALL_CALLS", "30"))
 RATE_TESTALL_WINDOW = int(os.getenv("GAIA_RATE_TESTALL_WINDOW", "60"))
-RATE_GUEST_CALLS  = int(os.getenv("GAIA_RATE_GUEST_CALLS",  "5"))
+RATE_GUEST_CALLS = int(os.getenv("GAIA_RATE_GUEST_CALLS", "5"))
 RATE_GUEST_WINDOW = int(os.getenv("GAIA_RATE_GUEST_WINDOW", "60"))
 # ── Invitados ─────────────────────────────────────────────────────────────────
 # Margen antes de considerar abandonado a un invitado sin sesión viva. Entre el
@@ -159,32 +170,34 @@ RATE_GUEST_WINDOW = int(os.getenv("GAIA_RATE_GUEST_WINDOW", "60"))
 # y guest.py ya importa esa purga — al revés se cerraría un ciclo de imports.
 GUEST_GRACE_SECONDS = int(os.getenv("GAIA_GUEST_GRACE_SECONDS", "3600"))
 # Recuperación de contraseña: límite estricto para prevenir spam SMTP masivo
-RATE_FORGOT_CALLS  = int(os.getenv("GAIA_RATE_FORGOT_CALLS",  "5"))    # intentos
+RATE_FORGOT_CALLS = int(os.getenv("GAIA_RATE_FORGOT_CALLS", "5"))  # intentos
 RATE_FORGOT_WINDOW = int(os.getenv("GAIA_RATE_FORGOT_WINDOW", "3600"))  # por hora
 # Reset de contraseña: token de 256 bits es imprácticable de fuerza bruta,
 # pero limitamos igualmente para prevenir DoS sobre la BD
-RATE_RESET_CALLS  = int(os.getenv("GAIA_RATE_RESET_CALLS",  "10"))
+RATE_RESET_CALLS = int(os.getenv("GAIA_RATE_RESET_CALLS", "10"))
 RATE_RESET_WINDOW = int(os.getenv("GAIA_RATE_RESET_WINDOW", "300"))
 # Canje del refresh: un cliente legítimo renueva una vez cada
 # ACCESS_EXPIRE_MINUTES, pero varias pestañas pueden coincidir tras despertar
 # el equipo, así que el cupo es holgado. RateLimiter divide entre GAIA_WORKERS.
-RATE_REFRESH_CALLS  = int(os.getenv("GAIA_RATE_REFRESH_CALLS",  "60"))
+RATE_REFRESH_CALLS = int(os.getenv("GAIA_RATE_REFRESH_CALLS", "60"))
 RATE_REFRESH_WINDOW = int(os.getenv("GAIA_RATE_REFRESH_WINDOW", "300"))
-RATE_MAX_IPS      = int(os.getenv("GAIA_RATE_MAX_IPS",      "10000"))  # IPs simultáneas en memoria
+RATE_MAX_IPS = int(
+    os.getenv("GAIA_RATE_MAX_IPS", "10000")
+)  # IPs simultáneas en memoria
 # Ventana secundaria por IP de los limiters con clave por usuario: el mismo
 # cupo multiplicado por este factor. Existe porque la clave por principal, sola,
 # regala una cuota entera por cada cuenta desechable que alguien registre; la
 # IP no puede ser el límite principal (un NAT corporativo comparte una) pero sí
 # el techo por encima. A 0 se desactiva y solo cuenta el principal —lo dice la
 # auditoría de arranque, no se apaga en silencio.
-RATE_IP_FACTOR    = int(os.getenv("GAIA_RATE_IP_FACTOR",    "5"))
+RATE_IP_FACTOR = int(os.getenv("GAIA_RATE_IP_FACTOR", "5"))
 # Tamaño máximo de cuerpo de petición, en bytes. **0 = sin límite**, que es el
 # valor por defecto: lo decide el administrador desde el panel
 # (`max_request_bytes` en settings.json) y esta variable es solo el valor de
 # partida cuando no ha tocado nada. Antes era 2 MB fijos —un número dimensionado
 # para cuerpos JSON que las subidas de ficheros heredaron sin que nadie lo
 # revisara—, y nginx cortaba en su millón por defecto antes de llegar aquí.
-BODY_MAX_BYTES    = int(os.getenv("GAIA_BODY_MAX_BYTES",   "0"))
+BODY_MAX_BYTES = int(os.getenv("GAIA_BODY_MAX_BYTES", "0"))
 
 # ── Proxies confiables para X-Forwarded-For ────────────────────────────────────
 # Solo se lee el header X-Forwarded-For cuando la conexión TCP viene de una de
