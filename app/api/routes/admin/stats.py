@@ -295,7 +295,9 @@ async def admin_stats(_: str = Depends(require_admin)) -> dict[str, Any]:
     endpoint_error_counts: dict[str, int] = {}
     latency_total = 0
     latency_count = 0
-    _latency_re = re.compile(r"\((\d+)ms\)\s*$")
+    # Compatible con el formato histórico ``(40ms)`` y con el logger ASGI,
+    # que añade TTFB y bytes sin sacrificar la métrica que consume el panel.
+    _latency_re = re.compile(r"\((\d+)ms(?:;[^)]*)?\)\s*$")
     for level, summary in log_rows:
         match = _latency_re.search(summary)
         if match:

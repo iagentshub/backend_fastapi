@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from fastapi.responses import JSONResponse
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.requests import Request
+from starlette.types import ASGIApp, Receive, Scope, Send
 
 from app.auth.auth import decode_token, get_user_by_identity, get_user_role
 from app.storage.billing import BillingStorage
@@ -53,30 +54,43 @@ def _billing_enabled() -> bool:
         return False
 
 
-class LicenseGateMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request, call_next):
+class LicenseGateMiddleware:
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        request = Request(scope)
         path = request.url.path
         # El prefijo primero: descarta la mayoría de peticiones sin tocar disco.
         if not path.startswith(_PROTECTED_PREFIXES) or not _billing_enabled():
-            return await call_next(request)
+            await self.app(scope, receive, send)
+            return
 
         token = request.cookies.get("ga_token")
         username = decode_token(token) if token else None
         if not username:
-            return await call_next(request)
+            await self.app(scope, receive, send)
+            return
         if is_guest(username):
-            return await call_next(request)
+            await self.app(scope, receive, send)
+            return
 
         role = await get_user_role(username)
         if role == "admin":
-            return await call_next(request)
+            await self.app(scope, receive, send)
+            return
 
         user = await get_user_by_identity(username)
         user_id = user["id"] if user else username
         if await BillingStorage().has_active_license(user_id):
-            return await call_next(request)
+            await self.app(scope, receive, send)
+            return
 
-        return JSONResponse(
+        response = JSONResponse(
             {
                 "detail": {
                     "code": "license_required",
@@ -85,3 +99,4 @@ class LicenseGateMiddleware(BaseHTTPMiddleware):
             },
             status_code=403,
         )
+        await response(scope, receive, send)

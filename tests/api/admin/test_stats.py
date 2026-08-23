@@ -120,7 +120,12 @@ def test_admin_stats_health_counts_and_failure_rate(admin_client, tmp_path):
 
     db = tmp_path / "hub.db"
     today = _datetime.now().strftime("%Y-%m-%d")
-    _insert_log(db, date=today, level="INFO", summary="GET /api/agents → 200 (40ms)")
+    _insert_log(
+        db,
+        date=today,
+        level="INFO",
+        summary="GET /api/agents → 200 (40ms; ttfb=5ms; bytes=120)",
+    )
     _insert_log(db, date=today, level="INFO", summary="GET /api/agents → 200 (60ms)")
     _insert_log(
         db, date=today, level="WARNING", summary="POST /api/auth/login → 401 (20ms)"

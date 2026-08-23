@@ -31,9 +31,10 @@ from __future__ import annotations
 from urllib.parse import urlsplit
 
 from fastapi.responses import JSONResponse
-from starlette.middleware.base import BaseHTTPMiddleware
+from starlette.datastructures import MutableHeaders
 from starlette.requests import Request
 from starlette.responses import Response
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 import app.config.session as _session
 from app.auth.cookies import SESSION_COOKIE
@@ -76,23 +77,34 @@ def _rechazo(code: str, message: str) -> JSONResponse:
     return JSONResponse({"detail": {"code": code, "message": message}}, status_code=403)
 
 
-class CsrfMiddleware(BaseHTTPMiddleware):
-    async def dispatch(self, request: Request, call_next):
+class CsrfMiddleware:
+    def __init__(self, app: ASGIApp) -> None:
+        self.app = app
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+
+        request = Request(scope)
         # Los modos se leen a través del módulo, no importados por valor: los
         # tests los cambian con monkeypatch.setattr y un `from … import` los
         # habría congelado al importar (mismo motivo que `_db.IS_PG`).
         metodo = request.method.upper()
         if metodo in _session.SAFE_METHODS:
-            return await self._reemitir_csrf(request, await call_next(request))
+            await self._pasar_reemitiendo_csrf(request, scope, receive, send)
+            return
 
         # Credencial explícita, no ambiental → no hay CSRF posible.
         if request.headers.get("authorization"):
-            return await call_next(request)
+            await self.app(scope, receive, send)
+            return
 
         rechazo = self._revisar_origen(request) or self._revisar_token(request)
         if rechazo is not None:
-            return rechazo
-        return await call_next(request)
+            await rechazo(scope, receive, send)
+            return
+        await self.app(scope, receive, send)
 
     # ── Capa 1 ────────────────────────────────────────────────────────────────
 
@@ -148,7 +160,13 @@ class CsrfMiddleware(BaseHTTPMiddleware):
 
     # ── Auto-reparación ───────────────────────────────────────────────────────
 
-    async def _reemitir_csrf(self, request: Request, response: Response) -> Response:
+    async def _pasar_reemitiendo_csrf(
+        self,
+        request: Request,
+        scope: Scope,
+        receive: Receive,
+        send: Send,
+    ) -> None:
         """Repone `ga_csrf` cuando hay sesión y la cookie falta o no cuadra.
 
         Es lo que permite subir la capa 2 a `enforce` sin echar a nadie: las
@@ -156,11 +174,25 @@ class CsrfMiddleware(BaseHTTPMiddleware):
         se curan en la primera navegación, porque el token es una función pura
         del JWT y el servidor lo puede recalcular sin guardar nada.
         """
+        cookie_header = self._csrf_cookie_header(request)
+        if cookie_header is None:
+            await self.app(scope, receive, send)
+            return
+
+        async def send_with_csrf_cookie(message: Message) -> None:
+            if message["type"] == "http.response.start":
+                MutableHeaders(scope=message).append("set-cookie", cookie_header)
+            await send(message)
+
+        await self.app(scope, receive, send_with_csrf_cookie)
+
+    @staticmethod
+    def _csrf_cookie_header(request: Request) -> str | None:
         if _session.CSRF_TOKEN_CHECK == "off":
-            return response
+            return None
         ga_token = request.cookies.get(SESSION_COOKIE)
         if not ga_token:
-            return response
+            return None
 
         from app.auth.passwords import derive_csrf_token
 
@@ -170,10 +202,11 @@ class CsrfMiddleware(BaseHTTPMiddleware):
             # _secret() aborta si el secreto de firma no está configurado. Sin
             # él no hay sesión válida que proteger: no es aquí donde se avisa
             # (lo hace startup_checks), y romper un GET lo empeoraría.
-            return response
+            return None
         if request.cookies.get(_session.CSRF_COOKIE) == esperado:
-            return response
+            return None
 
+        response = Response()
         response.set_cookie(
             _session.CSRF_COOKIE,
             esperado,
@@ -182,4 +215,4 @@ class CsrfMiddleware(BaseHTTPMiddleware):
             secure=_session.SECURE_COOKIES,
             max_age=_session.JWT_MAX_AGE_SECONDS,
         )
-        return response
+        return response.headers["set-cookie"]

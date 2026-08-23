@@ -27,6 +27,20 @@ def _request(cookies: dict[str, str] | None = None, path: str = "/api/agents"):
     )
 
 
+async def _receive():
+    return {"type": "http.request", "body": b"", "more_body": False}
+
+
+async def _run(middleware, scope):
+    sent = []
+
+    async def send(message):
+        sent.append(message)
+
+    await middleware(scope, _receive, send)
+    return sent
+
+
 def test_logger_envuelve_los_middlewares_que_pueden_rechazar_acciones():
     from app.api.app import create_app
 
@@ -131,13 +145,13 @@ async def test_eventos_de_la_ruta_heredan_ip_y_usuario(monkeypatch):
     token = create_token("andres")
     request = _request({"ga_token": token})
 
-    async def ruta(_request):
+    async def ruta(scope, receive, send):
         flog.ok("agente creado")
-        return Response(status_code=201)
+        await Response(status_code=201)(scope, receive, send)
 
-    response = await RequestLoggerMiddleware(None).dispatch(request, ruta)
+    sent = await _run(RequestLoggerMiddleware(ruta), request.scope)
 
-    assert response.status_code == 201
+    assert sent[0]["status"] == 201
     assert vistos[0]["ip"] == "10.0.0.1"
     assert vistos[0]["username"] == "andres"
 
@@ -156,11 +170,11 @@ async def test_peticion_anonima_atribuye_eventos_a_su_ip(monkeypatch):
 
     monkeypatch.setattr(flog, "_extra", capturar)
 
-    async def ruta(_request):
+    async def ruta(scope, receive, send):
         flog.info("acción pública")
-        return Response(status_code=200)
+        await Response(status_code=200)(scope, receive, send)
 
-    await RequestLoggerMiddleware(None).dispatch(_request(), ruta)
+    await _run(RequestLoggerMiddleware(ruta), _request().scope)
 
     assert vistos[0]["ip"] == "10.0.0.1"
     assert vistos[0]["username"] == "-"
@@ -180,11 +194,11 @@ async def test_excepcion_se_registra_y_limpia_el_contexto(monkeypatch):
 
     monkeypatch.setattr(flog, "_extra", capturar)
 
-    async def ruta(_request):
+    async def ruta(scope, receive, send):
         raise RuntimeError("fallo de prueba")
 
     with pytest.raises(RuntimeError, match="fallo de prueba"):
-        await RequestLoggerMiddleware(None).dispatch(_request(), ruta)
+        await _run(RequestLoggerMiddleware(ruta), _request().scope)
 
     assert vistos[-1]["ip"] == "10.0.0.1"
     assert vistos[-1]["username"] == "-"
@@ -201,28 +215,22 @@ async def test_excepcion_se_registra_y_limpia_el_contexto(monkeypatch):
 @pytest.mark.parametrize("codigo", [200, 204, 304])
 def test_health_ok_no_se_registra(codigo):
     peticion = _request(path="/api/health")
-    assert RequestLoggerMiddleware._silenciar(peticion, Response(status_code=codigo))
+    assert RequestLoggerMiddleware._silenciar(peticion, codigo)
 
 
 @pytest.mark.parametrize("codigo", [500, 503])
 def test_health_caido_si_se_registra(codigo):
     """Un health check que falla es justo lo que hay que ver en el log."""
     peticion = _request(path="/api/health")
-    assert not RequestLoggerMiddleware._silenciar(
-        peticion, Response(status_code=codigo)
-    )
+    assert not RequestLoggerMiddleware._silenciar(peticion, codigo)
 
 
 def test_las_rutas_normales_no_se_silencian():
-    assert not RequestLoggerMiddleware._silenciar(
-        _request(path="/api/agents"), Response(status_code=200)
-    )
+    assert not RequestLoggerMiddleware._silenciar(_request(path="/api/agents"), 200)
 
 
 def test_la_escotilla_devuelve_el_comportamiento_anterior(monkeypatch):
     import app.config.logging as cfg
 
     monkeypatch.setattr(cfg, "LOG_HEALTH", True)
-    assert not RequestLoggerMiddleware._silenciar(
-        _request(path="/api/health"), Response(status_code=200)
-    )
+    assert not RequestLoggerMiddleware._silenciar(_request(path="/api/health"), 200)
