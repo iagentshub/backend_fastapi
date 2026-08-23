@@ -17,7 +17,7 @@ async def test_missing_model_returns_actionable_error_without_calling_provider()
     conn = _make_conn("openai", model="")
     events = []
 
-    with patch("app.services.chat.providers.safe_urlopen") as urlopen:
+    with patch("app.connections.openai_compatible.safe_urlopen") as urlopen:
         async for frame in stream_chat(
             agent,
             conn,

@@ -8,9 +8,9 @@ import urllib.request
 from http.cookies import SimpleCookie
 from typing import Any, Dict
 
-from app.utils.safe_http import safe_urlopen
+from app.utils.safe_http import assert_url_allowed, safe_urlopen
 
-from .base import BaseProvider, FieldDef, TestResult, register
+from .base import BaseProvider, FieldDef, TestResult, UnsafeProviderURL, register
 
 
 def _login(url: str, username: str, password: str) -> str:
@@ -37,6 +37,7 @@ def _login(url: str, username: str, password: str) -> str:
 @register
 class IAgentsHubProvider(BaseProvider):
     type_id = "iagentshub"
+    account_type_id = "iagentshub"
     label = "iAgents Hub"
     icon = ""
     fields = [
@@ -46,6 +47,20 @@ class IAgentsHubProvider(BaseProvider):
         FieldDef("username", "Usuario", "text", "", required=True),
         FieldDef("api_key", "Contraseña", "password", "", required=True),
     ]
+
+    @classmethod
+    def validate_config(
+        cls, config: Dict[str, Any], *, purpose: str = "use"
+    ) -> None:
+        url = str(config.get("url") or "").strip().rstrip("/")
+        if not url:
+            return
+        try:
+            assert_url_allowed(url)
+        except ValueError as exc:
+            raise UnsafeProviderURL(
+                f"La URL de la conexión no está permitida: {exc}"
+            ) from exc
 
     @classmethod
     def test(cls, config: Dict[str, Any]) -> TestResult:
@@ -61,6 +76,7 @@ class IAgentsHubProvider(BaseProvider):
             return TestResult(False, "Falta la contraseña")
 
         try:
+            cls.validate_config(config, purpose="test")
             token = _login(url, username, password)
             # Verificar acceso real
             req = urllib.request.Request(

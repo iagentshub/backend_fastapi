@@ -17,7 +17,7 @@ def _mock_response(data: dict):
 
 def test_test_empty_host_uses_default():
     """Host vacío debe intentar localhost:11434 y fallar si no hay servidor."""
-    with patch("urllib.request.urlopen", side_effect=OSError("refused")):
+    with patch("app.connections.ollama.safe_urlopen", side_effect=OSError("refused")):
         result = OllamaProvider.test({"host": ""})
     assert result.ok is False
 
@@ -25,7 +25,7 @@ def test_test_empty_host_uses_default():
 def test_test_success_with_models():
     models = [{"name": f"model{i}"} for i in range(3)]
     mock_resp = _mock_response({"models": models})
-    with patch("urllib.request.urlopen", return_value=mock_resp):
+    with patch("app.connections.ollama.safe_urlopen", return_value=mock_resp):
         result = OllamaProvider.test({"host": "http://localhost:11434"})
     assert result.ok is True
     assert "3" in result.message
@@ -33,12 +33,12 @@ def test_test_success_with_models():
 
 def test_test_success_no_models():
     mock_resp = _mock_response({"models": []})
-    with patch("urllib.request.urlopen", return_value=mock_resp):
+    with patch("app.connections.ollama.safe_urlopen", return_value=mock_resp):
         result = OllamaProvider.test({"host": "http://localhost:11434"})
     assert result.ok is True
 
 
 def test_test_connection_error():
-    with patch("urllib.request.urlopen", side_effect=OSError("refused")):
+    with patch("app.connections.ollama.safe_urlopen", side_effect=OSError("refused")):
         result = OllamaProvider.test({"host": "http://localhost:11434"})
     assert result.ok is False

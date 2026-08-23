@@ -317,7 +317,7 @@ def test_list_connections_expands_ollama_base(client):
     client.post("/api/connections", json=_CONN_OLLAMA_BASE)
 
     with patch(
-        "app.api.routes.connections._fetch_ollama_models",
+        "app.connections.ollama.OllamaProvider.fetch_models",
         return_value=["llama3:latest", "mistral:7b"],
     ):
         r = client.get("/api/connections")
@@ -334,7 +334,7 @@ def test_list_connections_ollama_no_models_returns_base(client):
     client.post("/api/connections", json=_CONN_OLLAMA_BASE)
 
     with patch(
-        "app.api.routes.connections._fetch_ollama_models",
+        "app.connections.ollama.OllamaProvider.fetch_models",
         return_value=[],
     ):
         r = client.get("/api/connections")

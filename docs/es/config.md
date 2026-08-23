@@ -22,6 +22,19 @@ Toda la configuración se realiza mediante variables de entorno. Estas se establ
 | Duración de sesión | Tiempo en horas que una sesión permanece activa. |
 | Concurrencia LLM | Número máximo de llamadas simultáneas a proveedores por worker. |
 | Escritura de logs | Tamaño de lote e intervalo de volcado del registro de actividad. |
+| Orígenes internos de Ollama | Lista exacta de servidores locales/LAN a los que puede conectar el backend. |
+
+### Destinos internos de Ollama
+
+| Variable | Por defecto | Descripción |
+|---|---|---|
+| `GAIA_OLLAMA_ALLOWED_ORIGINS` | `http://localhost:11434,http://127.0.0.1:11434,http://[::1]:11434,http://host.docker.internal:11434` | Orígenes internos exactos autorizados para Ollama, separados por comas. Los destinos públicos siguen pasando por validación y DNS fijado. |
+
+La autorización incluye protocolo, host y puerto. Por ejemplo, permitir
+`http://localhost:11434` no permite `http://localhost:5432`.
+Esta variable solo abre excepciones para destinos internos. La opción oficial
+`https://ollama.com` y las URLs personalizadas públicas se admiten sin
+configuración adicional y conservan validación SSRF y DNS fijado.
 
 ## Auditoría de configuración al arrancar
 

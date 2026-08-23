@@ -38,7 +38,7 @@ async def test_no_llama_al_proveedor_con_la_credencial_ilegible():
         UNREADABLE_FIELDS: ["api_key"],
     }
 
-    with patch("app.services.chat.providers.safe_urlopen") as urlopen:
+    with patch("app.connections.openai_compatible.safe_urlopen") as urlopen:
         eventos = await _recoger(_make_agent("openai"), conn)
 
     assert urlopen.call_count == 0, "no debe llegar a hacer la petición"
@@ -52,7 +52,7 @@ async def test_una_conexion_legible_sigue_funcionando():
     from tests.services.chat._helpers import _sse_done_response
 
     with patch(
-        "app.services.chat.providers.safe_urlopen", return_value=_sse_done_response("Hola")
+        "app.connections.openai_compatible.safe_urlopen", return_value=_sse_done_response("Hola")
     ):
         eventos = await _recoger(_make_agent("openai"), _make_conn("openai"))
 

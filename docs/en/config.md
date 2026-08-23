@@ -22,6 +22,19 @@ All configuration is done through environment variables. These are set by the de
 | Session duration | How long in hours a session remains active. |
 | LLM concurrency | Maximum simultaneous provider calls per worker. |
 | Log writes | Batch size and flush interval for the activity log. |
+| Internal Ollama origins | Exact local/LAN servers the backend may contact. |
+
+### Internal Ollama destinations
+
+| Variable | Default | Description |
+|---|---|---|
+| `GAIA_OLLAMA_ALLOWED_ORIGINS` | `http://localhost:11434,http://127.0.0.1:11434,http://[::1]:11434,http://host.docker.internal:11434` | Comma-separated exact internal origins authorized for Ollama. Public destinations still use validation and DNS pinning. |
+
+Authorization includes scheme, host, and port. For example, allowing
+`http://localhost:11434` does not allow `http://localhost:5432`.
+This variable only opens exceptions for internal destinations. The official
+`https://ollama.com` option and public custom URLs require no additional
+configuration and retain SSRF validation and DNS pinning.
 
 ## Startup configuration audit
 

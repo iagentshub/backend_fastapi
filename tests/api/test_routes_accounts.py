@@ -8,6 +8,7 @@ provider.
 from __future__ import annotations
 
 import asyncio
+import json
 from unittest.mock import MagicMock, patch
 
 import httpx
@@ -25,14 +26,15 @@ def _setup_user(client, username="accuser"):
 
 def _mock_openai_models(*model_ids):
     mock_response = MagicMock()
-    mock_response.status_code = 200
-    mock_response.json.return_value = {"data": [{"id": m} for m in model_ids]}
-    mock_response.raise_for_status = lambda: None
-
-    async def fake_get(*args, **kwargs):
-        return mock_response
-
-    return fake_get
+    mock_response.read.return_value = json.dumps(
+        {"data": [{"id": model_id} for model_id in model_ids]}
+    ).encode()
+    mock_response.__enter__.return_value = mock_response
+    mock_response.__exit__.return_value = False
+    return patch(
+        "app.connections.openai_compatible.safe_urlopen",
+        return_value=mock_response,
+    )
 
 
 # ── GET /api/accounts ────────────────────────────────────────────────────────
@@ -216,9 +218,7 @@ def test_unlink_account_deletes_synced_connections(client):
         "/api/accounts", json={"provider": "openai", "api_key": "sk-test-openai-123456"}
     ).json()["id"]
 
-    with patch.object(
-        httpx.AsyncClient, "get", new=_mock_openai_models("gpt-4o", "gpt-3.5-turbo")
-    ):
+    with _mock_openai_models("gpt-4o", "gpt-3.5-turbo"):
         client.post(f"/api/accounts/{account_id}/sync")
 
     r = client.delete(f"/api/accounts/{account_id}")
@@ -241,7 +241,7 @@ def test_unlink_account_does_not_delete_sibling_or_manual_connections(client):
     id2 = client.post(
         "/api/accounts", json={"provider": "openai", "api_key": "sk-two-123456"}
     ).json()["id"]
-    with patch.object(httpx.AsyncClient, "get", new=_mock_openai_models("gpt-4o")):
+    with _mock_openai_models("gpt-4o"):
         client.post(f"/api/accounts/{id1}/sync")
         client.post(f"/api/accounts/{id2}/sync")
     manual = client.post(
@@ -270,9 +270,7 @@ def test_unlink_account_does_not_delete_sibling_or_manual_connections(client):
 
 def test_test_new_account_openai_mocked(client):
     _setup_user(client, "testnew1")
-    with patch.object(
-        httpx.AsyncClient, "get", new=_mock_openai_models("gpt-4o", "gpt-3.5-turbo")
-    ):
+    with _mock_openai_models("gpt-4o", "gpt-3.5-turbo"):
         r = client.post(
             "/api/accounts/test",
             json={"provider": "openai", "api_key": "sk-test-openai-123456"},
@@ -308,9 +306,7 @@ def test_test_account_uses_stored_credentials(client):
         "/api/accounts", json={"provider": "openai", "api_key": "sk-test-openai-123456"}
     ).json()["id"]
 
-    with patch.object(
-        httpx.AsyncClient, "get", new=_mock_openai_models("gpt-4o", "gpt-3.5-turbo")
-    ):
+    with _mock_openai_models("gpt-4o", "gpt-3.5-turbo"):
         r = client.post(f"/api/accounts/{account_id}/test", json={})
 
     assert r.status_code == 200
@@ -346,9 +342,7 @@ def test_sync_account_openai_mocked(client):
         "/api/accounts", json={"provider": "openai", "api_key": "sk-test-openai-123456"}
     ).json()["id"]
 
-    with patch.object(
-        httpx.AsyncClient, "get", new=_mock_openai_models("gpt-4o", "gpt-3.5-turbo")
-    ):
+    with _mock_openai_models("gpt-4o", "gpt-3.5-turbo"):
         r = client.post(f"/api/accounts/{account_id}/sync")
 
     assert r.status_code == 200
@@ -365,11 +359,7 @@ def test_sync_account_with_selected_models(client):
         "/api/accounts", json={"provider": "openai", "api_key": "sk-test-openai-123456"}
     ).json()["id"]
 
-    with patch.object(
-        httpx.AsyncClient,
-        "get",
-        new=_mock_openai_models("gpt-4o", "gpt-3.5-turbo", "gpt-4o-mini"),
-    ):
+    with _mock_openai_models("gpt-4o", "gpt-3.5-turbo", "gpt-4o-mini"):
         r = client.post(f"/api/accounts/{account_id}/sync", json={"models": ["gpt-4o"]})
 
     assert r.status_code == 200
@@ -394,7 +384,7 @@ def test_sync_two_accounts_same_provider_do_not_clash(client):
         "/api/accounts", json={"provider": "openai", "api_key": "sk-acc-two-123456"}
     ).json()["id"]
 
-    with patch.object(httpx.AsyncClient, "get", new=_mock_openai_models("gpt-4o")):
+    with _mock_openai_models("gpt-4o"):
         client.post(f"/api/accounts/{id1}/sync")
         client.post(f"/api/accounts/{id2}/sync")
 
@@ -412,11 +402,7 @@ def test_sync_account_deselecting_deletes_connection(client):
         "/api/accounts", json={"provider": "openai", "api_key": "sk-test-openai-123456"}
     ).json()["id"]
 
-    with patch.object(
-        httpx.AsyncClient,
-        "get",
-        new=_mock_openai_models("gpt-4o", "gpt-3.5-turbo"),
-    ):
+    with _mock_openai_models("gpt-4o", "gpt-3.5-turbo"):
         client.post(
             f"/api/accounts/{account_id}/sync",
             json={"models": ["gpt-4o", "gpt-3.5-turbo"]},
@@ -441,14 +427,10 @@ def test_sync_account_without_body_does_not_delete(client):
         "/api/accounts", json={"provider": "openai", "api_key": "sk-test-openai-123456"}
     ).json()["id"]
 
-    with patch.object(
-        httpx.AsyncClient,
-        "get",
-        new=_mock_openai_models("gpt-4o", "gpt-3.5-turbo"),
-    ):
+    with _mock_openai_models("gpt-4o", "gpt-3.5-turbo"):
         client.post(f"/api/accounts/{account_id}/sync")
 
-    with patch.object(httpx.AsyncClient, "get", new=_mock_openai_models("gpt-4o")):
+    with _mock_openai_models("gpt-4o"):
         r = client.post(f"/api/accounts/{account_id}/sync")
 
     assert r.status_code == 200
@@ -471,7 +453,7 @@ def test_sync_account_visible_in_connections_for_admin_user(admin_client):
         "/api/accounts", json={"provider": "openai", "api_key": "sk-test-openai-123456"}
     ).json()["id"]
 
-    with patch.object(httpx.AsyncClient, "get", new=_mock_openai_models("gpt-4o")):
+    with _mock_openai_models("gpt-4o"):
         r = client.post(f"/api/accounts/{account_id}/sync")
 
     assert r.status_code == 200

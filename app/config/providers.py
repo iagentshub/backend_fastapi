@@ -12,6 +12,29 @@ import os
 # configurado, ese botón queda deshabilitado (fallback: pegar el token).
 GITHUB_OAUTH_CLIENT_ID: str = os.getenv("GITHUB_OAUTH_CLIENT_ID", "")
 
+
+def _origin_list(name: str, default: str) -> tuple[str, ...]:
+    """Lee una lista de orígenes exactos, sin esconder configuración en scripts."""
+    return tuple(
+        origin.strip().rstrip("/")
+        for origin in (os.getenv(name) or default).split(",")
+        if origin.strip()
+    )
+
+
+# Ollama es el único LLM cuyo destino normal puede estar dentro de la máquina
+# o red del despliegue. La excepción se limita a orígenes exactos: permitir
+# localhost:11434 no autoriza PostgreSQL en localhost:5432 ni toda la LAN.
+# Un operador con Ollama en otra dirección interna puede declararla aquí desde
+# el entorno del backend, que es la fuente central de configuración.
+OLLAMA_ALLOWED_INTERNAL_ORIGINS: tuple[str, ...] = _origin_list(
+    "GAIA_OLLAMA_ALLOWED_ORIGINS",
+    (
+        "http://localhost:11434,http://127.0.0.1:11434,"
+        "http://[::1]:11434,http://host.docker.internal:11434"
+    ),
+)
+
 PROVIDER_BASE_URLS: dict[str, str] = {
     "openai":  "https://api.openai.com/v1",
     "gemini":  "https://generativelanguage.googleapis.com/v1beta",

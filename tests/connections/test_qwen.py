@@ -22,12 +22,12 @@ def test_test_missing_api_key():
 
 def test_test_success():
     mock_resp = _mock_response({"data": [{"id": "qwen-plus"}]})
-    with patch("app.connections.base.safe_urlopen", return_value=mock_resp):
+    with patch("app.connections.openai_compatible.safe_urlopen", return_value=mock_resp):
         result = QwenProvider.test({"api_key": "fake-dashscope-key"})
     assert result.ok is True
 
 
 def test_test_connection_error():
-    with patch("app.connections.base.safe_urlopen", side_effect=OSError("timeout")):
+    with patch("app.connections.openai_compatible.safe_urlopen", side_effect=OSError("timeout")):
         result = QwenProvider.test({"api_key": "fake-key"})
     assert result.ok is False

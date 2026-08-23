@@ -8,7 +8,6 @@ from typing import Any
 from fastapi import APIRouter, Depends
 
 from app.api.routes.auth import require_session
-from app.config.security import assert_safe_url
 from app.connections import all_providers
 from app.models.request_bodies import OllamaModelsBody
 
@@ -31,9 +30,9 @@ async def ollama_models(
     host = (payload.get("host") or "http://localhost:11434").strip().rstrip("/")
     api_key = str(payload.get("api_key") or "").strip()
     try:
-        assert_safe_url(host)
-        data = await asyncio.to_thread(OllamaProvider._fetch_tags, host, api_key)
-        models = [m["name"] for m in (data.get("models") or []) if m.get("name")]
+        config = {"host": host, "api_key": api_key}
+        OllamaProvider.validate_config(config, purpose="models")
+        models = await asyncio.to_thread(OllamaProvider.fetch_models, config)
         return {"models": models}
     except Exception as exc:  # noqa: BLE001
         # El motivo se devuelve en la respuesta ({'models': [], 'error': …}),

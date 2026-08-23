@@ -15,7 +15,7 @@ from typing import Any, Dict, List, Optional
 import yaml
 
 from app.config.content_languages import language_label
-from app.config.providers import OPENAI_COMPAT_URLS
+from app.connections import is_chat_provider
 from app.models.agent import Agent
 from app.models.official_source import PackageComponent
 from app.services.chat import stream_chat
@@ -44,7 +44,6 @@ from app.services.official_source_llm.prompts import (
 from app.storage.connection_storage import ConnectionStorage
 from app.storage.skill_storage import ensure_origin_label
 
-_SUPPORTED_CONNECTIONS = frozenset({*OPENAI_COMPAT_URLS, "claude", "ollama"})
 
 class OfficialSourceLLMAnalyzer:
     def __init__(self, connections: Optional[ConnectionStorage] = None) -> None:
@@ -61,7 +60,7 @@ class OfficialSourceLLMAnalyzer:
         if not connection or not connection.get("is_active", True):
             raise ValueError("La conexión LLM seleccionada no está disponible")
         connection_type = str(connection.get("type") or "").lower()
-        if connection_type not in _SUPPORTED_CONNECTIONS:
+        if not is_chat_provider(connection_type):
             raise ValueError("La conexión seleccionada no es una conexión LLM compatible")
 
         relevant_files = _llm_relevant_files(

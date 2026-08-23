@@ -22,13 +22,13 @@ def test_test_missing_api_key():
 
 def test_test_success():
     mock_resp = _mock_response({"data": [{"id": "grok-3"}]})
-    with patch("app.connections.base.safe_urlopen", return_value=mock_resp):
+    with patch("app.connections.openai_compatible.safe_urlopen", return_value=mock_resp):
         result = GrokProvider.test({"api_key": "xai-fake"})
     assert result.ok is True
 
 
 def test_test_connection_error():
-    with patch("app.connections.base.safe_urlopen", side_effect=OSError("timeout")):
+    with patch("app.connections.openai_compatible.safe_urlopen", side_effect=OSError("timeout")):
         result = GrokProvider.test({"api_key": "xai-fake"})
     assert result.ok is False
     assert "timeout" in result.detail

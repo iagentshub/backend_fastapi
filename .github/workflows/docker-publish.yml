@@ -80,6 +80,11 @@ jobs:
 
       - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
         with:
+          # La versión sale del pubspec de app_flutter, que es donde la fija
+          # ese repo. Con `channel: stable` a secas, este workflow —que compila
+          # la imagen que de verdad se despliega— instalaba lo que hubiera ese
+          # día, mientras el CI de app_flutter validaba una versión distinta.
+          flutter-version-file: app_flutter/pubspec.yaml
           channel: stable
           cache: true
 

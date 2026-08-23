@@ -25,7 +25,7 @@ def test_test_missing_api_key():
 
 def test_test_success():
     mock_resp = _mock_response({"data": [{"id": "available-model"}]})
-    with patch("app.connections.base.safe_urlopen", return_value=mock_resp):
+    with patch("app.connections.openai_compatible.safe_urlopen", return_value=mock_resp):
         result = NvidiaProvider.test({"api_key": "nvapi-fake"})
     assert result.ok is True
 
@@ -36,7 +36,7 @@ def test_test_auth_error():
         hdrs=None, fp=None,  # type: ignore
     )
     http_err.read = lambda: b'{"error": {"message": "Invalid API key"}}'
-    with patch("app.connections.base.safe_urlopen", side_effect=http_err):
+    with patch("app.connections.openai_compatible.safe_urlopen", side_effect=http_err):
         result = NvidiaProvider.test({"api_key": "nvapi-bad"})
     assert result.ok is False
     assert result.message == "Error de autenticación"
@@ -44,7 +44,7 @@ def test_test_auth_error():
 
 
 def test_test_connection_error():
-    with patch("app.connections.base.safe_urlopen", side_effect=OSError("timeout")):
+    with patch("app.connections.openai_compatible.safe_urlopen", side_effect=OSError("timeout")):
         result = NvidiaProvider.test({"api_key": "nvapi-fake"})
     assert result.ok is False
     assert "timeout" in result.detail

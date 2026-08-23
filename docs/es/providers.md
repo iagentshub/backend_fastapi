@@ -45,6 +45,20 @@ El identificador del modelo sigue el formato `organización/nombre-modelo` tal c
 
 Ollama permite ejecutar modelos de IA directamente en la máquina local, sin depender de servicios externos ni incurrir en costes por uso. Es la opción recomendada para entornos sin acceso a internet o para quienes prefieren mantener todos los datos en local.
 
+La conexión admite tres modalidades: **Oficial**, mediante
+`https://ollama.com` y una API Key de Ollama Cloud; **Local**, mediante el
+servidor habitual en `http://localhost:11434`; y **URL personalizada**, para un
+servidor Ollama propio público o interno.
+
+Por seguridad, el backend solo permite destinos internos Ollama declarados como
+orígenes exactos (protocolo, host y puerto). Por defecto se admiten
+`localhost:11434`, `127.0.0.1:11434`, `[::1]:11434` y
+`host.docker.internal:11434`. Un servidor en otra dirección de la LAN debe
+añadirse a `GAIA_OLLAMA_ALLOWED_ORIGINS`, separando varios orígenes con comas;
+autorizar un puerto de Ollama no abre los demás servicios de esa máquina.
+La URL oficial y cualquier URL personalizada pública no necesitan estar en esa
+variable: pasan por la validación pública y el DNS fijado del transporte común.
+
 ---
 
 ## Seguimiento de tokens por conexión

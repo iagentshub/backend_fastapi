@@ -88,6 +88,16 @@ async def test_all_connections(
                 "detail": "",
                 "latency_ms": None,
             }
+        try:
+            provider.validate_config(conn, purpose="test")
+        except ValueError as exc:
+            return {
+                "id": conn["id"],
+                "ok": False,
+                "message": "Destino no permitido",
+                "detail": str(exc),
+                "latency_ms": None,
+            }
         t0 = _time.perf_counter()
         result = await asyncio.to_thread(provider.test, conn)
         latency_ms = round((_time.perf_counter() - t0) * 1000)
@@ -126,5 +136,9 @@ async def test_connection(
             "ok": False,
             "message": f"Tipo '{conn.get('type')}' sin proveedor de test",
         }
+    try:
+        provider.validate_config(conn, purpose="test")
+    except ValueError as exc:
+        return {"ok": False, "message": "Destino no permitido", "detail": str(exc)}
     result = await asyncio.to_thread(provider.test, conn)
     return {"ok": result.ok, "message": result.message, "detail": result.detail}

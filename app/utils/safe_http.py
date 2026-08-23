@@ -11,12 +11,57 @@ import socket
 import ssl
 import urllib.error
 import urllib.request
+from collections.abc import Collection
 from typing import Any, Iterator
 from urllib.parse import urljoin, urlsplit
 
 from app.config.security import assert_safe_url, resolve_safe_host
 
 _REDIRECT_STATUSES = frozenset({301, 302, 303, 307, 308})
+
+
+def _origin(url: str) -> str:
+    """Devuelve el origen canónico (scheme + host + puerto efectivo)."""
+    parts = urlsplit(url)
+    if parts.scheme not in {"http", "https"} or not parts.hostname:
+        raise ValueError("Solo se permiten URLs http/https con hostname")
+    try:
+        port = parts.port or (443 if parts.scheme == "https" else 80)
+    except ValueError as exc:
+        raise ValueError("Puerto inválido") from exc
+    hostname = parts.hostname.encode("idna").decode("ascii").lower()
+    display_host = f"[{hostname}]" if ":" in hostname else hostname
+    return f"{parts.scheme.lower()}://{display_host}:{port}"
+
+
+def normalize_origins(origins: Collection[str]) -> frozenset[str]:
+    """Normaliza una allowlist para que nunca dependa de barras o puertos implícitos."""
+    return frozenset(_origin(origin) for origin in origins)
+
+
+def assert_url_allowed(
+    url: str, *, allowed_internal_origins: Collection[str] = ()
+) -> None:
+    """Valida la política sin abrir red: público o un origen interno exacto."""
+    allowed = normalize_origins(allowed_internal_origins)
+    if _origin(url) in allowed:
+        return
+    assert_safe_url(url)
+
+
+def _resolve_host(host: str, port: int, *, allow_internal: bool) -> str:
+    """Resuelve todas las IP y devuelve una sola, validada para la política."""
+    if not allow_internal:
+        return resolve_safe_host(host, port)
+    try:
+        addresses = socket.getaddrinfo(host, port, type=socket.SOCK_STREAM)
+    except socket.gaierror as exc:
+        raise ValueError("No se pudo resolver el hostname de la URL") from exc
+    if not addresses:
+        raise ValueError("El hostname de la URL no tiene direcciones")
+    # El origen ya fue autorizado exactamente. Aun así se fija una de sus IP
+    # para que la conexión no haga una segunda resolución susceptible a rebinding.
+    return str(addresses[0][4][0]).split("%", 1)[0]
 
 
 class _PinnedHTTPConnection(http.client.HTTPConnection):
@@ -105,8 +150,15 @@ def safe_urlopen(
     timeout: float | None = 20,
     max_redirects: int = 5,
     raise_for_status: bool = True,
+    allowed_internal_origins: Collection[str] = (),
 ) -> SafeHTTPResponse:
-    """Abre una URL pública fijando la IP y revalidando cada redirección."""
+    """Abre una URL autorizada fijando la IP y revalidando cada redirección.
+
+    Por defecto solo permite destinos públicos. ``allowed_internal_origins``
+    abre excepciones exactas (scheme, host y puerto), pensadas para servicios
+    locales como Ollama; nunca autoriza una red o un hostname en cualquier
+    puerto.
+    """
     if isinstance(request, str):
         current = urllib.request.Request(request)
     else:
@@ -118,14 +170,18 @@ def safe_urlopen(
         if url in visited:
             raise urllib.error.URLError("Bucle de redirecciones")
         visited.add(url)
-        assert_safe_url(url)
+        allowed = normalize_origins(allowed_internal_origins)
+        current_origin = _origin(url)
+        allow_internal = current_origin in allowed
+        if not allow_internal:
+            assert_safe_url(url)
         parts = urlsplit(url)
         hostname = (parts.hostname or "").encode("idna").decode("ascii")
         try:
             port = parts.port or (443 if parts.scheme == "https" else 80)
         except ValueError as exc:
             raise urllib.error.URLError("Puerto inválido") from exc
-        connect_ip = resolve_safe_host(hostname, port)
+        connect_ip = _resolve_host(hostname, port, allow_internal=allow_internal)
         connection_cls = (
             _PinnedHTTPSConnection if parts.scheme == "https" else _PinnedHTTPConnection
         )

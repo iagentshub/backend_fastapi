@@ -17,7 +17,6 @@ nombres, no este.
 from __future__ import annotations
 
 import urllib.error
-import urllib.request
 from typing import (
     TYPE_CHECKING,
     Any,
@@ -30,11 +29,7 @@ from typing import (
 if TYPE_CHECKING:
     from app.models.agent import Agent
 
-from app.config.providers import (
-    ANTHROPIC_API_VERSION,
-    OPENAI_COMPAT_URLS,
-    PROVIDER_BASE_URLS,
-)
+from app.connections import UnsafeProviderURL, get_provider
 from app.services.chat._protocols import (
     _ChatStorage,
     _KnowledgeStorage,
@@ -52,17 +47,7 @@ from app.services.chat._streaming import (
     _stream_tokens,
     _truncate_history,
 )
-from app.services.chat.providers import (
-    _NVIDIA_DEEPSEEK_V4_MODELS,
-    UnsafeProviderURL,
-    _assert_provider_url,
-    _detalle_publico,
-    _do_claude_stream,
-    _do_ollama_call,
-    _do_openai_stream_with_dns_retry,
-    _openai_compat_chat_url,
-    _validate_ollama_host,
-)
+from app.services.chat.providers import _detalle_publico
 from app.services.llm_executor import LLMCapacityError, LLMLease
 from app.storage.crypto import UNREADABLE_FLAG
 from app.storage.db import DB_ERRORS
@@ -116,7 +101,6 @@ async def stream_chat(
             }
         )
         return
-    api_key = str(conn.get("api_key") or "")
     # El modelo siempre procede de una conexión sincronizada o del agente; los
     # catálogos cambian demasiado deprisa para mantener un fallback en código.
     model = str(conn.get("model") or agent.model or "")
@@ -349,122 +333,10 @@ async def stream_chat(
             }
         )
 
+    provider = get_provider(conn_type)
+    invocation = None
     try:
-        if conn_type in OPENAI_COMPAT_URLS:
-            url = _openai_compat_chat_url(
-                conn_type,
-                str(conn.get("url") or ""),
-            )
-            _assert_provider_url(url)
-            msgs: List[Dict[str, Any]] = []
-            if system:
-                msgs.append({"role": "system", "content": system})
-            msgs.extend(history)
-            payload: Dict[str, Any] = {
-                "model": model,
-                "messages": msgs,
-                "temperature": temperature,
-                "stream": True,
-                "stream_options": {"include_usage": True},
-            }
-            if max_tokens:
-                payload["max_tokens"] = int(max_tokens)
-            elif conn_type == "nvidia" and model in _NVIDIA_DEEPSEEK_V4_MODELS:
-                # El endpoint alojado permite respuestas muy largas. Un límite
-                # conservador evita que las etapas de una orquestación agoten el
-                # tiempo del gateway cuando el agente no define uno propio.
-                payload["max_tokens"] = 2_048
-            if conn_type == "nvidia" and model in _NVIDIA_DEEPSEEK_V4_MODELS:
-                payload["chat_template_kwargs"] = {"thinking": False}
-                if model == "deepseek-ai/deepseek-v4-flash":
-                    payload["chat_template_kwargs"]["reasoning_effort"] = "none"
-            if agent.effort_level:
-                payload["reasoning_effort"] = agent.effort_level
-            headers = {
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {api_key}",
-            }
-            # urllib lee el proveedor en un hilo. Reenviar cada delta mediante
-            # una cola evita acumular la respuesta completa: con modelos lentos
-            # el cliente recibe actividad y el proxy no corta por inactividad.
-            out: "list[tuple[str, int, int]]" = []
-            async for frame in _stream_tokens(
-                out,
-                _do_openai_stream_with_dns_retry,
-                url,
-                headers,
-                payload,
-                timeout,
-                llm_lease=llm_lease,
-                stream_state=stream_state,
-            ):
-                yield frame
-            reply, tok_in, tok_out = out[0]
-
-        elif conn_type == "claude":
-            url = (
-                conn.get("url") or f"{PROVIDER_BASE_URLS['claude']}/messages"
-            ).strip()
-            if not url.endswith("/messages"):
-                url = url.rstrip("/") + "/messages"
-            _assert_provider_url(url)
-            payload = {
-                "model": model,
-                "messages": history,
-                "temperature": temperature,
-                "stream": True,
-                "max_tokens": int(max_tokens) if max_tokens else 4096,
-            }
-            if system:
-                payload["system"] = system
-            headers = {
-                "Content-Type": "application/json",
-                "x-api-key": api_key,
-                "anthropic-version": ANTHROPIC_API_VERSION,
-            }
-            out = []
-            async for frame in _stream_tokens(
-                out,
-                _do_claude_stream,
-                url,
-                headers,
-                payload,
-                timeout,
-                llm_lease=llm_lease,
-                stream_state=stream_state,
-            ):
-                yield frame
-            reply, tok_in, tok_out = out[0]
-
-        elif conn_type == "ollama":
-            host = str(conn.get("host") or "http://localhost:11434").rstrip("/")
-            _validate_ollama_host(host)
-            msgs_ollama: List[Dict[str, Any]] = []
-            if system:
-                msgs_ollama.append({"role": "system", "content": system})
-            msgs_ollama.extend(history)
-            payload_o: Dict[str, Any] = {
-                "model": model,
-                "messages": msgs_ollama,
-                "stream": True,
-                "options": {"temperature": temperature},
-            }
-            ollama_api_key = str(conn.get("api_key") or "")
-            out = []
-            async for frame in _stream_tokens(
-                out,
-                _do_ollama_call,
-                host,
-                payload_o,
-                timeout,
-                ollama_api_key,
-                llm_lease=llm_lease,
-                stream_state=stream_state,
-            ):
-                yield frame
-            reply, tok_in, tok_out = out[0]
-
-        else:
+        if provider is None or not provider.supports_chat:
             yield _sse(
                 {
                     "type": "error",
@@ -472,6 +344,27 @@ async def stream_chat(
                 }
             )
             return
+
+        invocation = provider.prepare_chat(
+            conn,
+            model=model,
+            history=history,
+            system=system,
+            temperature=temperature,
+            max_tokens=int(max_tokens) if max_tokens else None,
+            effort_level=agent.effort_level,
+            timeout=timeout,
+        )
+        out: "list[tuple[str, int, int]]" = []
+        async for frame in _stream_tokens(
+            out,
+            invocation.worker,
+            *invocation.args,
+            llm_lease=llm_lease,
+            stream_state=stream_state,
+        ):
+            yield frame
+        reply, tok_in, tok_out = out[0]
 
         yield _sse(
             {"type": "done", "reply": reply, "tokens": {"in": tok_in, "out": tok_out}}
@@ -513,12 +406,13 @@ async def stream_chat(
             username=user_id or "-",
         )
         detail = _detalle_publico(body)
-        if exc.code == 404 and conn_type in OPENAI_COMPAT_URLS:
-            detail = (
-                f"No se encontró el endpoint de chat o el modelo '{model}'. "
-                f"URL utilizada: {url}. Revisa que la conexión use una URL base "
-                "OpenAI-compatible y que el modelo admita conversaciones."
-            )
+        provider_detail = (
+            provider.http_error_detail(exc.code, model, invocation)
+            if provider is not None and invocation is not None
+            else None
+        )
+        if provider_detail:
+            detail = provider_detail
         yield _sse(
             {
                 "type": "error",

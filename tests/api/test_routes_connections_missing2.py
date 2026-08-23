@@ -1,8 +1,8 @@
 """Tests de cobertura 2 para connections.py.
 
 Cubre: _safe_name, _list_accessible team group, _get_conn_any personal fallback,
-_resolve_connections (guest branch + shared), _fetch_ollama_models branches,
-_ollama_conns_to_models, hub_sync con datos reales, import_models branches,
+_resolve_connections (guest branch + shared), expansión de modelos por provider,
+hub_sync con datos reales, import_models branches,
 test_connection no-provider, delete no-admin, tokens-daily.
 """
 
@@ -682,26 +682,18 @@ def test_fetch_ollama_models_generic_exception_returns_empty(client):
     assert r.status_code == 200
 
 
-def test_fetch_ollama_models_ssrf_localhost_returns_empty(client):
-    """_fetch_ollama_models retorna [] para hosts localhost (SSRF protection, C3).
-
-    Con la protección SSRF activa, cualquier host que apunte a localhost o a rangos
-    privados es bloqueado antes de hacer la petición HTTP — el alt-host fallback
-    (localhost → host.docker.internal) ya no se puede alcanzar porque ambos son
-    privados. El endpoint /api/connections sigue respondiendo 200 pero sin modelos.
-    """
+def test_fetch_ollama_models_localhost_unavailable_returns_base(client):
+    """Localhost está autorizado, pero sin Ollama se conserva la conexión base."""
     _setup_user(client, "ollama_altok_m2")
     client.post("/api/connections", json=_CONN_OLLAMA_BASE)
 
-    # Sin mock: assert_safe_url("http://localhost:11434") lanza ValueError,
-    # _fetch_ollama_models lo captura como Exception y devuelve [].
     r = client.get("/api/connections")
 
     assert r.status_code == 200
     assert isinstance(r.json(), list)
 
 
-# ── 20. _ollama_conns_to_models modelo explícito (líneas 131-136) ────────────
+# ── 20. expansión de modelos: conexión con modelo explícito ─────────────────
 
 
 def test_list_connections_ollama_with_explicit_model(client):

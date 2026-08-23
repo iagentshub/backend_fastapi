@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field, model_validator
 
 from app.api.routes.auth import GroupContext, require_group_session
 from app.config.data import AGENTS_DIR
-from app.config.providers import OPENAI_COMPAT_URLS
+from app.connections import is_chat_provider
 from app.errors import APIError
 from app.models.llm_orchestration import orchestration_connection_id
 from app.services.connection_access import connection_access
@@ -28,7 +28,6 @@ _bindings = LLMOrchestrationBindingStorage()
 _agents = AgentStorage(AGENTS_DIR)
 _shares = GroupShareStorage()
 _groups = GroupStorage()
-_SUPPORTED_TYPES = {*OPENAI_COMPAT_URLS, "claude", "ollama"}
 
 
 class CandidateBody(BaseModel):
@@ -140,7 +139,7 @@ async def _validate_connections(body: LLMOrchestrationBody, ctx: GroupContext) -
                 "Una de las conexiones está desactivada",
                 extra={"resource": "connection", "id": connection_id},
             )
-        if str(connection.get("type") or "").lower() not in _SUPPORTED_TYPES:
+        if not is_chat_provider(str(connection.get("type") or "").lower()):
             raise APIError(
                 422,
                 "invalid_field",

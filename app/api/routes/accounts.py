@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends
 from app.api.routes.auth import require_auth
 from app.config.data import AGENTS_DIR, SKILLS_DIR
 from app.config.session import RATE_IP_FACTOR
+from app.connections import account_providers, get_account_provider
 from app.errors import APIError
 from app.middleware.ratelimit import RateLimiter, principal_key
 from app.models.request_bodies import AccountBody, AccountSyncBody, DeviceCodeBody
@@ -50,32 +51,15 @@ async def _owner(user: str) -> str:
 _agent_storage = AgentStorage(AGENTS_DIR)
 _skill_storage = SkillStorage(SKILLS_DIR)
 
-_PROVIDERS = [
-    "anthropic",
-    "openai",
-    "github",
-    "ollama",
-    "nvidia",
-    "google",
-    "iagentshub",
-]
+_ACCOUNT_PROVIDERS = account_providers()
+_PROVIDERS = list(_ACCOUNT_PROVIDERS)
 _PROVIDER_LABELS = {
-    "anthropic": "Anthropic",
-    "openai": "OpenAI",
-    "github": "GitHub Copilot",
-    "ollama": "Ollama",
-    "nvidia": "NVIDIA NIM",
-    "google": "Google Gemini",
-    "iagentshub": "iAgents Hub",
+    account_type: implementation.label
+    for account_type, implementation in _ACCOUNT_PROVIDERS.items()
 }
-_PROVIDER_TYPE_IDS: dict[str, str] = {
-    "anthropic": "claude",
-    "google": "gemini",
-    "openai": "openai",
-    "ollama": "ollama",
-    "nvidia": "nvidia",
-    "github": "github",
-    "iagentshub": "iagentshub",
+_PROVIDER_TYPE_IDS = {
+    account_type: implementation.type_id
+    for account_type, implementation in _ACCOUNT_PROVIDERS.items()
 }
 
 # iAgents Hub no encaja en el modelo "api_key -> lista de modelos -> una
@@ -202,6 +186,15 @@ async def link_account(
         data["username"] = username
     if name:
         data["name"] = name
+    implementation = get_account_provider(provider)
+    if implementation is not None:
+        try:
+            implementation.validate_config(data, purpose="save")
+        except ValueError as exc:
+            field = "host" if provider == "ollama" else "url"
+            raise APIError(
+                422, "unsafe_url", str(exc), extra={"field": field}
+            ) from exc
     saved = await _storage.save(data, await _owner(user))
     return _redact(saved)
 
@@ -282,7 +275,10 @@ async def update_account(
     url = str(body.get("url") or "").strip()
     username = str(body.get("username") or "").strip()
     name = str(body.get("name") or "").strip()
-    data: Dict[str, Any] = {"id": account_id, "provider": existing["provider"]}
+    # La edición es parcial: conservar host/url/nombre y validar la configuración
+    # efectiva completa, no solo los campos presentes en esta petición.
+    data: Dict[str, Any] = dict(existing)
+    data.update({"id": account_id, "provider": existing["provider"]})
     if api_key:
         data["api_key"] = api_key
     if host:
@@ -293,6 +289,15 @@ async def update_account(
         data["username"] = username
     if name:
         data["name"] = name
+    implementation = get_account_provider(existing["provider"])
+    if implementation is not None:
+        try:
+            implementation.validate_config(data, purpose="save")
+        except ValueError as exc:
+            field = "host" if existing["provider"] == "ollama" else "url"
+            raise APIError(
+                422, "unsafe_url", str(exc), extra={"field": field}
+            ) from exc
     saved = await _storage.save(data, owner)
     return _redact(saved)
 

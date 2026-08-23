@@ -87,17 +87,10 @@ async def import_models(
 
     conn_type = conn.get("type", "")
 
-    _PROVIDER_TYPE_TO_ACCOUNT: Dict[str, str] = {
-        "claude": "anthropic",
-        "gemini": "google",
-        "openai": "openai",
-        "ollama": "ollama",
-        "nvidia": "nvidia",
-        "qwen": "qwen",
-        "grok": "grok",
-    }
-    account_key = _PROVIDER_TYPE_TO_ACCOUNT.get(conn_type)
-    if not account_key:
+    from app.connections import get_provider
+
+    provider = get_provider(conn_type)
+    if provider is None or not provider.supports_chat:
         raise APIError(
             400,
             "import_models_unsupported",
@@ -108,7 +101,7 @@ async def import_models(
     assert_readable(conn)
     api_key = conn.get("api_key", "")
     host = conn.get("host", "") or conn.get("url", "")
-    models = await fetch_provider_models(account_key, api_key, host)
+    models = await fetch_provider_models(conn_type, api_key, host)
     if not models:
         raise APIError(
             502, "no_models_found", "No se encontraron modelos en este proveedor"

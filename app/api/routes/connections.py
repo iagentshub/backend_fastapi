@@ -13,7 +13,6 @@ from app.api.routes.auth import (
 )
 from app.auth.auth import get_user_role
 from app.config.data import AGENTS_DIR, SKILLS_DIR
-from app.config.security import assert_safe_url
 from app.connections import get_provider
 from app.errors import APIError
 from app.models.llm_orchestration import orchestration_connection_id
@@ -125,37 +124,8 @@ async def _resolve_connections(
     )
 
 
-def _fetch_ollama_models(host: str, api_key: str = "") -> List[str]:
-    """Llama a /api/tags y devuelve los nombres de modelos instalados."""
-    from app.config.security import assert_safe_url
-    from app.connections.ollama import OllamaProvider
-
-    try:
-        assert_safe_url(host)  # C3: prevenir SSRF via hosts de conexiones almacenadas
-        data = OllamaProvider._fetch_tags(host, api_key)
-    except OSError:
-        alt = OllamaProvider._alt_host(host)
-        if not alt:
-            return []
-        try:
-            data = OllamaProvider._fetch_tags(alt, api_key)
-        except (OSError, ValueError) as exc:
-            flog.warning(f"[ollama] Sin catálogo de modelos en {alt}: {exc}")
-            return []
-    except ValueError as exc:
-        # Dos cosas caen aquí y conviene no confundirlas al leer el log: el
-        # ValueError de assert_safe_url (host bloqueado por SSRF) y el
-        # JSONDecodeError de una respuesta que no es JSON. El OSError de red se
-        # trata arriba, en la rama del host alternativo.
-        # La lista vacía es indistinguible de "no hay modelos" en la UI, así que
-        # el motivo real solo existe si se registra.
-        flog.warning(f"[ollama] Catálogo no obtenido de {host}: {exc}")
-        return []
-    return [m["name"] for m in (data.get("models") or []) if m.get("name")]
-
-
-async def _ollama_conns_to_models(
-    ollama_conns: List[Dict[str, Any]],
+async def _expand_model_connections(
+    connections: List[Dict[str, Any]],
 ) -> List[Dict[str, Any]]:
     """
     Convierte todas las conexiones Ollama en una lista de entradas por modelo,
@@ -165,7 +135,7 @@ async def _ollama_conns_to_models(
     seen: set = set()
     result: List[Dict[str, Any]] = []
 
-    for c in ollama_conns:
+    for c in connections:
         model = (c.get("model") or "").strip()
         if not model:
             continue
@@ -176,7 +146,7 @@ async def _ollama_conns_to_models(
         clean["name"] = model
         result.append(clean)
 
-    base_conns = [c for c in ollama_conns if not (c.get("model") or "").strip()]
+    base_conns = [c for c in connections if not (c.get("model") or "").strip()]
     if base_conns:
         base = base_conns[0]
         base_clean = {k: v for k, v in base.items() if k != "api_key"}
@@ -187,9 +157,17 @@ async def _ollama_conns_to_models(
         if base.get(UNREADABLE_FLAG):
             result.append(base_clean)
             return result
-        host = (base.get("host") or "http://localhost:11434").rstrip("/")
-        api_key = str(base.get("api_key") or "")
-        models = await asyncio.to_thread(_fetch_ollama_models, host, api_key)
+        provider = get_provider(str(base.get("type") or ""))
+        try:
+            models = (
+                await asyncio.to_thread(provider.fetch_models, base) if provider else []
+            )
+        except (OSError, ValueError) as exc:
+            flog.warning(
+                f"[{base.get('type')}] Catálogo no obtenido de la conexión "
+                f"{base.get('id')}: {exc}"
+            )
+            models = []
         if models:
             for model in models:
                 if model in seen:
@@ -271,8 +249,6 @@ async def list_connections(
         if c.get("_shared") or c.get("owner_id") in (user, active_group_id):
             c["origin_type"] = compute_origin_type(c)
 
-    non_ollama = [c for c in raw if c.get("type") != "ollama"]
-    ollama_raw = [c for c in raw if c.get("type") == "ollama"]
     if active_group_id != user and await get_user_role(user) != "admin":
         # Las conexiones personales del usuario (incluidas aquí por
         # _list_accessible como cortesía al estar en un group de equipo)
@@ -283,25 +259,27 @@ async def list_connections(
         # Un solo SELECT sobre group_members para las dos listas: la fila del
         # miembro es la misma para todas las conexiones.
         permitido = await _groups.permission_checker(active_group_id, user)
-        non_ollama = [
+        raw = [
             connection
-            for connection in non_ollama
-            if connection.get("owner_id") == user
-            or permitido("connections", connection["id"], "direct")
-        ]
-        ollama_raw = [
-            connection
-            for connection in ollama_raw
+            for connection in raw
             if connection.get("owner_id") == user
             or permitido("connections", connection["id"], "direct")
         ]
 
+    expandable = [
+        connection
+        for connection in raw
+        if (provider := get_provider(str(connection.get("type") or "")))
+        and provider.expand_models_on_list
+    ]
+    regular = [connection for connection in raw if connection not in expandable]
     result: List[Dict[str, Any]] = [
-        {k: v for k, v in c.items() if k != "api_key"} for c in non_ollama
+        {k: v for k, v in connection.items() if k != "api_key"}
+        for connection in regular
     ]
 
-    if ollama_raw:
-        result.extend(await _ollama_conns_to_models(ollama_raw))
+    if expandable:
+        result.extend(await _expand_model_connections(expandable))
 
     result = paginate_materialized(
         result, limit=limit, offset=offset, response=response
@@ -320,7 +298,8 @@ async def save_connection(
     # recursos privados. Se descarta `scope` por compatibilidad con clientes
     # antiguos que todavía puedan enviarlo.
     payload.pop("scope", None)
-    if not get_provider(payload.get("type") or ""):
+    provider = get_provider(payload.get("type") or "")
+    if not provider:
         raise APIError(
             422,
             "invalid_field",
@@ -328,16 +307,13 @@ async def save_connection(
             extra={"field": "connection_type"},
         )
 
-    # SSRF: `url` es el destino al que el chat hace POST más tarde. Se valida
-    # aquí y también antes de cada stream, porque las conexiones que ya están
-    # en la BD no vuelven a pasar por el alta. Ollama queda fuera a propósito:
-    # usa `host` y un servidor en loopback es su caso de uso normal.
-    conn_url = str(payload.get("url") or "").strip()
-    if conn_url and (payload.get("type") or "").lower() != "ollama":
-        try:
-            assert_safe_url(conn_url)
-        except ValueError as exc:
-            raise APIError(422, "unsafe_url", str(exc), extra={"field": "url"}) from exc
+    # La política vive en el proveedor y se repite al usar la conexión para
+    # cubrir registros anteriores a esta validación de escritura.
+    try:
+        provider.validate_config(payload, purpose="save")
+    except ValueError as exc:
+        field = "host" if (payload.get("type") or "").lower() == "ollama" else "url"
+        raise APIError(422, "unsafe_url", str(exc), extra={"field": field}) from exc
 
     # Las conexiones son siempre privadas — se pueden compartir con un group completo
     labels = [lbl for lbl in (payload.get("labels") or []) if lbl != "public"]

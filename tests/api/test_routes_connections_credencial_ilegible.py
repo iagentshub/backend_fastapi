@@ -94,7 +94,9 @@ def test_listado_ollama_ilegible_no_consulta_el_proveedor(admin_client, rotar_cl
     ).json()
     rotar_clave()
 
-    with patch("app.api.routes.connections._fetch_ollama_models") as fetch_models:
+    with patch(
+        "app.connections.ollama.OllamaProvider.fetch_models"
+    ) as fetch_models:
         conns = admin_client.get("/api/connections").json()
 
     rota = next(c for c in conns if c["id"] == created["id"])

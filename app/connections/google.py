@@ -10,16 +10,20 @@ from typing import Any, Dict
 from app.config.providers import PROVIDER_BASE_URLS
 from app.utils.safe_http import safe_urlopen
 
-from .base import BaseProvider, FieldDef, TestResult, register
+from .base import FieldDef, TestResult, register
+from .openai_compatible import OpenAICompatibleProvider
 
 _BASE_URL = PROVIDER_BASE_URLS["gemini"]
 
 
 @register
-class GoogleProvider(BaseProvider):
+class GoogleProvider(OpenAICompatibleProvider):
     type_id = "gemini"
+    account_type_id = "google"
     label = "Google Gemini"
     icon = ""
+    base_url = _BASE_URL
+    default_chat_url = f"{_BASE_URL}/openai/chat/completions"
     fields = [
         FieldDef("api_key", "API Key", "password", "AIza...", required=True),
         FieldDef("model", "Modelo", "text"),
@@ -45,3 +49,17 @@ class GoogleProvider(BaseProvider):
             # ValueError, el JSONDecodeError de una respuesta que no es JSON.
             # El mensaje viaja al usuario en TestResult.detail.
             return TestResult(False, "Error de conexión", str(e))
+
+    @classmethod
+    def fetch_models(cls, config: Dict[str, Any]) -> list[str]:
+        api_key = str(config.get("api_key") or "").strip()
+        request = urllib.request.Request(
+            f"{_BASE_URL}/models?key={api_key}&pageSize=100"
+        )
+        with safe_urlopen(request, timeout=10) as response:
+            data = json.loads(response.read())
+        return [
+            item["name"].split("/")[-1]
+            for item in (data.get("models") or [])
+            if "generateContent" in item.get("supportedGenerationMethods", [])
+        ]

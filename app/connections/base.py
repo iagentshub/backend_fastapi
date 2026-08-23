@@ -4,11 +4,9 @@ from __future__ import annotations
 
 import json
 import urllib.error
-import urllib.request
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any, ClassVar, Dict, List, Optional
-
-from app.utils.safe_http import safe_urlopen
 
 
 @dataclass
@@ -33,11 +31,28 @@ class TestResult:
     detail: str = ""
 
 
+@dataclass(frozen=True)
+class ChatInvocation:
+    """Trabajo bloqueante ya preparado por un proveedor para ``_stream_tokens``."""
+
+    worker: Callable[..., tuple[str, int, int]]
+    args: tuple[Any, ...]
+    url: str = ""
+
+
+class UnsafeProviderURL(ValueError):
+    """La configuración intenta alcanzar un destino que su política no permite."""
+
+
 class BaseProvider:
     type_id: str = ""
     label: str = ""
     icon: str = "🔌"
     category: str = "llm"  # llm | machine | database
+    account_type_id: str = ""
+    supports_chat: bool = False
+    expand_models_on_list: bool = False
+    visible: bool = True
     fields: ClassVar[List[FieldDef]] = []
 
     @classmethod
@@ -52,45 +67,67 @@ class BaseProvider:
             return body[:200]
 
     @classmethod
-    def _test_openai_models(cls, api_key: str, base_url: str) -> TestResult:
-        """Test para proveedores con endpoint /models compatible con OpenAI."""
-        if not api_key:
-            return TestResult(False, "Falta la API Key")
-        try:
-            req = urllib.request.Request(
-                f"{base_url}/models",
-                headers={"Authorization": f"Bearer {api_key}"},
-            )
-            with safe_urlopen(req, timeout=10) as r:
-                data = json.loads(r.read())
-            count = len(data.get("data") or [])
-            return TestResult(True, f"OK — {count} modelos disponibles")
-        except urllib.error.HTTPError as e:
-            return TestResult(False, "Error de autenticación", cls._http_error_msg(e))
-        except (OSError, ValueError) as e:
-            # OSError cubre URLError, timeouts y fallos de socket/DNS; ValueError
-            # cubre el JSONDecodeError de una respuesta que no es JSON. El
-            # mensaje viaja al usuario en TestResult.detail, así que esto no es
-            # un silencio: es el resultado que se muestra al probar la conexión.
-            return TestResult(False, "Error de conexión", str(e))
-
-    @classmethod
     def test(cls, config: Dict[str, Any]) -> TestResult:  # noqa: D102
         raise NotImplementedError
+
+    @classmethod
+    def validate_config(
+        cls, config: Dict[str, Any], *, purpose: str = "use"
+    ) -> None:
+        """Valida sintaxis y política; las subclases controlan sus excepciones."""
+
+    @classmethod
+    def fetch_models(cls, config: Dict[str, Any]) -> List[str]:
+        raise NotImplementedError(f"{cls.type_id} no expone catálogo de modelos")
+
+    @classmethod
+    def prepare_chat(
+        cls,
+        config: Dict[str, Any],
+        *,
+        model: str,
+        history: List[Dict[str, Any]],
+        system: str,
+        temperature: float,
+        max_tokens: int | None,
+        effort_level: str | None,
+        timeout: int | None,
+    ) -> ChatInvocation:
+        raise NotImplementedError(f"{cls.type_id} no soporta chat")
+
+    @classmethod
+    def http_error_detail(cls, status: int, model: str, invocation: ChatInvocation) -> str | None:
+        return None
 
 
 # ── Registry ──────────────────────────────────────────────────────────────────
 
 _REGISTRY: Dict[str, type] = {}
+_ACCOUNT_REGISTRY: Dict[str, type] = {}
 
 
 def register(cls: type) -> type:
     _REGISTRY[cls.type_id] = cls
+    if cls.account_type_id:
+        _ACCOUNT_REGISTRY[cls.account_type_id] = cls
     return cls
 
 
 def get_provider(type_id: str) -> Optional[type]:
     return _REGISTRY.get(type_id)
+
+
+def get_account_provider(type_id: str) -> Optional[type]:
+    return _ACCOUNT_REGISTRY.get(type_id)
+
+
+def account_providers() -> Dict[str, type]:
+    return dict(_ACCOUNT_REGISTRY)
+
+
+def is_chat_provider(type_id: str) -> bool:
+    provider = get_provider(type_id)
+    return bool(provider and provider.supports_chat)
 
 
 def all_providers() -> List[Dict[str, Any]]:
@@ -104,4 +141,5 @@ def all_providers() -> List[Dict[str, Any]]:
             "fields": [f.__dict__ for f in p.fields],
         }
         for p in _REGISTRY.values()
+        if p.visible
     ]
