@@ -32,10 +32,12 @@ def test_tree_discovery_collects_the_real_backend_suite():
 
     assert files
     assert sum(item["count"] for item in files) > 0
-    assert any(
-        item["file"] == __file__.removeprefix(f"{_state._BACKEND_DIR}/")
-        for item in files
-    )
+    # pytest identifica los ficheros con barras `/` en cualquier plataforma.
+    # Recortar el prefijo a mano con `removeprefix(f"{_BACKEND_DIR}/")` no
+    # recorta nada en Windows —ahí `__file__` lleva `\`— y la comparación se
+    # hacía contra una ruta absoluta que no aparece nunca en el árbol.
+    esperado = Path(__file__).relative_to(_state._BACKEND_DIR).as_posix()
+    assert any(item["file"] == esperado for item in files)
 
 
 def test_tree_discovery_does_not_hide_pytest_failures():

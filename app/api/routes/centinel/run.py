@@ -54,6 +54,21 @@ async def get_status(_: str = Depends(require_admin)) -> dict:
     return {k: _run.get(k) for k in _RUN_PERSIST_KEYS}
 
 
+def _entorno_utf8() -> dict:
+    """Copia del entorno con la salida de Python forzada a UTF-8.
+
+    En Windows el subproceso escribe en la codepage de la consola (cp1252),
+    así que los nombres de test con acento —hay varios en tests/auth/gdpr,
+    `test_toda_tabla_con_dueño_se_borra...`— llegaban como bytes que UTF-8 no
+    sabe leer: el árbol reventaba con UnicodeDecodeError y la salida en vivo
+    enseñaba interrogantes en mitad del identificador. Un id mal escrito no es
+    cosmético, es un test que luego no se puede relanzar.
+    """
+    env = os.environ.copy()
+    env["PYTHONIOENCODING"] = "utf-8"
+    return env
+
+
 @router.get("/tree")
 async def get_tree(_: str = Depends(require_admin)) -> dict:
     _guard()
@@ -69,6 +84,7 @@ async def get_tree(_: str = Depends(require_admin)) -> dict:
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=_BACKEND_DIR,
+            env=_entorno_utf8(),
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
         if proc.returncode != 0:
@@ -81,7 +97,7 @@ async def get_tree(_: str = Depends(require_admin)) -> dict:
                 "internal_error",
                 "No se pudo descubrir la suite de tests",
             )
-        return _build_tree(stdout.decode().splitlines())
+        return _build_tree(stdout.decode("utf-8", errors="replace").splitlines())
     except asyncio.TimeoutError:
         raise APIError(504, "upstream_error", "Timeout descubriendo tests")
     except APIError:
@@ -331,7 +347,7 @@ async def _execute_run(run_id: str, target: str) -> None:
     # worker, heredaría esa marca aunque va a crear sus propias bases de
     # datos SQLite efímeras y vacías (ver conftest.py), haciendo que
     # init_db() se salte migrate_schema() y truene con "no such table".
-    env = os.environ.copy()
+    env = _entorno_utf8()
     env.pop(database_config.SCHEMA_MIGRATED_ENV, None)
 
     ticker_task: Optional[asyncio.Task] = None
