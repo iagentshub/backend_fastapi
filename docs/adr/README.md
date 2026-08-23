@@ -36,6 +36,7 @@ Donde se movi贸 un bloque, queda en el c贸digo una l铆nea `# Ver docs/adr/NNN-鈥
 | [010](010-el-grafo-se-arma-en-el-cliente.md) | El backend entrega relaciones; el grafo lo arma el cliente |
 | [011](011-un-solo-limite-de-tamano-y-lo-pone-el-admin.md) | Un solo l铆mite de tama帽o de petici贸n, y lo pone el administrador |
 | [012](012-el-invitado-es-un-usuario-efimero.md) | El invitado es un usuario ef铆mero, no un dict en memoria |
+| [013](013-la-extraccion-no-pierde-texto-en-silencio.md) | La extracci贸n de documentos no pierde texto en silencio |
 
 ## Plantilla
 

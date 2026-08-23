@@ -5,10 +5,9 @@
 # última capa y cambia en cada build, así que ese peso lo volvía a descargar
 # cada instalación en cada actualización.
 #
-# Los cuatro de abajo son todo lo que el contenedor necesita: se comprobó que
-# ni app/ ni main.py leen nada fuera de app/ en runtime — las menciones a
-# docs/ son comentarios «Ver docs/adr/…» y BASE_DIR solo deriva el data dir,
-# que en Docker viene de GAIA_DATA_DIR.
+# El runtime necesita también tests/: Centinel ejecuta la suite que corresponde
+# exactamente al código empaquetado. Sin esa excepción el endpoint /tree existe,
+# pero pytest falla en producción porque /app/tests no está en la imagen.
 #
 # El `*` deja el propio Dockerfile fuera del contexto y eso es correcto:
 # BuildKit lo transfiere aparte. Un builder anterior a BuildKit fallaría, pero
@@ -17,6 +16,7 @@
 *
 
 !app
+!tests
 !main.py
 !docker-entrypoint.sh
 !requirements.lock

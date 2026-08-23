@@ -46,6 +46,20 @@ def _catalogo() -> list[tuple[str, str]]:
     ]
 
 
+# `@nombre@` es la misma convención de marcador que usa el esquema para los
+# tipos por dialecto (`@BOOL@`, `@SERIAL@`…), aquí para una lista `IN` cuya
+# longitud solo se conoce en tiempo de ejecución: el llamador la sustituye por
+# tantos `?` como elementos tenga. Preparar el cuerpo tal cual falla con
+# `unrecognized token: "@"` y dejaba la consulta fuera de los dos motores, que
+# es justo la que nadie mira en PostgreSQL hasta el despliegue. Con un solo
+# marcador la sintaxis, las tablas y las columnas se validan igual.
+_MARCADOR_LISTA = re.compile(r"@[a-z_]+@")
+
+
+def _preparable(cuerpo: str) -> str:
+    return _MARCADOR_LISTA.sub("?", cuerpo)
+
+
 def _motor(identificador: str, cuerpo: str) -> str | None:
     """`sqlite`, `pg` o None si la consulta vale para los dos."""
     from tests.storage.test_sql_en_ficheros import SOLO_PG, SOLO_SQLITE
@@ -79,8 +93,11 @@ def test_todas_las_consultas_preparan_en_sqlite(tmp_path):
                 continue
             # EXPLAIN devuelve el bytecode y no ejecuta el programa, así que los
             # parámetros pueden ir a None sin insertar ni borrar nada.
+            sentencia = _preparable(cuerpo)
             try:
-                conn.execute(f"EXPLAIN {cuerpo}", [None] * cuerpo.count("?"))
+                conn.execute(
+                    f"EXPLAIN {sentencia}", [None] * sentencia.count("?")
+                )
             except sqlite3.Error as exc:
                 rotas.append(f"{identificador}: {exc}")
     finally:
@@ -128,7 +145,7 @@ def test_todas_las_consultas_preparan_en_postgres():
                 try:
                     # prepare() valida sintaxis, tablas y columnas contra el
                     # esquema real sin ejecutar la consulta.
-                    await conn.prepare(traducir(cuerpo))
+                    await conn.prepare(traducir(_preparable(cuerpo)))
                 except asyncpg.PostgresError as exc:
                     rotas.append(f"{identificador}: {exc}")
         finally:

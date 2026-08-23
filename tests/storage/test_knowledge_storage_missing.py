@@ -92,7 +92,7 @@ def test_fetch_url_text_invalid_scheme():
 def test_fetch_url_text_html_content():
     with patch(
         "app.storage.knowledge._download_safe_url",
-        return_value=(b"<p>Contenido de prueba</p>", "text/html; charset=utf-8"),
+        return_value=(b"<p>Contenido de prueba</p>", "text/html; charset=utf-8", False),
     ):
         result = fetch_url_text("https://example.com")
     assert "Contenido" in result
@@ -101,7 +101,7 @@ def test_fetch_url_text_html_content():
 def test_fetch_url_text_plain_content():
     with patch(
         "app.storage.knowledge._download_safe_url",
-        return_value=(b"Texto plano sin HTML", "text/plain; charset=utf-8"),
+        return_value=(b"Texto plano sin HTML", "text/plain; charset=utf-8", False),
     ):
         result = fetch_url_text("https://example.com/file.txt")
     assert "Texto plano" in result
@@ -112,7 +112,7 @@ def test_fetch_url_text_charset_extraction():
     body = "<p>Ñoño</p>".encode("latin-1")
     with patch(
         "app.storage.knowledge._download_safe_url",
-        return_value=(body, "text/html; charset=latin-1"),
+        return_value=(body, "text/html; charset=latin-1", False),
     ):
         result = fetch_url_text("https://example.com")
     assert "Ñoño" in result
@@ -122,7 +122,7 @@ def test_fetch_url_text_no_charset_defaults_utf8():
     """Sin charset en Content-Type debe usarse utf-8 por defecto."""
     with patch(
         "app.storage.knowledge._download_safe_url",
-        return_value=(b"<p>OK</p>", "text/html"),
+        return_value=(b"<p>OK</p>", "text/html", False),
     ):
         result = fetch_url_text("https://example.com")
     assert "OK" in result
@@ -145,9 +145,10 @@ def test_download_connects_to_the_validated_ip():
         patch("app.utils.safe_http.resolve_safe_host", return_value="93.184.216.34"),
         patch("app.utils.safe_http._PinnedHTTPConnection", return_value=connection) as cls,
     ):
-        body, _content_type = _download_safe_url("http://example.com/data")
+        body, _content_type, truncated = _download_safe_url("http://example.com/data")
     cls.assert_called_once_with("example.com", "93.184.216.34", 80, 20)
     assert body == b"seguro"
+    assert truncated is False
 
 
 def test_download_revalidates_redirect_target():

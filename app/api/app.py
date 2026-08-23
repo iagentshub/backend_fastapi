@@ -64,6 +64,7 @@ from app.middleware.ratelimit import purge_expired_windows
 from app.middleware.request_logging import RequestLoggerMiddleware
 from app.middleware.security import SecurityHeadersMiddleware
 from app.pagination.http import PAGINATION_HEADERS
+from app.services.document_executor import shutdown_document_executor
 from app.services.llm_executor import shutdown_llm_executor
 from app.services.workflow_run_executor import (
     stop_workflow_runs,
@@ -165,6 +166,7 @@ async def _lifespan(app: FastAPI):
         await asyncio.gather(*tasks, return_exceptions=True)
         await stop_workflow_runs()
         shutdown_llm_executor()
+        shutdown_document_executor()
         await close_db_pool()
         flog.info("iAgents Hub detenido")
 

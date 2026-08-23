@@ -10,7 +10,7 @@ from unittest.mock import patch
 import pytest
 
 from app.auth.auth import create_token, register_user
-from app.storage.knowledge import KnowledgeStorage
+from app.storage.knowledge import ExtractedDocument, KnowledgeStorage
 
 # ── Helpers ────────────────────────────────────────────────────────────────────
 
@@ -69,7 +69,8 @@ def test_list_items_filter_by_type(alice):
     )
     # URL item via mock
     with patch(
-        "app.api.routes.knowledge.items.fetch_url_text", return_value="contenido url"
+        "app.api.routes.knowledge.items.fetch_url_document",
+        return_value=ExtractedDocument(text="contenido url"),
     ):
         alice.post(
             "/api/knowledge/url", json={"url": "https://example.com", "title": "Web"}
@@ -388,11 +389,19 @@ def test_pack_upload_session_continues_after_failure_and_retries_file(alice):
         )
         assert uploaded.status_code == 200
 
-    failed = alice.post(
-        f"/api/knowledge/packs/upload-sessions/{session_id}/files",
-        data={"relative_path": "docs/b.md", "reported_size": 10 * 1024 * 1024 + 1},
-        files={"file": ("b.md", b"x" * (10 * 1024 * 1024 + 1), "text/markdown")},
-    )
+    # El techo por archivo lo pone ahora `max_request_bytes`, no esta ruta: lo
+    # que sigue rechazando aquí es el acumulado de la sesión, que se reparte en
+    # varias peticiones y por eso ningún middleware puede contarlo. Se baja en
+    # caliente porque llegar al real exige subir medio giga.
+    import app.api.routes.knowledge.pack_sessions as sessions_route
+
+    with pytest.MonkeyPatch.context() as techo:
+        techo.setattr(sessions_route, "_PACK_SESSION_MAX_TOTAL_BYTES", 8)
+        failed = alice.post(
+            f"/api/knowledge/packs/upload-sessions/{session_id}/files",
+            data={"relative_path": "docs/b.md", "reported_size": 9},
+            files={"file": ("b.md", b"x" * 9, "text/markdown")},
+        )
     assert failed.status_code == 413
 
     retried = alice.post(
@@ -521,8 +530,8 @@ def test_add_text_item_missing_content(alice):
 
 def test_add_url_item_mocked(alice):
     with patch(
-        "app.api.routes.knowledge.items.fetch_url_text",
-        return_value="texto extraído de la web",
+        "app.api.routes.knowledge.items.fetch_url_document",
+        return_value=ExtractedDocument(text="texto extraído de la web"),
     ):
         r = alice.post(
             "/api/knowledge/url",
@@ -542,7 +551,7 @@ def test_add_url_item_missing_url(alice):
 
 def test_add_url_item_fetch_error(alice):
     with patch(
-        "app.api.routes.knowledge.items.fetch_url_text",
+        "app.api.routes.knowledge.items.fetch_url_document",
         side_effect=Exception("timeout"),
     ):
         r = alice.post("/api/knowledge/url", json={"url": "https://bad.example.com"})
@@ -601,8 +610,10 @@ def test_upload_document_preserves_content_language_labels(alice):
 
 def test_upload_image_document_uses_ocr(alice, monkeypatch):
     monkeypatch.setattr(
-        "app.api.routes.knowledge.items.extract_document_text",
-        lambda content, filename, mime: "Texto reconocido en la imagen",
+        "app.api.routes.knowledge._shared.extract_document",
+        lambda content, filename, mime: ExtractedDocument(
+            text="Texto reconocido en la imagen"
+        ),
     )
     r = alice.post(
         "/api/knowledge/document",
@@ -794,3 +805,70 @@ def test_upload_document_requires_auth(client):
         files={"file": ("nota.txt", b"contenido", "text/plain")},
     )
     assert r.status_code == 401
+
+
+def test_documento_recortado_lo_dice_en_la_ficha(alice, monkeypatch):
+    """El aviso tiene que llegar al cliente, no quedarse en el extractor.
+
+    Sin esto la ficha guarda el texto a medias con un `char_count` que es el del
+    recorte, y no hay nada —ni columna, ni campo, ni log— que distinga eso de un
+    documento que entró entero. El original no se conserva: si el aviso se
+    pierde aquí, se pierde para siempre.
+    """
+    monkeypatch.setattr(
+        "app.api.routes.knowledge._shared.extract_document",
+        lambda content, filename, mime: ExtractedDocument(
+            text="lo que cupo",
+            truncated=True,
+            source_chars=1_500_000,
+            reason="max_chars",
+        ),
+    )
+    r = alice.post(
+        "/api/knowledge/document",
+        files={"file": ("enorme.pdf", b"%PDF-1.4", "application/pdf")},
+    )
+    assert r.status_code == 200
+    ficha = r.json()
+    assert ficha["content_truncated"] is True
+    assert ficha["truncation_reason"] == "max_chars"
+    assert ficha["source_char_count"] == 1_500_000
+    assert ficha["char_count"] == len("lo que cupo")
+
+    listado = alice.get("/api/knowledge?type=document").json()
+    fila = next(item for item in listado if item["id"] == ficha["id"])
+    assert fila["content_truncated"] is True
+    assert fila["source_char_count"] == 1_500_000
+
+
+def test_documento_completo_no_se_marca(alice, monkeypatch):
+    monkeypatch.setattr(
+        "app.api.routes.knowledge._shared.extract_document",
+        lambda content, filename, mime: ExtractedDocument(
+            text="texto entero", source_chars=len("texto entero")
+        ),
+    )
+    r = alice.post(
+        "/api/knowledge/document",
+        files={"file": ("normal.pdf", b"%PDF-1.4", "application/pdf")},
+    )
+    ficha = r.json()
+    assert ficha["content_truncated"] is False
+    assert ficha["source_char_count"] == ficha["char_count"]
+
+
+def test_un_documento_grande_ya_no_lo_rechaza_esta_ruta(alice):
+    """El techo de subida lo pone `max_request_bytes`, no un literal aquí.
+
+    Había un segundo límite de 10 MB escrito a mano y por debajo del panel: con
+    el administrador en «sin límite», la interfaz dejaba elegir el fichero y era
+    esa línea la que lo rechazaba, con un número que no aparece en ninguna
+    pantalla. Ver docs/adr/011-un-solo-limite-de-tamano-y-lo-pone-el-admin.md
+    """
+    grande = b"contenido de prueba\n" * 600_000  # ~11,4 MB
+    r = alice.post(
+        "/api/knowledge/document",
+        files={"file": ("grande.txt", grande, "text/plain")},
+    )
+    assert r.status_code == 200
+    assert r.json()["size_bytes"] == len(grande)

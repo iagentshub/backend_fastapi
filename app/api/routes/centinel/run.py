@@ -54,8 +54,8 @@ async def get_status(_: str = Depends(require_admin)) -> dict:
     return {k: _run.get(k) for k in _RUN_PERSIST_KEYS}
 
 
-def _entorno_utf8() -> dict:
-    """Copia del entorno con la salida de Python forzada a UTF-8.
+def _entorno_pytest() -> dict[str, str]:
+    """Entorno determinista de pytest, sin configuración ni secretos vivos.
 
     En Windows el subproceso escribe en la codepage de la consola (cp1252),
     así que los nombres de test con acento —hay varios en tests/auth/gdpr,
@@ -63,9 +63,31 @@ def _entorno_utf8() -> dict:
     sabe leer: el árbol reventaba con UnicodeDecodeError y la salida en vivo
     enseñaba interrogantes en mitad del identificador. Un id mal escrito no es
     cosmético, es un test que luego no se puede relanzar.
+
+    El subproceso no necesita la configuración GAIA/Stripe de la instancia y
+    no debe heredar credenciales genéricas del host. `tests/conftest.py` fija
+    su propio data dir, SQLite y valores de test antes de importar la app.
     """
     env = os.environ.copy()
+    sensitive_suffixes = (
+        "_API_KEY",
+        "_CREDENTIAL",
+        "_CREDENTIALS",
+        "_PASS",
+        "_PASSWORD",
+        "_PRIVATE_KEY",
+        "_SECRET",
+        "_TOKEN",
+    )
+    for key in tuple(env):
+        if (
+            key == database_config.DATABASE_URL_ENV
+            or key.startswith(("GAIA_", "STRIPE_"))
+            or key.upper().endswith(sensitive_suffixes)
+        ):
+            env.pop(key, None)
     env["PYTHONIOENCODING"] = "utf-8"
+    env["PYTHONDONTWRITEBYTECODE"] = "1"
     return env
 
 
@@ -81,10 +103,12 @@ async def get_tree(_: str = Depends(require_admin)) -> dict:
             "--collect-only",
             "-q",
             "--no-header",
+            "-p",
+            "no:cacheprovider",
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE,
             cwd=_BACKEND_DIR,
-            env=_entorno_utf8(),
+            env=_entorno_pytest(),
         )
         stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=30)
         if proc.returncode != 0:
@@ -347,8 +371,8 @@ async def _execute_run(run_id: str, target: str) -> None:
     # worker, heredaría esa marca aunque va a crear sus propias bases de
     # datos SQLite efímeras y vacías (ver conftest.py), haciendo que
     # init_db() se salte migrate_schema() y truene con "no such table".
-    env = _entorno_utf8()
-    env.pop(database_config.SCHEMA_MIGRATED_ENV, None)
+    # `_entorno_pytest` elimina toda configuración GAIA, incluida esa marca.
+    env = _entorno_pytest()
 
     ticker_task: Optional[asyncio.Task] = None
     try:

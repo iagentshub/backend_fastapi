@@ -47,7 +47,10 @@ _groups = GroupStorage()
 
 _VALID_SCOPES = {"public", "private", "all"}
 
-# 50 MB — igual límite que documenta el plan de la Fase 1.
+# Defensa del proceso, no límite de subida: el binario se guarda en base64
+# dentro de una columna, así que 50 MB de fichero son ~67 MB de fila. El
+# tamaño que el usuario puede subir lo decide `max_request_bytes` desde el
+# panel y muerde antes salvo cuando el administrador lo deja sin límite.
 _MAX_TOOL_BINARY_BYTES = 50 * 1024 * 1024
 
 

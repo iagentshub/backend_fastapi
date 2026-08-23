@@ -11,6 +11,7 @@ _OWN_KEYS = {
     "id", "name", "description", "icon", "owner_id", "created_by", "scope",
     "labels", "is_active", "deactivated_at", "created_at", "updated_at",
     "resource_type", "title", "type", "source", "content", "char_count",
+    "source_char_count", "content_truncated", "truncation_reason",
 }
 
 
@@ -23,6 +24,14 @@ class KnowledgeItem(BaseResource):
     source: str = ""
     content: str = ""
     char_count: int = 0
+
+    #: Caracteres del original y si la extracción se dejó algo fuera. Van en el
+    #: modelo, no en `extra`, porque la interfaz tiene que poder avisar: un
+    #: documento a medias que se enseña como entero es la forma en que esto
+    #: pasaba desapercibido.
+    source_char_count: int = 0
+    content_truncated: bool = False
+    truncation_reason: str = ""
 
     extra: Dict[str, Any] = field(default_factory=dict)
 
@@ -39,6 +48,9 @@ class KnowledgeItem(BaseResource):
             source=str(data.get("source") or "").strip(),
             content=str(data.get("content") or ""),
             char_count=int(data.get("char_count") or 0),
+            source_char_count=int(data.get("source_char_count") or 0),
+            content_truncated=bool(data.get("content_truncated") or False),
+            truncation_reason=str(data.get("truncation_reason") or ""),
             labels=[str(lbl) for lbl in (data.get("labels") or []) if lbl],
             scope=data.get("scope") or "private",  # type: ignore[arg-type]
             owner_id=str(data["owner_id"]).strip() or None
@@ -67,6 +79,9 @@ class KnowledgeItem(BaseResource):
             "source": self.source,
             "content": self.content,
             "char_count": self.char_count,
+            "source_char_count": self.source_char_count,
+            "content_truncated": self.content_truncated,
+            "truncation_reason": self.truncation_reason,
             "labels": self.labels,
             "scope": self.scope,
             "owner_id": self.owner_id,

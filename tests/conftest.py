@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import atexit
 import json
 import os
 import shutil
@@ -19,8 +20,20 @@ from pathlib import Path
 # lo corrige. Se sobrescribe SIEMPRE (no setdefault): los tests nunca deben depender
 # del entorno ambiente del desarrollador, ni siquiera si algún día se configura
 # GAIA_DATA_DIR ahí para conveniencia del servidor de desarrollo.
-os.environ["GAIA_DATA_DIR"] = tempfile.mkdtemp(prefix="gaia_test_collection_")
+_COLLECTION_DATA_DIR = Path(tempfile.mkdtemp(prefix="gaia_test_collection_"))
+os.environ["GAIA_DATA_DIR"] = str(_COLLECTION_DATA_DIR)
 os.environ["DATABASE_URL"] = ""
+
+
+def _cleanup_collection_data_dir() -> None:
+    """Retira el aislamiento creado antes de la colección de pytest."""
+    shutil.rmtree(_COLLECTION_DATA_DIR, ignore_errors=True)
+
+
+# `tmp_data_dir` no llega a instanciarse con `--collect-only`, de modo que su
+# finalizer no puede limpiar este directorio previo a los fixtures. atexit se
+# ejecuta tanto tras una suite normal como tras el descubrimiento de Centinel.
+atexit.register(_cleanup_collection_data_dir)
 
 # bcrypt con las 12 rondas de producción cuesta ~235 ms por hash, y la suite
 # tiene 141 puntos de registro de usuario: tests/auth se pasaba el 91% de su
@@ -29,8 +42,8 @@ os.environ["DATABASE_URL"] = ""
 # el techo en app/config/session.py.
 os.environ["GAIA_BCRYPT_ROUNDS"] = "4"
 
-import pytest
-from fastapi.testclient import TestClient
+import pytest  # noqa: E402
+from fastapi.testclient import TestClient  # noqa: E402
 
 
 def pytest_addoption(parser):

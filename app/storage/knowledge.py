@@ -4,6 +4,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
+from dataclasses import dataclass
 from html.parser import HTMLParser
 from typing import Any, Dict, List, Optional
 
@@ -42,6 +44,8 @@ def _coerce_active(d: Dict[str, Any]) -> Dict[str, Any]:
         d["labels"] = ensure_origin_label(["private"])
     if "is_active" in d:
         d["is_active"] = bool(d["is_active"])
+    if "content_truncated" in d:
+        d["content_truncated"] = bool(d["content_truncated"])
     return d
 
 
@@ -78,12 +82,67 @@ class _TextParser(HTMLParser):
 
 # ── Public helpers ─────────────────────────────────────────────────────────────
 
-MAX_CONTENT = 500_000  # max characters stored per item
-_MAX_DOWNLOAD_BYTES = 2 * 1024 * 1024
+# Cota de proceso, no de producto. Hasta 2026-08 esto valía 500 000 y era el
+# recorte real de todo lo que se importaba: un PDF de 62 KB con 400 páginas
+# perdía el 69 % de su texto, sin log, sin marca en la ficha y sin nada en la
+# interfaz — el original no se guarda, así que lo cortado no se podía recuperar.
+# El número de hoy está por encima de cualquier documento legítimo (unas 5 000
+# páginas de libro) y lo único que defiende es la memoria del proceso. Cuando se
+# alcanza ya no se pierde en silencio: se anota en la ficha y se registra.
+# Ver docs/adr/013-la-extraccion-no-pierde-texto-en-silencio.md
+MAX_EXTRACTED_CHARS = 20_000_000
+
+# Lo mismo para la descarga de una URL: 2 MB cortaba páginas largas a mitad de
+# HTML y devolvía un texto incompleto indistinguible de uno entero.
+_MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024
+
+# Un PDF malformado —contenidos anidados, fuentes rotas, árbol de páginas con
+# ciclos— puede tener a pypdf dando vueltas sin lanzar nada. El reloj se mira
+# entre páginas, que es donde sí se puede abandonar; dentro de una página no hay
+# forma de interrumpir a pypdf desde Python.
+_PDF_DEADLINE_SECONDS = 120.0
 
 
-def _download_safe_url(url: str) -> tuple[bytes, str]:
-    """Descarga con DNS fijado y valida de nuevo cada redirección."""
+@dataclass(frozen=True)
+class ExtractedDocument:
+    """Texto extraído y, si no cupo entero, por qué.
+
+    Existe para que truncar deje de ser invisible. `extract_document_text`
+    devuelve solo el texto y sigue valiendo donde los metadatos dan igual, pero
+    ninguna ruta de `app/api/routes/` puede usarla: `tests/storage/
+    test_extraccion_sin_perdida_silenciosa.py` falla si reaparece allí.
+    """
+
+    text: str
+    truncated: bool = False
+    source_chars: int = 0
+    reason: str = ""
+
+    @property
+    def lost_chars(self) -> int:
+        return max(0, self.source_chars - len(self.text))
+
+
+def _bounded(text: str, *, source_chars: int | None = None) -> ExtractedDocument:
+    """Aplica la cota de proceso dejando constancia si llega a morder."""
+    total = len(text) if source_chars is None else source_chars
+    if len(text) <= MAX_EXTRACTED_CHARS:
+        return ExtractedDocument(text=text, source_chars=total)
+    return ExtractedDocument(
+        text=text[:MAX_EXTRACTED_CHARS],
+        truncated=True,
+        source_chars=total,
+        reason="max_chars",
+    )
+
+
+def _download_safe_url(url: str) -> tuple[bytes, str, bool]:
+    """Descarga con DNS fijado y valida de nuevo cada redirección.
+
+    El tercer elemento dice si la respuesta llegó al tope y quedó cortada. Se
+    lee un byte de más justo para poder distinguirlo: leer exactamente el tope
+    devuelve lo mismo para una página que cabe justa y para una que no cabe.
+    """
     import urllib.request
 
     request = urllib.request.Request(
@@ -95,12 +154,15 @@ def _download_safe_url(url: str) -> tuple[bytes, str]:
     )
     with safe_urlopen(request, timeout=20, raise_for_status=False) as response:
         content_type = response.headers.get("Content-Type", "text/html")
-        return response.read(_MAX_DOWNLOAD_BYTES), content_type
+        raw = response.read(_MAX_DOWNLOAD_BYTES + 1)
+        if len(raw) > _MAX_DOWNLOAD_BYTES:
+            return raw[:_MAX_DOWNLOAD_BYTES], content_type, True
+        return raw, content_type, False
 
 
-def fetch_url_text(url: str) -> str:
-    """Download a URL and return its plain text (max 2 MB)."""
-    raw, content_type = _download_safe_url(url)
+def fetch_url_document(url: str) -> ExtractedDocument:
+    """Descarga una URL y devuelve su texto plano, diciendo si no cupo entero."""
+    raw, content_type, download_truncated = _download_safe_url(url)
 
     charset = "utf-8"
     if "charset=" in content_type:
@@ -116,13 +178,109 @@ def fetch_url_text(url: str) -> str:
             # en UTF-8, que es lo que sirve la web moderna. No se registra: pasa
             # con cabeceras mal escritas y el reintento resuelve el caso.
             parser.feed(raw.decode("utf-8", errors="replace"))
-        return parser.text()[:MAX_CONTENT]
+        extracted = _bounded(parser.text())
+    else:
+        extracted = _bounded(raw.decode(charset, errors="replace"))
 
-    return raw.decode(charset, errors="replace")[:MAX_CONTENT]
+    if download_truncated and not extracted.truncated:
+        # El texto extraído cabe entero, pero viene de una descarga que se
+        # cortó: sin esto la ficha diría que está completa.
+        return ExtractedDocument(
+            text=extracted.text,
+            truncated=True,
+            source_chars=len(extracted.text),
+            reason="max_download_bytes",
+        )
+    return extracted
 
 
-def extract_document_text(content_bytes: bytes, filename: str, mime: str = "") -> str:
-    """Extract text from a textual document, PDF, or supported image."""
+def fetch_url_text(url: str) -> str:
+    """Texto plano de una URL, sin los metadatos de recorte."""
+    return fetch_url_document(url).text
+
+
+def _extract_pdf(content_bytes: bytes) -> ExtractedDocument:
+    """Recorre las páginas acumulando, y para en cuanto sabe que sobra."""
+    import io
+
+    try:
+        from pypdf import PdfReader
+    except ImportError as exc:
+        raise ValueError("pypdf no instalado — reconstruye la imagen Docker") from exc
+
+    reader = PdfReader(io.BytesIO(content_bytes))
+    total_pages = len(reader.pages)
+    deadline = time.monotonic() + _PDF_DEADLINE_SECONDS
+
+    pages: list[str] = []
+    chars = 0
+    reason = ""
+    pages_read = 0
+    for page in reader.pages:
+        # El corte se decidía antes con un `[:MAX_CONTENT]` sobre el resultado:
+        # se extraía el documento entero para tirar casi todo. Cortando aquí, un
+        # documento largo legítimo deja de pagar el trabajo que ya se sabe
+        # descartado.
+        if chars >= MAX_EXTRACTED_CHARS:
+            reason = "max_chars"
+            break
+        if time.monotonic() > deadline:
+            reason = "timeout"
+            break
+        text = page.extract_text() or ""
+        pages.append(text)
+        chars += len(text) + 1
+        pages_read += 1
+
+    joined = "\n".join(pages)
+    if not reason:
+        return _bounded(joined)
+    return ExtractedDocument(
+        text=joined[:MAX_EXTRACTED_CHARS],
+        truncated=True,
+        # No se leyó el resto, así que el total real no se conoce: se estima con
+        # lo que costó de media lo leído. Es una cifra para enseñar al usuario,
+        # no un dato exacto, y quedarse con 0 sería peor.
+        source_chars=(
+            int(len(joined) * total_pages / pages_read) if pages_read else len(joined)
+        ),
+        reason=reason,
+    )
+
+
+def _extract_image(content_bytes: bytes) -> ExtractedDocument:
+    import io
+
+    try:
+        import pytesseract
+        from PIL import Image, UnidentifiedImageError
+        from pillow_heif import register_heif_opener
+    except ImportError as exc:
+        raise ValueError("OCR no instalado — reconstruye la imagen Docker") from exc
+
+    # Evita que una imagen comprimida pequena expanda a una cantidad de
+    # memoria desproporcionada durante la decodificacion.
+    Image.MAX_IMAGE_PIXELS = 40_000_000
+    register_heif_opener()
+    try:
+        with Image.open(io.BytesIO(content_bytes)) as source:
+            source.verify()
+        with Image.open(io.BytesIO(content_bytes)) as source:
+            source.load()
+            image = source.convert("RGB")
+            image.thumbnail((5000, 5000))
+    except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as exc:
+        raise ValueError("La imagen no es valida o no se puede leer") from exc
+    try:
+        return _bounded(pytesseract.image_to_string(image, lang="spa+eng", timeout=30))
+    except (RuntimeError, pytesseract.TesseractError) as exc:
+        raise ValueError("No se pudo extraer texto de la imagen") from exc
+
+
+def extract_document(
+    content_bytes: bytes, filename: str, mime: str = ""
+) -> ExtractedDocument:
+    """Extrae el texto de un documento, PDF o imagen, y si sobró algo, lo dice."""
     name_lower = (filename or "").lower()
     is_pdf = name_lower.endswith(".pdf") or "pdf" in mime.lower()
     is_image = name_lower.endswith(
@@ -130,56 +288,26 @@ def extract_document_text(content_bytes: bytes, filename: str, mime: str = "") -
     ) or mime.lower().startswith("image/")
 
     if is_pdf:
-        import io
-
-        try:
-            from pypdf import PdfReader
-        except ImportError as exc:
-            raise ValueError(
-                "pypdf no instalado — reconstruye la imagen Docker"
-            ) from exc
-        reader = PdfReader(io.BytesIO(content_bytes))
-        pages = [page.extract_text() or "" for page in reader.pages]
-        return "\n".join(pages)[:MAX_CONTENT]
-
+        return _extract_pdf(content_bytes)
     if is_image:
-        import io
-
-        try:
-            import pytesseract
-            from PIL import Image, UnidentifiedImageError
-            from pillow_heif import register_heif_opener
-        except ImportError as exc:
-            raise ValueError("OCR no instalado — reconstruye la imagen Docker") from exc
-
-        # Evita que una imagen comprimida pequena expanda a una cantidad de
-        # memoria desproporcionada durante la decodificacion.
-        Image.MAX_IMAGE_PIXELS = 40_000_000
-        register_heif_opener()
-        try:
-            with Image.open(io.BytesIO(content_bytes)) as source:
-                source.verify()
-            with Image.open(io.BytesIO(content_bytes)) as source:
-                source.load()
-                image = source.convert("RGB")
-                image.thumbnail((5000, 5000))
-        except (UnidentifiedImageError, OSError, Image.DecompressionBombError) as exc:
-            raise ValueError("La imagen no es valida o no se puede leer") from exc
-        try:
-            return pytesseract.image_to_string(
-                image,
-                lang="spa+eng",
-                timeout=30,
-            )[:MAX_CONTENT]
-        except (RuntimeError, pytesseract.TesseractError) as exc:
-            raise ValueError("No se pudo extraer texto de la imagen") from exc
+        return _extract_image(content_bytes)
 
     for enc in ("utf-8", "latin-1", "cp1252"):
         try:
-            return content_bytes.decode(enc)[:MAX_CONTENT]
+            return _bounded(content_bytes.decode(enc))
         except (UnicodeDecodeError, LookupError):
             continue
-    return content_bytes.decode("utf-8", errors="replace")[:MAX_CONTENT]
+    return _bounded(content_bytes.decode("utf-8", errors="replace"))
+
+
+def extract_document_text(content_bytes: bytes, filename: str, mime: str = "") -> str:
+    """Texto de un documento, sin los metadatos de recorte.
+
+    Ninguna ruta puede usar esta: perder el `truncated` es exactamente cómo un
+    documento a medias acababa guardado como si estuviera entero. Lo guarda
+    `tests/storage/test_extraccion_sin_perdida_silenciosa.py`.
+    """
+    return extract_document(content_bytes, filename, mime).text
 
 
 # ── Storage ────────────────────────────────────────────────────────────────────
@@ -263,7 +391,8 @@ class KnowledgeStorage(ResourceStorage):
             params.extend(permission_filter.params)
         where = " AND ".join(f"({clause})" for clause in clauses)
         columns = (
-            "k.id,k.owner_id,k.type,k.title,k.source,k.char_count,k.mime_type,"
+            "k.id,k.owner_id,k.type,k.title,k.source,k.char_count,"
+            "k.source_char_count,k.content_truncated,k.truncation_reason,k.mime_type,"
             "k.size_bytes,k.checksum,k.labels,k.is_active,k.deactivated_at,"
             "k.created_at,k.updated_at,k.pack_id,k.pack_relative_path,k.pack_kind"
         )
@@ -359,6 +488,7 @@ class KnowledgeStorage(ResourceStorage):
     ) -> List[Dict[str, Any]]:
         query = (
             "SELECT k.id, k.owner_id, k.type, k.title, k.source, k.char_count, "
+            "k.source_char_count, k.content_truncated, k.truncation_reason, "
             "k.mime_type, k.size_bytes, k.checksum, "
             "k.labels, k.is_active, k.deactivated_at, k.created_at, k.updated_at, "
             "k.pack_id, k.pack_relative_path, k.pack_kind FROM knowledge_items k"
@@ -413,6 +543,7 @@ class KnowledgeStorage(ResourceStorage):
         async with open_db() as conn:
             row = await conn.fetchone(
                 f"SELECT k.id, k.owner_id, k.type, k.title, k.source, k.content, k.char_count, "
+                f"k.source_char_count, k.content_truncated, k.truncation_reason, "
                 f"k.mime_type, k.size_bytes, k.checksum, "
                 f"k.labels, k.is_active, k.deactivated_at, k.created_at, k.updated_at, "
                 f"k.pack_id, k.pack_relative_path, k.pack_kind FROM knowledge_items k "
@@ -433,6 +564,7 @@ class KnowledgeStorage(ResourceStorage):
         mime_type: str = "",
         size_bytes: int = 0,
         checksum: Optional[str] = None,
+        extraction: Optional[ExtractedDocument] = None,
         item_id: Optional[str] = None,
         conn: Optional[AsyncConn] = None,
         assume_new: bool = False,
@@ -457,6 +589,7 @@ class KnowledgeStorage(ResourceStorage):
                     mime_type,
                     size_bytes,
                     normalized_checksum,
+                    extraction,
                     existing["created_at"] if existing else now,
                     now,
                 )
@@ -475,6 +608,7 @@ class KnowledgeStorage(ResourceStorage):
                 mime_type,
                 size_bytes,
                 normalized_checksum,
+                extraction,
                 existing["created_at"] if existing else now,
                 now,
             )
@@ -490,6 +624,12 @@ class KnowledgeStorage(ResourceStorage):
                 "name": title,
                 "source": source,
                 "content": content,
+                "char_count": len(content),
+                "source_char_count": (
+                    extraction.source_chars if extraction else len(content)
+                ),
+                "content_truncated": bool(extraction and extraction.truncated),
+                "truncation_reason": extraction.reason if extraction else "",
                 "mime_type": mime_type,
                 "size_bytes": size_bytes,
                 "checksum": normalized_checksum,
@@ -512,9 +652,12 @@ class KnowledgeStorage(ResourceStorage):
         mime_type: str,
         size_bytes: int,
         checksum: str,
+        extraction: Optional[ExtractedDocument],
         created_at: str,
         updated_at: str,
     ) -> None:
+        # Sin `extraction` el contenido llega de una edición manual o de una
+        # copia, no de una extracción: no hay nada que se haya quedado fuera.
         await conn.execute(
             sql("queries/knowledge:upsert_item"),
             (
@@ -525,6 +668,9 @@ class KnowledgeStorage(ResourceStorage):
                 source,
                 content,
                 len(content),
+                extraction.source_chars if extraction else len(content),
+                1 if extraction and extraction.truncated else 0,
+                extraction.reason if extraction else "",
                 mime_type,
                 size_bytes,
                 checksum,

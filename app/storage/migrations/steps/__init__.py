@@ -38,6 +38,8 @@ from app.storage.migrations.steps.knowledge import (
     _knowledge_pack_upload_sessions_sqlite,
     _knowledge_packs_pg,
     _knowledge_packs_sqlite,
+    _knowledge_truncation_metadata_pg,
+    _knowledge_truncation_metadata_sqlite,
     _remove_obsolete_knowledge_pack_items_pg,
     _remove_obsolete_knowledge_pack_items_sqlite,
 )
@@ -129,6 +131,7 @@ MIGRATION_PAIRS: tuple[MigrationPair, ...] = (
     MigrationPair(33, "gdpr_legacy_owner_orphans", _gdpr_legacy_owner_orphans_sqlite, _gdpr_legacy_owner_orphans_pg),
     MigrationPair(34, "resource_execution_leases", _resource_execution_leases, _resource_execution_leases),
     MigrationPair(35, "content_activation", _content_activation_sqlite, _content_activation_pg),
+    MigrationPair(36, "knowledge_truncation_metadata", _knowledge_truncation_metadata_sqlite, _knowledge_truncation_metadata_pg),
 )
 
 __all__ = ["MIGRATION_PAIRS"]

@@ -326,3 +326,63 @@ async def _remove_obsolete_knowledge_pack_items_sqlite(conn: Any) -> None:
 async def _remove_obsolete_knowledge_pack_items_pg(conn: Any) -> None:
     """Consolida cualquier relación legacy y elimina su tabla auxiliar."""
     await _knowledge_items_pack_membership_pg(conn)
+
+
+async def _knowledge_truncation_metadata_sqlite(conn: Any) -> None:
+    """Deja constancia de lo que la cota de extracción se comió.
+
+    Hasta ahora el recorte a 500 000 caracteres no dejaba rastro de ningún tipo:
+    `char_count` guardaba el número ya recortado y el original no se conserva.
+    Las filas anteriores a esta migración no se pueden reparar —el texto que
+    falta no está en ninguna parte—, así que se marcan las que tocaron el techo
+    exacto, que es la única señal que queda de que probablemente había más.
+    """
+    cursor = await conn.execute("PRAGMA table_info(knowledge_items)")
+    columns = {row[1] for row in await cursor.fetchall()}
+    if "source_char_count" not in columns:
+        await conn.execute(
+            "ALTER TABLE knowledge_items ADD COLUMN "
+            "source_char_count INTEGER NOT NULL DEFAULT 0"
+        )
+    if "content_truncated" not in columns:
+        await conn.execute(
+            "ALTER TABLE knowledge_items ADD COLUMN "
+            "content_truncated INTEGER NOT NULL DEFAULT 0"
+        )
+    if "truncation_reason" not in columns:
+        await conn.execute(
+            "ALTER TABLE knowledge_items ADD COLUMN "
+            "truncation_reason TEXT NOT NULL DEFAULT ''"
+        )
+    await conn.execute(
+        "UPDATE knowledge_items SET content_truncated=1,"
+        "truncation_reason='legacy_max_content' WHERE char_count=500000"
+    )
+    await conn.execute(
+        "UPDATE knowledge_items SET source_char_count=char_count "
+        "WHERE source_char_count=0"
+    )
+
+
+async def _knowledge_truncation_metadata_pg(conn: Any) -> None:
+    """Deja constancia de lo que la cota de extracción se comió."""
+    await conn.execute(
+        "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS "
+        "source_char_count INTEGER NOT NULL DEFAULT 0"
+    )
+    await conn.execute(
+        "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS "
+        "content_truncated SMALLINT NOT NULL DEFAULT 0"
+    )
+    await conn.execute(
+        "ALTER TABLE knowledge_items ADD COLUMN IF NOT EXISTS "
+        "truncation_reason TEXT NOT NULL DEFAULT ''"
+    )
+    await conn.execute(
+        "UPDATE knowledge_items SET content_truncated=1,"
+        "truncation_reason='legacy_max_content' WHERE char_count=500000"
+    )
+    await conn.execute(
+        "UPDATE knowledge_items SET source_char_count=char_count "
+        "WHERE source_char_count=0"
+    )

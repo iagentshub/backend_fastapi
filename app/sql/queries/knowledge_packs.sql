@@ -1,7 +1,7 @@
 -- Consultas de app/storage/knowledge_packs.py.
 
 -- name: list_pack_files
-SELECT k.id, k.pack_relative_path AS relative_path, k.pack_kind AS kind, k.mime_type, k.size_bytes, k.checksum, k.title, k.type, k.char_count, k.is_active, k.created_at, k.updated_at
+SELECT k.id, k.pack_relative_path AS relative_path, k.pack_kind AS kind, k.mime_type, k.size_bytes, k.checksum, k.title, k.type, k.char_count, k.source_char_count, k.content_truncated, k.truncation_reason, k.is_active, k.created_at, k.updated_at
 FROM knowledge_items k
 WHERE k.pack_id=?
 ORDER BY k.pack_relative_path;
@@ -22,8 +22,8 @@ INSERT INTO knowledge_packs (id,owner_id,name,description,labels,scope,source_mo
 VALUES (?,?,?,?,?,'private',?,?,?,?,?);
 
 -- name: insert_pack_item
-INSERT INTO knowledge_items (id,owner_id,type,title,source,content,char_count,mime_type,size_bytes,checksum,pack_id,pack_relative_path,pack_kind,labels,created_at,updated_at)
-VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);
+INSERT INTO knowledge_items (id,owner_id,type,title,source,content,char_count,source_char_count,content_truncated,truncation_reason,mime_type,size_bytes,checksum,pack_id,pack_relative_path,pack_kind,labels,created_at,updated_at)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);
 
 -- name: pack_item_by_path
 SELECT id
@@ -32,7 +32,7 @@ WHERE pack_id=? AND pack_relative_path=?;
 
 -- name: update_pack_item_content
 UPDATE knowledge_items
-SET content=?,char_count=?,pack_kind=?,mime_type=?,size_bytes=?,checksum=?,updated_at=?
+SET content=?,char_count=?,source_char_count=?,content_truncated=?,truncation_reason=?,pack_kind=?,mime_type=?,size_bytes=?,checksum=?,updated_at=?
 WHERE id=?;
 
 -- name: mark_pack_ready

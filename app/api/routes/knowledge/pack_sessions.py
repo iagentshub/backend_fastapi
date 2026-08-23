@@ -7,7 +7,6 @@ subida directa porque aquí no hay una sola petición que sostener en memoria.
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 from typing import Any, Dict
 
@@ -16,11 +15,12 @@ from fastapi import Depends, File, Form, UploadFile
 from app.api.routes.auth import GroupContext, require_group_session
 from app.api.routes.knowledge._router import router
 from app.api.routes.knowledge._shared import (
-    _PACK_MAX_FILE_BYTES,
     _PACK_SESSION_MAX_FILES,
     _PACK_SESSION_MAX_TOTAL_BYTES,
     _catalogued_file_content,
     _content_labels,
+    _extract_document,
+    _extraction_item_fields,
     _normalize_pack_path,
     _owner,
     _pack_file_is_extractable,
@@ -35,10 +35,6 @@ from app.errors import APIError
 from app.models.request_bodies import (
     KnowledgePackUploadSessionBody,
 )
-from app.storage.knowledge import (
-    extract_document_text,
-)
-from app.utils import flog
 
 
 @router.post("/packs/upload-sessions")
@@ -115,19 +111,23 @@ async def upload_pack_session_file(
     raw = await file.read()
     source_mode = str(pack.get("source_mode") or "upload")
     size = reported_size if source_mode == "reference" else len(raw)
-    if size < 0 or size > _PACK_MAX_FILE_BYTES:
+    if size < 0:
         raise APIError(
-            413,
-            "file_too_large",
-            "El archivo supera el límite de 10 MB",
-            extra={"max_file_mb": 10},
+            422,
+            "invalid_field",
+            "El tamaño declarado del archivo no es válido",
+            extra={"field": "size_bytes", "path": path},
         )
+    # El techo por archivo lo pone `max_request_bytes` desde el panel de
+    # administración; aquí solo queda el acumulado del pack, que se sube en
+    # muchas peticiones y por eso ningún middleware puede contarlo.
+    # Ver docs/adr/011-un-solo-limite-de-tamano-y-lo-pone-el-admin.md
     if int(pack.get("size_bytes") or 0) + size > _PACK_SESSION_MAX_TOTAL_BYTES:
         raise APIError(
             413,
             "file_too_large",
             "El pack supera el límite total de 500 MB",
-            extra={"max_total_mb": 500},
+            extra={"max_total_mb": _PACK_SESSION_MAX_TOTAL_BYTES // (1024 * 1024)},
         )
     client_checksum = reported_checksum.strip().lower()
     if client_checksum and not _valid_sha256(client_checksum):
@@ -138,6 +138,7 @@ async def upload_pack_session_file(
             extra={"field": "checksum", "path": path},
         )
     mime_type = (reported_mime_type.strip().lower() or file.content_type or "")[:255]
+    extraction = None
     if source_mode == "reference":
         content = (
             f"Referencia externa del pack: {path}\nTamano: {size} bytes\n"
@@ -157,21 +158,10 @@ async def upload_pack_session_file(
             )
         content = ""
         if _pack_file_is_extractable(path):
-            try:
-                content = await asyncio.to_thread(
-                    extract_document_text, raw, path, mime_type
-                )
-            except Exception as exc:  # noqa: BLE001
-                # Ancho a propósito: extract_document_text envuelve parsers de
-                # terceros (PDF, ofimática, OCR) y un fichero raro no puede tumbar
-                # la subida. Lo que no puede es no dejar rastro: sin esto el
-                # usuario sube un PDF, recibe la ficha catalogada en vez del texto
-                # y no hay forma de saber por qué.
-                flog.warning(
-                    f"[knowledge] Extracción fallida de {path} ({mime_type}): {exc}"
-                )
-                content = ""
+            extraction = await _extract_document(raw, path, mime_type)
+            content = extraction.text
         if not content.strip() or "\x00" in content:
+            extraction = None
             content = _catalogued_file_content(path, mime_type, size)
         checksum = server_checksum
     owner = str(pack["owner_id"])
@@ -185,6 +175,7 @@ async def upload_pack_session_file(
             "size_bytes": size,
             "checksum": checksum,
             "content": content,
+            **_extraction_item_fields(extraction),
         },
     )
     if result is None:

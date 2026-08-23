@@ -35,6 +35,20 @@ def _pack_dict(row: Any) -> Dict[str, Any]:
     return data
 
 
+def _extraction_columns(item: Dict[str, Any], content: str) -> tuple:
+    """Las tres columnas que dicen si el fichero entró entero.
+
+    El dict del item las trae solo cuando vino de una extracción; un fichero de
+    texto que se copió tal cual no puede haber perdido nada, y ahí el original
+    son los mismos caracteres que se guardan.
+    """
+    return (
+        int(item.get("source_char_count") or len(content)),
+        1 if item.get("content_truncated") else 0,
+        str(item.get("truncation_reason") or ""),
+    )
+
+
 class KnowledgePackStorage:
     async def set_active(
         self, pack_id: str, owner_id: Optional[str], active: bool
@@ -176,6 +190,7 @@ class KnowledgePackStorage:
                             item["relative_path"],
                             content,
                             len(content),
+                            *_extraction_columns(item, content),
                             item.get("mime_type", ""),
                             int(item["size_bytes"]),
                             item["checksum"],
@@ -217,6 +232,7 @@ class KnowledgePackStorage:
                         (
                             content,
                             len(content),
+                            *_extraction_columns(item, content),
                             item["kind"],
                             item.get("mime_type", ""),
                             int(item["size_bytes"]),
@@ -238,6 +254,7 @@ class KnowledgePackStorage:
                             relative_path,
                             content,
                             len(content),
+                            *_extraction_columns(item, content),
                             item.get("mime_type", ""),
                             int(item["size_bytes"]),
                             item["checksum"],
@@ -364,6 +381,7 @@ class KnowledgePackStorage:
                             (
                                 content,
                                 len(content),
+                                *_extraction_columns(item, content),
                                 item["kind"],
                                 item.get("mime_type", ""),
                                 int(item["size_bytes"]),
@@ -385,6 +403,7 @@ class KnowledgePackStorage:
                                 relative_path,
                                 content,
                                 len(content),
+                                *_extraction_columns(item, content),
                                 item.get("mime_type", ""),
                                 int(item["size_bytes"]),
                                 item["checksum"],

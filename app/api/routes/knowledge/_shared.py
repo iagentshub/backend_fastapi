@@ -14,11 +14,14 @@ from typing import Any, Dict, List, Optional
 from app.api.routes.auth import GroupContext
 from app.auth.auth import get_user_role
 from app.errors import APIError
+from app.services.document_executor import run_document_blocking
 from app.services.publishing import assert_can_publish
 from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
 from app.storage.knowledge import (
+    ExtractedDocument,
     KnowledgeStorage,
+    extract_document,
 )
 from app.storage.knowledge_packs import KnowledgePackStorage
 from app.storage.skill_storage import (
@@ -26,6 +29,7 @@ from app.storage.skill_storage import (
     SKILL_LABELS,
     ensure_origin_label,
 )
+from app.utils import flog
 
 _storage = KnowledgeStorage()
 
@@ -34,6 +38,52 @@ _packs = KnowledgePackStorage()
 _shares = GroupShareStorage()
 
 _groups = GroupStorage()
+
+
+def _extraction_item_fields(extraction: Optional[ExtractedDocument]) -> Dict[str, Any]:
+    """Los metadatos de recorte, con la forma que espera el dict de un pack.
+
+    Sin extracción no hay nada que se haya quedado fuera: el contenido llega de
+    una referencia o de la ficha catalogada, y ahí lo guardado es todo lo que
+    hay.
+    """
+    if extraction is None or not extraction.truncated:
+        return {}
+    return {
+        "source_char_count": extraction.source_chars,
+        "content_truncated": True,
+        "truncation_reason": extraction.reason,
+    }
+
+
+async def _extract_document(raw: bytes, path: str, mime: str) -> ExtractedDocument:
+    """Extrae el texto de un fichero subido, sin comerse lo que no quepa.
+
+    Los cuatro sitios que importan ficheros llamaban directamente a
+    `asyncio.to_thread(extract_document_text, ...)`, con dos consecuencias que
+    esto cierra. El pool por defecto de asyncio es donde también corre bcrypt,
+    así que unas cuantas subidas grandes a la vez frenaban los logins sin que
+    nada lo dijera. Y el texto llegaba ya recortado, sin forma de saber que
+    faltaba nada: aquí queda en el log y viaja en el `ExtractedDocument` hasta
+    la ficha.
+    """
+    try:
+        extracted = await run_document_blocking(extract_document, raw, path, mime)
+    except Exception as exc:  # noqa: BLE001
+        # Ancho a propósito: extract_document envuelve parsers de terceros
+        # (PDF, ofimática, OCR) y un fichero raro no puede tumbar la subida. Lo
+        # que no puede es no dejar rastro: sin esto el usuario sube un PDF,
+        # recibe la ficha catalogada en vez del texto y no hay forma de saber
+        # por qué.
+        flog.warning(f"[knowledge] Extracción fallida de {path} ({mime}): {exc}")
+        return ExtractedDocument(text="")
+    if extracted.truncated:
+        flog.warning(
+            f"[knowledge] {path} ({mime}) entró recortado por "
+            f"{extracted.reason}: {len(extracted.text)} de ~"
+            f"{extracted.source_chars} caracteres"
+        )
+    return extracted
 
 _IMAGE_EXTS = {
     ".png",
@@ -147,10 +197,13 @@ _PACK_MAX_FILES = 500
 
 _PACK_SESSION_MAX_FILES = 5000
 
-_PACK_MAX_FILE_BYTES = 10 * 1024 * 1024
-
-_PACK_MAX_TOTAL_BYTES = 50 * 1024 * 1024
-
+# Lo que pesa un archivo o un pack en una sola petición lo decide
+# `max_request_bytes` desde el panel; aquí había además un techo de 10 MB por
+# archivo y otro de 50 MB por pack, más bajos y no configurables, que rechazaban
+# lo que el panel decía aceptar. El que queda es el acumulado de una sesión de
+# subida, que reparte el directorio en muchas peticiones y por eso ningún
+# middleware puede contarlo.
+# Ver docs/adr/011-un-solo-limite-de-tamano-y-lo-pone-el-admin.md
 _PACK_SESSION_MAX_TOTAL_BYTES = 500 * 1024 * 1024
 
 

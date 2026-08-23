@@ -6,6 +6,12 @@ CREATE TABLE IF NOT EXISTS knowledge_items (
     source     TEXT NOT NULL,
     content    TEXT NOT NULL,
     char_count INTEGER NOT NULL DEFAULT 0,
+    -- Lo que tenía el original antes de la cota de extracción, y si llegó a
+    -- morder. Sin esto, un documento importado a medias es indistinguible de
+    -- uno entero: solo se guarda el texto, nunca los bytes de origen.
+    source_char_count INTEGER NOT NULL DEFAULT 0,
+    content_truncated @BOOL@ NOT NULL DEFAULT 0,
+    truncation_reason TEXT NOT NULL DEFAULT '',
     mime_type  TEXT NOT NULL DEFAULT '',
     size_bytes BIGINT NOT NULL DEFAULT 0,
     checksum   TEXT NOT NULL DEFAULT '',

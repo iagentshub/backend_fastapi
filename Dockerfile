@@ -32,6 +32,12 @@ COPY --from=builder /install /usr/local
 # Copiar código fuente (data/ queda fuera gracias a .dockerignore)
 COPY . .
 
+# Centinel descubre y ejecuta esta misma suite en vivo. Fallar durante el build
+# evita publicar una imagen aparentemente sana cuyo /api/admin/centinel/tree
+# solo descubre en runtime que tests/ no fue empaquetado.
+RUN PYTHONDONTWRITEBYTECODE=1 python -m pytest tests/ --collect-only -q \
+    --no-header -p no:cacheprovider > /dev/null
+
 # Usuario sin privilegios, pero el contenedor SIGUE arrancando como root a
 # propósito. El sed y el chmod tampoco sobran: defienden del clon hecho en
 # Windows. Ver docs/adr/002-el-contenedor-arranca-como-root.md

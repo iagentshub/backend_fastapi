@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 from pathlib import PurePosixPath
@@ -16,6 +15,7 @@ from app.api.routes.knowledge._shared import (
     _catalogued_file_content,
     _content_labels,
     _edited_labels,
+    _extract_document,
     _owner,
     _pack_file_is_extractable,
     _pack_skip_reason,
@@ -31,10 +31,11 @@ from app.models.request_bodies import (
     LabelsBody,
 )
 from app.pagination.models import OffsetParams
+from app.services.document_executor import run_document_blocking
 from app.services.knowledge_listing import list_authenticated_knowledge
 from app.storage.knowledge import (
-    extract_document_text,
-    fetch_url_text,
+    ExtractedDocument,
+    fetch_url_document,
 )
 from app.utils import flog
 from app.utils.origin import assert_resource_writable
@@ -119,23 +120,29 @@ async def add_url(
     if not url:
         raise APIError(422, "invalid_field", "URL requerida", extra={"field": "url"})
     try:
-        content = await asyncio.to_thread(fetch_url_text, url)
+        fetched = await run_document_blocking(fetch_url_document, url)
     except Exception as exc:
         raise APIError(
             422, "url_fetch_failed", f"No se pudo obtener la URL: {exc}"
         ) from exc
-    if not content.strip():
+    if not fetched.text.strip():
         raise APIError(
             422, "url_text_extraction_failed", "No se pudo extraer texto de la URL"
+        )
+    if fetched.truncated:
+        flog.warning(
+            f"[knowledge] {url} entró recortado por {fetched.reason}: "
+            f"{len(fetched.text)} de ~{fetched.source_chars} caracteres"
         )
     owner = await _owner(user, group_id) or group_id
     item = await _storage.save(
         type="url",
         title=title,
         source=url,
-        content=content,
+        content=fetched.text,
         owner_id=owner,
         labels=labels,
+        extraction=fetched,
     )
     await _sync_social_visibility(
         resource_type="knowledge",
@@ -176,35 +183,22 @@ async def upload_document(
             "El fichero parece contener credenciales o secretos y no se puede importar",
             extra={"reason": unsafe_reason},
         )
+    # El tamaño máximo de una subida es uno solo y lo pone el administrador
+    # (`max_request_bytes`, aplicado por BodySizeLimitMiddleware). Aquí había un
+    # segundo techo de 10 MB escrito a mano y por debajo de aquel: con el panel
+    # en «sin límite», la interfaz dejaba elegir el fichero y era esta línea la
+    # que lo rechazaba, con un número que no aparece en ninguna pantalla.
+    # Ver docs/adr/011-un-solo-limite-de-tamano-y-lo-pone-el-admin.md
     content_bytes = await file.read()
-    if len(content_bytes) > 10 * 1024 * 1024:
-        raise APIError(
-            413,
-            "file_too_large",
-            "El fichero supera el límite de 10 MB",
-            extra={"max_mb": 10},
-        )
+    extraction: ExtractedDocument | None = None
     content = ""
     if _pack_file_is_extractable(filename):
-        try:
-            content = await asyncio.to_thread(
-                extract_document_text,
-                content_bytes,
-                filename,
-                file.content_type or "",
-            )
-        except Exception as exc:  # noqa: BLE001
-            # Ancho a propósito: extract_document_text envuelve parsers de
-            # terceros (PDF, ofimática, OCR) y un fichero raro no puede tumbar
-            # la subida. Lo que no puede es no dejar rastro: sin esto el
-            # usuario sube un PDF, recibe la ficha catalogada en vez del texto
-            # y no hay forma de saber por qué.
-            flog.warning(
-                f"[knowledge] Extracción fallida de {filename} "
-                f"({file.content_type}): {exc}"
-            )
-            content = ""
+        extraction = await _extract_document(
+            content_bytes, filename, file.content_type or ""
+        )
+        content = extraction.text
     if not content.strip() or "\x00" in content:
+        extraction = None
         content = _catalogued_file_content(
             filename, file.content_type or "", len(content_bytes)
         )
@@ -219,6 +213,7 @@ async def upload_document(
         mime_type=file.content_type or "",
         size_bytes=len(content_bytes),
         checksum=hashlib.sha256(content_bytes).hexdigest(),
+        extraction=extraction,
     )
     await _sync_social_visibility(
         resource_type="knowledge",

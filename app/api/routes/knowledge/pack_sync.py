@@ -6,7 +6,6 @@ falta subir. Es lo que evita re-subir un pack entero para cambiar un fichero.
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 from typing import Any, Dict, List
@@ -16,11 +15,11 @@ from fastapi import Depends, File, Form, UploadFile
 from app.api.routes.auth import GroupContext, require_group_session
 from app.api.routes.knowledge._router import router
 from app.api.routes.knowledge._shared import (
-    _PACK_MAX_FILE_BYTES,
-    _PACK_MAX_TOTAL_BYTES,
     _PACK_SESSION_MAX_FILES,
     _PACK_SESSION_MAX_TOTAL_BYTES,
     _catalogued_file_content,
+    _extract_document,
+    _extraction_item_fields,
     _normalize_pack_path,
     _pack_file_is_extractable,
     _pack_kind,
@@ -35,10 +34,6 @@ from app.errors import APIError
 from app.models.request_bodies import (
     KnowledgePackManifestBody,
 )
-from app.storage.knowledge import (
-    extract_document_text,
-)
-from app.utils import flog
 from app.utils.origin import assert_resource_writable
 
 
@@ -103,16 +98,17 @@ async def compare_pack_sync_manifest(
             "El directorio contiene demasiados archivos",
             extra={"max_files": _PACK_SESSION_MAX_FILES},
         )
+    # El techo por fichero lo pone `max_request_bytes` desde el panel; el que se
+    # queda aquí es el acumulado de la sesión entera, que reparte el directorio
+    # en varias peticiones y por eso el middleware no puede verlo.
+    # Ver docs/adr/011-un-solo-limite-de-tamano-y-lo-pone-el-admin.md
     total_bytes = sum(int(item["size_bytes"]) for item in manifest)
-    if (
-        any(int(item["size_bytes"]) > _PACK_MAX_FILE_BYTES for item in manifest)
-        or total_bytes > _PACK_SESSION_MAX_TOTAL_BYTES
-    ):
+    if total_bytes > _PACK_SESSION_MAX_TOTAL_BYTES:
         raise APIError(
             413,
             "file_too_large",
             "El directorio supera los límites de sincronización",
-            extra={"max_file_mb": 10, "max_total_mb": 500},
+            extra={"max_total_mb": _PACK_SESSION_MAX_TOTAL_BYTES // (1024 * 1024)},
         )
     existing = {
         str(item["relative_path"]): str(item.get("checksum") or "")
@@ -254,14 +250,15 @@ async def sync_pack(
                 "El archivo recibido no coincide con el tamaño declarado",
                 extra={"field": "size_bytes", "path": relative_path},
             )
-        if size > _PACK_MAX_FILE_BYTES or total_bytes > _PACK_MAX_TOTAL_BYTES:
+        if total_bytes > _PACK_SESSION_MAX_TOTAL_BYTES:
             raise APIError(
                 413,
                 "file_too_large",
                 "El directorio supera los límites de sincronización",
-                extra={"max_file_mb": 10, "max_total_mb": 50},
+                extra={"max_total_mb": _PACK_SESSION_MAX_TOTAL_BYTES // (1024 * 1024)},
             )
         mime_type = str((declared or {}).get("mime_type") or upload.content_type or "")
+        extraction = None
         if source_mode == "reference":
             content = (
                 f"Referencia externa del pack: {relative_path}\n"
@@ -280,25 +277,10 @@ async def sync_pack(
                 )
             content = ""
             if _pack_file_is_extractable(relative_path):
-                try:
-                    content = await asyncio.to_thread(
-                        extract_document_text,
-                        raw,
-                        relative_path,
-                        mime_type,
-                    )
-                except Exception as exc:  # noqa: BLE001
-                    # Ancho a propósito: extract_document_text envuelve parsers de
-                    # terceros (PDF, ofimática, OCR) y un fichero raro no puede tumbar
-                    # la subida. Lo que no puede es no dejar rastro: sin esto el
-                    # usuario sube un PDF, recibe la ficha catalogada en vez del texto
-                    # y no hay forma de saber por qué.
-                    flog.warning(
-                        f"[knowledge] Extracción fallida de {relative_path} "
-                        f"({mime_type}): {exc}"
-                    )
-                    content = ""
+                extraction = await _extract_document(raw, relative_path, mime_type)
+                content = extraction.text
             if not content.strip() or "\x00" in content:
+                extraction = None
                 content = _catalogued_file_content(relative_path, mime_type, size)
         accepted.append(
             {
@@ -308,6 +290,7 @@ async def sync_pack(
                 "size_bytes": size,
                 "checksum": checksum,
                 "content": content,
+                **_extraction_item_fields(extraction),
             }
         )
     if manifest_items:

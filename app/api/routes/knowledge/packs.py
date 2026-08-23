@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import hashlib
 import json
 from typing import Any, Dict, List, Optional
@@ -12,12 +11,12 @@ from fastapi import Depends, File, Form, Query, UploadFile
 from app.api.routes.auth import GroupContext, require_group_session
 from app.api.routes.knowledge._router import router
 from app.api.routes.knowledge._shared import (
-    _PACK_MAX_FILE_BYTES,
     _PACK_MAX_FILES,
-    _PACK_MAX_TOTAL_BYTES,
     _catalogued_file_content,
     _content_labels,
     _edited_labels,
+    _extract_document,
+    _extraction_item_fields,
     _groups,
     _normalize_pack_path,
     _owner,
@@ -35,10 +34,6 @@ from app.models.request_bodies import (
     KnowledgePackEditBody,
     LabelsBody,
 )
-from app.storage.knowledge import (
-    extract_document_text,
-)
-from app.utils import flog
 from app.utils.origin import assert_resource_writable
 
 
@@ -176,14 +171,13 @@ async def upload_pack(
             if source_mode == "reference"
             else len(raw)
         )
+        # El peso lo acota `max_request_bytes`, que el administrador decide y el
+        # middleware aplica sobre la petición entera. Un techo por fichero
+        # escrito aquí volvía a ser un segundo número, más bajo y no
+        # configurable, que rechazaba lo que el panel decía aceptar.
+        # Ver docs/adr/011-un-solo-limite-de-tamano-y-lo-pone-el-admin.md
         total_bytes += size
-        if size > _PACK_MAX_FILE_BYTES or total_bytes > _PACK_MAX_TOTAL_BYTES:
-            raise APIError(
-                413,
-                "file_too_large",
-                "El directorio supera los límites de importación",
-                extra={"max_file_mb": 10, "max_total_mb": 50},
-            )
+        extraction = None
         content = ""
         if source_mode == "reference":
             content = (
@@ -193,25 +187,12 @@ async def upload_pack(
                 "por el agente."
             )
         elif _pack_file_is_extractable(relative_path):
-            try:
-                content = await asyncio.to_thread(
-                    extract_document_text,
-                    raw,
-                    relative_path,
-                    upload.content_type or "",
-                )
-            except Exception as exc:  # noqa: BLE001
-                # Ancho a propósito: extract_document_text envuelve parsers de
-                # terceros (PDF, ofimática, OCR) y un fichero raro no puede tumbar
-                # la subida. Lo que no puede es no dejar rastro: sin esto el
-                # usuario sube un PDF, recibe la ficha catalogada en vez del texto
-                # y no hay forma de saber por qué.
-                flog.warning(
-                    f"[knowledge] Extracción fallida de {relative_path} "
-                    f"({upload.content_type}): {exc}"
-                )
-                content = ""
+            extraction = await _extract_document(
+                raw, relative_path, upload.content_type or ""
+            )
+            content = extraction.text
         if not content.strip() or "\x00" in content:
+            extraction = None
             content = _catalogued_file_content(
                 relative_path, upload.content_type or "", size
             )
@@ -227,6 +208,7 @@ async def upload_pack(
                     else hashlib.sha256(raw).hexdigest()
                 ),
                 "content": content,
+                **_extraction_item_fields(extraction),
             }
         )
     if not accepted:

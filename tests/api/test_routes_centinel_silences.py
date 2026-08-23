@@ -24,9 +24,12 @@ def test_centinel_backend_dir_contains_the_test_suite():
     assert (backend_dir / "tests").is_dir()
 
 
-def test_tree_discovery_collects_the_real_backend_suite():
+def test_tree_discovery_collects_the_real_backend_suite_and_cleans_up(
+    tmp_path, monkeypatch
+):
     from app.api.routes.centinel import run
 
+    monkeypatch.setenv("TMPDIR", str(tmp_path))
     tree = asyncio.run(run.get_tree("admin"))
     files = [item for directory in tree["dirs"] for item in directory["files"]]
 
@@ -38,6 +41,42 @@ def test_tree_discovery_collects_the_real_backend_suite():
     # hacía contra una ruta absoluta que no aparece nunca en el árbol.
     esperado = Path(__file__).relative_to(_state._BACKEND_DIR).as_posix()
     assert any(item["file"] == esperado for item in files)
+    assert not list(tmp_path.glob("gaia_test_collection_*"))
+
+
+def test_pytest_environment_does_not_inherit_live_configuration(monkeypatch):
+    from app.api.routes.centinel import run
+
+    monkeypatch.setenv("GAIA_AGENTS_SECRET", "jwt-real")
+    monkeypatch.setenv("GAIA_DATA_DIR", "/data/real")
+    monkeypatch.setenv("DATABASE_URL", "postgresql://production")
+    monkeypatch.setenv("STRIPE_SECRET_KEY", "stripe-real")
+    monkeypatch.setenv("OPENAI_API_KEY", "openai-real")
+    monkeypatch.setenv("PATH", "/bin:/usr/bin")
+
+    env = run._entorno_pytest()
+
+    assert "GAIA_AGENTS_SECRET" not in env
+    assert "GAIA_DATA_DIR" not in env
+    assert "DATABASE_URL" not in env
+    assert "STRIPE_SECRET_KEY" not in env
+    assert "OPENAI_API_KEY" not in env
+    assert env["PATH"] == "/bin:/usr/bin"
+    assert env["PYTHONIOENCODING"] == "utf-8"
+    assert env["PYTHONDONTWRITEBYTECODE"] == "1"
+
+
+def test_standalone_image_context_includes_centinel_tests():
+    dockerignore = Path(_state._BACKEND_DIR) / ".dockerignore"
+    if not dockerignore.is_file():
+        pytest.skip(".dockerignore no se copia dentro de la imagen")
+
+    rules = {
+        line.strip()
+        for line in dockerignore.read_text(encoding="utf-8").splitlines()
+        if line.strip() and not line.lstrip().startswith("#")
+    }
+    assert "!tests" in rules
 
 
 def test_tree_discovery_does_not_hide_pytest_failures():
