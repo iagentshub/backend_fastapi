@@ -93,6 +93,10 @@ from app.storage.migrations.steps.shared import (
     _resource_social_origin_index,
     _resource_social_page_index,
 )
+from app.storage.migrations.steps.social import (
+    _social_iso_dates_pg,
+    _social_iso_dates_sqlite,
+)
 
 MIGRATION_PAIRS: tuple[MigrationPair, ...] = (
     MigrationPair(1, "legacy_schema_catchup", _migrate_sqlite, _migrate_pg, repeatable=True),
@@ -132,6 +136,7 @@ MIGRATION_PAIRS: tuple[MigrationPair, ...] = (
     MigrationPair(34, "resource_execution_leases", _resource_execution_leases, _resource_execution_leases),
     MigrationPair(35, "content_activation", _content_activation_sqlite, _content_activation_pg),
     MigrationPair(36, "knowledge_truncation_metadata", _knowledge_truncation_metadata_sqlite, _knowledge_truncation_metadata_pg),
+    MigrationPair(37, "social_iso_dates", _social_iso_dates_sqlite, _social_iso_dates_pg),
 )
 
 __all__ = ["MIGRATION_PAIRS"]

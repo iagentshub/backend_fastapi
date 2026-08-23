@@ -43,7 +43,7 @@ _DIALECTOS: dict[str, dict[str, str]] = {
         "BOOL": "SMALLINT",
         "SERIAL": "BIGSERIAL PRIMARY KEY",
         "FLOAT": "DOUBLE PRECISION",
-        "NOW": "(NOW()::TEXT)",
+        "NOW": "(to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'))",
     },
 }
 
@@ -69,6 +69,10 @@ TABLAS: tuple[str, ...] = (
     "official_import_components",
     "official_source_mappings",
     "users",
+    "user_follows",
+    "resource_stars",
+    "resource_social",
+    "resource_labels",
     "resource_group_shares",
     "groups",
     "group_members",

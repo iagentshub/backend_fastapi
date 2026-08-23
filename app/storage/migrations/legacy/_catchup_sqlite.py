@@ -257,70 +257,8 @@ async def _migrate_sqlite(conn: Any) -> None:
                 # Migración idempotente: se reintenta en el siguiente arranque.
                 flog.warning(f"[db] No se pudo añadir columna {col}: {exc}")
 
-    if "user_follows" not in existing_tables:
-        await conn.executescript("""
-            CREATE TABLE IF NOT EXISTS user_follows (
-                follower    TEXT NOT NULL,
-                following   TEXT NOT NULL,
-                created_at  TEXT NOT NULL DEFAULT (datetime('now')),
-                PRIMARY KEY (follower, following)
-            );
-            CREATE INDEX IF NOT EXISTS idx_uf_follower  ON user_follows(follower);
-            CREATE INDEX IF NOT EXISTS idx_uf_following ON user_follows(following);
-        """)
-
-    if "resource_stars" not in existing_tables:
-        await conn.executescript("""
-            CREATE TABLE IF NOT EXISTS resource_stars (
-                username      TEXT NOT NULL,
-                resource_type TEXT NOT NULL,
-                resource_id   TEXT NOT NULL,
-                created_at    TEXT NOT NULL DEFAULT (datetime('now')),
-                PRIMARY KEY (username, resource_type, resource_id)
-            );
-            CREATE INDEX IF NOT EXISTS idx_rs_resource ON resource_stars(resource_type, resource_id);
-        """)
-
-    if "resource_group_shares" not in existing_tables:
-        await conn.executescript("""
-            CREATE TABLE IF NOT EXISTS resource_group_shares (
-                resource_type TEXT NOT NULL,
-                resource_id   TEXT NOT NULL,
-                group_id  TEXT NOT NULL,
-                shared_by     TEXT NOT NULL,
-                shared_at     TEXT NOT NULL,
-                PRIMARY KEY (resource_type, resource_id, group_id)
-            );
-            CREATE INDEX IF NOT EXISTS idx_group_share_group ON resource_group_shares(group_id, resource_type);
-            CREATE INDEX IF NOT EXISTS idx_group_share_resource  ON resource_group_shares(resource_type, resource_id);
-        """)
-
-    # 12. Resource social catalog
-    if "resource_social" not in existing_tables:
-        await conn.executescript("""
-            CREATE TABLE IF NOT EXISTS resource_social (
-                resource_type      TEXT NOT NULL,
-                resource_id        TEXT NOT NULL,
-                owner              TEXT NOT NULL,
-                name               TEXT NOT NULL DEFAULT '',
-                description        TEXT NOT NULL DEFAULT '',
-                is_public          INTEGER NOT NULL DEFAULT 0,
-                category           TEXT NOT NULL DEFAULT 'Other',
-                trial_missing_deps TEXT NOT NULL DEFAULT 'warn',
-                fork_of_user       TEXT,
-                fork_of_id         TEXT,
-                linked_to_user     TEXT,
-                linked_to_id       TEXT,
-                stars_count        INTEGER NOT NULL DEFAULT 0,
-                tags               TEXT NOT NULL DEFAULT '[]',
-                labels             TEXT NOT NULL DEFAULT '["private"]',
-                verified           INTEGER NOT NULL DEFAULT 0,
-                updated_at         TEXT NOT NULL DEFAULT (datetime('now')),
-                PRIMARY KEY (resource_type, resource_id, owner)
-            );
-            CREATE INDEX IF NOT EXISTS idx_rsoc_public ON resource_social(is_public, resource_type, category);
-            CREATE INDEX IF NOT EXISTS idx_rsoc_owner  ON resource_social(owner, resource_type);
-        """)
+    # Las tablas sociales base pertenecen a app/sql/schema. Los ALTER que
+    # siguen son reparaciones para instalaciones antiguas con columnas ausentes.
     await _add_sqlite_column(
         conn, "resource_social", "tags", "TEXT NOT NULL DEFAULT '[]'"
     )
@@ -457,19 +395,6 @@ async def _migrate_sqlite(conn: Any) -> None:
     # Arreglos menores de fechas
     await _add_sqlite_column(conn, "groups", "updated_at", "TEXT")
     await _add_sqlite_column(conn, "memory_files", "created_at", "TEXT")
-
-    # 19. Índice transversal de etiquetas (labels) para enlaces entre objetos.
-    await conn.executescript("""
-        CREATE TABLE IF NOT EXISTS resource_labels (
-            resource_type TEXT NOT NULL,
-            resource_id   TEXT NOT NULL,
-            owner_id      TEXT NOT NULL DEFAULT '',
-            label         TEXT NOT NULL,
-            PRIMARY KEY (resource_type, resource_id, label)
-        );
-        CREATE INDEX IF NOT EXISTS idx_resource_labels_label
-            ON resource_labels(label, owner_id);
-    """)
 
     # 20. Tokens por mensaje — para mostrar consumo por respuesta al recargar
     # una conversación, no solo en el evento SSE de la sesión activa.

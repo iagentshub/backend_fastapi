@@ -247,6 +247,31 @@ async def test_purge_elimina_los_recursos_añadidos_después_del_borrado(patch_d
             "VALUES ('src', 'comp', 'agent', 'a1', ?, 'now', 'now')",
             (owner,),
         )
+        await conn.execute(
+            "INSERT INTO resource_labels "
+            "(resource_type, resource_id, owner_id, label) "
+            "VALUES ('agent', 'a1', ?, 'lang_es')",
+            (owner,),
+        )
+        await conn.execute(
+            "INSERT INTO resource_social "
+            "(resource_type, resource_id, owner, name) "
+            "VALUES ('agent', 'a1', ?, 'Publicado')",
+            (owner,),
+        )
+        await conn.execute(
+            "INSERT INTO resource_stars (username, resource_type, resource_id) "
+            "VALUES (?, 'agent', 'other-agent')",
+            (owner,),
+        )
+        await conn.execute(
+            "INSERT INTO user_follows (follower, following) VALUES (?, 'other')",
+            (owner,),
+        )
+        await conn.execute(
+            "INSERT INTO user_follows (follower, following) VALUES ('other', ?)",
+            (owner,),
+        )
         await conn.commit()
 
     await purge_user_data("purge_recursos")
@@ -261,10 +286,17 @@ async def test_purge_elimina_los_recursos_añadidos_después_del_borrado(patch_d
             ("knowledge_packs", "owner_id"),
             ("resource_versions", "owner_id"),
             ("resource_source_links", "resource_owner_id"),
+            ("resource_labels", "owner_id"),
+            ("resource_social", "owner"),
+            ("resource_stars", "username"),
         ):
             assert not await conn.fetchval(
                 f"SELECT 1 FROM {tabla} WHERE {columna} = ?", (owner,)
             ), f"{tabla} conserva filas del usuario borrado"
+        assert not await conn.fetchval(
+            "SELECT 1 FROM user_follows WHERE follower = ? OR following = ?",
+            (owner, owner),
+        )
 
     assert SKILLS_DIR is not None  # el directorio legacy no interviene ya
 

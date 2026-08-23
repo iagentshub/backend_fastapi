@@ -34,15 +34,15 @@ WHERE resource_type='knowledge' AND resource_id=?;
 -- name: upsert_social_pg
 -- engine: pg
 INSERT INTO resource_social (resource_type, resource_id, owner, name, description, is_public, category, trial_missing_deps, tags, labels, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, now())
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS.MS"Z"'))
 ON CONFLICT (resource_type, resource_id, owner) DO
 UPDATE
-SET name=EXCLUDED.name, description=EXCLUDED.description, is_public=EXCLUDED.is_public, category=EXCLUDED.category, trial_missing_deps=EXCLUDED.trial_missing_deps, tags=EXCLUDED.tags, labels=EXCLUDED.labels, updated_at=now();
+SET name=EXCLUDED.name, description=EXCLUDED.description, is_public=EXCLUDED.is_public, category=EXCLUDED.category, trial_missing_deps=EXCLUDED.trial_missing_deps, tags=EXCLUDED.tags, labels=EXCLUDED.labels, updated_at=EXCLUDED.updated_at;
 
 -- name: upsert_social_sqlite
 -- engine: sqlite
 INSERT INTO resource_social (resource_type, resource_id, owner, name, description, is_public, category, trial_missing_deps, tags, labels, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, datetime('now'))
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, strftime('%Y-%m-%dT%H:%M:%fZ', 'now'))
 ON CONFLICT(resource_type, resource_id, owner) DO
 UPDATE
 SET name=excluded.name, description=excluded.description, is_public=excluded.is_public, category=excluded.category, trial_missing_deps=excluded.trial_missing_deps, tags=excluded.tags, labels=excluded.labels, updated_at=excluded.updated_at;

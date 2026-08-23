@@ -12,6 +12,18 @@ TABLE_PATTERN = re.compile(
     re.IGNORECASE,
 )
 INFRASTRUCTURE_TABLES = {"schema_migrations"}
+EXTERNAL_QUERY_TABLES = {
+    "dbstat",
+    "information_schema",
+    "pg_stat_user_tables",
+    "set",  # `DO UPDATE SET`, no una tabla.
+    "sqlite_master",
+}
+QUERY_TABLE_PATTERN = re.compile(
+    r"\b(?:FROM|JOIN|UPDATE|INTO|DELETE\s+FROM)\s+[\"`]?"
+    r"([A-Za-z_][A-Za-z0-9_]*)",
+    re.IGNORECASE,
+)
 
 
 def _declared_tables() -> set[str]:
@@ -54,5 +66,42 @@ def test_every_declared_application_table_has_a_runtime_consumer():
     )
 
 
+def test_every_query_table_is_declared_in_the_canonical_schema():
+    """Una consulta activa nunca debe depender de DDL escondido en migraciones."""
+    declared = {source.stem for source in (APP_ROOT / "sql" / "schema").glob("*.sql")}
+    referenced = {
+        table.lower()
+        for source in (APP_ROOT / "sql" / "queries").rglob("*.sql")
+        for table in QUERY_TABLE_PATTERN.findall(source.read_text(encoding="utf-8"))
+    }
+    missing = referenced - declared - EXTERNAL_QUERY_TABLES
+    assert missing == set(), (
+        "Tablas consultadas fuera del esquema canónico: "
+        f"{sorted(missing)}. Añade su fichero a app/sql/schema y a TABLAS."
+    )
+
+
 def test_obsolete_pack_membership_table_is_not_declared():
     assert "knowledge_pack_items" not in _declared_tables()
+
+
+def test_social_schema_is_not_redeclared_in_legacy_catchup():
+    social_tables = {
+        "resource_group_shares",
+        "resource_labels",
+        "resource_social",
+        "resource_stars",
+        "user_follows",
+    }
+    legacy_sources = (APP_ROOT / "storage" / "migrations" / "legacy").glob(
+        "_catchup_*.py"
+    )
+    redeclared = {
+        table.lower()
+        for source in legacy_sources
+        for table in TABLE_PATTERN.findall(source.read_text(encoding="utf-8"))
+    }
+    assert redeclared.isdisjoint(social_tables), (
+        "El DDL social debe vivir solo en app/sql/schema: "
+        f"{sorted(redeclared & social_tables)}"
+    )

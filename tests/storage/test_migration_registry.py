@@ -73,6 +73,115 @@ async def test_repeatable_migration_runs_again_but_is_recorded_once(tmp_path):
     assert count == 1
 
 
+async def test_social_iso_dates_rebuilds_legacy_sqlite_tables_without_data_loss(
+    tmp_path,
+):
+    from app.storage.migrations.steps.social import _social_iso_dates_sqlite
+
+    db = tmp_path / "legacy-social-dates.db"
+    async with aiosqlite.connect(db) as conn:
+        await conn.executescript("""
+            CREATE TABLE user_follows (
+                follower TEXT NOT NULL, following TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (follower, following)
+            );
+            CREATE TABLE resource_stars (
+                username TEXT NOT NULL, resource_type TEXT NOT NULL,
+                resource_id TEXT NOT NULL,
+                created_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (username, resource_type, resource_id)
+            );
+            CREATE TABLE resource_social (
+                resource_type TEXT NOT NULL, resource_id TEXT NOT NULL,
+                owner TEXT NOT NULL, name TEXT NOT NULL DEFAULT '',
+                description TEXT NOT NULL DEFAULT '',
+                is_public INTEGER NOT NULL DEFAULT 0,
+                category TEXT NOT NULL DEFAULT 'Other',
+                trial_missing_deps TEXT NOT NULL DEFAULT 'warn',
+                fork_of_user TEXT, fork_of_id TEXT,
+                linked_to_user TEXT, linked_to_id TEXT,
+                stars_count INTEGER NOT NULL DEFAULT 0,
+                tags TEXT NOT NULL DEFAULT '[]',
+                labels TEXT NOT NULL DEFAULT '["private"]',
+                verified INTEGER NOT NULL DEFAULT 0,
+                updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+                PRIMARY KEY (resource_type, resource_id, owner)
+            );
+            INSERT INTO user_follows VALUES ('alice', 'bob', '2026-01-02 03:04:05');
+            INSERT INTO resource_stars VALUES ('alice', 'agent', 'a1', '2026-01-02 03:04:05');
+            INSERT INTO resource_social (
+                resource_type, resource_id, owner, name, updated_at
+            ) VALUES ('agent', 'a1', 'alice', 'Agente', '2026-01-02 03:04:05');
+        """)
+
+        await _social_iso_dates_sqlite(conn)
+        await _social_iso_dates_sqlite(conn)
+
+        follow = (
+            await conn.execute_fetchall("SELECT * FROM user_follows")
+        )[0]
+        star = (await conn.execute_fetchall("SELECT * FROM resource_stars"))[0]
+        social = (
+            await conn.execute_fetchall(
+                "SELECT name,updated_at FROM resource_social"
+            )
+        )[0]
+        definitions = {
+            row[0]: row[1]
+            for row in await conn.execute_fetchall(
+                "SELECT name,sql FROM sqlite_master "
+                "WHERE type='table' AND name IN "
+                "('user_follows','resource_stars','resource_social')"
+            )
+        }
+        indexes = {
+            row[0]
+            for row in await conn.execute_fetchall(
+                "SELECT name FROM sqlite_master WHERE type='index'"
+            )
+        }
+
+    assert follow == ("alice", "bob", "2026-01-02T03:04:05.000Z")
+    assert star == ("alice", "agent", "a1", "2026-01-02T03:04:05.000Z")
+    assert social == ("Agente", "2026-01-02T03:04:05.000Z")
+    assert all("strftime" in definition for definition in definitions.values())
+    assert indexes >= {
+        "idx_uf_follower",
+        "idx_uf_following",
+        "idx_rs_resource",
+        "idx_rsoc_public",
+        "idx_rsoc_owner",
+        "idx_rsoc_link_origin",
+        "idx_rsoc_public_page",
+    }
+
+
+async def test_social_iso_dates_converts_postgres_timestamp_and_defaults():
+    from app.storage.migrations.steps.social import _social_iso_dates_pg
+
+    class FakePgConnection:
+        def __init__(self) -> None:
+            self.statements: list[str] = []
+
+        async def fetchval(self, statement: str):
+            self.statements.append(statement)
+            return "timestamp with time zone"
+
+        async def execute(self, statement: str):
+            self.statements.append(statement)
+
+    conn = FakePgConnection()
+    await _social_iso_dates_pg(conn)
+    sql_text = "\n".join(conn.statements)
+
+    assert "ALTER COLUMN updated_at TYPE TEXT USING" in sql_text
+    assert "updated_at AT TIME ZONE 'UTC'" in sql_text
+    assert "ALTER COLUMN updated_at SET NOT NULL" in sql_text
+    assert "ALTER COLUMN created_at SET DEFAULT" in sql_text
+    assert "to_char(NOW() AT TIME ZONE 'UTC'" in sql_text
+
+
 async def test_chat_interrupted_migration_updates_existing_messages(tmp_path):
     from app.storage.migrations.steps.misc import _chat_message_interrupted_sqlite
 

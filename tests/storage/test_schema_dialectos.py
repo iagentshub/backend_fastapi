@@ -69,7 +69,7 @@ def test_los_tipos_propios_de_cada_dialecto():
     assert "SMALLINT NOT NULL DEFAULT 1" in SCHEMA_PG
     assert "BIGSERIAL PRIMARY KEY" in SCHEMA_PG
     assert "DOUBLE PRECISION" in SCHEMA_PG
-    assert "(NOW()::TEXT)" in SCHEMA_PG
+    assert "to_char(NOW() AT TIME ZONE 'UTC'" in SCHEMA_PG
 
     assert "INTEGER PRIMARY KEY AUTOINCREMENT" in SCHEMA_SQLITE
     assert "strftime('%Y-%m-%dT%H:%M:%fZ', 'now')" in SCHEMA_SQLITE
@@ -128,3 +128,15 @@ def test_cada_sentencia_del_ddl_de_pg_esta_completa():
 def test_dialecto_desconocido():
     with pytest.raises(ValueError, match="Dialecto"):
         schema_for("mysql")
+
+
+def test_las_tablas_sociales_forman_parte_del_esquema_base():
+    for table in (
+        "user_follows",
+        "resource_stars",
+        "resource_social",
+        "resource_labels",
+    ):
+        marker = f"CREATE TABLE IF NOT EXISTS {table}"
+        assert marker in SCHEMA_SQLITE
+        assert marker in SCHEMA_PG

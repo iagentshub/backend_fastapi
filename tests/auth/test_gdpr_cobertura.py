@@ -30,6 +30,9 @@ COLUMNA_DUEÑO = re.compile(
     r"^\s*((?:(?:[A-Za-z0-9_]+_)?owner_id)|username|started_by)\s",
     re.MULTILINE,
 )
+IDENTIDADES_DECLARADAS = re.compile(
+    r"^--\s*gdpr-identity:\s*([A-Za-z0-9_, ]+)$", re.MULTILINE
+)
 
 # Tablas con dueño que quedan deliberadamente fuera del borrado, con el motivo.
 # Sin esta lista la guarda se vuelve ruido y se acaba desactivando entera.
@@ -47,15 +50,20 @@ EXCLUIDAS = {
 }
 
 
-def _tablas_con_dueño() -> dict[str, str]:
-    """{tabla: columna de propiedad} leídas del DDL, no de una lista a mano."""
-    encontradas: dict[str, str] = {}
+def _tablas_con_dueño() -> dict[str, tuple[str, ...]]:
+    """{tabla: columnas de identidad} leídas del DDL, no de una lista a mano."""
+    encontradas: dict[str, tuple[str, ...]] = {}
     for fichero in sorted(SCHEMA_DIR.glob("*.sql")):
         ddl = fichero.read_text(encoding="utf-8")
         tabla = TABLA.search(ddl)
+        declaradas = IDENTIDADES_DECLARADAS.search(ddl)
         columna = COLUMNA_DUEÑO.search(ddl)
-        if tabla and columna:
-            encontradas[tabla.group(1).lower()] = columna.group(1)
+        if tabla and declaradas:
+            encontradas[tabla.group(1).lower()] = tuple(
+                value.strip() for value in declaradas.group(1).split(",")
+            )
+        elif tabla and columna:
+            encontradas[tabla.group(1).lower()] = (columna.group(1),)
     return encontradas
 
 
@@ -98,13 +106,16 @@ def test_la_columna_de_propiedad_es_la_que_filtra_el_borrado():
         if not objetivo:
             continue
         tabla = objetivo.group(1).lower()
-        columna = con_dueño.get(tabla)
+        columnas = con_dueño.get(tabla, ())
         # `users.username` es identidad, no una referencia a su dueño: la fila
         # raíz se borra por la PK canónica que usan todas las demás tablas.
         if tabla == "users":
-            columna = "id"
-        if columna and columna not in cuerpo:
-            errores.append(f"{nombre} borra {tabla} sin filtrar por {columna}")
+            columnas = ("id",)
+        ausentes = [columna for columna in columnas if columna not in cuerpo]
+        if ausentes:
+            errores.append(
+                f"{nombre} borra {tabla} sin filtrar por {', '.join(ausentes)}"
+            )
     assert errores == [], errores
 
 
@@ -134,6 +145,7 @@ def test_la_exportación_entrega_los_mismos_recursos_que_borra_el_purgado():
         "group_invitations",
         "groups",
         "resource_group_shares",
+        "resource_labels",
         "resource_social",
         "llm_orchestrations",
         "llm_orchestration_bindings",

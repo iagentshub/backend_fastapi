@@ -90,6 +90,10 @@ WHERE owner_id = ?;
 DELETE FROM resource_social
 WHERE owner = ?;
 
+-- name: delete_resource_labels
+DELETE FROM resource_labels
+WHERE owner_id = ?;
+
 -- name: delete_stars
 DELETE FROM resource_stars
 WHERE username = ?;

@@ -142,77 +142,8 @@ async def _migrate_pg(conn: Any) -> None:
         "WHERE id IS NULL OR id = ''"
     )
     await conn.execute("CREATE UNIQUE INDEX IF NOT EXISTS idx_users_id ON users(id)")
-    await conn.execute("""
-        CREATE TABLE IF NOT EXISTS user_follows (
-            follower    TEXT NOT NULL,
-            following   TEXT NOT NULL,
-            created_at  TEXT NOT NULL DEFAULT NOW(),
-            PRIMARY KEY (follower, following)
-        )
-    """)
-    await conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_uf_follower ON user_follows(follower)"
-    )
-    await conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_uf_following ON user_follows(following)"
-    )
-    await conn.execute("""
-        CREATE TABLE IF NOT EXISTS resource_stars (
-            username      TEXT NOT NULL,
-            resource_type TEXT NOT NULL,
-            resource_id   TEXT NOT NULL,
-            created_at    TEXT NOT NULL DEFAULT NOW(),
-            PRIMARY KEY (username, resource_type, resource_id)
-        )
-    """)
-    await conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_rs_resource ON resource_stars(resource_type, resource_id)"
-    )
-    await conn.execute("""
-        CREATE TABLE IF NOT EXISTS resource_group_shares (
-            resource_type TEXT NOT NULL,
-            resource_id   TEXT NOT NULL,
-            group_id  TEXT NOT NULL,
-            shared_by     TEXT NOT NULL,
-            shared_at     TEXT NOT NULL,
-            PRIMARY KEY (resource_type, resource_id, group_id)
-        )
-    """)
-    await conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_group_share_group ON resource_group_shares(group_id, resource_type)"
-    )
-    await conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_group_share_resource ON resource_group_shares(resource_type, resource_id)"
-    )
-    # 12. Resource social catalog
-    await conn.execute("""
-        CREATE TABLE IF NOT EXISTS resource_social (
-            resource_type      TEXT NOT NULL,
-            resource_id        TEXT NOT NULL,
-            owner              TEXT NOT NULL,
-            name               TEXT NOT NULL DEFAULT '',
-            description        TEXT NOT NULL DEFAULT '',
-            is_public          SMALLINT NOT NULL DEFAULT 0,
-            category           TEXT NOT NULL DEFAULT 'Other',
-            trial_missing_deps TEXT NOT NULL DEFAULT 'warn',
-            fork_of_user       TEXT,
-            fork_of_id         TEXT,
-            linked_to_user     TEXT,
-            linked_to_id       TEXT,
-            stars_count        INTEGER NOT NULL DEFAULT 0,
-            tags               TEXT NOT NULL DEFAULT '[]',
-            labels             TEXT NOT NULL DEFAULT '["private"]',
-            verified           SMALLINT NOT NULL DEFAULT 0,
-            updated_at         TIMESTAMP WITH TIME ZONE DEFAULT now(),
-            PRIMARY KEY (resource_type, resource_id, owner)
-        )
-    """)
-    await conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_rsoc_public ON resource_social(is_public, resource_type, category)"
-    )
-    await conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_rsoc_owner ON resource_social(owner, resource_type)"
-    )
+    # Las tablas sociales base pertenecen a app/sql/schema. Los ALTER que
+    # siguen son reparaciones para instalaciones antiguas con columnas ausentes.
     await conn.execute(
         "ALTER TABLE resource_social ADD COLUMN IF NOT EXISTS tags TEXT NOT NULL DEFAULT '[]'"
     )
@@ -377,21 +308,6 @@ async def _migrate_pg(conn: Any) -> None:
     await conn.execute("ALTER TABLE groups ADD COLUMN IF NOT EXISTS updated_at TEXT")
     await conn.execute(
         "ALTER TABLE memory_files ADD COLUMN IF NOT EXISTS created_at TEXT"
-    )
-
-    # 19. Índice transversal de etiquetas (labels) para enlaces entre objetos.
-    await conn.execute("""
-        CREATE TABLE IF NOT EXISTS resource_labels (
-            resource_type TEXT NOT NULL,
-            resource_id   TEXT NOT NULL,
-            owner_id      TEXT NOT NULL DEFAULT '',
-            label         TEXT NOT NULL,
-            PRIMARY KEY (resource_type, resource_id, label)
-        )
-    """)
-    await conn.execute(
-        "CREATE INDEX IF NOT EXISTS idx_resource_labels_label "
-        "ON resource_labels(label, owner_id)"
     )
 
     # 20. Tokens por mensaje — para mostrar consumo por respuesta al recargar

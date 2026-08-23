@@ -25,6 +25,7 @@ import os
 import re
 import sqlite3
 from pathlib import Path
+from uuid import uuid4
 
 import pytest
 
@@ -154,3 +155,79 @@ def test_todas_las_consultas_preparan_en_postgres():
 
     rotas = asyncio.run(_correr())
     assert rotas == [], "Consultas que PostgreSQL no acepta: " + "; ".join(rotas)
+
+
+@pytest.mark.skipif(
+    not DSN, reason="define GAIA_TEST_PG_DSN para probar la migración PostgreSQL"
+)
+def test_social_iso_dates_migrates_a_real_postgres():
+    import asyncio
+
+    import asyncpg
+
+    from app.storage.migrations.steps.social import _social_iso_dates_pg
+
+    async def _correr() -> None:
+        conn = await asyncpg.connect(DSN)
+        schema = f"social_dates_{uuid4().hex}"
+        try:
+            await conn.execute(f'CREATE SCHEMA "{schema}"')
+            await conn.execute(f'SET search_path TO "{schema}"')
+            await conn.execute("""
+                CREATE TABLE resource_social (
+                    resource_type TEXT NOT NULL,
+                    resource_id TEXT NOT NULL,
+                    owner TEXT NOT NULL,
+                    updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
+                    PRIMARY KEY (resource_type, resource_id, owner)
+                );
+                CREATE TABLE resource_stars (
+                    username TEXT NOT NULL,
+                    resource_type TEXT NOT NULL,
+                    resource_id TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (username, resource_type, resource_id)
+                );
+                CREATE TABLE user_follows (
+                    follower TEXT NOT NULL,
+                    following TEXT NOT NULL,
+                    created_at TEXT NOT NULL DEFAULT NOW(),
+                    PRIMARY KEY (follower, following)
+                );
+                INSERT INTO resource_social VALUES ('agent', 'a1', 'alice', NOW());
+                INSERT INTO resource_stars (username, resource_type, resource_id)
+                    VALUES ('alice', 'agent', 'a1');
+                INSERT INTO user_follows (follower, following)
+                    VALUES ('alice', 'bob');
+            """)
+
+            await _social_iso_dates_pg(conn)
+
+            column = await conn.fetchrow(
+                "SELECT data_type,is_nullable,column_default "
+                "FROM information_schema.columns "
+                "WHERE table_schema=current_schema() "
+                "AND table_name='resource_social' AND column_name='updated_at'"
+            )
+            social_date = await conn.fetchval(
+                "SELECT updated_at FROM resource_social"
+            )
+            star_date = await conn.fetchval("SELECT created_at FROM resource_stars")
+            follow_date = await conn.fetchval("SELECT created_at FROM user_follows")
+
+            assert column["data_type"] == "text"
+            assert column["is_nullable"] == "NO"
+            assert "to_char" in column["column_default"]
+            assert re.fullmatch(
+                r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z", social_date
+            )
+            for value in (star_date, follow_date):
+                assert re.fullmatch(
+                    r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z", value
+                )
+        finally:
+            await conn.execute("SET search_path TO public")
+            await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+            await conn.close()
+
+    asyncio.run(_correr())
