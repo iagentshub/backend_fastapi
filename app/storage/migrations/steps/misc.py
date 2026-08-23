@@ -448,6 +448,95 @@ async def _gdpr_orphan_resources_pg(conn: Any) -> None:
         )
 
 
+async def _gdpr_legacy_owner_orphans_sqlite(conn: Any) -> None:
+    """Limpia filas huérfanas en tablas cuyo dueño no se llama owner_id."""
+    cursor = await conn.execute("SELECT COUNT(*) FROM users")
+    fila = await cursor.fetchone()
+    if not fila or not fila[0]:
+        return
+
+    reservados = ",".join("?" for _ in _DUEÑOS_SIN_CUENTA)
+    condicion = (
+        "NOT IN (SELECT id FROM users) "
+        f"AND {{columna}} NOT IN ({reservados})"
+    )
+
+    # Dependencias antes que padres, también cuando foreign_keys está apagado.
+    await conn.execute(
+        "DELETE FROM workflow_run_events WHERE run_id IN ("
+        "SELECT id FROM workflow_runs WHERE started_by "
+        + condicion.format(columna="started_by")
+        + ")",
+        _DUEÑOS_SIN_CUENTA,
+    )
+    await conn.execute(
+        "DELETE FROM subscription_license_assignments WHERE subscription_id IN ("
+        "SELECT id FROM subscriptions WHERE username "
+        + condicion.format(columna="username")
+        + ")",
+        _DUEÑOS_SIN_CUENTA,
+    )
+    for columna in ("username", "assigned_by"):
+        await conn.execute(
+            "DELETE FROM subscription_license_assignments WHERE "
+            f"{columna} " + condicion.format(columna=columna),
+            _DUEÑOS_SIN_CUENTA,
+        )
+    for tabla, columna in (
+        ("personal_access_tokens", "username"),
+        ("vscode_auth_codes", "username"),
+        ("workflow_runs", "started_by"),
+        ("subscriptions", "username"),
+    ):
+        await conn.execute(
+            f"DELETE FROM {tabla} WHERE {columna} "
+            + condicion.format(columna=columna),
+            _DUEÑOS_SIN_CUENTA,
+        )
+
+
+async def _gdpr_legacy_owner_orphans_pg(conn: Any) -> None:
+    """Variante asyncpg de la limpieza de dueños históricos."""
+    if not await conn.fetchval("SELECT COUNT(*) FROM users"):
+        return
+
+    condicion = (
+        "NOT IN (SELECT id FROM users) AND {columna} <> ALL($1::text[])"
+    )
+    reservados = list(_DUEÑOS_SIN_CUENTA)
+    await conn.execute(
+        "DELETE FROM workflow_run_events WHERE run_id IN ("
+        "SELECT id FROM workflow_runs WHERE started_by "
+        + condicion.format(columna="started_by")
+        + ")",
+        reservados,
+    )
+    await conn.execute(
+        "DELETE FROM subscription_license_assignments WHERE subscription_id IN ("
+        "SELECT id FROM subscriptions WHERE username "
+        + condicion.format(columna="username")
+        + ")",
+        reservados,
+    )
+    for columna in ("username", "assigned_by"):
+        await conn.execute(
+            "DELETE FROM subscription_license_assignments WHERE "
+            f"{columna} " + condicion.format(columna=columna),
+            reservados,
+        )
+    for tabla, columna in (
+        ("personal_access_tokens", "username"),
+        ("vscode_auth_codes", "username"),
+        ("workflow_runs", "started_by"),
+        ("subscriptions", "username"),
+    ):
+        await conn.execute(
+            f"DELETE FROM {tabla} WHERE {columna} "
+            + condicion.format(columna=columna),
+            reservados,
+        )
+
+
 async def _unused_indexes_audit_sqlite(conn: Any) -> None:
     """Retira tres índices que ninguna consulta elige.
 

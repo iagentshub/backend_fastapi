@@ -48,6 +48,8 @@ from app.storage.migrations.steps.misc import (
     _chat_message_interrupted_sqlite,
     _connection_provider_accounts_pg,
     _connection_provider_accounts_sqlite,
+    _gdpr_legacy_owner_orphans_pg,
+    _gdpr_legacy_owner_orphans_sqlite,
     _gdpr_orphan_resources_pg,
     _gdpr_orphan_resources_sqlite,
     _group_share_cascade_flag_pg,
@@ -121,6 +123,7 @@ MIGRATION_PAIRS: tuple[MigrationPair, ...] = (
     MigrationPair(30, "chat_message_interrupted", _chat_message_interrupted_sqlite, _chat_message_interrupted_pg),
     MigrationPair(31, "remove_content_activation", _remove_content_activation_sqlite, _remove_content_activation_pg),
     MigrationPair(32, "app_logs_structured_audit", _app_logs_structured_audit_sqlite, _app_logs_structured_audit_pg),
+    MigrationPair(33, "gdpr_legacy_owner_orphans", _gdpr_legacy_owner_orphans_sqlite, _gdpr_legacy_owner_orphans_pg),
 )
 
 __all__ = ["MIGRATION_PAIRS"]

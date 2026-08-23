@@ -123,3 +123,47 @@ SELECT agent_id, connection_id, updated_at
 FROM user_agent_preferences
 WHERE username = ?
 ORDER BY updated_at DESC;
+
+-- PAT: solo metadatos reconocibles por el usuario. `token_hash` es material de
+-- autenticación y no forma parte del ZIP.
+-- name: personal_access_tokens
+SELECT id, name, prefix, created_at, expires_at, last_used_at, revoked_at
+FROM personal_access_tokens
+WHERE username = ?
+ORDER BY created_at DESC;
+
+-- name: subscriptions
+SELECT id, stripe_customer_id, stripe_subscription_id, tier, seats, self_hosted,
+       interval, amount_cents, status, current_period_end,
+       cancel_at_period_end, created_at, updated_at
+FROM subscriptions
+WHERE username = ?
+ORDER BY created_at DESC;
+
+-- Licencias recibidas por el usuario. Las asignaciones de una suscripción que
+-- posee aparecen además como parte de su metadato de facturación.
+-- name: subscription_license_assignments
+SELECT subscription_id, username, assigned_by, assigned_at, status
+FROM subscription_license_assignments
+WHERE username = ?
+ORDER BY assigned_at DESC;
+
+-- name: subscription_assignments_owned
+SELECT la.subscription_id, la.username, la.assigned_by, la.assigned_at, la.status
+FROM subscription_license_assignments la
+JOIN subscriptions s ON s.id = la.subscription_id
+WHERE s.username = ?
+ORDER BY la.assigned_at DESC;
+
+-- name: workflow_runs
+SELECT *
+FROM workflow_runs
+WHERE started_by = ?
+ORDER BY created_at DESC;
+
+-- name: workflow_run_events
+SELECT e.*
+FROM workflow_run_events e
+JOIN workflow_runs r ON r.id = e.run_id
+WHERE r.started_by = ?
+ORDER BY e.run_id, e.sequence;

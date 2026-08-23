@@ -90,7 +90,9 @@ async def test_export_contiene_ficheros_requeridos(patch_gdpr_db):
                      "token_usage.json", "groups.json", "accounts.json",
                      "agents.json", "skills.json", "prompts.json", "tools.json",
                      "workflows.json", "knowledge_packs.json", "memory.json",
-                     "stars.json", "follows.json"):
+                     "stars.json", "follows.json", "personal_access_tokens.json",
+                     "subscriptions.json", "subscription_license_assignments.json",
+                     "workflow_runs.json", "workflow_run_events.json"):
         assert expected in names, f"Falta {expected} en el ZIP"
 
 
@@ -131,6 +133,70 @@ async def test_export_profile_no_contiene_password_hash(patch_gdpr_db):
     buf = await export_user_data("exp_nopwd")
     profile = json.loads(_zip_read(buf, "profile.json"))
     assert "password_hash" not in profile
+
+
+async def test_export_credenciales_facturación_y_workflows_sin_hash(patch_gdpr_db):
+    from app.storage.db import open_db
+
+    await _make_user("exp_legacy_owner")
+    owner = await _user_id("exp_legacy_owner")
+    async with open_db() as conn:
+        await conn.execute(
+            "INSERT INTO personal_access_tokens "
+            "(id, username, name, token_hash, prefix, created_at) "
+            "VALUES ('pat-exp', ?, 'CLI', 'hash-secreto', 'iah_visible', 'now')",
+            (owner,),
+        )
+        await conn.execute(
+            "INSERT INTO subscriptions "
+            "(id, username, stripe_customer_id, stripe_subscription_id, tier, "
+            "seats, self_hosted, interval, amount_cents, status, created_at, updated_at) "
+            "VALUES ('sub-exp', ?, 'cus-exp', 'stripe-exp', 'pro', 1, 0, "
+            "'month', 1000, 'active', 'now', 'now')",
+            (owner,),
+        )
+        await conn.execute(
+            "INSERT INTO subscription_license_assignments "
+            "(subscription_id, username, assigned_by, assigned_at, status) "
+            "VALUES ('sub-exp', ?, ?, 'now', 'active')",
+            (owner, owner),
+        )
+        await conn.execute(
+            "INSERT INTO workflow_runs "
+            "(id, workflow_id, started_by, group_id, workflow_name, definition, "
+            "agents, input, status, heartbeat_at, created_at, updated_at) "
+            "VALUES ('run-exp', 'wf', ?, ?, 'WF', '{\"nodes\":[]}', '[]', "
+            "'pregunta', 'completed', 'now', 'now', 'now')",
+            (owner, owner),
+        )
+        await conn.execute(
+            "INSERT INTO workflow_run_events (run_id, sequence, payload, created_at) "
+            "VALUES ('run-exp', 1, '{\"answer\":42}', 'now')"
+        )
+        await conn.commit()
+
+    buf = await export_user_data("exp_legacy_owner")
+
+    pats = json.loads(_zip_read(buf, "personal_access_tokens.json"))
+    assert pats == [{
+        "id": "pat-exp",
+        "name": "CLI",
+        "prefix": "iah_visible",
+        "created_at": "now",
+        "expires_at": None,
+        "last_used_at": None,
+        "revoked_at": None,
+    }]
+    assert "hash-secreto" not in _zip_read(buf, "personal_access_tokens.json")
+    assert json.loads(_zip_read(buf, "subscriptions.json"))[0]["id"] == "sub-exp"
+    assignments = json.loads(
+        _zip_read(buf, "subscription_license_assignments.json")
+    )
+    assert len(assignments) == 1
+    runs = json.loads(_zip_read(buf, "workflow_runs.json"))
+    assert runs[0]["definition"] == {"nodes": []}
+    events = json.loads(_zip_read(buf, "workflow_run_events.json"))
+    assert events[0]["payload"] == {"answer": 42}
 
 
 # ── conversations ─────────────────────────────────────────────────────────────

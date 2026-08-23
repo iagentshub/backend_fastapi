@@ -106,6 +106,40 @@ WHERE owner_id = ?;
 DELETE FROM accounts
 WHERE owner_id = ?;
 
+-- name: delete_personal_access_tokens
+DELETE FROM personal_access_tokens
+WHERE username = ?;
+
+-- name: delete_vscode_auth_codes
+DELETE FROM vscode_auth_codes
+WHERE username = ?;
+
+-- name: delete_workflow_run_events
+-- Explícito aunque exista ON DELETE CASCADE: en SQLite `foreign_keys` es un
+-- PRAGMA por conexión y la purga no debe depender de que esté activado.
+DELETE FROM workflow_run_events
+WHERE run_id IN (
+SELECT id
+FROM workflow_runs
+WHERE started_by = ?);
+
+-- name: delete_workflow_runs
+DELETE FROM workflow_runs
+WHERE started_by = ?;
+
+-- name: delete_subscription_license_assignments
+-- Incluye las licencias que recibió o asignó la cuenta y todos los asientos de
+-- una suscripción suya. Debe ejecutarse antes de borrar `subscriptions`.
+DELETE FROM subscription_license_assignments
+WHERE username = ? OR assigned_by = ? OR subscription_id IN (
+SELECT id
+FROM subscriptions
+WHERE username = ?);
+
+-- name: delete_subscriptions
+DELETE FROM subscriptions
+WHERE username = ?;
+
 -- name: delete_group_shares
 DELETE FROM resource_group_shares
 WHERE shared_by = ?;

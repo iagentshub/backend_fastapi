@@ -23,9 +23,13 @@ TABLA = re.compile(
     r"CREATE\s+TABLE\s+(?:IF\s+NOT\s+EXISTS\s+)?[\"`]?([A-Za-z_][A-Za-z0-9_]*)",
     re.IGNORECASE,
 )
-# `resource_source_links` llama a su columna `resource_owner_id`. El sufijo, y
-# no el nombre exacto, es lo que identifica a la columna de propiedad.
-COLUMNA_DUEÑO = re.compile(r"^\s*((?:[A-Za-z0-9_]+_)?owner_id)\s", re.MULTILINE)
+# `resource_source_links` llama a su columna `resource_owner_id`; varias tablas
+# históricas usan `username` y las ejecuciones usan `started_by`. Las tres
+# formas representan la propiedad que el borrado RGPD debe cubrir.
+COLUMNA_DUEÑO = re.compile(
+    r"^\s*((?:(?:[A-Za-z0-9_]+_)?owner_id)|username|started_by)\s",
+    re.MULTILINE,
+)
 
 # Tablas con dueño que quedan deliberadamente fuera del borrado, con el motivo.
 # Sin esta lista la guarda se vuelve ruido y se acaba desactivando entera.
@@ -37,6 +41,9 @@ EXCLUIDAS = {
     # Borrador de importación con caducidad propia (`expires_at`): se limpia por
     # su ciclo de vida, no por el del usuario.
     "official_import_drafts": "borrador efímero con expiración propia",
+    # Los logs tienen retención propia y conservan la mínima trazabilidad de
+    # seguridad incluso después del borrado. El usuario no es dueño de la fila.
+    "app_logs": "registro diagnóstico y de auditoría con retención propia",
 }
 
 
@@ -92,6 +99,10 @@ def test_la_columna_de_propiedad_es_la_que_filtra_el_borrado():
             continue
         tabla = objetivo.group(1).lower()
         columna = con_dueño.get(tabla)
+        # `users.username` es identidad, no una referencia a su dueño: la fila
+        # raíz se borra por la PK canónica que usan todas las demás tablas.
+        if tabla == "users":
+            columna = "id"
         if columna and columna not in cuerpo:
             errores.append(f"{nombre} borra {tabla} sin filtrar por {columna}")
     assert errores == [], errores
@@ -126,6 +137,9 @@ def test_la_exportación_entrega_los_mismos_recursos_que_borra_el_purgado():
         "resource_social",
         "llm_orchestrations",
         "llm_orchestration_bindings",
+        # Código de emparejamiento de un solo uso y 60 segundos: es material de
+        # autenticación efímero, no un dato portable.
+        "vscode_auth_codes",
         "users",
     }
     faltan = _tablas_borradas() - exportadas - sin_exportar

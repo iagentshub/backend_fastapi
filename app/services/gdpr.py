@@ -12,7 +12,7 @@ from app.utils import flog
 # Columnas que la base de datos guarda como texto JSON. Sin deserializarlas, el
 # ZIP del artículo 20 entrega el agente como una cadena escapada dentro de otra:
 # formalmente son los datos, pero no son portables a ningún sitio.
-_JSON_COLUMNS = ("data", "definition", "labels")
+_JSON_COLUMNS = ("data", "definition", "labels", "agents", "payload")
 
 # Un fichero del ZIP por consulta. El orden es el del ZIP y el nombre es el que
 # ve el usuario; la consulta toma siempre el id de usuario como único parámetro.
@@ -30,6 +30,10 @@ _RESOURCE_FILES = (
     ("stars.json", "queries/gdpr_export:stars"),
     ("sessions.json", "queries/gdpr_export:sessions"),
     ("agent_preferences.json", "queries/gdpr_export:agent_preferences"),
+    ("personal_access_tokens.json", "queries/gdpr_export:personal_access_tokens"),
+    ("subscriptions.json", "queries/gdpr_export:subscriptions"),
+    ("workflow_runs.json", "queries/gdpr_export:workflow_runs"),
+    ("workflow_run_events.json", "queries/gdpr_export:workflow_run_events"),
 )
 
 
@@ -136,6 +140,25 @@ async def export_user_data(username: str) -> io.BytesIO:
                         [_decode_row(r) for r in rows], ensure_ascii=False, indent=2
                     ),
                 )
+
+            # Las licencias propias y las que cuelgan de una suscripción del
+            # usuario se solapan para el asiento del comprador. Se deduplican
+            # por su clave primaria antes de escribir un único fichero.
+            assignments = {}
+            for query in (
+                "queries/gdpr_export:subscription_license_assignments",
+                "queries/gdpr_export:subscription_assignments_owned",
+            ):
+                rows = await conn.fetchall(sql(query), (user_id,))
+                for row in rows:
+                    item = dict(row)
+                    assignments[(item["subscription_id"], item["username"])] = item
+            zf.writestr(
+                "subscription_license_assignments.json",
+                json.dumps(
+                    list(assignments.values()), ensure_ascii=False, indent=2
+                ),
+            )
 
             # 9. Seguimientos, en las dos direcciones: a quién sigue y quién le
             #    sigue son datos suyos por igual.

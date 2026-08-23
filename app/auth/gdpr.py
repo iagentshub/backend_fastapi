@@ -161,6 +161,29 @@ async def purge_user_data(username: str) -> None:
                 await conn.execute(
                     sql("queries/gdpr:delete_accounts"), (user_id,)
                 )
+                # Credenciales, ejecuciones y facturación usan columnas de
+                # propiedad históricas (`username`/`started_by`) en vez de
+                # `owner_id`; por eso no las cubrían las primeras versiones de
+                # esta purga. Las dependencias se eliminan antes que sus padres.
+                await conn.execute(
+                    sql("queries/gdpr:delete_personal_access_tokens"), (user_id,)
+                )
+                await conn.execute(
+                    sql("queries/gdpr:delete_vscode_auth_codes"), (user_id,)
+                )
+                await conn.execute(
+                    sql("queries/gdpr:delete_workflow_run_events"), (user_id,)
+                )
+                await conn.execute(
+                    sql("queries/gdpr:delete_workflow_runs"), (user_id,)
+                )
+                await conn.execute(
+                    sql("queries/gdpr:delete_subscription_license_assignments"),
+                    (user_id, user_id, user_id),
+                )
+                await conn.execute(
+                    sql("queries/gdpr:delete_subscriptions"), (user_id,)
+                )
                 await conn.execute(
                     sql("queries/gdpr:delete_agent_preferences"), (user_id,)
                 )

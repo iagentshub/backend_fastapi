@@ -269,6 +269,84 @@ async def test_purge_elimina_los_recursos_añadidos_después_del_borrado(patch_d
     assert SKILLS_DIR is not None  # el directorio legacy no interviene ya
 
 
+async def test_purge_elimina_credenciales_facturación_y_ejecuciones(patch_data_dir):
+    """Las tablas con `username`/`started_by` forman parte de la misma purga."""
+    from app.storage.db import open_db
+
+    await _make_user("purge_legacy_owner")
+    await _make_user("purge_legacy_bystander")
+    victim = await _user_id("purge_legacy_owner")
+    bystander = await _user_id("purge_legacy_bystander")
+
+    async with open_db() as conn:
+        await conn.execute(
+            "INSERT INTO personal_access_tokens "
+            "(id, username, name, token_hash, prefix, created_at) "
+            "VALUES ('pat-v', ?, 'CLI', 'hash-v', 'iah_v', 'now')",
+            (victim,),
+        )
+        await conn.execute(
+            "INSERT INTO vscode_auth_codes (code_hash, username, state, expires_at) "
+            "VALUES ('code-v', ?, 'state', 'later')",
+            (victim,),
+        )
+        for sub_id, owner in (("sub-v", victim), ("sub-b", bystander)):
+            await conn.execute(
+                "INSERT INTO subscriptions "
+                "(id, username, stripe_customer_id, stripe_subscription_id, tier, "
+                "seats, self_hosted, interval, amount_cents, status, created_at, updated_at) "
+                "VALUES (?, ?, ?, ?, 'pro', 2, 0, 'month', 1000, 'active', 'now', 'now')",
+                (sub_id, owner, f"cus-{sub_id}", f"stripe-{sub_id}"),
+            )
+        for sub_id, username, assigned_by, status in (
+            ("sub-v", bystander, victim, "revoked"),
+            ("sub-b", victim, bystander, "revoked"),
+            ("sub-b", bystander, bystander, "active"),
+        ):
+            await conn.execute(
+                "INSERT INTO subscription_license_assignments "
+                "(subscription_id, username, assigned_by, assigned_at, status) "
+                "VALUES (?, ?, ?, 'now', ?)",
+                (sub_id, username, assigned_by, status),
+            )
+        await conn.execute(
+            "INSERT INTO workflow_runs "
+            "(id, workflow_id, started_by, group_id, workflow_name, definition, "
+            "agents, input, status, heartbeat_at, created_at, updated_at) "
+            "VALUES ('run-v', 'wf', ?, ?, 'WF', '{}', '[]', 'dato', "
+            "'completed', 'now', 'now', 'now')",
+            (victim, victim),
+        )
+        await conn.execute(
+            "INSERT INTO workflow_run_events (run_id, sequence, payload, created_at) "
+            "VALUES ('run-v', 1, '{\"output\":\"dato\"}', 'now')"
+        )
+        await conn.commit()
+
+    await purge_user_data("purge_legacy_owner")
+
+    async with open_db() as conn:
+        for tabla, columna in (
+            ("personal_access_tokens", "username"),
+            ("vscode_auth_codes", "username"),
+            ("subscriptions", "username"),
+            ("workflow_runs", "started_by"),
+        ):
+            assert not await conn.fetchval(
+                f"SELECT 1 FROM {tabla} WHERE {columna} = ?", (victim,)
+            )
+        assert not await conn.fetchval(
+            "SELECT 1 FROM workflow_run_events WHERE run_id = 'run-v'"
+        )
+        assert await conn.fetchval(
+            "SELECT 1 FROM subscriptions WHERE username = ?", (bystander,)
+        )
+        rows = await conn.fetchall(
+            "SELECT username, assigned_by FROM subscription_license_assignments"
+        )
+        assert [tuple(row) for row in rows] == [(bystander, bystander)]
+
+
 async def test_purge_no_toca_los_recursos_de_otro_usuario(patch_data_dir):
     from app.storage.prompt_storage import PromptStorage
 

@@ -12,7 +12,10 @@ import sqlite3
 
 import aiosqlite
 
-from app.storage.migrations.steps.misc import _gdpr_orphan_resources_sqlite
+from app.storage.migrations.steps.misc import (
+    _gdpr_legacy_owner_orphans_sqlite,
+    _gdpr_orphan_resources_sqlite,
+)
 
 _ESQUEMA = """
 CREATE TABLE users (id TEXT PRIMARY KEY, username TEXT);
@@ -22,6 +25,14 @@ CREATE TABLE memory_files (id TEXT, owner_id TEXT);
 CREATE TABLE knowledge_packs (id TEXT, owner_id TEXT);
 CREATE TABLE resource_versions (id TEXT, owner_id TEXT);
 CREATE TABLE resource_source_links (source_id TEXT, resource_owner_id TEXT);
+CREATE TABLE personal_access_tokens (id TEXT, username TEXT);
+CREATE TABLE vscode_auth_codes (code_hash TEXT, username TEXT);
+CREATE TABLE subscriptions (id TEXT, username TEXT);
+CREATE TABLE subscription_license_assignments (
+    subscription_id TEXT, username TEXT, assigned_by TEXT
+);
+CREATE TABLE workflow_runs (id TEXT, started_by TEXT);
+CREATE TABLE workflow_run_events (run_id TEXT, sequence INTEGER);
 """
 
 
@@ -88,4 +99,60 @@ async def test_una_instalación_sin_usuarios_no_se_vacía(tmp_path):
     await _gdpr_orphan_resources_sqlite(conn)
 
     assert await _ids(conn, "prompts") == ["cualquiera"]
+    await conn.close()
+
+
+async def test_limpia_huérfanos_con_username_y_started_by_en_orden(tmp_path):
+    conn = await _db(tmp_path)
+    await conn.execute("INSERT INTO personal_access_tokens VALUES ('pat', 'borrada')")
+    await conn.execute("INSERT INTO vscode_auth_codes VALUES ('code', 'borrada')")
+    await conn.execute("INSERT INTO subscriptions VALUES ('sub', 'borrada')")
+    await conn.execute(
+        "INSERT INTO subscription_license_assignments VALUES "
+        "('sub', 'u-viva', 'u-viva')"
+    )
+    await conn.execute("INSERT INTO workflow_runs VALUES ('run', 'borrada')")
+    await conn.execute("INSERT INTO workflow_run_events VALUES ('run', 1)")
+
+    await _gdpr_legacy_owner_orphans_sqlite(conn)
+
+    for tabla in (
+        "personal_access_tokens",
+        "vscode_auth_codes",
+        "subscriptions",
+        "subscription_license_assignments",
+        "workflow_runs",
+        "workflow_run_events",
+    ):
+        assert await _ids(conn, tabla, "rowid") == [], tabla
+    await conn.close()
+
+
+async def test_limpieza_de_dueños_históricos_conserva_usuario_vivo(tmp_path):
+    conn = await _db(tmp_path)
+    await conn.execute("INSERT INTO personal_access_tokens VALUES ('pat', 'u-viva')")
+    await conn.execute("INSERT INTO subscriptions VALUES ('sub', 'u-viva')")
+    await conn.execute(
+        "INSERT INTO subscription_license_assignments VALUES "
+        "('sub', 'u-viva', 'u-viva')"
+    )
+    await conn.execute("INSERT INTO workflow_runs VALUES ('run', 'u-viva')")
+    await conn.execute("INSERT INTO workflow_run_events VALUES ('run', 1)")
+
+    await _gdpr_legacy_owner_orphans_sqlite(conn)
+
+    assert await _ids(conn, "personal_access_tokens", "username") == ["u-viva"]
+    assert await _ids(conn, "subscriptions", "username") == ["u-viva"]
+    assert await _ids(conn, "workflow_runs", "started_by") == ["u-viva"]
+    assert await _ids(conn, "workflow_run_events", "run_id") == ["run"]
+    await conn.close()
+
+
+async def test_limpieza_de_dueños_históricos_no_vacía_instalación_nueva(tmp_path):
+    conn = await _db(tmp_path, con_usuarios=False)
+    await conn.execute("INSERT INTO personal_access_tokens VALUES ('pat', 'cualquiera')")
+
+    await _gdpr_legacy_owner_orphans_sqlite(conn)
+
+    assert await _ids(conn, "personal_access_tokens", "username") == ["cualquiera"]
     await conn.close()
