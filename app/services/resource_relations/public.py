@@ -59,6 +59,37 @@ async def public_names(
         for row in rows
     }
 
+
+async def _workflow_agent_presentations(
+    agent_ids: List[str],
+) -> Dict[str, Dict[str, Any]]:
+    """Presentación pública/legible de los agentes de un workflow, en lote.
+
+    El id del agente no se devuelve en la relación pública: el paso conserva
+    su id sintético y las dependencias solo se añaden si el agente está
+    publicado. El nombre almacenado únicamente evita que una copia enlazada o
+    un agente compartido termine presentado como el id técnico ``step-*``.
+    """
+    unique = [value for value in dict.fromkeys(agent_ids) if value]
+    if not unique:
+        return {}
+    placeholders = ",".join("?" for _ in unique)
+    query = sql("queries/resource_relations:workflow_agent_presentations").replace(
+        "@agent_ids@", placeholders
+    )
+    async with open_db() as conn:
+        rows = await conn.fetchall(query, tuple(unique))
+    return {
+        str(row["id"]): {
+            "stored_name": str(row["stored_name"] or "").strip(),
+            "public_name": str(row["public_name"] or "").strip(),
+            "public_description": str(row["public_description"] or ""),
+            "is_public": bool(row["is_public"]),
+        }
+        for row in rows
+    }
+
+
 async def _agent_public_items(
     agent: Dict[str, Any], *, via: Optional[tuple[str, str]]
 ) -> List[Dict[str, Any]]:
@@ -212,7 +243,7 @@ async def _workflow_public_items(
     raw_edges = definition.get("edges") or []
 
     agent_ids = [str(node.get("agent_id") or "") for node in raw_nodes]
-    public_agents = await public_names("agent", agent_ids)
+    agent_presentations = await _workflow_agent_presentations(agent_ids)
 
     items: List[Dict[str, Any]] = []
     step_ids: Dict[str, str] = {}
@@ -224,19 +255,29 @@ async def _workflow_public_items(
         step_id = f"{workflow_id}:{raw_step_id}"
         step_ids[raw_step_id] = step_id
         agent_id = str(raw_node.get("agent_id") or "")
-        public_agent = public_agents.get(agent_id)
+        presentation = agent_presentations.get(agent_id) or {}
+        is_public_agent = presentation.get("is_public") is True
         kind = "evaluator" if raw_node.get("kind") == "evaluator" else "agent"
+        label = (
+            presentation.get("public_name")
+            or str(raw_node.get("label") or "").strip()
+            or presentation.get("stored_name")
+            or f"Agente {index + 1}"
+        )
         items.append(
             item(
                 kind,
                 step_id,
-                (public_agent or {}).get("name")
-                or str(raw_node.get("label") or raw_step_id),
-                description=(public_agent or {}).get("description", ""),
+                label,
+                description=(
+                    presentation.get("public_description", "")
+                    if is_public_agent
+                    else ""
+                ),
                 relation="orchestrates",
             )
         )
-        if public_agent:
+        if is_public_agent:
             agent = await storage.get(agent_id)
             if agent:
                 items.extend(await _agent_public_items(agent, via=(kind, step_id)))

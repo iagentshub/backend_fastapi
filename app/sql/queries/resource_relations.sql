@@ -13,6 +13,19 @@ FROM knowledge_items
 WHERE pack_id = ?
 ORDER BY pack_relative_path;
 
+-- name: workflow_agent_presentations
+SELECT a.id,
+       a.name AS stored_name,
+       social.name AS public_name,
+       social.description AS public_description,
+       CASE WHEN social.resource_id IS NULL THEN 0 ELSE 1 END AS is_public
+FROM agents a
+LEFT JOIN resource_social social
+  ON social.resource_type = 'agent'
+ AND social.resource_id = a.id
+ AND social.is_public = 1
+WHERE a.id IN (@agent_ids@);
+
 -- name: group_memberships_of_user
 SELECT group_id, role
 FROM group_members

@@ -322,6 +322,46 @@ def test_grafo_publico_de_workflow_conserva_flujo_y_recursos(client):
     )
 
 
+def test_grafo_publico_de_workflow_muestra_nombre_de_agente_enlazado(client):
+    _login(client, "explore_linked_step_source")
+    source_agent = _create_agent(client, "Agente enlazado legible")
+    _make_agent_public(client, source_agent["id"])
+
+    _login(client, "explore_linked_step_owner")
+    linked = client.post(f"/api/agents/private/{source_agent['id']}/link")
+    assert linked.status_code == 200, linked.text
+    linked_agent_id = linked.json()["agent_id"]
+
+    workflow = client.post(
+        "/api/workflows",
+        json={
+            "name": "Workflow con agente enlazado",
+            "labels": ["public"],
+            "definition": {
+                "nodes": [{"id": "step-interno", "agent_id": linked_agent_id}],
+                "edges": [],
+            },
+        },
+    )
+    assert workflow.status_code in (200, 201), workflow.text
+    workflow_id = workflow.json()["id"]
+    published = client.put(
+        f"/api/workflows/{workflow_id}/visibility",
+        json={"is_public": True, "category": "Productivity"},
+    )
+    assert published.status_code == 200, published.text
+
+    _login(client, "explore_linked_step_viewer")
+    response = client.get(f"/api/explore/workflow/{workflow_id}/relations")
+
+    assert response.status_code == 200, response.text
+    step = next(
+        item for item in response.json()["items"] if item["relation"] == "orchestrates"
+    )
+    assert step["label"] == source_agent["name"]
+    assert step["label"] != "step-interno"
+
+
 def test_grafo_publico_rechaza_tipos_sin_grafo(client):
     _login(client, "explore_graph_invalid")
     response = client.get("/api/explore/skill/anything/relations")
