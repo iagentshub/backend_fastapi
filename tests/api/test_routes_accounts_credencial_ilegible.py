@@ -4,6 +4,7 @@ La cuenta sigue listándose —para que el usuario la vea y la arregle— pero
 marcada, sin máscara de una clave que no existe, y las acciones que usarían la
 credencial se niegan antes de llamar al proveedor.
 """
+
 from __future__ import annotations
 
 import asyncio
@@ -44,7 +45,9 @@ def test_listado_marca_la_cuenta_y_no_enmascara_nada(client, rotar_clave):
     account_id = _crear_cuenta(client)
     rotar_clave()
 
-    cuenta = next(a for a in client.get("/api/accounts").json() if a["id"] == account_id)
+    cuenta = next(
+        a for a in client.get("/api/accounts").json() if a["id"] == account_id
+    )
     assert cuenta["credentials_unreadable"] is True
     assert cuenta["api_key_masked"] == ""
 
@@ -54,9 +57,16 @@ def test_sync_se_niega_con_codigo_propio(client, rotar_clave):
     account_id = _crear_cuenta(client)
     rotar_clave()
 
-    r = client.post(f"/api/accounts/{account_id}/sync")
+    from unittest.mock import AsyncMock, patch
+
+    with patch(
+        "app.api.routes.accounts._fetch_models", new_callable=AsyncMock
+    ) as fetch_models:
+        r = client.post(f"/api/accounts/{account_id}/sync")
+
     assert r.status_code == 409
     assert r.json()["detail"]["code"] == "credential_unreadable"
+    fetch_models.assert_not_awaited()
 
 
 def test_test_con_clave_nueva_en_el_body_sigue_permitido(client, rotar_clave):

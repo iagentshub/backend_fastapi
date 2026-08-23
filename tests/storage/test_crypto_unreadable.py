@@ -5,9 +5,11 @@ que `enc:gAAAAA…` acababa en la cabecera `Authorization` del proveedor LLM y e
 usuario veía un 401 ajeno. Ahora el fallo es tipado (`DecryptionError`), el
 storage vacía el campo y lo marca, y quien vaya a usar la credencial se niega.
 """
+
 from __future__ import annotations
 
 import pytest
+from cryptography.fernet import Fernet
 
 from app.storage import crypto
 from app.storage.accounts import AccountStorage
@@ -45,6 +47,15 @@ def test_decrypt_lanza_con_secreto_rotado(rotar_secreto):
 def test_decrypt_deja_pasar_valores_legacy_en_claro():
     assert decrypt("sk-en-claro") == "sk-en-claro"
     assert decrypt("") == ""
+
+
+def test_decrypt_tipifica_un_payload_fernet_no_utf8(monkeypatch):
+    fernet = Fernet(Fernet.generate_key())
+    monkeypatch.setattr(crypto, "_fernet", fernet)
+    cifrado = "enc:" + fernet.encrypt(b"\xff").decode("ascii")
+
+    with pytest.raises(DecryptionError):
+        decrypt(cifrado)
 
 
 async def test_conexion_ilegible_se_marca_y_no_devuelve_ciphertext(

@@ -16,6 +16,7 @@ real. Los storages usan decrypt_fields() para degradar ese fallo a una marca
 en el recurso (`credentials_unreadable`) que las rutas traducen a un error
 propio: «la clave guardada no se puede leer, vuelve a introducirla».
 """
+
 from __future__ import annotations
 
 import base64
@@ -52,6 +53,7 @@ def _get_fernet():
     from cryptography.fernet import Fernet
 
     from app.auth.passwords import _secret
+
     raw = _secret().encode("utf-8")
     key_bytes = hashlib.pbkdf2_hmac("sha256", raw, _SALT, _ITERATIONS, dklen=32)
     _fernet = Fernet(base64.urlsafe_b64encode(key_bytes))
@@ -81,8 +83,16 @@ def decrypt(value: str) -> str:
     if not is_encrypted(value):
         return value
     try:
-        return _get_fernet().decrypt(value[len(_PREFIX):].encode("utf-8")).decode("utf-8")
-    except (InvalidToken, InvalidSignature, ValueError, TypeError) as exc:
+        return (
+            _get_fernet().decrypt(value[len(_PREFIX) :].encode("utf-8")).decode("utf-8")
+        )
+    except (
+        InvalidToken,
+        InvalidSignature,
+        UnicodeDecodeError,
+        ValueError,
+        TypeError,
+    ) as exc:
         raise DecryptionError(str(exc)) from exc
 
 

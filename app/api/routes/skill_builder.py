@@ -89,10 +89,9 @@ async def builder_chat(
 
     imported = build_from_skill_markdown(body.messages)
     if imported:
+
         async def imported_event():
-            yield _sse(
-                {"type": "builder_done", **imported.model_dump(mode="json")}
-            )
+            yield _sse({"type": "builder_done", **imported.model_dump(mode="json")})
 
         return StreamingResponse(imported_event(), media_type="text/event-stream")
 
@@ -115,10 +114,9 @@ async def builder_chat(
             reply = ""
             partial_reply = ""
             provider_error = ""
+            provider_error_code = ""
             last_progress: Dict[str, Any] = {}
-            async for chunk in stream_chat(
-                builder_agent, conn, attempt_history, None
-            ):
+            async for chunk in stream_chat(builder_agent, conn, attempt_history, None):
                 if chunk.startswith(":"):
                     yield chunk
                     continue
@@ -139,6 +137,7 @@ async def builder_chat(
                         yield _sse({"type": "progress", **progress})
                 elif event.get("type") == "error":
                     provider_error = str(event.get("message") or "")
+                    provider_error_code = str(event.get("code") or "")
                     break
                 elif event.get("type") == "done":
                     reply = str(event.get("reply") or "")
@@ -183,7 +182,13 @@ async def builder_chat(
                         }
                     )
                     return
-                yield _sse({"type": "error", "message": provider_error})
+                yield _sse(
+                    {
+                        "type": "error",
+                        "code": provider_error_code,
+                        "message": provider_error,
+                    }
+                )
                 return
 
             if attempt == 0:
@@ -194,7 +199,7 @@ async def builder_chat(
                         "role": "user",
                         "content": (
                             "Corrige la respuesta. No hagas preguntas. Devuelve solo "
-                            "el JSON completo con status=\"ready\" y una skill operativa."
+                            'el JSON completo con status="ready" y una skill operativa.'
                         ),
                     },
                 ]
@@ -202,9 +207,7 @@ async def builder_chat(
 
         if force_ready:
             fallback = build_fallback_ready(body.messages)
-            yield _sse(
-                {"type": "builder_done", **fallback.model_dump(mode="json")}
-            )
+            yield _sse({"type": "builder_done", **fallback.model_dump(mode="json")})
             return
         yield _sse(
             {

@@ -5,9 +5,7 @@ import json
 
 def _events(text: str) -> list[dict]:
     return [
-        json.loads(line[6:])
-        for line in text.splitlines()
-        if line.startswith("data: ")
+        json.loads(line[6:]) for line in text.splitlines() if line.startswith("data: ")
     ]
 
 
@@ -50,7 +48,43 @@ Conserva estas instrucciones completas.
     )
 
     assert response.status_code == 200
-    done = next(event for event in _events(response.text) if event["type"] == "builder_done")
+    done = next(
+        event for event in _events(response.text) if event["type"] == "builder_done"
+    )
     assert done["status"] == "ready"
     assert done["draft"]["name"] == "high-end-visual-design"
     assert "Contenido extenso" in done["draft"]["content"]
+
+
+def test_skill_builder_preserva_codigo_de_credencial_ilegible(
+    admin_client, monkeypatch
+):
+    connection = admin_client.post(
+        "/api/connections",
+        json={
+            "name": "NIM ilegible",
+            "type": "nvidia",
+            "api_key": "nvapi-test",
+            "model": "meta/llama-3.2-3b-instruct",
+        },
+    ).json()
+
+    async def unreadable(*args, **kwargs):
+        yield (
+            'data: {"type":"error","code":"credential_unreadable",'
+            '"message":"Mensaje de fallback"}\n\n'
+        )
+
+    monkeypatch.setattr("app.api.routes.skill_builder.stream_chat", unreadable)
+
+    response = admin_client.post(
+        "/api/skill-builder/chat",
+        json={
+            "connection_id": connection["id"],
+            "mode": "guided",
+            "messages": [{"role": "user", "content": "Ayúdame"}],
+        },
+    )
+
+    error = next(event for event in _events(response.text) if event["type"] == "error")
+    assert error["code"] == "credential_unreadable"

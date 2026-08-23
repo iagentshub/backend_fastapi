@@ -25,6 +25,7 @@ from app.services.connection_access import connection_access
 from app.sql import sql
 from app.storage.agent_storage import AgentStorage
 from app.storage.connection_storage import ConnectionStorage
+from app.storage.crypto import UNREADABLE_FLAG
 from app.storage.db import DB_ERRORS, IS_PG, open_db
 from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
@@ -178,10 +179,17 @@ async def _ollama_conns_to_models(
     base_conns = [c for c in ollama_conns if not (c.get("model") or "").strip()]
     if base_conns:
         base = base_conns[0]
+        base_clean = {k: v for k, v in base.items() if k != "api_key"}
+        # El listado expande una conexión Ollama base consultando /api/tags.
+        # Si la credencial guardada es ilegible, no hay una clave válida que
+        # enviar: se conserva la tarjeta marcada para que pueda repararse y se
+        # evita por completo la petición externa.
+        if base.get(UNREADABLE_FLAG):
+            result.append(base_clean)
+            return result
         host = (base.get("host") or "http://localhost:11434").rstrip("/")
         api_key = str(base.get("api_key") or "")
         models = await asyncio.to_thread(_fetch_ollama_models, host, api_key)
-        base_clean = {k: v for k, v in base.items() if k != "api_key"}
         if models:
             for model in models:
                 if model in seen:

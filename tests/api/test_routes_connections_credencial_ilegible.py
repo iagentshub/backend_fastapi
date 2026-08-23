@@ -4,7 +4,10 @@ El ciphertext no sale por la API ni se manda al proveedor: el listado marca la
 conexión como `credentials_unreadable` y las acciones que usarían la clave
 responden con el código `credential_unreadable`.
 """
+
 from __future__ import annotations
+
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from cryptography.fernet import Fernet
@@ -31,9 +34,7 @@ def rotar_clave(monkeypatch):
     return _rotar
 
 
-def test_listado_marca_la_conexion_y_no_filtra_el_ciphertext(
-    admin_client, rotar_clave
-):
+def test_listado_marca_la_conexion_y_no_filtra_el_ciphertext(admin_client, rotar_clave):
     created = admin_client.post("/api/connections", json=_CONN_PAYLOAD).json()
     rotar_clave()
 
@@ -66,12 +67,58 @@ def test_test_all_devuelve_el_codigo_propio(admin_client, rotar_clave):
     assert resultado["code"] == "credential_unreadable"
 
 
-def test_import_models_se_niega_antes_de_llamar_al_proveedor(
-    admin_client, rotar_clave
-):
+def test_import_models_se_niega_antes_de_llamar_al_proveedor(admin_client, rotar_clave):
     created = admin_client.post("/api/connections", json=_CONN_PAYLOAD).json()
     rotar_clave()
 
-    r = admin_client.post(f"/api/connections/{created['id']}/import-models")
+    with patch(
+        "app.api.routes.connection_sync.fetch_provider_models",
+        new_callable=AsyncMock,
+    ) as fetch_models:
+        r = admin_client.post(f"/api/connections/{created['id']}/import-models")
+
     assert r.status_code == 409
     assert r.json()["detail"]["code"] == "credential_unreadable"
+    fetch_models.assert_not_awaited()
+
+
+def test_listado_ollama_ilegible_no_consulta_el_proveedor(admin_client, rotar_clave):
+    created = admin_client.post(
+        "/api/connections",
+        json={
+            "type": "ollama",
+            "label": "Ollama Cloud rota",
+            "host": "https://ollama.example.com",
+            "api_key": "ollama-test-key",
+        },
+    ).json()
+    rotar_clave()
+
+    with patch("app.api.routes.connections._fetch_ollama_models") as fetch_models:
+        conns = admin_client.get("/api/connections").json()
+
+    rota = next(c for c in conns if c["id"] == created["id"])
+    assert rota["credentials_unreadable"] is True
+    assert "api_key" not in rota
+    fetch_models.assert_not_called()
+
+
+def test_hub_sync_ilegible_no_intenta_login(admin_client, rotar_clave):
+    created = admin_client.post(
+        "/api/connections",
+        json={
+            "type": "iagentshub",
+            "label": "Hub remoto roto",
+            "url": "https://hub.example.com",
+            "username": "alice",
+            "api_key": "password-test",
+        },
+    ).json()
+    rotar_clave()
+
+    with patch("app.connections.iagentshub._login") as login:
+        r = admin_client.post(f"/api/connections/{created['id']}/hub-sync")
+
+    assert r.status_code == 409
+    assert r.json()["detail"]["code"] == "credential_unreadable"
+    login.assert_not_called()

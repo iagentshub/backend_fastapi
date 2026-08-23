@@ -153,10 +153,9 @@ async def builder_chat(
             reply = ""
             partial_reply = ""
             provider_error = ""
+            provider_error_code = ""
             last_progress: Dict[str, Any] = {}
-            async for chunk in stream_chat(
-                builder_agent, conn, attempt_history, None
-            ):
+            async for chunk in stream_chat(builder_agent, conn, attempt_history, None):
                 if chunk.startswith(":"):
                     yield chunk
                     continue
@@ -177,6 +176,7 @@ async def builder_chat(
                         yield _sse({"type": "progress", **progress})
                 elif event.get("type") == "error":
                     provider_error = str(event.get("message") or "")
+                    provider_error_code = str(event.get("code") or "")
                     break
                 elif event.get("type") == "done":
                     reply = str(event.get("reply") or "")
@@ -227,32 +227,32 @@ async def builder_chat(
                         }
                     )
                     return
-                yield _sse({"type": "error", "message": provider_error})
+                yield _sse(
+                    {
+                        "type": "error",
+                        "code": provider_error_code,
+                        "message": provider_error,
+                    }
+                )
                 return
 
             if attempt == 0:
                 attempt_history = [
                     *history,
-                    *(
-                        [{"role": "assistant", "content": reply}]
-                        if reply
-                        else []
-                    ),
+                    *([{"role": "assistant", "content": reply}] if reply else []),
                     {
                         "role": "user",
                         "content": (
                             "Corrige tu respuesta anterior. No hagas más preguntas. "
                             "Diseña el agente solicitado y devuelve únicamente el "
-                            "objeto JSON completo con status=\"ready\" y draft."
+                            'objeto JSON completo con status="ready" y draft.'
                         ),
                     },
                 ]
                 yield _sse({"type": "progress"})
 
         if force_ready:
-            fallback = build_fallback_ready(
-                body.messages, body.resources, body.mode
-            )
+            fallback = build_fallback_ready(body.messages, body.resources, body.mode)
             yield _sse(
                 {
                     "type": "builder_done",

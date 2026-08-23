@@ -35,6 +35,38 @@ def test_builder_rejects_unavailable_connection(admin_client):
     assert response.status_code == 404
 
 
+def test_builder_preserva_codigo_de_credencial_ilegible(admin_client, monkeypatch):
+    connection = admin_client.post(
+        "/api/connections",
+        json={
+            "name": "NIM ilegible",
+            "type": "nvidia",
+            "api_key": "nvapi-test",
+            "model": "meta/llama-3.2-3b-instruct",
+        },
+    ).json()
+
+    async def unreadable(*args, **kwargs):
+        yield (
+            'data: {"type":"error","code":"credential_unreadable",'
+            '"message":"Mensaje de fallback"}\n\n'
+        )
+
+    monkeypatch.setattr("app.api.routes.agent_builder.stream_chat", unreadable)
+
+    response = admin_client.post(
+        "/api/agent-builder/chat",
+        json={
+            "connection_id": connection["id"],
+            "mode": "auto",
+            "messages": [{"role": "user", "content": "Ayúdame"}],
+        },
+    )
+
+    error = next(event for event in _events(response.text) if event["type"] == "error")
+    assert error["code"] == "credential_unreadable"
+
+
 def test_builder_returns_validated_draft(admin_client, monkeypatch):
     connection = admin_client.post(
         "/api/connections",
@@ -272,9 +304,7 @@ def test_guided_mode_recovers_from_invalid_model_json(admin_client, monkeypatch)
         json={
             "connection_id": connection["id"],
             "mode": "guided",
-            "messages": [
-                {"role": "user", "content": "Quiero ayudar a mis clientes"}
-            ],
+            "messages": [{"role": "user", "content": "Quiero ayudar a mis clientes"}],
         },
     )
 
@@ -407,9 +437,7 @@ def test_clear_guided_request_uses_provider(admin_client, monkeypatch):
         )
         yield f"data: {json.dumps({'type': 'done', 'reply': reply})}\n\n"
 
-    monkeypatch.setattr(
-        "app.api.routes.agent_builder.stream_chat", fake_stream_chat
-    )
+    monkeypatch.setattr("app.api.routes.agent_builder.stream_chat", fake_stream_chat)
 
     response = admin_client.post(
         "/api/agent-builder/chat",
@@ -471,9 +499,7 @@ def test_builder_recovers_complete_json_before_provider_timeout(
         yield f"data: {json.dumps({'type': 'token', 'token': reply})}\n\n"
         yield 'data: {"type":"error","message":"The read operation timed out"}\n\n'
 
-    monkeypatch.setattr(
-        "app.api.routes.agent_builder.stream_chat", timeout_after_reply
-    )
+    monkeypatch.setattr("app.api.routes.agent_builder.stream_chat", timeout_after_reply)
 
     response = admin_client.post(
         "/api/agent-builder/chat",
