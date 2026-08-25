@@ -324,7 +324,9 @@ def test_language_labels_are_valid_for_all_content_resources(client):
 
     listed = client.get("/api/knowledge")
     assert listed.status_code == 200
-    stored = next(item for item in listed.json() if item["id"] == knowledge.json()["id"])
+    stored = next(
+        item for item in listed.json() if item["id"] == knowledge.json()["id"]
+    )
     assert stored["labels"] == ["private", "community", "lang_es"]
 
     url_knowledge = client.post(
@@ -342,9 +344,7 @@ def test_language_labels_are_valid_for_all_content_resources(client):
         "lang_pt",
     ]
 
-    workflow_agent = client.post(
-        "/api/agents", json={"name": "Paso del flujo"}
-    ).json()
+    workflow_agent = client.post("/api/agents", json={"name": "Paso del flujo"}).json()
     workflow = client.post(
         "/api/workflows",
         json={
@@ -393,4 +393,4 @@ def test_language_labels_are_valid_for_all_content_resources(client):
         },
     )
     assert tool.status_code == 200
-    assert tool.json()["labels"] == ["private", "community", "lang_es"]
+    assert tool.json()["labels"] == ["private", "community", "lang_es", "review"]

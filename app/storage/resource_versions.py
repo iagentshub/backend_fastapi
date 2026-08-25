@@ -6,6 +6,7 @@ import json
 from typing import Any, Dict, List, Optional
 
 from app.sql import sql
+from app.storage import db as _db
 from app.storage.db import AsyncConn, open_db
 from app.utils.generators import generate_date as _now
 from app.utils.generators import generate_id
@@ -54,6 +55,18 @@ class ResourceVersionStorage:
                     item["created_at"],
                 ),
             )
+            artifact_sha = (
+                str(snapshot.get("binary_sha256") or "")
+                if resource_type == "tool"
+                else ""
+            )
+            if artifact_sha:
+                query = (
+                    "queries/tools:retain_version_artifact_pg"
+                    if _db.IS_PG
+                    else "queries/tools:retain_version_artifact_sqlite"
+                )
+                await target.execute(sql(query), (item["id"], artifact_sha))
             return item
 
         if conn is not None:

@@ -127,6 +127,7 @@ async def _agent_reply(
                     knowledge_pack_storage=_knowledge_packs_store,
                     prompt_storage=_prompts_store,
                     tool_storage=_tools_store,
+                    resolved_tools=agent.resolved_tools,
                 )
             else:
                 streamer = stream_chat(
@@ -138,6 +139,7 @@ async def _agent_reply(
                     knowledge_pack_storage=_knowledge_packs_store,
                     prompt_storage=_prompts_store,
                     tool_storage=_tools_store,
+                    resolved_tools=agent.resolved_tools,
                 )
             async for chunk in streamer:
                 if not chunk.startswith("data: "):

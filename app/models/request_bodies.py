@@ -7,7 +7,7 @@ campos conocidos aparecen en OpenAPI.
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -197,3 +197,12 @@ class ConnectionPayload(ResourcePayload):
 class CatalogResourcePayload(ResourcePayload):
     content: str | None = None
     language: str | None = None
+    instructions: str | None = None
+    input_schema: dict[str, Any] | None = None
+    output_schema: dict[str, Any] | None = None
+    target_os: str | None = None
+    target_arch: str | None = None
+
+
+class ToolSecurityBody(BaseModel):
+    state: Literal["approved", "review", "quarantine"]

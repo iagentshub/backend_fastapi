@@ -64,6 +64,8 @@ from app.storage.migrations.steps.misc import (
     _remove_content_activation_sqlite,
     _resource_origin_labels_pg,
     _resource_origin_labels_sqlite,
+    _tool_artifacts_pg,
+    _tool_artifacts_sqlite,
     _unused_indexes_audit_pg,
     _unused_indexes_audit_sqlite,
 )
@@ -137,6 +139,7 @@ MIGRATION_PAIRS: tuple[MigrationPair, ...] = (
     MigrationPair(35, "content_activation", _content_activation_sqlite, _content_activation_pg),
     MigrationPair(36, "knowledge_truncation_metadata", _knowledge_truncation_metadata_sqlite, _knowledge_truncation_metadata_pg),
     MigrationPair(37, "social_iso_dates", _social_iso_dates_sqlite, _social_iso_dates_pg),
+    MigrationPair(38, "tool_artifacts", _tool_artifacts_sqlite, _tool_artifacts_pg),
 )
 
 __all__ = ["MIGRATION_PAIRS"]

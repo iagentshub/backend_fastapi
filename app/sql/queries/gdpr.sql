@@ -55,6 +55,21 @@ WHERE owner_id = ?;
 DELETE FROM tools
 WHERE owner_id = ?;
 
+-- name: delete_tool_artifact_links
+DELETE FROM tool_artifact_links
+WHERE owner_id = ?;
+
+-- name: delete_orphan_tool_artifacts
+DELETE FROM tool_artifacts
+WHERE NOT EXISTS (
+    SELECT 1 FROM tool_artifact_links AS link
+    WHERE link.sha256=tool_artifacts.sha256
+)
+AND NOT EXISTS (
+    SELECT 1 FROM tool_version_artifacts AS version_artifact
+    WHERE version_artifact.sha256=tool_artifacts.sha256
+);
+
 -- name: delete_memory_files
 DELETE FROM memory_files
 WHERE owner_id = ?;

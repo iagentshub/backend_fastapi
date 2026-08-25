@@ -6,6 +6,8 @@ instalación que nunca tuvo la tabla vieja.
 
 from __future__ import annotations
 
+import base64
+import hashlib
 import json
 from typing import Any
 
@@ -35,6 +37,107 @@ async def _table_exists_pg(conn: Any, table: str) -> bool:
     """Ver el homónimo de sqlite.py: las tablas del catálogo oficial antiguo
     ya no forman parte del esquema, así que en una base nueva no existen."""
     return await conn.fetchval("SELECT to_regclass($1)", table) is not None
+
+
+async def _tool_artifacts_sqlite(conn: Any) -> None:
+    """Move executable bytes out of resource rows into deduplicated BLOBs."""
+    await conn.execute(
+        "CREATE TABLE IF NOT EXISTS tool_artifacts ("
+        "sha256 TEXT PRIMARY KEY, binary_data BLOB NOT NULL, size INTEGER NOT NULL, "
+        "created_at TEXT NOT NULL)"
+    )
+    await conn.execute(
+        "CREATE TABLE IF NOT EXISTS tool_artifact_links ("
+        "tool_id TEXT NOT NULL, owner_id TEXT NOT NULL, sha256 TEXT NOT NULL, "
+        "PRIMARY KEY (tool_id, owner_id), "
+        "FOREIGN KEY (sha256) REFERENCES tool_artifacts(sha256))"
+    )
+    await conn.execute(
+        "CREATE TABLE IF NOT EXISTS tool_version_artifacts ("
+        "version_id TEXT PRIMARY KEY, sha256 TEXT NOT NULL, "
+        "FOREIGN KEY (version_id) REFERENCES resource_versions(id) ON DELETE CASCADE, "
+        "FOREIGN KEY (sha256) REFERENCES tool_artifacts(sha256))"
+    )
+    rows = await conn.execute_fetchall(
+        "SELECT id, owner_id, binary_b64, data, binary_uploaded_at FROM tools "
+        "WHERE binary_b64 IS NOT NULL AND binary_b64 <> ''"
+    )
+    for row in rows:
+        metadata = json.loads(row[3] or "{}")
+        try:
+            binary = base64.b64decode(row[2], validate=True)
+        except (ValueError, TypeError):
+            continue
+        digest = hashlib.sha256(binary).hexdigest()
+        if metadata.get("binary_sha256") != digest:
+            metadata["binary_sha256"] = digest
+            await conn.execute(
+                "UPDATE tools SET data=? WHERE id=? AND owner_id=?",
+                (json.dumps(metadata, ensure_ascii=False), row[0], row[1]),
+            )
+        await conn.execute(
+            "INSERT OR IGNORE INTO tool_artifacts "
+            "(sha256, binary_data, size, created_at) VALUES (?, ?, ?, ?)",
+            (digest, binary, len(binary), row[4] or ""),
+        )
+        await conn.execute(
+            "INSERT OR REPLACE INTO tool_artifact_links (tool_id, owner_id, sha256) "
+            "VALUES (?, ?, ?)",
+            (row[0], row[1], digest),
+        )
+
+
+async def _tool_artifacts_pg(conn: Any) -> None:
+    await conn.execute(
+        "CREATE TABLE IF NOT EXISTS tool_artifacts ("
+        "sha256 TEXT PRIMARY KEY, binary_data BYTEA NOT NULL, size BIGINT NOT NULL, "
+        "created_at TEXT NOT NULL)"
+    )
+    await conn.execute(
+        "CREATE TABLE IF NOT EXISTS tool_artifact_links ("
+        "tool_id TEXT NOT NULL, owner_id TEXT NOT NULL, sha256 TEXT NOT NULL "
+        "REFERENCES tool_artifacts(sha256), PRIMARY KEY (tool_id, owner_id))"
+    )
+    await conn.execute(
+        "CREATE TABLE IF NOT EXISTS tool_version_artifacts ("
+        "version_id TEXT PRIMARY KEY REFERENCES resource_versions(id) ON DELETE CASCADE, "
+        "sha256 TEXT NOT NULL REFERENCES tool_artifacts(sha256))"
+    )
+    rows = await conn.fetch(
+        "SELECT id, owner_id, binary_b64, data, binary_uploaded_at FROM tools "
+        "WHERE binary_b64 IS NOT NULL AND binary_b64 <> ''"
+    )
+    for row in rows:
+        metadata = json.loads(row["data"] or "{}")
+        try:
+            binary = base64.b64decode(row["binary_b64"], validate=True)
+        except (ValueError, TypeError):
+            continue
+        digest = hashlib.sha256(binary).hexdigest()
+        if metadata.get("binary_sha256") != digest:
+            metadata["binary_sha256"] = digest
+            await conn.execute(
+                "UPDATE tools SET data=$1 WHERE id=$2 AND owner_id=$3",
+                json.dumps(metadata, ensure_ascii=False),
+                row["id"],
+                row["owner_id"],
+            )
+        await conn.execute(
+            "INSERT INTO tool_artifacts (sha256, binary_data, size, created_at) "
+            "VALUES ($1, $2, $3, $4) ON CONFLICT (sha256) DO NOTHING",
+            digest,
+            binary,
+            len(binary),
+            row["binary_uploaded_at"] or "",
+        )
+        await conn.execute(
+            "INSERT INTO tool_artifact_links (tool_id, owner_id, sha256) "
+            "VALUES ($1, $2, $3) ON CONFLICT (tool_id, owner_id) "
+            "DO UPDATE SET sha256=EXCLUDED.sha256",
+            row["id"],
+            row["owner_id"],
+            digest,
+        )
 
 
 async def _chat_message_interrupted_sqlite(conn: Any) -> None:

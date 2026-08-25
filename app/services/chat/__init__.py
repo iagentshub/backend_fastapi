@@ -16,6 +16,7 @@ nombres, no este.
 
 from __future__ import annotations
 
+import json
 import urllib.error
 from typing import (
     TYPE_CHECKING,
@@ -71,6 +72,7 @@ async def stream_chat(
     prompt_storage: Optional[_PromptStorage] = None,
     tool_storage: Optional[_ToolStorage] = None,
     attached_knowledge: Optional[List[Dict[str, Any]]] = None,
+    resolved_tools: Optional[List[Dict[str, Any]]] = None,
     llm_lease: LLMLease | None = None,
     stream_state: ChatStreamState | None = None,
 ) -> AsyncGenerator[str, None]:
@@ -156,41 +158,61 @@ async def stream_chat(
                 )
                 break
 
-    # Tools injection — recurso estático vinculado al agente (agent.tools),
-    # misma familia que Skill: el modelo conoce el contenido para poder
-    # compartirlo con el usuario, nunca lo ejecuta (Fase 2, fuera de alcance).
-    for tid in agent.tools:
-        if tool_storage is None:
-            break
-        for scope in ("public", "private"):
-            t = await tool_storage.get(scope, tid)
-            if t and t.get("is_active", True):
-                language = str(t.get("language") or "")
-                name = t.get("name", tid)
-                if language == "cpp":
-                    add_context(
-                        "tool",
-                        (
-                            f"\n\n## Tool: {name} (binario C++)\n"
-                            f"{t.get('description', '') or 'Sin descripción.'}\n"
-                            "Es un binario precompilado: no hay código fuente en texto "
-                            "para mostrar en el chat. Indica al usuario que puede "
-                            "descargarlo desde la tarjeta de esta tool en Conocimiento."
-                        ),
-                    )
-                else:
-                    add_context(
-                        "tool",
-                        (
-                            f"\n\n## Tool: {name} ({language})\n"
-                            "No se ejecuta en el servidor: comparte este código con el "
-                            "usuario, tal cual, para que lo ejecute en su propia "
-                            "máquina. No digas que lo ejecutaste tú ni inventes su "
-                            "resultado.\n\n"
-                            f"```{language}\n{t.get('content', '')}\n```"
-                        ),
-                    )
+    # Tools injection: el modelo recibe propósito, instrucciones y contrato;
+    # nunca el código ejecutable. La ejecución, si el cliente dispone de un
+    # sandbox compatible, pertenece siempre al dispositivo del usuario.
+    tool_items: list[Dict[str, Any]] = []
+    if resolved_tools is not None:
+        tool_items = resolved_tools
+    else:
+        for tid in agent.tools:
+            if tool_storage is None:
                 break
+            for scope in ("public", "private"):
+                candidate = await tool_storage.get(scope, tid)
+                if candidate:
+                    tool_items.append(candidate)
+                    break
+    for t in tool_items:
+        if t.get("is_active", True):
+            tid = str(t.get("id") or "")
+            language = str(t.get("language") or "")
+            name = t.get("name", tid)
+            instructions = str(t.get("instructions") or "").strip()
+            input_schema = t.get("input_schema") or {}
+            output_schema = t.get("output_schema") or {}
+            purpose = str(t.get("description") or "").strip() or "Sin descripción."
+            availability = (
+                "Tiene una implementación nativa descargable."
+                if language == "cpp"
+                else f"Tiene una implementación local {language}."
+            )
+            add_context(
+                "tool",
+                (
+                    f"\n\n## Tool disponible: {name}\n"
+                    f"Propósito: {purpose}\n"
+                    f"{availability} El servidor nunca la ejecuta. No afirmes que "
+                    "se ejecutó ni inventes resultados.\n"
+                    + (
+                        f"Instrucciones de uso: {instructions}\n"
+                        if instructions
+                        else ""
+                    )
+                    + (
+                        "Entrada esperada: "
+                        f"{json.dumps(input_schema, ensure_ascii=False, separators=(',', ':'))}\n"
+                        if input_schema
+                        else ""
+                    )
+                    + (
+                        "Salida esperada: "
+                        f"{json.dumps(output_schema, ensure_ascii=False, separators=(',', ':'))}"
+                        if output_schema
+                        else ""
+                    )
+                ),
+            )
 
     # Knowledge injection (URLs + documents attached to the agent)
     covered_knowledge_ids: set[str] = set()

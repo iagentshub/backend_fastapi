@@ -14,6 +14,7 @@ from pydantic import BaseModel
 from app.api.routes.auth import require_admin
 from app.api.routes.settings._router import router
 from app.api.routes.settings._shared import VALID_THEMES
+from app.config.tool_runtimes import public_tool_runtime_catalog
 from app.errors import APIError
 from app.services.platform_settings import (
     _VALID_REGISTRATION,
@@ -136,6 +137,9 @@ async def get_platform_config_public() -> dict:
         # Dart, porque el número lo cambia el admin en caliente; el rechazo de
         # verdad lo sigue dando el middleware.
         "max_request_bytes": cfg.get("max_request_bytes", 0),
+        # Catálogo contractual único. Flutter decide icono/traducción, pero no
+        # vuelve a mantener por su cuenta qué runtimes acepta este backend.
+        "tool_runtimes": public_tool_runtime_catalog(),
     }
 
 

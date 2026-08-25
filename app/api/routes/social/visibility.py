@@ -20,6 +20,7 @@ from app.api.routes.social._router import (
 from app.errors import APIError
 from app.services.publication_cascade import (
     _agent_public_dependency_keys,
+    _assert_workflow_tools_distributable,
     _cascade_publish_agent,
     _cascade_publish_workflow,
     _publish_knowledge_cascade,
@@ -42,6 +43,8 @@ from app.services.social_catalog import (
     _check_category,
     _upsert_social,
 )
+from app.services.tool_access import assert_tools_distributable_by_ids
+from app.services.tool_policy import assert_tool_distributable
 from app.sql import sql
 from app.storage.db import open_db
 from app.utils.generators import generate_date
@@ -210,6 +213,16 @@ async def set_agent_visibility(
             extra={"field": "publish_dependencies", "invalid": invalid_dependencies},
         )
 
+    if body.is_public:
+        await assert_tools_distributable_by_ids(
+            [
+                str(tool_id)
+                for tool_id in (agent.get("tools") or [])
+                if f"tool:{tool_id}" in set(selected_dependencies)
+            ],
+            storage=_tools_store,
+        )
+
     async with open_db() as conn:
         agent = await agents.save(
             {**agent, "public_dependencies": selected_dependencies},
@@ -344,8 +357,9 @@ async def set_tool_visibility(
     scope: str,
     tool_id: str,
     body: _ToolVisibilityBody,
-    username: str = Depends(require_auth),
+    ctx: GroupContext = Depends(require_group),
 ) -> Dict[str, Any]:
+    username = ctx.user
     if body.is_public:
         assert_can_publish(username)
     _check_category(body.category)
@@ -356,7 +370,11 @@ async def set_tool_visibility(
             404, "not_found", "Tool no encontrada", extra={"resource": "tool"}
         )
     assert_resource_writable(tool, "tool")
+    if tool.get("owner_id") not in {ctx.user, ctx.group_id}:
+        raise APIError(403, "forbidden", "No tienes permisos sobre esta Tool")
     resource_labels = tool.get("labels") or ["private"]
+    if body.is_public:
+        assert_tool_distributable(tool)
 
     async with open_db() as conn:
         if body.is_public:
@@ -404,6 +422,8 @@ async def set_workflow_visibility(
         )
     assert_resource_writable(workflow, "workflow")
     resource_labels = workflow.get("labels") or ["private"]
+    if body.is_public:
+        await _assert_workflow_tools_distributable(workflow, ctx.user, ctx.group_id)
 
     async with open_db() as conn:
         if body.is_public:

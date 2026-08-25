@@ -20,11 +20,13 @@ from app.config.data import AGENTS_DIR, SKILLS_DIR
 from app.errors import APIError
 from app.models.llm_orchestration import orchestration_id_from_connection
 from app.services.connection_access import connection_access
+from app.services.tool_access import resolve_accessible_tools
 from app.services.workflow_errors import WorkflowPublicError, workflow_error_event
 from app.services.workflow_run_executor import start_workflow_run
 from app.services.workflow_runner import run_workflow
 from app.services.workflow_validator import validate_workflow
 from app.storage.agent_storage import AgentStorage
+from app.storage.db import open_db
 from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
 from app.storage.resource_executions import ResourceExecutionStorage
@@ -34,6 +36,7 @@ from app.storage.skill_storage import (
     SKILL_LABELS,
     SkillStorage,
 )
+from app.storage.tool_storage import ToolStorage
 from app.storage.workflow_runs import TERMINAL_STATUSES, WorkflowRunStorage
 from app.storage.workflows import WorkflowStorage
 from app.utils import flog
@@ -47,6 +50,7 @@ _versions = ResourceVersionStorage()
 _workflows = WorkflowStorage()
 _shares = GroupShareStorage()
 _group_storage = GroupStorage()
+_tools = ToolStorage()
 _workflow_runs = WorkflowRunStorage()
 _executions = ResourceExecutionStorage()
 
@@ -63,8 +67,8 @@ class WorkflowRunBody(BaseModel):
     input: str = Field(min_length=1, max_length=30_000)
 
 
-def _check_type(resource_type: str) -> Literal["agent", "skill"]:
-    if resource_type not in ("agent", "skill"):
+def _check_type(resource_type: str) -> Literal["agent", "skill", "tool"]:
+    if resource_type not in ("agent", "skill", "tool"):
         raise APIError(
             404,
             "invalid_resource_type",
@@ -78,11 +82,12 @@ async def _owned_resource(
     resource_type: str, resource_id: str, owner_id: str
 ) -> Dict[str, Any]:
     kind = _check_type(resource_type)
-    resource = (
-        await _agents.get(resource_id)
-        if kind == "agent"
-        else await _skills.get_any(resource_id)
-    )
+    if kind == "agent":
+        resource = await _agents.get(resource_id)
+    elif kind == "skill":
+        resource = await _skills.get_any(resource_id)
+    else:
+        resource = await _tools.get_any(resource_id)
     if not resource:
         raise APIError(
             404, "not_found", "Recurso no encontrado", extra={"resource": kind}
@@ -139,8 +144,40 @@ async def restore_version(
     snapshot = {**item["snapshot"], "id": resource_id}
     if resource_type == "agent":
         saved = await _agents.save(snapshot, "private", ctx.group_id)
-    else:
+    elif resource_type == "skill":
         saved = await _skills.save("private", snapshot, ctx.group_id)
+    else:
+        async with open_db() as conn:
+            async with conn.transaction(immediate=True):
+                saved = await _tools.save("private", snapshot, ctx.group_id, conn=conn)
+                restored = await _tools.restore_version_artifact(
+                    resource_id,
+                    ctx.group_id,
+                    str(item["id"]),
+                    snapshot,
+                    conn=conn,
+                )
+                if snapshot.get("binary_sha256") and not restored:
+                    raise APIError(
+                        409,
+                        "artifact_unavailable",
+                        "El artefacto binario de esta versión ya no está disponible",
+                        extra={"resource": "tool", "version": version},
+                    )
+                saved = (
+                    await _tools.get("private", resource_id, ctx.group_id, conn=conn)
+                    or saved
+                )
+                await _versions.create(
+                    resource_type,
+                    resource_id,
+                    ctx.group_id,
+                    saved,
+                    ctx.user,
+                    reason=f"restore:{version}",
+                    conn=conn,
+                )
+        return saved
     await _versions.create(
         resource_type,
         resource_id,
@@ -429,6 +466,19 @@ async def _prepare_workflow_run(workflow_id: str, ctx: GroupContext):
                 raise RuntimeError(
                     f"El agente {agent_id} no está disponible para tu grupo"
                 )
+        role = await get_user_role(ctx.user)
+        agent = {
+            **agent,
+            "resolved_tools": await resolve_accessible_tools(
+                agent.get("tools") or [],
+                user_id=ctx.user,
+                group_id=ctx.group_id,
+                is_admin=role == "admin",
+                storage=_tools,
+                shares=_shares,
+                groups=_group_storage,
+            ),
+        }
         connection_id = str(
             definition.get("llm_orchestration_connection_id")
             or agent.get("connection_id")

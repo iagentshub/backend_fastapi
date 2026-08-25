@@ -13,11 +13,12 @@ from typing import Any, AsyncIterator, Dict, List, Literal, Optional
 
 from fastapi import Depends, Request
 from fastapi.responses import StreamingResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from app.api.routes.admin._router import admin_router
 from app.api.routes.auth import require_admin
 from app.api.routes.llm_limits import official_llm_limiter
+from app.config.tool_runtimes import TOOL_RUNTIMES
 from app.errors import APIError
 from app.models.official_source import INTERNAL_SOURCE_ID, MATERIALIZABLE_TYPES
 from app.services.official_source_drafts import OfficialImportDraftService
@@ -75,9 +76,16 @@ class UpdateDraftComponentBody(BaseModel):
         Literal["agent", "skill", "prompt", "knowledge", "tool", "memory", "workflow"]
     ] = None
     forced_language: Optional[str] = Field(default=None, max_length=40)
-    forced_tool_language: Optional[Literal["", "python", "shell", "cpp"]] = None
+    forced_tool_language: Optional[str] = Field(default=None, max_length=40)
     security_accepted: Optional[bool] = None
     dependencies: Optional[List[str]] = Field(default=None, max_length=500)
+
+    @field_validator("forced_tool_language")
+    @classmethod
+    def validate_tool_runtime(cls, value: Optional[str]) -> Optional[str]:
+        if value not in {None, ""} and value not in TOOL_RUNTIMES:
+            raise ValueError("unsupported tool runtime")
+        return value
 
 
 class TransferSourceBody(BaseModel):

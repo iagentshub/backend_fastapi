@@ -10,11 +10,13 @@ from fastapi import Depends
 from app.api.routes.admin._router import admin_router
 from app.api.routes.auth import require_admin
 from app.config.data import AGENTS_DIR as _AGENTS_DIR
+from app.connections import is_chat_provider
 from app.errors import APIError
 from app.models.request_bodies import (
     ResourceOwnerBody,
     ResourcePayload,
     StatusBody,
+    ToolSecurityBody,
     VerificationBody,
 )
 from app.sql import sql
@@ -44,9 +46,7 @@ async def admin_list_connections(
     import json as _json
 
     async with open_db() as conn:
-        rows = await conn.fetchall(
-            sql("queries/admin_resources:list_connections")
-        )
+        rows = await conn.fetchall(sql("queries/admin_resources:list_connections"))
         username_map = await _username_map(conn)
     result = []
     for row in rows:
@@ -61,7 +61,8 @@ async def admin_list_connections(
                 "data": row[4],
                 "tokens_in": row[5],
                 "tokens_out": row[6],
-                "created_at": row[7],
+                "is_active": row[7],
+                "created_at": row[8],
             }
         )
         try:
@@ -76,6 +77,9 @@ async def admin_list_connections(
                 "provider_account_id": d.get("provider_account_id"),
                 "name": d["name"],
                 "type": data.get("type", ""),
+                "model": data.get("model", ""),
+                "supports_chat": is_chat_provider(str(data.get("type") or "").lower()),
+                "is_active": bool(d.get("is_active", True)),
                 "tokens_in": d["tokens_in"],
                 "tokens_out": d["tokens_out"],
                 "created_at": d["created_at"],
@@ -242,8 +246,21 @@ async def admin_list_tools(_: str = Depends(require_admin)) -> list[dict[str, An
             item.get("owner_id", ""), item.get("owner_id", "")
         )
         item.pop("content", None)
-        item.pop("binary_b64", None)
     return items
+
+
+@admin_router.get("/tools/{item_id}")
+async def admin_get_tool(
+    item_id: str, _: str = Depends(require_admin)
+) -> dict[str, Any]:
+    from app.storage.tool_storage import ToolStorage
+
+    tool = await ToolStorage().get_any(item_id)
+    if not tool:
+        raise APIError(
+            404, "not_found", "Elemento no encontrado", extra={"resource": "tool"}
+        )
+    return tool
 
 
 @admin_router.delete("/tools/{item_id}")
@@ -258,8 +275,59 @@ async def admin_delete_tool(
         raise APIError(
             404, "not_found", "Elemento no encontrado", extra={"resource": "item"}
         )
-    await storage.delete(tool["scope"], item_id, owner_id=None, allow_public=True)
+    await storage.delete(
+        tool["scope"],
+        item_id,
+        owner_id=str(tool["owner_id"]) if tool.get("owner_id") else None,
+        allow_public=True,
+    )
     return {"ok": True}
+
+
+@admin_router.put("/tools/{item_id}/security")
+async def admin_set_tool_security(
+    item_id: str,
+    body: ToolSecurityBody,
+    admin_user: str = Depends(require_admin),
+) -> dict[str, Any]:
+    from app.services.tool_policy import TOOL_SECURITY_LABELS
+    from app.storage.resource_versions import ResourceVersionStorage
+    from app.storage.tool_storage import ToolStorage
+
+    storage = ToolStorage()
+    tool = await storage.get_any(item_id)
+    if not tool:
+        raise APIError(
+            404, "not_found", "Elemento no encontrado", extra={"resource": "tool"}
+        )
+    owner_id = tool.get("owner_id")
+    if not owner_id:
+        raise APIError(
+            403,
+            "public_tool_readonly",
+            "Las tools públicas de sistema son de solo lectura",
+        )
+    labels = [
+        str(label)
+        for label in (tool.get("labels") or [])
+        if str(label) not in TOOL_SECURITY_LABELS
+    ]
+    if body.state != "approved":
+        labels.append(body.state)
+    saved = await storage.save(
+        str(tool.get("scope") or "private"),
+        {**tool, "labels": labels},
+        str(owner_id),
+    )
+    await ResourceVersionStorage().create(
+        "tool",
+        item_id,
+        str(owner_id),
+        saved,
+        admin_user,
+        reason=f"security:{body.state}",
+    )
+    return saved
 
 
 @admin_router.get("/memory")
@@ -272,9 +340,7 @@ async def admin_list_memory(_: str = Depends(require_admin)) -> list[dict[str, A
     "id" que se expone aquí es "{owner_id}::{filename}"."""
     async with open_db() as conn:
         username_map = await _username_map(conn)
-        rows = await conn.fetchall(
-            sql("queries/admin_resources:list_memory_files")
-        )
+        rows = await conn.fetchall(sql("queries/admin_resources:list_memory_files"))
     return [
         {
             "id": f"{r['owner_id']}::{r['id']}",
@@ -402,9 +468,7 @@ async def admin_list_groups(
     from app.config.data import AGENTS_DIR
 
     async with open_db() as conn:
-        group_rows = await conn.fetchall(
-            sql("queries/admin_resources:list_groups")
-        )
+        group_rows = await conn.fetchall(sql("queries/admin_resources:list_groups"))
         groups = [
             {
                 "id": r[0],
@@ -417,9 +481,7 @@ async def admin_list_groups(
             }
             for r in group_rows
         ]
-        mc_rows = await conn.fetchall(
-            sql("queries/admin_resources:members_per_group")
-        )
+        mc_rows = await conn.fetchall(sql("queries/admin_resources:members_per_group"))
         member_counts = {r[0]: r[1] for r in mc_rows}
         cs_rows = await conn.fetchall(
             sql("queries/admin_resources:connections_per_owner")

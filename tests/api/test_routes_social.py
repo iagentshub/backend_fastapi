@@ -21,6 +21,20 @@ def _switch(client, username):
     return username
 
 
+def _set_tool_labels(tool_id: str, owner_id: str, labels: list[str]) -> None:
+    import asyncio
+
+    from app.storage.tool_storage import ToolStorage
+
+    async def update() -> None:
+        storage = ToolStorage()
+        tool = await storage.get("private", tool_id, owner_id=owner_id)
+        assert tool is not None
+        await storage.save("private", {**tool, "labels": labels}, owner_id=owner_id)
+
+    asyncio.run(update())
+
+
 def _create_agent(client, name="Social Agent"):
     r = client.post(
         "/api/agents",
@@ -85,9 +99,7 @@ def test_agente_publico_desactivado_no_se_descubre_previsualiza_ni_enlaza(client
     client.post(f"/api/agents/{agent['id']}/deactivate")
 
     _login(client, "explore_inactive_viewer")
-    catalog = client.get(
-        "/api/explore", params={"type": "agent", "q": agent["name"]}
-    )
+    catalog = client.get("/api/explore", params={"type": "agent", "q": agent["name"]})
     preview = client.get(f"/api/explore/agent/{agent['id']}/preview")
     linked = client.post(f"/api/agents/private/{agent['id']}/link")
 
@@ -241,6 +253,121 @@ def test_publicar_agente_materializa_solo_dependencias_elegidas(client):
     assert ("knowledge", knowledge["id"]) not in published
 
 
+def test_publicar_agente_no_distribuye_tool_en_revision_ni_deja_agente_parcial(client):
+    _login(client, "publish_reviewed_tool_owner")
+    tool = client.post(
+        "/api/tools/private",
+        json={
+            "name": "Tool retenida",
+            "language": "python",
+            "content": "print('review')",
+        },
+    ).json()
+    assert "review" in tool["labels"]
+
+    response = client.post(
+        "/api/agents",
+        json={
+            "name": "Agente que no debe publicarse",
+            "scope": "public",
+            "labels": ["public"],
+            "tools": [tool["id"]],
+            "publish_dependencies": [f"tool:{tool['id']}"],
+        },
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"]["labels"] == ["review"]
+    assert all(
+        agent["name"] != "Agente que no debe publicarse"
+        for agent in client.get("/api/agents").json()
+    )
+
+
+def test_visibilidad_no_publica_tool_en_revision_directa_o_via_agente(client):
+    _login(client, "visibility_reviewed_tool_owner")
+    tool = client.post(
+        "/api/tools/private",
+        json={
+            "name": "Tool privada retenida",
+            "language": "python",
+            "content": "print('review')",
+        },
+    ).json()
+    agent = client.post(
+        "/api/agents",
+        json={"name": "Agente privado retenido", "tools": [tool["id"]]},
+    ).json()
+
+    direct = client.put(
+        f"/api/tools/private/{tool['id']}/visibility",
+        json={"is_public": True, "category": "Coding"},
+    )
+    cascaded = client.put(
+        f"/api/agents/private/{agent['id']}/visibility",
+        json={
+            "is_public": True,
+            "category": "Coding",
+            "publish_dependencies": [f"tool:{tool['id']}"],
+        },
+    )
+
+    assert direct.status_code == 403
+    assert cascaded.status_code == 403
+
+
+def test_usuario_no_puede_publicar_tool_aprobada_ajena(client):
+    _login(client, "visibility_foreign_tool_owner")
+    tool = client.post(
+        "/api/tools/private",
+        json={
+            "name": "Tool aprobada ajena",
+            "language": "python",
+            "content": "print('owner')",
+        },
+    ).json()
+    _set_tool_labels(tool["id"], tool["owner_id"], ["public"])
+
+    _login(client, "visibility_foreign_tool_attacker")
+    response = client.put(
+        f"/api/tools/private/{tool['id']}/visibility",
+        json={"is_public": True, "category": "Coding"},
+    )
+
+    assert response.status_code == 403
+    assert response.json()["detail"]["code"] == "forbidden"
+    _login(client, "visibility_foreign_tool_viewer")
+    assert not any(
+        item["resource_id"] == tool["id"] for item in client.get("/api/explore").json()
+    )
+
+
+def test_preview_no_expone_tool_publica_que_vuelve_a_revision(client):
+    _login(client, "preview_reviewed_tool_owner")
+    tool = client.post(
+        "/api/tools/private",
+        json={
+            "name": "Tool pública después retenida",
+            "language": "python",
+            "content": "print('contenido sensible')",
+        },
+    ).json()
+    _set_tool_labels(tool["id"], tool["owner_id"], ["public"])
+    published = client.put(
+        f"/api/tools/private/{tool['id']}/visibility",
+        json={"is_public": True, "category": "Coding"},
+    )
+    assert published.status_code == 200
+    _set_tool_labels(tool["id"], tool["owner_id"], ["public", "review"])
+
+    _login(client, "preview_reviewed_tool_viewer")
+    preview = client.get(f"/api/explore/tool/{tool['id']}/preview")
+
+    assert preview.status_code == 403
+    assert preview.json()["detail"]["code"] == "forbidden"
+    assert "contenido sensible" not in preview.text
+
+
 def test_publicar_agente_rechaza_dependencias_ajenas_y_conexiones(client):
     _login(client, "publish_selection_invalid")
     response = client.post(
@@ -317,9 +444,7 @@ def test_grafo_publico_de_workflow_conserva_flujo_y_recursos(client):
     # El flujo entre pasos y las dependencias de cada agente viajan como
     # hechos: el grafo lo arma el cliente.
     assert any(item["relation"] == "flow" for item in items)
-    assert any(
-        item["type"] == "skill" and item["id"] == skill["id"] for item in items
-    )
+    assert any(item["type"] == "skill" and item["id"] == skill["id"] for item in items)
 
 
 def test_grafo_publico_de_workflow_muestra_nombre_de_agente_enlazado(client):
@@ -654,9 +779,13 @@ def test_try_agente_publico_ok(client, monkeypatch):
         yield 'data: {"type":"chunk","content":"hola"}\n\n'
         yield 'data: {"type":"done"}\n\n'
 
-    monkeypatch.setattr("app.api.routes.resource_linking.trial.stream_chat", _fake_stream)
+    monkeypatch.setattr(
+        "app.api.routes.resource_linking.trial.stream_chat", _fake_stream
+    )
     warnings = []
-    monkeypatch.setattr("app.api.routes.resource_linking.trial.flog.warning", warnings.append)
+    monkeypatch.setattr(
+        "app.api.routes.resource_linking.trial.flog.warning", warnings.append
+    )
 
     r = client.post(
         f"/api/agents/private/{agent_id}/try",

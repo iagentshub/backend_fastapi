@@ -12,9 +12,11 @@ El servicio central de iAgentsHub. Gestiona agentes, skills, memoria y conexione
 ---
 
 - [Arquitectura](architecture.md) — cómo está organizado el servicio
+- [Guía de la API](api.md) — contratos principales y acceso al listado canónico de rutas
 - [Proveedores](providers.md) — qué servicios de IA son compatibles
 - [Configuración](config.md) — variables de entorno y ajustes
 - [Datos](data.md) — qué almacena y dónde
 - [Despliegue](deployment.md) — cómo ponerlo en marcha
 - [Calidad de código](ci.md) — verificación automática antes del commit y en GitHub
+- [Tests](tests.md) — cómo ejecutar y ampliar la suite
 - [Decisiones de arquitectura (ADR)](../adr/) — por qué el código es como es; solo en español, es documentación interna

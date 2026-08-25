@@ -5,7 +5,7 @@ SELECT id, username
 FROM users;
 
 -- name: list_connections
-SELECT id, owner_id, provider_account_id, name, data, tokens_in, tokens_out, created_at
+SELECT id, owner_id, provider_account_id, name, data, tokens_in, tokens_out, is_active, created_at
 FROM connections
 ORDER BY created_at DESC;
 

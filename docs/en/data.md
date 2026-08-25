@@ -7,13 +7,16 @@
 
 # Data
 
-The backend stores most information in an SQLite database and an external data directory mounted into the service.
+The backend stores structured information in SQLite or PostgreSQL. The external
+directory contains the SQLite database when that engine is used, settings,
+operational state, and the few resources that remain file-based.
 
 ---
 
 ## Database
 
-The SQLite database (`hub.db`) stores all structured data:
+The database stores all structured data. With SQLite it is `hub.db`; with
+PostgreSQL it lives in the server selected by `DATABASE_URL`.
 
 | Table | Contents |
 |---|---|
@@ -23,6 +26,12 @@ The SQLite database (`hub.db`) stores all structured data:
 | `knowledge_items` | Knowledge base entries, including content-language labels |
 | `conversations` | Conversation history (id, title, timestamps) |
 | `messages` | Individual messages linked to conversations |
+| `agents`, `skills`, `prompts`, `tools` | Reusable resources, ownership, state, content, and metadata |
+| `tool_artifacts`, `tool_artifact_links`, `tool_version_artifacts` | SHA-256 Tool binaries, active links, and version retention |
+| `resource_versions` | Immutable history for agents, skills, and Tools |
+| `groups`, `resource_group_shares` | Multi-tenancy and shared access |
+| `resource_social` | Publications visible in Explore |
+| `workflows`, `llm_orchestrations` | Execution definitions and LLM routes |
 
 ---
 
@@ -30,10 +39,10 @@ The SQLite database (`hub.db`) stores all structured data:
 
 | Path | Contents |
 |---|---|
-| `agents/` | Agent configurations (instructions, model, assigned skills) |
 | `memory/` | Memory accumulated by each agent between conversations |
-| `skills/public/` | Skills synced from the skills repository |
-| `skills/private/` | Installation-specific private skills |
+| `settings.json` | Admin-managed platform settings and local secrets |
+| `centinel_state.json` | Centinel operational state |
+| `agents/`, `skills/`, `connections/`, `accounts/` | Legacy migration inputs; not active sources of truth |
 
 ---
 
@@ -46,6 +55,14 @@ None of the runtime data is committed to the repository. The database and data d
 ## Skills
 
 Skills are stored in the database with a name, description, icon, a category from the closed catalog, and their content. They do not accept free-form tags; their labels are limited to the system catalog. System public skills are read-only; user-created skills retain their owner whether private or public. The content is injected into the agent's system prompt when the skill is enabled.
+
+## Tools and artifacts
+
+Tool metadata, instructions, and scripts live in `tools`. Native executables are
+never included in listing or detail JSON: they are stored once by SHA-256 in
+`tool_artifacts` and linked to the Tool and its versions. A restorable backup
+must therefore include the complete database; copying an assumed Tools
+directory does not preserve artifacts.
 
 ## Content language
 

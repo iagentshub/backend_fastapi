@@ -72,6 +72,7 @@ GET /api/admin/resources/{resource_type}/{resource_id}/relations
 GET /api/admin/skills
 GET /api/admin/stats
 GET /api/admin/tools
+GET /api/admin/tools/{item_id}
 GET /api/admin/users
 GET /api/admin/workflows
 GET /api/agents
@@ -275,6 +276,7 @@ PUT /api/admin/official-sources/{source_id}
 PUT /api/admin/official-sources/{source_id}/owner
 PUT /api/admin/resources/{resource_type}/{resource_id}/owner
 PUT /api/admin/resources/{resource_type}/{resource_id}/verify
+PUT /api/admin/tools/{item_id}/security
 PUT /api/agents/{agent_id}/preferences
 PUT /api/agents/{scope}/{agent_id}/visibility
 PUT /api/auth/me/profile

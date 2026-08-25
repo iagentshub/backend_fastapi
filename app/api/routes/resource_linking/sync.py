@@ -21,6 +21,7 @@ from app.api.routes.resource_linking._shared import (
 )
 from app.errors import APIError
 from app.services.social_catalog import _assert_public
+from app.services.tool_policy import assert_tool_distributable
 from app.sql import sql
 
 # db se importa como MÓDULO a propósito: IS_PG debe leerse en el momento de
@@ -184,10 +185,9 @@ async def sync_linked_tool(
             await _assert_public("tool", original_id)
     except HTTPException:
         raise APIError(403, "forbidden", "La tool original ya no es accesible")
+    assert_tool_distributable(original)
 
-    # El dict que devuelve get_any() ya trae binary_b64/binary_filename/
-    # binary_size/binary_uploaded_at (mismo mecanismo que content) — se
-    # sincronizan directo, sin llamada aparte al binario.
+    # La lectura ordinaria nunca carga el BLOB: se copia por el camino explícito.
     sync_fields = {
         k: v
         for k, v in original.items()
@@ -195,6 +195,15 @@ async def sync_linked_tool(
     }
     updated = {**local, **sync_fields}
     await tools.save("private", updated, owner_id=local.get("owner_id"))
+    if original.get("language") == "cpp":
+        copied = await tools.copy_binary(
+            str(original.get("scope") or "public"),
+            original_id,
+            tool_id,
+            local.get("owner_id"),
+        )
+        if not copied:
+            await tools.clear_binary(tool_id, local.get("owner_id"))
 
     return {"ok": True, "synced_from": original_id}
 

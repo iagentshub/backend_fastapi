@@ -71,9 +71,7 @@ class BaseProvider:
         raise NotImplementedError
 
     @classmethod
-    def validate_config(
-        cls, config: Dict[str, Any], *, purpose: str = "use"
-    ) -> None:
+    def validate_config(cls, config: Dict[str, Any], *, purpose: str = "use") -> None:
         """Valida sintaxis y política; las subclases controlan sus excepciones."""
 
     @classmethod
@@ -96,7 +94,9 @@ class BaseProvider:
         raise NotImplementedError(f"{cls.type_id} no soporta chat")
 
     @classmethod
-    def http_error_detail(cls, status: int, model: str, invocation: ChatInvocation) -> str | None:
+    def http_error_detail(
+        cls, status: int, model: str, invocation: ChatInvocation
+    ) -> str | None:
         return None
 
 
@@ -138,6 +138,7 @@ def all_providers() -> List[Dict[str, Any]]:
             "label": p.label,
             "icon": p.icon,
             "category": p.category,
+            "supports_chat": p.supports_chat,
             "fields": [f.__dict__ for f in p.fields],
         }
         for p in _REGISTRY.values()

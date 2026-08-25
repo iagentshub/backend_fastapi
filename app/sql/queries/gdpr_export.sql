@@ -77,6 +77,16 @@ FROM tools
 WHERE owner_id = ?
 ORDER BY created_at;
 
+-- name: tool_artifacts
+SELECT sha256, binary_data, size, created_at
+FROM tool_artifacts AS artifact
+WHERE EXISTS (
+    SELECT 1
+    FROM tool_artifact_links AS link
+    WHERE link.sha256=artifact.sha256 AND link.owner_id=?
+)
+ORDER BY sha256;
+
 -- name: workflows
 SELECT *
 FROM agent_workflows

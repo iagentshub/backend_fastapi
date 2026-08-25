@@ -3,10 +3,10 @@
 from __future__ import annotations
 
 import json
-from pathlib import PurePosixPath
 from typing import Any, Awaitable, Callable, Dict, Iterable, List, Optional
 
 from app.config.content_languages import CONTENT_LANGUAGE_LABELS
+from app.config.tool_runtimes import TOOL_RUNTIMES, infer_tool_runtime
 from app.models.official_source import MATERIALIZABLE_TYPES, PackageComponent
 from app.services.official_source_importer import OfficialSourceImporter
 from app.services.official_source_llm import OfficialSourceLLMAnalyzer
@@ -15,7 +15,6 @@ from app.sql import sql
 from app.storage.db import open_db
 from app.storage.official_source_storage import OfficialSourceStorage
 from app.storage.skill_storage import SKILL_LABELS
-from app.storage.tool_storage import TOOL_LANGUAGES
 
 _MANUAL_TYPES = frozenset(
     {"agent", "skill", "prompt", "knowledge", "tool", "memory", "workflow"}
@@ -28,11 +27,7 @@ def _tool_language(item: Dict[str, Any]) -> str:
     )
     if explicit:
         return explicit
-    return {
-        ".py": "python",
-        ".sh": "shell",
-        ".cpp": "cpp",
-    }.get(PurePosixPath(str(item.get("source_path") or "")).suffix.lower(), "")
+    return infer_tool_runtime(str(item.get("source_path") or ""))
 
 
 class OfficialImportDraftService:
@@ -250,7 +245,7 @@ class OfficialImportDraftService:
         forced_tool_language = updates.get("forced_tool_language")
         if (
             forced_tool_language not in {None, ""}
-            and forced_tool_language not in TOOL_LANGUAGES
+            and forced_tool_language not in TOOL_RUNTIMES
         ):
             raise ValueError("invalid_forced_tool_language")
         await self.storage.update_draft_component(draft_id, component_key, updates)
@@ -458,7 +453,7 @@ class OfficialImportDraftService:
                 raise ValueError("selected_tool_requires_review")
             if effective_type == "tool" and str(
                 _tool_language(item)
-            ) not in TOOL_LANGUAGES:
+            ) not in TOOL_RUNTIMES:
                 raise ValueError("selected_tool_requires_language")
             if set(item.get("dependencies", [])) - selected_ids:
                 raise ValueError("selected_component_has_missing_dependencies")

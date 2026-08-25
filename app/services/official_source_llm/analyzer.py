@@ -9,12 +9,12 @@ from __future__ import annotations
 
 import hashlib
 import json
-from pathlib import PurePosixPath
 from typing import Any, Dict, List, Optional
 
 import yaml
 
 from app.config.content_languages import language_label
+from app.config.tool_runtimes import TOOL_RUNTIMES, infer_tool_runtime
 from app.connections import is_chat_provider
 from app.models.agent import Agent
 from app.models.official_source import PackageComponent
@@ -364,19 +364,15 @@ class OfficialSourceLLMAnalyzer:
             labels = ensure_origin_label(item.labels, "official")
             if content_language:
                 labels.append(content_language)
-            inferred_tool_language = {
-                ".py": "python",
-                ".sh": "shell",
-                ".cpp": "cpp",
-            }.get(PurePosixPath(path).suffix.lower(), "")
+            inferred_tool_language = infer_tool_runtime(path)
             tool_language = (
                 item.tool_language.strip().lower() or inferred_tool_language
             )
-            if tool_language not in {"", "python", "shell", "cpp"}:
+            if tool_language not in ({""} | TOOL_RUNTIMES):
                 tool_language = inferred_tool_language
             executable = kind == "tool"
             blocked = executable and (
-                PurePosixPath(path).suffix.lower() not in {".py", ".sh", ".cpp"}
+                not infer_tool_runtime(path)
                 or any(
                     marker in content.lower()
                     for marker in ("rm -rf", "invoke-expression")

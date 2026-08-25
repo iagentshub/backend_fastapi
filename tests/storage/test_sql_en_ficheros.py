@@ -13,13 +13,21 @@ import ast
 import re
 from pathlib import Path
 
-from app.sql import SQL_DIR, motores_de, secciones_de
+from app.config.tool_runtimes import TOOL_RUNTIMES
+from app.sql import SQL_DIR, motores_de, secciones_de, sql
 
 APP = Path(__file__).resolve().parents[2] / "app"
 
 EJECUTORES = {
-    "execute", "executemany", "executescript", "fetchall", "fetchone",
-    "fetchval", "fetch", "execute_fetchall", "execute_insert",
+    "execute",
+    "executemany",
+    "executescript",
+    "fetchall",
+    "fetchone",
+    "fetchval",
+    "fetch",
+    "execute_fetchall",
+    "execute_insert",
 }
 EMPIEZA_SQL = re.compile(
     r"^\s*(SELECT|INSERT|UPDATE|DELETE|WITH|CREATE|ALTER|DROP)\b", re.I
@@ -111,7 +119,7 @@ def test_no_hay_sql_estatica_incrustada():
 
     assert intrusos == [], (
         "SQL estática incrustada en el código. Muévela a app/sql/queries/ y "
-        f"pídela con sql(\"queries/fichero:nombre\"): {intrusos}"
+        f'pídela con sql("queries/fichero:nombre"): {intrusos}'
     )
 
 
@@ -160,16 +168,43 @@ def test_ninguna_seccion_queda_sin_usar():
     assert huerfanas == [], f"Secciones SQL sin ningún consumidor: {huerfanas}"
 
 
+def test_listados_de_tools_no_arrastran_contenido_ni_binario():
+    for section in ("list_public", "list_private_by_owner", "list_private", "list_all"):
+        query = sql(f"queries/tools:{section}").lower()
+        select = query.partition("from tools")[0]
+        assert "binary_b64" not in select
+        # Consultar si existe texto no lo transporta. Lo prohibido es incluir
+        # la columna completa en la proyección de los listados.
+        assert not re.search(r"(?:select|,)\s*content\s*(?:,|$)", select)
+
+
+def test_upsert_de_tools_no_reescribe_columnas_binarias():
+    for section in ("upsert_pg", "upsert_sqlite"):
+        query = sql(f"queries/tools:{section}").lower()
+        assert "binary_b64" not in query
+        assert "binary_filename" not in query
+        assert "binary_size" not in query
+        assert "binary_uploaded_at" not in query
+
+
 # Sintaxis que solo entiende uno de los dos motores. Clasificar por lo que la
 # consulta dice y no por cómo se llama: un nombre acabado en `_pg` es una
 # convención, y la convención es justo lo que se olvida.
 SOLO_SQLITE = (
-    r"\bINSERT\s+OR\s+(IGNORE|REPLACE)\b", r"\bdatetime\s*\(\s*'now'",
-    r"\bstrftime\s*\(", r"\bsqlite_master\b", r"\bdbstat\b", r"\browid\b",
+    r"\bINSERT\s+OR\s+(IGNORE|REPLACE)\b",
+    r"\bdatetime\s*\(\s*'now'",
+    r"\bstrftime\s*\(",
+    r"\bsqlite_master\b",
+    r"\bdbstat\b",
+    r"\browid\b",
 )
 SOLO_PG = (
-    r"\bnow\s*\(\s*\)", r"\binformation_schema\b", r"\bpg_[a-z_]+\b",
-    r"::\w+", r"\bto_regclass\b", r"\bEXCLUDED\.",
+    r"\bnow\s*\(\s*\)",
+    r"\binformation_schema\b",
+    r"\bpg_[a-z_]+\b",
+    r"::\w+",
+    r"\bto_regclass\b",
+    r"\bEXCLUDED\.",
 )
 
 
@@ -214,7 +249,7 @@ def test_toda_consulta_dialectal_declara_su_motor():
                 )
 
     assert sin_declarar == [], (
-        "Consultas con sintaxis de un solo motor y sin `-- engine:`: " f"{sin_declarar}"
+        f"Consultas con sintaxis de un solo motor y sin `-- engine:`: {sin_declarar}"
     )
     assert contradictorias == [], f"`-- engine:` que no cuadra: {contradictorias}"
 
@@ -299,3 +334,15 @@ def test_el_esquema_tiene_un_fichero_por_tabla():
         f"solo en disco: {sorted(ficheros - set(TABLAS))}; "
         f"solo en TABLAS: {sorted(set(TABLAS) - ficheros)}"
     )
+
+
+def test_los_runtimes_de_tools_coinciden_con_la_restriccion_sql():
+    schema = (SQL_DIR / "schema" / "tools.sql").read_text(encoding="utf-8")
+    match = re.search(
+        r"language\s+TEXT.*?CHECK\s*\(language\s+IN\s*\(([^)]*)\)",
+        schema,
+        re.S,
+    )
+    assert match is not None, "tools.language debe conservar su CHECK explícito"
+    schema_values = set(re.findall(r"'([^']+)'", match.group(1)))
+    assert schema_values == set(TOOL_RUNTIMES)

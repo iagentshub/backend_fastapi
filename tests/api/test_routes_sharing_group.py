@@ -144,6 +144,35 @@ def test_admin_does_not_see_others_private_agents_without_group_filter(client):
     )
 
 
+def test_tool_under_review_cannot_be_shared_directly_or_via_agent(client):
+    _register("grp_tool_owner")
+    _set_cookie(client, "grp_tool_owner")
+    tool = client.post(
+        "/api/tools/private",
+        json={
+            "name": "Tool pendiente",
+            "language": "python",
+            "content": "print('ok')",
+        },
+    ).json()
+    agent = client.post(
+        "/api/agents",
+        json={"name": "Agente con Tool", "tools": [tool["id"]]},
+    ).json()
+    group = client.post("/api/groups", json={"name": "Grupo Tool"}).json()
+
+    direct = client.post(
+        f"/api/sharing/tool/{tool['id']}", json={"group_id": group["id"]}
+    )
+    cascade = client.post(
+        f"/api/sharing/agent/{agent['id']}", json={"group_id": group["id"]}
+    )
+
+    assert direct.status_code == 403
+    assert cascade.status_code == 403
+    assert direct.json()["detail"]["labels"] == ["review"]
+
+
 # ── Admin puede compartir recursos ajenos ─────────────────────────────────────
 
 def test_admin_can_share_others_agent(client):

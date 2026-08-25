@@ -23,6 +23,7 @@ from app.services.agent_listing import list_authenticated_agents
 from app.services.agent_presentation import apply_agent_locale
 from app.services.agent_presentation import validate_agent_scope as _check_scope
 from app.services.publishing import assert_can_publish
+from app.services.tool_access import resolve_accessible_tools
 from app.sql import sql
 from app.storage.agent_storage import AgentStorage
 from app.storage.chat import ChatStorage
@@ -155,24 +156,39 @@ async def _validate_resource_refs(
                 "No tienes acceso a uno de los prompts indicados",
                 extra={"resource": "prompt", "id": pid},
             )
-    for tid in payload.get("tools") or []:
-        tool = await _tools.get_any(tid)
-        if not tool or tool.get("scope") == "public":
-            continue
-        if not await _shares.is_accessible(
-            _groups,
-            resource_type="tool",
-            resource_id=tid,
-            owner_id=tool.get("owner_id"),
-            requester=user,
-            requester_group=group_id,
+
+
+async def _validate_tool_refs(
+    payload: Dict[str, Any], user: str, group_id: str, *, is_admin: bool
+) -> None:
+    """Tools are executable dependencies, so even admins cannot save ghosts."""
+    try:
+        await resolve_accessible_tools(
+            payload.get("tools") or [],
+            user_id=user,
+            group_id=group_id,
+            is_admin=is_admin,
+            storage=_tools,
+            shares=_shares,
+            groups=_groups,
+        )
+    except APIError as exc:
+        detail = exc.detail if isinstance(exc.detail, dict) else {}
+        if detail.get("code") == "not_found" or (
+            detail.get("code") == "invalid_field"
+            and detail.get("field") == "implementation"
         ):
             raise APIError(
-                403,
-                "forbidden",
-                "No tienes acceso a una de las tools indicadas",
-                extra={"resource": "tool", "id": tid},
-            )
+                422,
+                "invalid_field",
+                "Una de las Tools indicadas no tiene una implementación disponible",
+                extra={
+                    "resource": "tool",
+                    "field": "tools",
+                    "id": detail.get("resource_id"),
+                },
+            ) from exc
+        raise
 
 
 async def _assert_can_read_agent(
@@ -325,6 +341,20 @@ async def save_agent(
         payload["public_dependencies"] = public_dependencies
     else:
         payload["public_dependencies"] = []
+    await _validate_tool_refs(payload, user, group_id, is_admin=role == "admin")
+    if scope == "public":
+        from app.services.tool_access import assert_tools_distributable_by_ids
+
+        selected_tool_ids = [
+            str(tool_id)
+            for tool_id in (payload.get("tools") or [])
+            if public_dependencies is None
+            or f"tool:{tool_id}" in set(public_dependencies)
+        ]
+        await assert_tools_distributable_by_ids(
+            selected_tool_ids,
+            storage=_tools,
+        )
     if role != "admin":
         await _validate_resource_refs(payload, user, group_id)
     try:

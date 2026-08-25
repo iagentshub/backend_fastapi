@@ -167,7 +167,21 @@ async def export_user_data(username: str) -> io.BytesIO:
             )
             zf.writestr(
                 "follows.json",
-                json.dumps([dict(r) for r in rows], ensure_ascii=False, indent=2),
+                    json.dumps([dict(r) for r in rows], ensure_ascii=False, indent=2),
+                )
+
+            artifact_rows = await conn.fetchall(
+                sql("queries/gdpr_export:tool_artifacts"), (user_id,)
+            )
+            artifact_manifest = []
+            for row in artifact_rows:
+                item = dict(row)
+                binary = bytes(item.pop("binary_data"))
+                zf.writestr(f"tool_artifacts/{item['sha256']}.bin", binary)
+                artifact_manifest.append(item)
+            zf.writestr(
+                "tool_artifacts/manifest.json",
+                json.dumps(artifact_manifest, ensure_ascii=False, indent=2),
             )
 
     flog.ok(f"[gdpr] Exportación generada para {username}")

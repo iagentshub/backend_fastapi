@@ -25,6 +25,7 @@ Cuando el frontend envía una petición, el backend la autentica, ejecuta la ló
 | **Autenticación** | Verifica la identidad del usuario y protege el acceso |
 | **Agentes** | Gestiona la configuración y las conversaciones de cada agente |
 | **Skills** | Carga y sirve las capacidades que pueden añadirse a los agentes |
+| **Prompts y Tools** | Gestiona contenido reutilizable, implementaciones y artefactos versionados |
 | **Memoria** | Almacena y recupera el contexto persistente de cada agente entre conversaciones |
 | **Conexiones** | Gestiona las credenciales y la comunicación con los proveedores de IA |
 | **Groups** | Multi-tenancy: grupos de usuarios que comparten recursos |
@@ -33,9 +34,11 @@ Cuando el frontend envía una petición, el backend la autentica, ejecuta la ló
 
 ## Almacenamiento
 
-El sistema usa **SQLite** (desarrollo) o **PostgreSQL** (producción), seleccionado automáticamente según `DATABASE_URL`. Los ficheros de agentes y skills se almacenan en disco en `AGENTS_DIR` y `SKILLS_DIR`.
+El sistema usa **SQLite** (desarrollo) o **PostgreSQL** (producción), seleccionado automáticamente según `DATABASE_URL`. La base de datos es la fuente de verdad de agentes, skills, prompts, Tools, conexiones, Knowledge, relaciones y versiones. `AGENTS_DIR` y `SKILLS_DIR` se conservan únicamente para importar instalaciones legacy; no son el almacenamiento activo.
 
-El helper `PH` en `app/storage/db.py` abstrae el dialecto SQL (`?` en SQLite, `%s` en PostgreSQL). Nunca interpolar valores de usuario directamente en SQL.
+Los storages escriben placeholders `?` en ambos motores. `AsyncConn` los deja
+intactos en SQLite y los traduce a `$1`, `$2`, etc. para PostgreSQL. Nunca se
+interpolan valores de usuario directamente en SQL.
 
 ---
 

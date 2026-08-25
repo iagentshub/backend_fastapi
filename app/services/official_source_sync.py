@@ -16,6 +16,7 @@ from typing import Any, Dict, Iterable, List, Optional, Sequence
 import yaml
 
 from app.config import data as _cfg
+from app.config.tool_runtimes import TOOL_RUNTIMES
 from app.models.official_source import MATERIALIZABLE_TYPES, PackageComponent
 from app.services.workflow_validator import validate_workflow
 from app.sql import sql
@@ -31,7 +32,7 @@ from app.storage.official_source_storage import (
 from app.storage.prompt_storage import PromptStorage
 from app.storage.resource_versions import ResourceVersionStorage
 from app.storage.skill_storage import SkillStorage
-from app.storage.tool_storage import TOOL_LANGUAGES, ToolStorage
+from app.storage.tool_storage import ToolStorage
 from app.storage.workflows import WorkflowStorage
 
 # Lo oficial nace público: es la razón de traerlo. El resto de labels del
@@ -387,7 +388,7 @@ class OfficialSourceMaterializer:
 
         if kind == "tool":
             language = component.tool_language
-            if language not in TOOL_LANGUAGES:
+            if language not in TOOL_RUNTIMES:
                 return None
             payload = {
                 "name": component.name,

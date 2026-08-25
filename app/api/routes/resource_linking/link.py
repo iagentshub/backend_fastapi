@@ -6,7 +6,6 @@ apuntando al original, y sus dependencias privadas se heredan
 agentes que usa.
 """
 
-
 from __future__ import annotations
 
 import json
@@ -31,6 +30,8 @@ from app.services.resource_inheritance import (
     _inherit_workflow_agents,
 )
 from app.services.social_catalog import _assert_public
+from app.services.tool_access import assert_tools_distributable_by_ids
+from app.services.tool_policy import assert_tool_distributable
 from app.sql import sql
 
 # db se importa como MÓDULO a propósito: IS_PG debe leerse en el momento de
@@ -58,7 +59,6 @@ async def link_knowledge(
     await _assert_public("knowledge", source_id)
     if source_owner == username:
         raise APIError(400, "already_owner", "Ya eres el propietario de este recurso")
-
     link_title = source.get("title", source_id)
     link_labels = [
         label
@@ -105,6 +105,7 @@ async def link_knowledge(
             )
         await conn.commit()
     return {"ok": True, "knowledge_id": new_id, "name": link_title}
+
 
 @router.post("/api/agents/{scope}/{source_id}/link")
 async def link_agent(
@@ -168,6 +169,13 @@ async def link_agent(
             for resource_id in (link_payload.get(field_name) or [])
             if selected is None or f"{kind}:{resource_id}" in selected
         ]
+
+    # Preflight antes de clonar ninguna dependencia: evita que una Tool
+    # retenida produzca un Agent enlazado a medias.
+    await assert_tools_distributable_by_ids(
+        link_payload.get("tools") or [],
+        storage=_tools_store,
+    )
 
     memory_file = str(source.get("memory_file") or "").strip()
     copy_memory = bool(
@@ -240,6 +248,7 @@ async def link_agent(
         await conn.commit()
     return {"ok": True, "agent_id": new_id, "name": link_name}
 
+
 # Columnas de la fila que link_* escribe en resource_social. La lista estaba
 # escrita dos veces por tipo (una por dialecto) y tres veces en total.
 _SOCIAL_LINK_COLS = (
@@ -259,7 +268,10 @@ _ENLAZABLES = {
     "prompt": (lambda: _prompts_store, "Prompt no encontrado"),
 }
 
-async def _insert_ignore(conn, tabla: str, columnas: str, valores_sql: str, params: tuple) -> None:
+
+async def _insert_ignore(
+    conn, tabla: str, columnas: str, valores_sql: str, params: tuple
+) -> None:
     """Upsert dialectal en un solo sitio.
 
     `_db.IS_PG` se lee EN LA LLAMADA, no se importa por valor: los tests lo
@@ -274,7 +286,10 @@ async def _insert_ignore(conn, tabla: str, columnas: str, valores_sql: str, para
         sentencia = f"INSERT OR IGNORE INTO {tabla} ({columnas}) VALUES ({valores_sql})"
     await conn.execute(sentencia, params)
 
-async def _link_resource(tipo: str, scope: str, source_id: str, username: str) -> Dict[str, Any]:
+
+async def _link_resource(
+    tipo: str, scope: str, source_id: str, username: str
+) -> Dict[str, Any]:
     """Cuerpo único de link para skill, tool y prompt."""
     factory, no_existe = _ENLAZABLES[tipo]
     storage = factory()
@@ -287,6 +302,8 @@ async def _link_resource(tipo: str, scope: str, source_id: str, username: str) -
         await _assert_public(tipo, source_id)
     if source_owner == username:
         raise APIError(400, "already_owner", "Ya eres el propietario de este recurso")
+    if tipo == "tool":
+        assert_tool_distributable(source)
 
     link_payload = {
         k: v for k, v in source.items() if k not in ("id", "scope", "owner_id")
@@ -316,6 +333,8 @@ async def _link_resource(tipo: str, scope: str, source_id: str, username: str) -
 
     new_id = result["id"]
     link_name = result["name"]
+    if tipo == "tool" and source.get("language") == "cpp":
+        await storage.copy_binary(scope, source_id, new_id, username)
 
     async with open_db() as conn:
         await _insert_ignore(
@@ -337,6 +356,7 @@ async def _link_resource(tipo: str, scope: str, source_id: str, username: str) -
         await conn.commit()
     return {"ok": True, f"{tipo}_id": new_id, "name": link_name}
 
+
 @router.post("/api/skills/{scope}/{source_id}/link")
 async def link_skill(
     scope: str,
@@ -344,6 +364,7 @@ async def link_skill(
     username: str = Depends(require_session),
 ) -> Dict[str, Any]:
     return await _link_resource("skill", scope, source_id, username)
+
 
 @router.post("/api/tools/{scope}/{source_id}/link")
 async def link_tool(
@@ -353,6 +374,7 @@ async def link_tool(
 ) -> Dict[str, Any]:
     return await _link_resource("tool", scope, source_id, username)
 
+
 @router.post("/api/prompts/{scope}/{source_id}/link")
 async def link_prompt(
     scope: str,
@@ -360,6 +382,7 @@ async def link_prompt(
     username: str = Depends(require_session),
 ) -> Dict[str, Any]:
     return await _link_resource("prompt", scope, source_id, username)
+
 
 async def _duplicate_workflow(source_id: str, username: str) -> Dict[str, Any]:
     """Clona una orquestación pública para el usuario.
@@ -441,6 +464,7 @@ async def _duplicate_workflow(source_id: str, username: str) -> Dict[str, Any]:
             )
         await conn.commit()
     return {"ok": True, "workflow_id": new_id, "name": result["name"]}
+
 
 @router.post("/api/workflows/{source_id}/link")
 async def link_workflow(

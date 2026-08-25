@@ -2,7 +2,7 @@
 
 Aquí vive **solo** lo privado que usan dos o más módulos de recurso; lo
 específico de un recurso se queda en su propio fichero, y lo que consumen los
-routers (``SKILL_ASSIGNABLE_LABELS``, ``SKILL_CATEGORIES``, ``TOOL_LANGUAGES``) vive en
+routers (``SKILL_ASSIGNABLE_LABELS`` y ``SKILL_CATEGORIES``) vive en
 el módulo público del recurso al que pertenece.
 
 Este paquete no reexporta nada desde ``__init__.py``: los storages hacen

@@ -213,6 +213,9 @@ async def test_tool_python_script_injected_into_system():
                 "name": "Convertidor CSV",
                 "language": "python",
                 "content": "print('hola desde la tool')",
+                "instructions": "Convierte un CSV local conservando las columnas.",
+                "input_schema": {"type": "object", "required": ["path"]},
+                "output_schema": {"type": "object", "required": ["rows"]},
                 "scope": "public",
             }
         }
@@ -239,8 +242,11 @@ async def test_tool_python_script_injected_into_system():
         ]
 
     system_message = sent_payloads[0]["messages"][0]["content"]
-    assert "print('hola desde la tool')" in system_message
-    assert "no se ejecuta en el servidor" in system_message.lower()
+    assert "Convierte un CSV local conservando las columnas." in system_message
+    assert "print('hola desde la tool')" not in system_message
+    assert "servidor nunca la ejecuta" in system_message.lower()
+    assert 'Entrada esperada: {"type":"object","required":["path"]}' in system_message
+    assert 'Salida esperada: {"type":"object","required":["rows"]}' in system_message
 
 
 async def test_tool_shell_script_from_private_scope_injected():
@@ -254,6 +260,7 @@ async def test_tool_shell_script_from_private_scope_injected():
                 "name": "Backup de logs",
                 "language": "shell",
                 "content": "tar czf logs.tar.gz /var/log",
+                "instructions": "Crea una copia comprimida de los logs elegidos.",
                 "scope": "private",
             }
         }
@@ -280,7 +287,8 @@ async def test_tool_shell_script_from_private_scope_injected():
         ]
 
     system_message = sent_payloads[0]["messages"][0]["content"]
-    assert "tar czf logs.tar.gz /var/log" in system_message
+    assert "Crea una copia comprimida de los logs elegidos." in system_message
+    assert "tar czf logs.tar.gz /var/log" not in system_message
 
 
 async def test_tool_cpp_injects_metadata_not_binary():
@@ -323,7 +331,7 @@ async def test_tool_cpp_injects_metadata_not_binary():
 
     system_message = sent_payloads[0]["messages"][0]["content"]
     assert "Comprime PNG/JPEG sin pérdida perceptible." in system_message
-    assert "Conocimiento" in system_message
+    assert "implementación nativa" in system_message
     assert "AAAAFAKEBASE64==" not in system_message
 
 

@@ -8,10 +8,29 @@ from typing import Any, ClassVar, Dict, List, Optional
 from app.models.base import BaseResource
 
 _OWN_KEYS = {
-    "id", "name", "description", "icon", "owner_id", "created_by", "scope",
-    "labels", "is_active", "deactivated_at", "created_at", "updated_at",
-    "resource_type", "language", "content",
-    "binary_filename", "binary_size", "binary_uploaded_at",
+    "id",
+    "name",
+    "description",
+    "icon",
+    "owner_id",
+    "created_by",
+    "scope",
+    "labels",
+    "is_active",
+    "deactivated_at",
+    "created_at",
+    "updated_at",
+    "resource_type",
+    "language",
+    "content",
+    "instructions",
+    "input_schema",
+    "output_schema",
+    "target_os",
+    "target_arch",
+    "binary_filename",
+    "binary_size",
+    "binary_uploaded_at",
 }
 
 
@@ -21,6 +40,11 @@ class Tool(BaseResource):
 
     language: str = ""
     content: str = ""
+    instructions: str = ""
+    input_schema: Dict[str, Any] = field(default_factory=dict)
+    output_schema: Dict[str, Any] = field(default_factory=dict)
+    target_os: Optional[str] = None
+    target_arch: Optional[str] = None
     #: Metadatos ligeros del binario subido (solo para language="cpp").
     #: El contenido en base64 (binary_b64) NO es un campo del dataclass —
     #: se maneja como columna SQL cruda fuera del modelo de dominio, igual
@@ -42,6 +66,11 @@ class Tool(BaseResource):
             icon=str(data.get("icon") or "").strip(),
             language=str(data.get("language") or "").strip(),
             content=str(data.get("content") or ""),
+            instructions=str(data.get("instructions") or "").strip(),
+            input_schema=dict(data.get("input_schema") or {}),
+            output_schema=dict(data.get("output_schema") or {}),
+            target_os=str(data.get("target_os") or "").strip() or None,
+            target_arch=str(data.get("target_arch") or "").strip() or None,
             binary_filename=str(data.get("binary_filename") or "").strip() or None,
             binary_size=int(data["binary_size"])
             if data.get("binary_size") is not None
@@ -72,6 +101,11 @@ class Tool(BaseResource):
             "icon": self.icon,
             "language": self.language,
             "content": self.content,
+            "instructions": self.instructions,
+            "input_schema": self.input_schema,
+            "output_schema": self.output_schema,
+            "target_os": self.target_os,
+            "target_arch": self.target_arch,
             "binary_filename": self.binary_filename,
             "binary_size": self.binary_size,
             "binary_uploaded_at": self.binary_uploaded_at,

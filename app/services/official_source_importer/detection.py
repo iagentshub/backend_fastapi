@@ -15,6 +15,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import yaml
 
 from app.config.content_languages import language_label
+from app.config.tool_runtimes import infer_tool_runtime
 from app.models.official_source import COMPONENT_TYPES, PackageComponent
 from app.services.official_source_importer._shared import (
     _DANGEROUS_PATTERNS,
@@ -261,15 +262,11 @@ def detect_components(source_id: str, files: Dict[str, str]) -> List[PackageComp
         labels = ensure_origin_label(_string_list(meta.get("labels")), "official")
         if content_language:
             labels.append(content_language)
-        tool_language = {
-            ".py": "python",
-            ".sh": "shell",
-            ".cpp": "cpp",
-        }.get(pure.suffix.lower(), "")
+        tool_language = infer_tool_runtime(path)
         executable_candidate = kind in {"tool", "hook"} or detected_by == "undeclared_executable"
         executable = kind == "tool"
         blocked = executable_candidate and (
-            (kind == "tool" and pure.suffix.lower() not in {".py", ".sh", ".cpp"})
+            (kind == "tool" and not infer_tool_runtime(path))
             or any(
                 pattern.search(content) and label == "borrado recursivo"
                 for pattern, label in _DANGEROUS_PATTERNS

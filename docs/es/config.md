@@ -7,7 +7,9 @@
 
 # Configuración
 
-Toda la configuración se realiza mediante variables de entorno. Estas se establecen desde el orquestador de despliegue ([iAgentsHub](https://github.com/iagentshub/iAgents)) y no requieren modificar ningún fichero de código.
+La configuración de infraestructura y arranque se realiza mediante variables de
+entorno. Los ajustes operativos que deben poder cambiarse sin reiniciar se
+guardan desde el panel de administración. Ninguno requiere modificar código.
 
 ---
 
@@ -16,13 +18,26 @@ Toda la configuración se realiza mediante variables de entorno. Estas se establ
 | Ajuste | Descripción |
 |---|---|
 | Secreto de sesión | Clave usada para firmar los tokens de sesión. Obligatorio en producción. |
-| Directorio de datos | Ruta donde se almacenan agentes, conexiones, skills y memoria. |
+| Directorio de datos | Ruta de la base SQLite, ajustes, estado operativo y datos heredados. |
 | Puerto y host | Dónde escucha el servidor. |
 | Orígenes permitidos | Dominios desde los que se permite el acceso a la API. |
 | Duración de sesión | Tiempo en horas que una sesión permanece activa. |
 | Concurrencia LLM | Número máximo de llamadas simultáneas a proveedores por worker. |
 | Escritura de logs | Tamaño de lote e intervalo de volcado del registro de actividad. |
 | Orígenes internos de Ollama | Lista exacta de servidores locales/LAN a los que puede conectar el backend. |
+
+## Ajustes administrables en caliente
+
+`GET /api/settings/platform` y `PUT /api/settings/platform` permiten al admin
+consultar y cambiar los ajustes operativos persistentes. Entre ellos está
+`max_request_bytes`, el único límite global para el tamaño de las peticiones y
+artefactos; `0` significa sin límite. No existe un límite diferente por cada
+tipo de recurso.
+
+`GET /api/settings/platform/public` expone a los clientes la parte no sensible
+de esa configuración. Incluye `tool_runtimes`, el catálogo efectivo de Tools,
+con sus códigos de API, extensiones, requisito de binario y destinos nativos.
+Los clientes deben usar ese catálogo en vez de duplicar listas fijas.
 
 ### Destinos internos de Ollama
 

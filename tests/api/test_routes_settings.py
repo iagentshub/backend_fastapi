@@ -470,6 +470,11 @@ def test_get_platform_public_oauth_toggles_default_true(client):
     assert data["oauth_google_enabled"] is True
     assert data["oauth_apple_enabled"] is True
     assert data["oauth_microsoft_enabled"] is True
+    assert [item["api_value"] for item in data["tool_runtimes"]] == [
+        "python",
+        "shell",
+        "cpp",
+    ]
 
 
 def test_platform_sin_limite_de_tamano_por_defecto(admin_client, client):

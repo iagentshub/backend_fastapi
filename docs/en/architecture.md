@@ -25,6 +25,7 @@ When the frontend sends a request, the backend authenticates it, runs the corres
 | **Authentication** | Verifies user identity and controls access |
 | **Agents** | Manages each agent's configuration and conversations |
 | **Skills** | Loads and serves the capabilities that can be added to agents |
+| **Prompts and Tools** | Manages reusable content, implementations, and versioned artifacts |
 | **Memory** | Stores and retrieves each agent's persistent context between conversations |
 | **Connections** | Manages credentials and communication with AI providers |
 | **Groups** | Multi-tenancy: groups of users who share resources |
@@ -33,9 +34,11 @@ When the frontend sends a request, the backend authenticates it, runs the corres
 
 ## Storage
 
-The system uses **SQLite** (development) or **PostgreSQL** (production), selected automatically based on `DATABASE_URL`. Agent and skill files are stored on disk under `AGENTS_DIR` and `SKILLS_DIR`.
+The system uses **SQLite** (development) or **PostgreSQL** (production), selected automatically based on `DATABASE_URL`. The database is the source of truth for agents, skills, prompts, Tools, connections, Knowledge, relationships, and versions. `AGENTS_DIR` and `SKILLS_DIR` are retained only to import legacy installations; they are not active storage.
 
-The `PH` helper in `app/storage/db.py` abstracts SQL dialect differences (`?` in SQLite, `%s` in PostgreSQL). Never interpolate user values directly into SQL strings.
+Storages write `?` placeholders for both engines. `AsyncConn` keeps them in
+SQLite and translates them to `$1`, `$2`, and so on for PostgreSQL. User values
+must never be interpolated directly into SQL.
 
 ---
 

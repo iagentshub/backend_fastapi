@@ -21,10 +21,12 @@ from app.services.agent_presentation import apply_agent_locale
 from app.services.chat import ChatStreamState, stream_chat
 from app.services.llm_executor import try_acquire_llm_lease
 from app.services.llm_routing import stream_orchestrated_chat
+from app.services.tool_access import resolve_accessible_tools
 from app.storage.agent_storage import AgentStorage
 from app.storage.chat import ChatStorage
 from app.storage.connection_storage import ConnectionStorage
 from app.storage.db import PH, open_db
+from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
 from app.storage.knowledge import KnowledgeStorage
 from app.storage.knowledge_packs import KnowledgePackStorage
@@ -44,6 +46,7 @@ _prompts = PromptStorage()
 _tools = ToolStorage()
 _memory = MemoryStorage(MEMORY_DIR)
 _groups = GroupStorage()
+_shares = GroupShareStorage()
 _chat = ChatStorage()
 _knowledge = KnowledgeStorage()
 _knowledge_packs = KnowledgePackStorage()
@@ -207,6 +210,16 @@ async def chat(
                     "No tienes permiso para usar una conexión de la orquestación",
                 )
 
+    resolved_tools = await resolve_accessible_tools(
+        a.get("tools") or [],
+        user_id=user,
+        group_id=group_id,
+        is_admin=role == "admin",
+        storage=_tools,
+        shares=_shares,
+        groups=_groups,
+    )
+
     execution_lease = await _executions.acquire(
         resource_type="agent",
         resource_id=agent_id,
@@ -265,6 +278,7 @@ async def chat(
                     prompt_storage=_prompts,
                     tool_storage=_tools,
                     attached_knowledge=attached_knowledge,
+                    resolved_tools=resolved_tools,
                     llm_lease=llm_lease,
                     stream_state=stream_state,
                 )
@@ -284,6 +298,7 @@ async def chat(
                     prompt_storage=_prompts,
                     tool_storage=_tools,
                     attached_knowledge=attached_knowledge,
+                    resolved_tools=resolved_tools,
                     llm_lease=llm_lease,
                     stream_state=stream_state,
                 )

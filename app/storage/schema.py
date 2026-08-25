@@ -33,6 +33,7 @@ from app.sql import sql
 _DIALECTOS: dict[str, dict[str, str]] = {
     "sqlite": {
         "BOOL": "INTEGER",
+        "BLOB": "BLOB",
         "SERIAL": "INTEGER PRIMARY KEY AUTOINCREMENT",
         # El relleno mantiene la alineación de la columna; SQL lo ignora, pero
         # así el DDL generado se lee igual que cuando estaba escrito a mano.
@@ -41,6 +42,7 @@ _DIALECTOS: dict[str, dict[str, str]] = {
     },
     "pg": {
         "BOOL": "SMALLINT",
+        "BLOB": "BYTEA",
         "SERIAL": "BIGSERIAL PRIMARY KEY",
         "FLOAT": "DOUBLE PRECISION",
         "NOW": "(to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'))",
@@ -56,6 +58,8 @@ TABLAS: tuple[str, ...] = (
     "skills",
     "prompts",
     "tools",
+    "tool_artifacts",
+    "tool_artifact_links",
     "memory_files",
     "connections",
     "accounts",
@@ -88,6 +92,7 @@ TABLAS: tuple[str, ...] = (
     "sessions",
     "vscode_auth_codes",
     "resource_versions",
+    "tool_version_artifacts",
     "agent_workflows",
     "workflow_runs",
     "workflow_run_events",

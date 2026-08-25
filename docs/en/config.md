@@ -7,7 +7,9 @@
 
 # Configuration
 
-All configuration is done through environment variables. These are set by the deployment orchestrator ([iAgentsHub](https://github.com/iagentshub/iAgents)) and do not require modifying any code files.
+Infrastructure and startup configuration is supplied through environment
+variables. Operational settings that must change without a restart are stored
+from the admin panel. Neither mechanism requires code changes.
 
 ---
 
@@ -16,13 +18,25 @@ All configuration is done through environment variables. These are set by the de
 | Setting | Description |
 |---|---|
 | Session secret | Key used to sign session tokens. Required in production. |
-| Data directory | Path where agents, connections, skills, and memory are stored. |
+| Data directory | Path for the SQLite database, settings, operational state, and legacy data. |
 | Port and host | Where the server listens. |
 | Allowed origins | Domains permitted to access the API. |
 | Session duration | How long in hours a session remains active. |
 | LLM concurrency | Maximum simultaneous provider calls per worker. |
 | Log writes | Batch size and flush interval for the activity log. |
 | Internal Ollama origins | Exact local/LAN servers the backend may contact. |
+
+## Runtime admin settings
+
+`GET /api/settings/platform` and `PUT /api/settings/platform` let an admin read
+and change persistent operational settings. They include
+`max_request_bytes`, the single global size limit for requests and artifacts;
+`0` means unlimited. There is no separate limit for each resource type.
+
+`GET /api/settings/platform/public` exposes the non-sensitive part of this
+configuration to clients. It includes `tool_runtimes`, the effective Tool
+catalog with API codes, extensions, binary requirements, and native targets.
+Clients must use that catalog instead of duplicating fixed lists.
 
 ### Internal Ollama destinations
 

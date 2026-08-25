@@ -133,6 +133,7 @@ class Agent(BaseResource):
 
     # ── Runtime-only (not persisted) ──────────────────────────────────────────
     resolved_skills: List[dict] = field(default_factory=list)
+    resolved_tools: List[dict] = field(default_factory=list)
 
     # ── Factory ───────────────────────────────────────────────────────────────
 
@@ -186,6 +187,11 @@ class Agent(BaseResource):
             ],
             prompts=[str(p) for p in (data.get("prompts") or []) if p],
             tools=[str(t) for t in (data.get("tools") or []) if t],
+            resolved_tools=[
+                dict(tool)
+                for tool in (data.get("resolved_tools") or [])
+                if isinstance(tool, dict)
+            ],
             public_dependencies=(
                 [str(value) for value in data.get("public_dependencies", []) if value]
                 if data.get("public_dependencies") is not None

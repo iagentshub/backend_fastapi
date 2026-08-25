@@ -17,6 +17,8 @@ from app.auth.auth import get_user_role
 from app.errors import APIError
 from app.models.request_bodies import GroupShareBody
 from app.models.resource_types import RESOURCE_TYPES
+from app.services.tool_access import assert_tools_distributable_by_ids
+from app.services.tool_policy import assert_tool_distributable
 from app.sql import sql
 from app.storage.agent_storage import AgentStorage
 from app.storage.connection_storage import ConnectionStorage
@@ -94,7 +96,7 @@ async def _resource_owner(resource_type: str, resource_id: str) -> Optional[str]
 
 async def _assert_can_share_resource(
     resource_type: str, resource_id: str, ctx: GroupContext
-) -> None:
+) -> Dict[str, Dict[str, Any]]:
     """Solo el dueño directo del recurso, quien administra el group dueño, o un admin puede compartirlo."""
     item = await _resource_record(resource_type, resource_id)
     if item is None:
@@ -108,14 +110,25 @@ async def _assert_can_share_resource(
             "Los enlaces son de solo lectura y no se pueden compartir",
             extra={"resource": resource_type},
         )
+    if resource_type == "tool":
+        assert_tool_distributable(item)
+    validated_tools: Dict[str, Dict[str, Any]] = {}
+    if resource_type == "agent":
+        tool_ids = [str(tool_id) for tool_id in (item.get("tools") or [])]
+        tools = await assert_tools_distributable_by_ids(
+            tool_ids, storage=_tools_store, require_all=False
+        )
+        validated_tools = {str(tool.get("id") or ""): tool for tool in tools}
     role = await get_user_role(ctx.user)
     if role == "admin":
-        return  # los admins pueden compartir cualquier recurso gestionable
+        return (
+            validated_tools  # los admins pueden compartir cualquier recurso gestionable
+        )
     owner = str(item.get("owner_id") or "")
     if owner == ctx.user:
-        return
+        return validated_tools
     if await _groups.can_manage(owner, ctx.user):
-        return
+        return validated_tools
     raise APIError(403, "forbidden", "No tienes permisos sobre este recurso")
 
 
@@ -158,6 +171,7 @@ async def _cascade_share_agent(
     group_id: str,
     shared_by: str,
     shared_by_group: str = "",
+    validated_tools: Dict[str, Dict[str, Any]] | None = None,
 ) -> List[str]:
     """Al compartir un agente, comparte también sus skills, knowledge y prompts
     privados.
@@ -172,6 +186,7 @@ async def _cascade_share_agent(
     skill_storage = _skills_store
     knowledge_storage = _knowledge_store
     prompt_storage = _prompts_store
+    tool_storage = _tools_store
 
     # Identidades válidas del usuario que comparte (personal + group de equipo)
     _owner_ids = {shared_by, shared_by_group} - {""}
@@ -218,6 +233,20 @@ async def _cascade_share_agent(
         )
         cascaded.append(prompt_id)
 
+    for tool_id in agent.get("tools") or []:
+        tool = (validated_tools or {}).get(str(tool_id))
+        if tool is None:
+            tool = await tool_storage.get_any(str(tool_id))
+        if not tool or tool.get("scope", "private") != "private":
+            continue
+        if tool.get("owner_id") not in _owner_ids:
+            continue
+        assert_tool_distributable(tool)
+        await _shares.share_with_group(
+            "tool", str(tool_id), group_id, shared_by, via_cascade=True
+        )
+        cascaded.append(str(tool_id))
+
     return cascaded
 
 
@@ -230,6 +259,7 @@ async def _agent_dependencies(agent_id: str) -> List[Tuple[str, str]]:
         *(("skill", str(i)) for i in agent.get("skills") or []),
         *(("knowledge", str(i)) for i in agent.get("knowledge") or []),
         *(("prompt", str(i)) for i in agent.get("prompts") or []),
+        *(("tool", str(i)) for i in agent.get("tools") or []),
     ]
 
 
@@ -387,14 +417,18 @@ async def share_resource_with_group(
     role = await get_user_role(ctx.user)
     if role != "admin" and not await _groups.can_access(group_id, ctx.user):
         raise APIError(403, "forbidden", "No tienes acceso a este grupo")
-    await _assert_can_share_resource(resource_type, resource_id, ctx)
+    validated_tools = await _assert_can_share_resource(resource_type, resource_id, ctx)
     await _shares.share_with_group(resource_type, resource_id, group_id, ctx.user)
 
     # Cascade para agentes: compartir también skills y knowledge
     cascaded: List[str] = []
     if resource_type == "agent":
         cascaded = await _cascade_share_agent(
-            resource_id, group_id, ctx.user, ctx.group_id
+            resource_id,
+            group_id,
+            ctx.user,
+            ctx.group_id,
+            validated_tools=validated_tools,
         )
     elif resource_type == "workflow":
         cascaded = await _cascade_share_workflow(

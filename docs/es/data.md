@@ -7,13 +7,16 @@
 
 # Datos
 
-El backend guarda la mayor parte de la información en una base de datos SQLite y en un directorio de datos externo montado en el servicio.
+El backend guarda la información estructurada en SQLite o PostgreSQL. El
+directorio externo contiene la base SQLite cuando se usa ese motor, ajustes,
+estado operativo y los pocos recursos que siguen siendo ficheros.
 
 ---
 
 ## Base de datos
 
-La base de datos SQLite (`hub.db`) almacena todos los datos estructurados:
+La base de datos almacena todos los datos estructurados. Con SQLite es
+`hub.db`; con PostgreSQL vive en el servidor indicado por `DATABASE_URL`.
 
 | Tabla | Contenido |
 |---|---|
@@ -23,6 +26,12 @@ La base de datos SQLite (`hub.db`) almacena todos los datos estructurados:
 | `knowledge_items` | Elementos de la base de conocimiento, incluidas sus labels de idioma |
 | `conversations` | Historial de conversaciones (id, título, fechas) |
 | `messages` | Mensajes individuales ligados a conversaciones |
+| `agents`, `skills`, `prompts`, `tools` | Recursos reutilizables, propiedad, estado, contenido y metadatos |
+| `tool_artifacts`, `tool_artifact_links`, `tool_version_artifacts` | Binarios de Tools por SHA-256, enlace activo y retención por versión |
+| `resource_versions` | Historial inmutable de agentes, skills y Tools |
+| `groups`, `resource_group_shares` | Multi-tenancy y acceso compartido |
+| `resource_social` | Publicaciones visibles en Explorar |
+| `workflows`, `llm_orchestrations` | Definiciones de ejecución y rutas LLM |
 
 ---
 
@@ -30,10 +39,10 @@ La base de datos SQLite (`hub.db`) almacena todos los datos estructurados:
 
 | Ruta | Contenido |
 |---|---|
-| `agents/` | Configuraciones de los agentes (instrucciones, modelo, skills asignadas) |
 | `memory/` | Memoria acumulada por cada agente entre conversaciones |
-| `skills/public/` | Skills sincronizadas desde el repositorio de skills |
-| `skills/private/` | Skills privadas de la instalación |
+| `settings.json` | Ajustes de plataforma administrables y secretos locales |
+| `centinel_state.json` | Estado operativo de Centinel |
+| `agents/`, `skills/`, `connections/`, `accounts/` | Entradas legacy usadas solo durante migraciones; no son la fuente activa |
 
 ---
 
@@ -46,6 +55,15 @@ Ningún dato de runtime se incluye en el repositorio. La base de datos y el dire
 ## Skills
 
 Las skills se almacenan en la base de datos con nombre, descripción, icono, una categoría del catálogo cerrado y su contenido. No admiten tags libres; sus labels se limitan al catálogo del sistema. Las skills públicas del sistema son de solo lectura; las creadas por usuarios conservan su propietario tanto si son privadas como públicas. El contenido se inyecta en el system prompt del agente cuando la skill está activada.
+
+## Tools y artefactos
+
+Los metadatos, instrucciones y scripts de una Tool viven en `tools`. Los
+ejecutables nativos no se incluyen en listados ni detalles JSON: se guardan una
+sola vez por SHA-256 en `tool_artifacts` y se relacionan con la Tool y sus
+versiones. Por ello, una copia de seguridad restaurable debe incluir la base de
+datos completa; copiar un supuesto directorio de Tools no conserva los
+artefactos.
 
 ## Idioma del contenido
 

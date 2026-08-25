@@ -5,9 +5,14 @@
 
 <br>
 
-# Referencia de la API
+# Guía de la API
 
 Todos los endpoints requieren autenticación mediante cookie HTTP-only (`ga_token`) salvo los marcados con **—**.
+
+Esta guía describe los contratos de uso más importantes; no pretende duplicar
+las 297 rutas del contrato ejecutable. La lista canónica se mantiene en
+`tests/api/contrato_rutas.txt`. En desarrollo (`GAIA_DEV_MODE=true`) también se
+publican OpenAPI en `/openapi.json` y la interfaz interactiva en `/docs`.
 
 ## Paginación
 
@@ -108,11 +113,13 @@ Todos los endpoints de admin requieren el rol `admin`.
 | Método | Endpoint | Descripción |
 |---|---|---|
 | `GET` | `/api/admin/explore` | Inventario unificado de usuarios, grupos, agentes, conexiones, conocimiento y orquestaciones |
-| `GET` | `/api/admin/resources/{type}/{id}/graph` | Grafo relacional del objeto, cargado bajo demanda |
+| `GET` | `/api/admin/resources/{resource_type}/{resource_id}/relations` | Relaciones del objeto para construir su grafo en el cliente |
 
-`/api/admin/explore` admite `type` repetido, `q`, `owner`, `limit` y `offset`. Cada elemento incluye el discriminador `resource_type`; la respuesta también devuelve `total` y contadores por tipo. Los tipos válidos son `user`, `group`, `agent`, `connection`, `knowledge` y `workflow`.
+`/api/admin/explore` admite `type` repetido, `q`, `owner`, `limit` y `offset`. Cada elemento incluye el discriminador `resource_type`; la respuesta también devuelve `total` y contadores por tipo. Los tipos válidos son `user`, `group`, `agent`, `connection`, `knowledge`, `workflow`, `llm_orchestration`, `skill`, `prompt`, `tool` y `memory`.
 
-El grafo devuelve `root_id`, `nodes` y `edges`. Incluye relaciones de propiedad, pertenencia a grupos, compartición, uso de conexiones/conocimiento y participación en orquestaciones.
+El backend devuelve relaciones tipadas; Flutter construye con ellas `nodes` y
+`edges`. No existe un endpoint `/graph`: mantener el armado en el cliente evita
+tener una representación distinta por cada interfaz.
 
 ### Usuarios
 
@@ -241,6 +248,50 @@ La categoría debe pertenecer al catálogo cerrado (`ai`, `messaging`, `notes`, 
 
 ---
 
+## Tools
+
+Una Tool combina instrucciones para el agente con una implementación opcional.
+Los valores de API actuales son `python`, `shell` y `cpp`; el catálogo efectivo,
+sus extensiones y los destinos nativos se publica en
+`GET /api/settings/platform/public` bajo `tool_runtimes`.
+
+| Método | Endpoint | Descripción |
+|---|---|---|
+| `GET` | `/api/tools` | Lista paginada de Tools accesibles |
+| `GET` | `/api/tools/{scope}/{tool_id}` | Metadatos e implementación textual, nunca el BLOB binario |
+| `POST` | `/api/tools/{scope}` | Crear o actualizar metadatos y registrar una versión |
+| `DELETE` | `/api/tools/{scope}/{tool_id}` | Eliminar una Tool propia |
+| `POST` | `/api/tools/{scope}/{tool_id}/activate` | Activar una Tool |
+| `POST` | `/api/tools/{scope}/{tool_id}/deactivate` | Desactivar una Tool sin romper sus enlaces |
+| `POST` | `/api/tools/{scope}/{tool_id}/binary` | Subir el artefacto de una Tool `cpp` mediante multipart |
+| `GET` | `/api/tools/{scope}/{tool_id}/binary` | Descargar el artefacto con `Content-Length` y `ETag` SHA-256 |
+| `POST` | `/api/tools/{scope}/{source_id}/link` | Enlazar una Tool pública aprobada |
+| `POST` | `/api/tools/private/{tool_id}/sync` | Sincronizar una copia enlazada |
+| `PUT` | `/api/tools/{scope}/{tool_id}/visibility` | Publicar o retirar del catálogo social |
+
+Python y Shell guardan el script en `content`. `cpp` es un valor histórico del
+contrato: el servidor almacena un ejecutable nativo compilado, con
+`target_os`, `target_arch`, nombre, tamaño, autor de subida y SHA-256. La fuente
+C++ puede conservarse, pero no sustituye al artefacto. El límite de la petición
+es el único `max_request_bytes` que configura Admin; `0` significa sin límite.
+
+Toda implementación nueva o modificada recibe la label `review`. Admin puede
+pasarla a `approved`, devolverla a `review` o ponerla en `quarantine` usando las
+labels existentes. Una Tool en revisión no se puede publicar, compartir,
+heredar ni consumir por terceros; en cuarentena no puede consumirla nadie. Una
+Tool desactivada conserva sus enlaces, pero tampoco se inyecta ni se consume.
+
+Las versiones de Tools usan las rutas comunes
+`/api/resources/tool/{resource_id}/versions`. El artefacto se conserva por
+contenido y una restauración cambia metadatos, enlace binario e historial en
+una única transacción.
+
+El backend **no ejecuta Tools**. Sirve instrucciones, scripts y artefactos para
+que un cliente autorizado pueda usarlos. Flutter comprueba compatibilidad y
+SHA-256, pero la ejecución automática local todavía no está habilitada.
+
+---
+
 ## Memoria
 
 | Método | Endpoint | Descripción |
@@ -290,7 +341,7 @@ Las preferencias se guardan por usuario en la base de datos. Cambiarlas en un di
 
 ## Compartición de recursos
 
-Permite compartir recursos privados (agentes, skills, conexiones, conocimiento) con un grupo. No mueve ni copia el recurso — solo concede acceso de uso a todos los miembros del grupo destino. El `owner_id` del recurso no cambia.
+Permite compartir recursos privados con un grupo. No mueve ni copia el recurso — solo concede acceso de uso a todos los miembros del grupo destino. El `owner_id` del recurso no cambia.
 
 Solo el dueño directo del recurso (o un admin) puede compartirlo.
 
@@ -300,11 +351,12 @@ Solo el dueño directo del recurso (o un admin) puede compartirlo.
 | `POST` | `/api/sharing/{type}/{resource_id}` | Compartir un recurso con un grupo (`body: {"group_id": "..."}`) |
 | `DELETE` | `/api/sharing/{type}/{resource_id}?group_id={group_id}` | Retirar el acceso de un grupo a un recurso |
 
-Tipos válidos para `{type}`: `agent`, `skill`, `connection`, `knowledge`.
+Tipos válidos para `{type}`: `agent`, `skill`, `connection`, `knowledge`,
+`knowledge_pack`, `workflow`, `llm_orchestration`, `prompt` y `tool`.
 
 Los recursos compartidos con el usuario aparecen en los listados normales (`/api/skills`, `/api/agents`, etc.) con el campo `_shared: true`. El receptor puede usarlos pero no editarlos ni redistribuirlos.
 
-Compartir un agente arrastra sus skills, prompts y knowledge privados —el `POST` los devuelve en `cascaded`— y **retirarlo los retira**: el `DELETE` responde con `uncascaded` (lo que ha dejado de estar compartido) y `kept` (lo que se conserva). Se conserva lo que el usuario compartió por su cuenta y lo que otro agente u orquestación compartido del mismo grupo sigue necesitando: retirarlo dejaría a ese otro recurso sin una dependencia. Una orquestación se comporta igual con los agentes que arrastró.
+Compartir un agente arrastra sus skills, prompts, Tools y Knowledge privados —el `POST` los devuelve en `cascaded`— y **retirarlo los retira**: el `DELETE` responde con `uncascaded` (lo que ha dejado de estar compartido) y `kept` (lo que se conserva). Se conserva lo que el usuario compartió por su cuenta y lo que otro agente u orquestación compartido del mismo grupo sigue necesitando: retirarlo dejaría a ese otro recurso sin una dependencia. Una orquestación se comporta igual con los agentes que arrastró.
 
 ---
 

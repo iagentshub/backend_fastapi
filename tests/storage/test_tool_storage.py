@@ -4,6 +4,7 @@ texto/binario, preservación del binario en ediciones de solo texto."""
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import re
 
 import pytest
@@ -24,6 +25,7 @@ _TOOL = {
     "icon": "🛠️",
     "language": "python",
 }
+_ABC_SHA = hashlib.sha256(b"ABC").hexdigest()
 
 
 def test_list_empty(storage):
@@ -72,14 +74,12 @@ def test_shell_language_keeps_content(storage):
     assert tl["content"] == "echo hi"
 
 
-def test_cpp_language_forces_empty_content(storage):
+def test_cpp_language_preserves_source_content(storage):
     tl = asyncio.run(
-        storage.save(
-            "private", {**_TOOL, "language": "cpp", "content": "int main(){}"}
-        )
+        storage.save("private", {**_TOOL, "language": "cpp", "content": "int main(){}"})
     )
     assert tl["language"] == "cpp"
-    assert tl["content"] == ""
+    assert tl["content"] == "int main(){}"
 
 
 # ── CRUD básico ─────────────────────────────────────────────────────────────
@@ -127,9 +127,7 @@ def test_delete_system_public_raises(storage):
 
 def test_delete_owned_public_tool(storage):
     tool = asyncio.run(storage.save("public", _TOOL, owner_id="user-id"))
-    assert (
-        asyncio.run(storage.delete("public", tool["id"], owner_id="user-id")) is True
-    )
+    assert asyncio.run(storage.delete("public", tool["id"], owner_id="user-id")) is True
 
 
 def test_delete_nonexistent_tool(storage):
@@ -197,9 +195,7 @@ def test_get_any_returns_none_for_missing(storage):
 def test_delete_with_owner_id_does_not_touch_other_owner_same_id(storage):
     """Borrar la propia tool no debe borrar la de otro dueño con el mismo id."""
     shared_id = "legacy-shared-id"
-    asyncio.run(
-        storage.save("private", {**_TOOL, "id": shared_id}, owner_id="alice")
-    )
+    asyncio.run(storage.save("private", {**_TOOL, "id": shared_id}, owner_id="alice"))
     asyncio.run(storage.save("private", {**_TOOL, "id": shared_id}, owner_id="bob"))
 
     deleted = asyncio.run(storage.delete("private", shared_id, owner_id="alice"))
@@ -226,7 +222,17 @@ def test_list_excludes_content_and_binary(storage):
             "private", {**_TOOL, "language": "cpp", "content": ""}, owner_id="bob"
         )
     )
-    asyncio.run(storage.save_binary(tl["id"], "bob", "QUJD", "bin1", 3))
+    asyncio.run(
+        storage.save_binary(
+            tl["id"],
+            "bob",
+            "QUJD",
+            "bin1",
+            3,
+            sha256=_ABC_SHA,
+            uploaded_by="bob",
+        )
+    )
     items = asyncio.run(storage.list("private"))
     assert len(items) == 1
     assert "content" not in items[0]
@@ -236,17 +242,31 @@ def test_list_excludes_content_and_binary(storage):
     assert items[0]["binary_size"] == 3
 
 
-def test_get_includes_content_and_binary(storage):
+def test_get_includes_content_but_never_loads_binary(storage):
     tl = asyncio.run(
         storage.save(
             "private", {**_TOOL, "language": "cpp", "content": ""}, owner_id="alice"
         )
     )
-    asyncio.run(storage.save_binary(tl["id"], "alice", "QUJD", "prog", 3))
+    asyncio.run(
+        storage.save_binary(
+            tl["id"],
+            "alice",
+            "QUJD",
+            "prog",
+            3,
+            sha256=_ABC_SHA,
+            uploaded_by="alice",
+        )
+    )
     found = asyncio.run(storage.get("private", tl["id"]))
     assert found is not None
     assert "content" in found
-    assert found["binary_b64"] == "QUJD"
+    assert "binary_b64" not in found
+    assert found["binary_filename"] == "prog"
+    binary = asyncio.run(storage.get_binary("private", tl["id"]))
+    assert binary is not None
+    assert binary["binary_data"] == b"ABC"
 
 
 # ── binario ──────────────────────────────────────────────────────────────────
@@ -258,17 +278,41 @@ def test_save_binary_and_get_binary(storage):
             "private", {**_TOOL, "language": "cpp", "content": ""}, owner_id="alice"
         )
     )
-    ok = asyncio.run(storage.save_binary(tl["id"], "alice", "QUJD", "prog", 3))
+    ok = asyncio.run(
+        storage.save_binary(
+            tl["id"],
+            "alice",
+            "QUJD",
+            "prog",
+            3,
+            sha256=_ABC_SHA,
+            uploaded_by="alice",
+        )
+    )
     assert ok is True
     binary = asyncio.run(storage.get_binary("private", tl["id"]))
     assert binary is not None
-    assert binary["binary_b64"] == "QUJD"
+    assert binary["binary_data"] == b"ABC"
     assert binary["binary_filename"] == "prog"
     assert binary["binary_size"] == 3
+    assert binary["binary_sha256"] == _ABC_SHA
+    assert binary["binary_uploaded_by"] == "alice"
+    found = asyncio.run(storage.get("private", tl["id"]))
+    assert "review" in found["labels"]
 
 
 def test_save_binary_nonexistent_tool_returns_false(storage):
-    ok = asyncio.run(storage.save_binary("ghost-id", "alice", "QUJD", "prog", 3))
+    ok = asyncio.run(
+        storage.save_binary(
+            "ghost-id",
+            "alice",
+            "QUJD",
+            "prog",
+            3,
+            sha256=_ABC_SHA,
+            uploaded_by="alice",
+        )
+    )
     assert ok is False
 
 
@@ -285,6 +329,95 @@ def test_get_binary_returns_none_for_missing_tool(storage):
     assert asyncio.run(storage.get_binary("private", "ghost-tool")) is None
 
 
+def test_clear_binary_removes_payload_and_integrity_metadata(storage):
+    tl = asyncio.run(
+        storage.save(
+            "private", {**_TOOL, "language": "cpp", "content": ""}, owner_id="alice"
+        )
+    )
+    asyncio.run(
+        storage.save_binary(
+            tl["id"],
+            "alice",
+            "QUJD",
+            "prog",
+            3,
+            sha256=_ABC_SHA,
+            uploaded_by="alice",
+        )
+    )
+
+    assert asyncio.run(storage.clear_binary(tl["id"], "alice")) is True
+    assert asyncio.run(storage.get_binary("private", tl["id"])) is None
+    found = asyncio.run(storage.get("private", tl["id"]))
+    assert found is not None
+    assert found.get("binary_filename") is None
+    assert found.get("binary_sha256") is None
+    assert found.get("binary_uploaded_by") is None
+
+
+def test_delete_tool_removes_its_artifact_link(storage):
+    tl = asyncio.run(
+        storage.save(
+            "private", {**_TOOL, "language": "cpp", "content": ""}, owner_id="alice"
+        )
+    )
+    asyncio.run(
+        storage.save_binary(
+            tl["id"],
+            "alice",
+            b"ABC",
+            "prog",
+            3,
+            sha256=_ABC_SHA,
+            uploaded_by="alice",
+        )
+    )
+
+    assert asyncio.run(storage.delete("private", tl["id"], owner_id="alice"))
+    assert asyncio.run(storage.get_binary("private", tl["id"], "alice")) is None
+
+
+def test_copy_binary_uses_explicit_binary_path(storage):
+    source = asyncio.run(
+        storage.save(
+            "public",
+            {**_TOOL, "language": "cpp", "content": ""},
+            owner_id="alice",
+        )
+    )
+    target = asyncio.run(
+        storage.save(
+            "private",
+            {**_TOOL, "language": "cpp", "content": ""},
+            owner_id="bob",
+        )
+    )
+    asyncio.run(
+        storage.save_binary(
+            source["id"],
+            "alice",
+            "QUJD",
+            "prog",
+            3,
+            sha256=_ABC_SHA,
+            uploaded_by="alice",
+            add_review=False,
+        )
+    )
+
+    copied = asyncio.run(
+        storage.copy_binary("public", source["id"], target["id"], "bob")
+    )
+
+    assert copied is True
+    binary = asyncio.run(storage.get_binary("private", target["id"], "bob"))
+    assert binary is not None
+    assert binary["binary_data"] == b"ABC"
+    assert binary["binary_sha256"] == _ABC_SHA
+    assert binary["binary_uploaded_by"] == "alice"
+
+
 def test_binary_preserved_after_editing_only_name(storage):
     """Regresión directa del footgun de upsert descrito en el plan: editar
     solo texto (nombre) no debe resetear a NULL el binario ya subido."""
@@ -293,7 +426,17 @@ def test_binary_preserved_after_editing_only_name(storage):
             "private", {**_TOOL, "language": "cpp", "content": ""}, owner_id="alice"
         )
     )
-    asyncio.run(storage.save_binary(tl["id"], "alice", "QUJD", "prog", 3))
+    asyncio.run(
+        storage.save_binary(
+            tl["id"],
+            "alice",
+            "QUJD",
+            "prog",
+            3,
+            sha256=_ABC_SHA,
+            uploaded_by="alice",
+        )
+    )
 
     # Payload realista de una edición de solo texto: sin binary_b64 (nunca se
     # expone en las respuestas de list()/get() al cliente).
@@ -308,6 +451,8 @@ def test_binary_preserved_after_editing_only_name(storage):
 
     binary = asyncio.run(storage.get_binary("private", tl["id"]))
     assert binary is not None
-    assert binary["binary_b64"] == "QUJD"
+    assert binary["binary_data"] == b"ABC"
     assert binary["binary_filename"] == "prog"
     assert binary["binary_size"] == 3
+    assert binary["binary_sha256"] == _ABC_SHA
+    assert binary["binary_uploaded_by"] == "alice"

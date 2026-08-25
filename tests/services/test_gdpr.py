@@ -7,6 +7,7 @@ vacía, y eso es exactamente lo que pasaba: los recursos se leían de
 """
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import zipfile
@@ -307,6 +308,36 @@ async def test_export_entrega_todos_los_tipos_de_recurso(patch_gdpr_db):
                     "workflows.json", "memory.json"):
         contenido = json.loads(_zip_read(buf, fichero))
         assert contenido, f"{fichero} llegó vacío"
+
+
+async def test_export_incluye_el_artefacto_binario_de_la_tool(patch_gdpr_db):
+    from app.storage.tool_storage import ToolStorage
+
+    await _make_user("exp_tool_binary")
+    owner = await _user_id("exp_tool_binary")
+    storage = ToolStorage()
+    tool = await storage.save(
+        "private",
+        {"name": "Binaria", "language": "cpp", "content": ""},
+        owner_id=owner,
+    )
+    binary = b"portable-binary"
+    digest = hashlib.sha256(binary).hexdigest()
+    await storage.save_binary(
+        tool["id"],
+        owner,
+        binary,
+        "runner",
+        len(binary),
+        sha256=digest,
+        uploaded_by="exp_tool_binary",
+    )
+
+    buf = await export_user_data("exp_tool_binary")
+    with zipfile.ZipFile(buf) as archive:
+        assert archive.read(f"tool_artifacts/{digest}.bin") == binary
+        manifest = json.loads(archive.read("tool_artifacts/manifest.json"))
+    assert manifest[0]["sha256"] == digest
 
 
 async def test_export_no_incluye_recursos_de_otro_usuario(patch_gdpr_db):

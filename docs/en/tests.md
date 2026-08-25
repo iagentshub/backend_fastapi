@@ -59,10 +59,10 @@ python3 rtests.py -k auth
 python3 rtests.py -k "register or admin"
 
 # Run a single file
-pytest tests/api/test_routes_auth.py
+pytest tests/api/test_routes_tools.py
 
 # Run a single test
-pytest tests/api/test_routes_auth.py::test_login_ok
+pytest tests/api/test_routes_tools.py::test_save_private_tool
 ```
 
 ---
@@ -72,32 +72,31 @@ pytest tests/api/test_routes_auth.py::test_login_ok
 ```
 tests/
   conftest.py                    ← shared fixtures
-  test_auth.py                   ← auth module unit tests
   api/
-    test_routes_auth.py          ← POST /api/auth/login|logout
     test_routes_register.py      ← POST /api/auth/register
     test_routes_me.py            ← GET /api/auth/me, change-password
-    test_routes_admin.py         ← GET/DELETE /api/admin/users
     test_routes_agents.py        ← CRUD /api/agents
     test_routes_connections.py   ← CRUD /api/connections
-    test_routes_memory.py        ← CRUD /api/memory
     test_routes_skills.py        ← CRUD /api/skills
+    test_routes_tools.py         ← Tool CRUD, binaries, and versions
+    test_resource_management.py  ← activate, deactivate, and restore resources
+    admin/                       ← admin-only endpoints
   connections/
     test_base.py                 ← provider registry, FieldDef, TestResult
-    test_openai.py
-    test_anthropic.py
-    test_google.py
-    test_grok.py
-    test_qwen.py
-    test_ollama.py
   services/
-    test_chat.py                 ← provider routing, SSE, error handling
+    chat/                        ← routing, SSE, memory, and injection
+    test_tool_policy.py          ← Tool review, quarantine, and consumption
   storage/
     test_agent_storage.py
     test_connection_storage.py
     test_skill_storage.py
     test_memory_storage.py
+    test_tool_storage.py
 ```
+
+The suite grows with the product. This tree lists representative areas rather
+than a closed inventory; use `pytest --collect-only -q` to inspect the current
+checkout.
 
 ---
 

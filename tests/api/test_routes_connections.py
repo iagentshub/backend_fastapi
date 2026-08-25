@@ -1,4 +1,5 @@
 """Tests CRUD de conexiones: GET, POST, DELETE /api/connections."""
+
 from __future__ import annotations
 
 _CONN_PAYLOAD = {
@@ -18,6 +19,9 @@ def test_list_providers(admin_client):
     assert "openai" in types
     assert "grok" in types
     assert "qwen" in types
+    by_type = {provider["type"]: provider for provider in providers}
+    assert by_type["openai"]["supports_chat"] is True
+    assert by_type["ssh"]["supports_chat"] is False
 
 
 def test_create_connection(admin_client):

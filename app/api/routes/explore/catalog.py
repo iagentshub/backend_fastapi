@@ -26,6 +26,7 @@ from app.config.content_languages import (
 from app.errors import APIError
 from app.pagination.http import LINKED_HEADER, TOTAL_HEADER
 from app.services.social_catalog import _PUBLIC_VAL, PUBLICLY_AVAILABLE_SQL
+from app.services.tool_policy import assert_tool_distributable, tool_security_labels
 from app.sql import sql
 from app.storage.agent_storage import AgentStorage
 from app.storage.db import open_db
@@ -339,20 +340,29 @@ async def explore_preview(
                 ):
                     continue
                 prompt_names.append(pr.get("name", pid))
+            tool_ids = list(dict.fromkeys(str(tid) for tid in agent.get("tools", [])))
+            tool_rows = await _tools.list_by_ids(tool_ids)
+            tools_by_id: dict[str, list[dict[str, Any]]] = {}
+            for tool in tool_rows:
+                tools_by_id.setdefault(str(tool.get("id") or ""), []).append(tool)
+            shared_tools = (
+                await _shares.get_user_shared_resource_groups(username, "tool")
+                if tool_ids
+                else {}
+            )
             tool_names = []
-            for tid in agent.get("tools", []):
-                tl = await _tools.get_any(tid)
-                if not tl or not tl.get("is_active", True):
-                    continue
-                # No revelar nombres de tools privadas ajenas en la vista
-                # previa pública, aunque el agente que las usa sí sea público.
-                if tl.get("scope") != "public" and not await _shares.is_accessible(
-                    _groups,
-                    resource_type="tool",
-                    resource_id=tid,
-                    owner_id=tl.get("owner_id"),
-                    requester=username,
-                ):
+            for tid in tool_ids:
+                tl = next(
+                    (
+                        candidate
+                        for candidate in (tools_by_id.get(tid) or [])
+                        if candidate.get("scope") == "public"
+                        or candidate.get("owner_id") == username
+                        or tid in shared_tools
+                    ),
+                    None,
+                )
+                if not tl or not tl.get("is_active", True) or tool_security_labels(tl):
                     continue
                 tool_names.append(tl.get("name", tid))
             base["system_prompt"] = (agent.get("system_prompt") or "")[:600]
@@ -399,6 +409,7 @@ async def explore_preview(
                 "Recurso no encontrado o no es público",
                 extra={"resource": "tool"},
             )
+        assert_tool_distributable(tl)
         base["language"] = tl.get("language", "")
         base["binary_filename"] = tl.get("binary_filename")
         base["binary_size"] = tl.get("binary_size")

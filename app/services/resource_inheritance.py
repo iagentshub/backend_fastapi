@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List
 
+from app.errors import APIError
 from app.services.resource_stores import (
     _agents_store,
     _knowledge_store,
@@ -18,6 +19,8 @@ from app.services.resource_stores import (
     _skills_store,
     _tools_store,
 )
+from app.services.tool_policy import assert_tool_distributable
+from app.storage.db import open_db
 from app.utils.generators import generate_id
 
 # Los storages que usa _inherit_resource_ids son estos mismos: eran una segunda
@@ -31,6 +34,7 @@ _inherit_memory_store = _memory_store
 _inherit_prompts_store = _prompts_store
 
 _inherit_tools_store = _tools_store
+
 
 async def _inherit_resource_ids(
     ids: List[str], resource_type: str, target_owner_id: str
@@ -51,6 +55,9 @@ async def _inherit_resource_ids(
             item = await _inherit_knowledge_store.get(rid)
         if not item:
             continue
+        if resource_type == "tool":
+            # Defensa en profundidad para cualquier heredador actual o futuro.
+            assert_tool_distributable(item)
         if item.get("owner_id") == target_owner_id or item.get("scope") == "public":
             new_ids.append(rid)
             continue
@@ -100,9 +107,30 @@ async def _inherit_resource_ids(
                 for lbl in (clone.get("labels") or ["private"])
                 if lbl not in ("linked", "public")
             ] or ["private"]
-            saved = await _inherit_tools_store.save(
-                "private", clone, owner_id=target_owner_id
-            )
+            async with open_db() as conn:
+                async with conn.transaction(immediate=True):
+                    saved = await _inherit_tools_store.save(
+                        "private",
+                        clone,
+                        owner_id=target_owner_id,
+                        conn=conn,
+                        assume_new=True,
+                    )
+                    if item.get("language") == "cpp":
+                        copied = await _inherit_tools_store.copy_binary(
+                            str(item.get("scope") or "private"),
+                            rid,
+                            str(saved["id"]),
+                            target_owner_id,
+                            conn=conn,
+                        )
+                        if not copied:
+                            raise APIError(
+                                409,
+                                "artifact_unavailable",
+                                "El artefacto binario de la Tool no está disponible",
+                                extra={"resource": "tool", "resource_id": rid},
+                            )
         else:
             saved = await _inherit_knowledge_store.save(
                 type=item.get("type", "url"),
@@ -113,6 +141,7 @@ async def _inherit_resource_ids(
             )
         new_ids.append(saved["id"])
     return new_ids
+
 
 async def _inherit_agent_memory(
     source_agent: Dict[str, Any],
@@ -129,6 +158,7 @@ async def _inherit_agent_memory(
         await _inherit_memory_store.save(
             f"{new_agent_id}.md", content, owner_id=target_owner_id
         )
+
 
 async def _inherit_workflow_agents(
     nodes: List[Dict[str, Any]], target_owner_id: str

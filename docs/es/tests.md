@@ -59,10 +59,10 @@ python3 rtests.py -k auth
 python3 rtests.py -k "register or admin"
 
 # Ejecutar un único fichero
-pytest tests/api/test_routes_auth.py
+pytest tests/api/test_routes_tools.py
 
 # Ejecutar un único test
-pytest tests/api/test_routes_auth.py::test_login_ok
+pytest tests/api/test_routes_tools.py::test_save_private_tool
 ```
 
 ---
@@ -72,32 +72,31 @@ pytest tests/api/test_routes_auth.py::test_login_ok
 ```
 tests/
   conftest.py                    ← fixtures compartidos
-  test_auth.py                   ← tests unitarios del módulo auth
   api/
-    test_routes_auth.py          ← POST /api/auth/login|logout
     test_routes_register.py      ← POST /api/auth/register
     test_routes_me.py            ← GET /api/auth/me, change-password
-    test_routes_admin.py         ← GET/DELETE /api/admin/users
     test_routes_agents.py        ← CRUD /api/agents
     test_routes_connections.py   ← CRUD /api/connections
-    test_routes_memory.py        ← CRUD /api/memory
     test_routes_skills.py        ← CRUD /api/skills
+    test_routes_tools.py         ← CRUD, binarios y versiones de Tools
+    test_resource_management.py  ← activar, desactivar y restaurar recursos
+    admin/                       ← endpoints exclusivos de administración
   connections/
     test_base.py                 ← registro de providers, FieldDef, TestResult
-    test_openai.py
-    test_anthropic.py
-    test_google.py
-    test_grok.py
-    test_qwen.py
-    test_ollama.py
   services/
-    test_chat.py                 ← routing de proveedores, SSE, manejo de errores
+    chat/                        ← routing, SSE, memoria e inyección
+    test_tool_policy.py          ← revisión, cuarentena y consumo de Tools
   storage/
     test_agent_storage.py
     test_connection_storage.py
     test_skill_storage.py
     test_memory_storage.py
+    test_tool_storage.py
 ```
+
+La suite crece con el producto. Esta estructura enumera áreas representativas,
+no un inventario cerrado; usa `pytest --collect-only -q` para ver los casos del
+checkout actual.
 
 ---
 

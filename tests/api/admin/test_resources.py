@@ -97,6 +97,38 @@ def test_admin_set_owner_invalid_resource_type_returns_422(admin_client):
     assert r.status_code == 422
 
 
+def test_admin_reviews_and_quarantines_tools_with_existing_labels(admin_client):
+    tool = admin_client.post(
+        "/api/tools/private",
+        json={"name": "Tool revisable", "language": "python", "content": "print(1)"},
+    ).json()
+    detail = admin_client.get(f"/api/admin/tools/{tool['id']}")
+    assert detail.status_code == 200
+    assert detail.json()["content"] == "print(1)"
+    assert "binary_b64" not in detail.json()
+
+    quarantined = admin_client.put(
+        f"/api/admin/tools/{tool['id']}/security",
+        json={"state": "quarantine"},
+    )
+    assert quarantined.status_code == 200, quarantined.text
+    assert "quarantine" in quarantined.json()["labels"]
+
+    approved = admin_client.put(
+        f"/api/admin/tools/{tool['id']}/security",
+        json={"state": "approved"},
+    )
+    assert approved.status_code == 200, approved.text
+    assert "quarantine" not in approved.json()["labels"]
+    assert "review" not in approved.json()["labels"]
+
+    invalid = admin_client.put(
+        f"/api/admin/tools/{tool['id']}/security",
+        json={"state": "invented"},
+    )
+    assert invalid.status_code == 422
+
+
 def test_admin_agents_forbidden_for_standard(client, reset_rate_limiter):
     client.post(
         "/api/auth/register",
@@ -120,6 +152,9 @@ def test_admin_list_connections(admin_client):
     conns = r.json()
     assert isinstance(conns, list)
     assert len(conns) >= 1
+    assert conns[0]["supports_chat"] is True
+    assert conns[0]["is_active"] is True
+    assert conns[0]["model"] == "gpt-4o"
 
 
 def test_admin_list_connections_has_owner_username(admin_client):
@@ -238,9 +273,7 @@ def test_admin_memory_forbidden_for_standard(client, reset_rate_limiter):
 
 
 def test_admin_delete_memory(admin_client):
-    admin_client.post(
-        "/api/memory/admin-delete-me", json={"content": "some notes"}
-    )
+    admin_client.post("/api/memory/admin-delete-me", json={"content": "some notes"})
 
     memory = admin_client.get("/api/admin/memory").json()
     entry = next(m for m in memory if m["filename"] == "admin-delete-me")

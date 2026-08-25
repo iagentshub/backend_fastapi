@@ -27,6 +27,8 @@ from app.services.social_catalog import (
     _PUBLIC_VAL,
     _upsert_social,
 )
+from app.services.tool_access import assert_tools_distributable_by_ids
+from app.services.tool_policy import assert_tool_distributable
 from app.sql import sql
 from app.storage.db import open_db
 from app.utils.generators import generate_date
@@ -88,12 +90,17 @@ async def _publish_skill_cascade(
 
 
 async def _publish_tool_cascade(
-    tool_id: str, username: str, owner_ids: set[str]
+    tool_id: str,
+    username: str,
+    owner_ids: set[str],
+    *,
+    resolved_tool: Dict[str, Any] | None = None,
 ) -> None:
     tool_storage = _tools_store
-    tool = await tool_storage.get_any(tool_id)
+    tool = resolved_tool or await tool_storage.get_any(tool_id)
     if not tool or tool.get("owner_id") not in owner_ids:
         return
+    assert_tool_distributable(tool)
     labels = list(tool.get("labels") or ["private"])
     if "public" not in labels:
         labels.append("public")
@@ -286,6 +293,17 @@ async def _cascade_publish_agent(
     """
     assert_can_publish(username)
     owner_ids = {username, group_id} - {""}
+    selected_tool_ids = [
+        str(tool_id)
+        for tool_id in (agent.get("tools") or [])
+        if selected is None or f"tool:{tool_id}" in selected
+    ]
+    # Se valida todo antes de publicar la primera dependencia. Así una Tool
+    # retenida no deja skills/prompts ya publicados a mitad de una cascada.
+    resolved_tools = await assert_tools_distributable_by_ids(
+        selected_tool_ids,
+        storage=_tools_store,
+    )
     for skill_id in agent.get("skills") or []:
         if selected is None or f"skill:{skill_id}" in selected:
             await _publish_skill_cascade(skill_id, username, owner_ids)
@@ -298,20 +316,19 @@ async def _cascade_publish_agent(
     for prompt_id in agent.get("prompts") or []:
         if selected is None or f"prompt:{prompt_id}" in selected:
             await _publish_prompt_cascade(prompt_id, username, owner_ids)
-    for tool_id in agent.get("tools") or []:
-        if selected is None or f"tool:{tool_id}" in selected:
-            await _publish_tool_cascade(tool_id, username, owner_ids)
+    for tool in resolved_tools:
+        await _publish_tool_cascade(
+            str(tool["id"]), username, owner_ids, resolved_tool=tool
+        )
 
 
-async def _cascade_publish_workflow(
+async def _workflow_agents_for_cascade(
     workflow: Dict[str, Any], username: str, group_id: str = ""
-) -> None:
-    """Al publicar una orquestación, publica en cascada los agentes propios que usa
-    (y, para cada uno, sus skills/conocimiento — ver _cascade_publish_agent)."""
-    assert_can_publish(username)
+) -> list[dict[str, Any]]:
     owner_ids = {str(workflow.get("owner_id") or ""), username, group_id} - {""}
     agents_storage = _agents_store
     seen: set[str] = set()
+    agents_to_publish: list[dict[str, Any]] = []
     for node in workflow.get("definition", {}).get("nodes", []):
         agent_id = str(node.get("agent_id") or "")
         if not agent_id or agent_id in seen:
@@ -320,6 +337,39 @@ async def _cascade_publish_workflow(
         agent = await agents_storage.get(agent_id)
         if not agent or agent.get("owner_id") not in owner_ids:
             continue
+        agents_to_publish.append(agent)
+    return agents_to_publish
+
+
+async def _assert_workflow_tools_distributable(
+    workflow: Dict[str, Any], username: str, group_id: str = ""
+) -> None:
+    agents = await _workflow_agents_for_cascade(workflow, username, group_id)
+    for agent in agents:
+        await assert_tools_distributable_by_ids(
+            agent.get("tools") or [],
+            storage=_tools_store,
+        )
+
+
+async def _cascade_publish_workflow(
+    workflow: Dict[str, Any], username: str, group_id: str = ""
+) -> None:
+    """Al publicar una orquestación, publica en cascada los agentes propios que usa
+    (y, para cada uno, sus skills/conocimiento — ver _cascade_publish_agent)."""
+    assert_can_publish(username)
+    agents_to_publish = await _workflow_agents_for_cascade(workflow, username, group_id)
+
+    # Todos los agentes se validan antes de publicar el primero. Evita que un
+    # workflow deje una cascada parcial si el último contiene una Tool retenida.
+    for agent in agents_to_publish:
+        await assert_tools_distributable_by_ids(
+            agent.get("tools") or [],
+            storage=_tools_store,
+        )
+
+    for agent in agents_to_publish:
+        agent_id = str(agent["id"])
         async with open_db() as conn:
             linked_row = await conn.fetchone(
                 sql("queries/social:linked_to_id"),
@@ -330,7 +380,7 @@ async def _cascade_publish_workflow(
         labels = list(agent.get("labels") or ["private"])
         if "public" not in labels:
             labels.append("public")
-            agent = await agents_storage.save(
+            agent = await _agents_store.save(
                 {**agent, "labels": labels},
                 agent.get("scope", "private"),
                 owner_id=agent["owner_id"],

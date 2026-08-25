@@ -5,9 +5,14 @@
 
 <br>
 
-# API Reference
+# API Guide
 
 All endpoints require authentication via HTTP-only cookie (`ga_token`) unless marked **—**.
+
+This guide describes the most important usage contracts; it does not duplicate
+all 297 routes in the executable contract. The canonical list is maintained in
+`tests/api/contrato_rutas.txt`. In development (`GAIA_DEV_MODE=true`), OpenAPI
+is also available at `/openapi.json` and the interactive UI at `/docs`.
 
 ## Pagination
 
@@ -107,11 +112,13 @@ All admin endpoints require the `admin` role.
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/api/admin/explore` | Unified inventory of users, groups, agents, connections, knowledge and orchestrations |
-| `GET` | `/api/admin/resources/{type}/{id}/graph` | Relationship graph for an object, loaded on demand |
+| `GET` | `/api/admin/resources/{resource_type}/{resource_id}/relations` | Object relationships used by the client to build its graph |
 
-`/api/admin/explore` accepts repeated `type`, `q`, `owner`, `limit`, and `offset` parameters. Every item includes the `resource_type` discriminator; the response also returns `total` and per-type counts. Valid types are `user`, `group`, `agent`, `connection`, `knowledge`, and `workflow`.
+`/api/admin/explore` accepts repeated `type`, `q`, `owner`, `limit`, and `offset` parameters. Every item includes the `resource_type` discriminator; the response also returns `total` and per-type counts. Valid types are `user`, `group`, `agent`, `connection`, `knowledge`, `workflow`, `llm_orchestration`, `skill`, `prompt`, `tool`, and `memory`.
 
-The graph response contains `root_id`, `nodes`, and `edges`, covering ownership, group membership, sharing, connection/knowledge usage, and orchestration participation.
+The backend returns typed relationships; Flutter builds `nodes` and `edges`
+from them. There is no `/graph` endpoint: keeping graph assembly in the client
+avoids a different representation for every interface.
 
 ### Users
 
@@ -240,6 +247,50 @@ The category must belong to the closed catalog (`ai`, `messaging`, `notes`, `pro
 
 ---
 
+## Tools
+
+A Tool combines instructions for the agent with an optional implementation.
+Current API values are `python`, `shell`, and `cpp`; the effective catalog,
+extensions, and native targets are exposed by
+`GET /api/settings/platform/public` under `tool_runtimes`.
+
+| Method | Endpoint | Description |
+|---|---|---|
+| `GET` | `/api/tools` | Paginated list of accessible Tools |
+| `GET` | `/api/tools/{scope}/{tool_id}` | Metadata and textual implementation, never the binary BLOB |
+| `POST` | `/api/tools/{scope}` | Create or update metadata and record a version |
+| `DELETE` | `/api/tools/{scope}/{tool_id}` | Delete an owned Tool |
+| `POST` | `/api/tools/{scope}/{tool_id}/activate` | Activate a Tool |
+| `POST` | `/api/tools/{scope}/{tool_id}/deactivate` | Deactivate a Tool without removing its links |
+| `POST` | `/api/tools/{scope}/{tool_id}/binary` | Upload a `cpp` Tool artifact as multipart |
+| `GET` | `/api/tools/{scope}/{tool_id}/binary` | Download the artifact with `Content-Length` and SHA-256 `ETag` |
+| `POST` | `/api/tools/{scope}/{source_id}/link` | Link an approved public Tool |
+| `POST` | `/api/tools/private/{tool_id}/sync` | Synchronize a linked copy |
+| `PUT` | `/api/tools/{scope}/{tool_id}/visibility` | Publish to or remove from the social catalog |
+
+Python and Shell store their script in `content`. `cpp` is a historical wire
+value: the server stores a compiled native executable with `target_os`,
+`target_arch`, filename, size, uploader, and SHA-256. C++ source may be retained,
+but it does not replace the artifact. The request limit is the single
+Admin-controlled `max_request_bytes`; `0` means unlimited.
+
+Every new or modified implementation receives the `review` label. Admin may
+move it to `approved`, back to `review`, or to `quarantine` using the existing
+labels. A Tool under review cannot be published, shared, inherited, or consumed
+by third parties; a quarantined Tool cannot be consumed by anyone. A disabled
+Tool keeps its links but is not injected or consumed.
+
+Tool versions use the common
+`/api/resources/tool/{resource_id}/versions` routes. Artifacts are retained by
+content, and a restore changes metadata, binary link, and history in one
+transaction.
+
+The backend **does not execute Tools**. It serves instructions, scripts, and
+artifacts for authorized clients. Flutter checks compatibility and SHA-256, but
+automatic local execution is not enabled yet.
+
+---
+
 ## Memory
 
 | Method | Endpoint | Description |
@@ -284,7 +335,7 @@ Known widget IDs: `summary`, `token-usage`, `activity`, `conn-status`, `recent`.
 
 ## Resource Sharing
 
-Allows sharing private resources (agents, skills, connections, knowledge) with a group. The resource is not moved or copied — access is granted to all members of the destination group. The `owner_id` of the resource does not change.
+Allows sharing private resources with a group. The resource is not moved or copied — access is granted to all members of the destination group. The `owner_id` of the resource does not change.
 
 Only the direct owner of the resource (or an admin) can share it.
 
@@ -294,11 +345,12 @@ Only the direct owner of the resource (or an admin) can share it.
 | `POST` | `/api/sharing/{type}/{resource_id}` | Share a resource with a group (`body: {"group_id": "..."}`) |
 | `DELETE` | `/api/sharing/{type}/{resource_id}?group_id={group_id}` | Revoke a group's access to a resource |
 
-Valid values for `{type}`: `agent`, `skill`, `connection`, `knowledge`.
+Valid values for `{type}`: `agent`, `skill`, `connection`, `knowledge`,
+`knowledge_pack`, `workflow`, `llm_orchestration`, `prompt`, and `tool`.
 
 Resources shared with the user appear in the standard listing endpoints (`/api/skills`, `/api/agents`, etc.) with `_shared: true`. Recipients can use them but cannot edit or redistribute them.
 
-Sharing an agent cascades to its private skills, prompts, and knowledge — the `POST` returns them in `cascaded` — and **revoking it revokes them too**: the `DELETE` responds with `uncascaded` (no longer shared) and `kept`. Anything the user shared on its own is kept, as is anything another shared agent or orchestration in the same group still needs: removing it would leave that resource without a dependency. Orchestrations behave the same way with the agents they brought in.
+Sharing an agent cascades to its private skills, prompts, Tools, and Knowledge — the `POST` returns them in `cascaded` — and **revoking it revokes them too**: the `DELETE` responds with `uncascaded` (no longer shared) and `kept`. Anything the user shared on its own is kept, as is anything another shared agent or orchestration in the same group still needs: removing it would leave that resource without a dependency. Orchestrations behave the same way with the agents they brought in.
 
 ---
 
