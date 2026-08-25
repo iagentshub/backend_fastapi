@@ -67,6 +67,12 @@ async def me(
     if user_row:
         payload["email"] = user_row.get("email")
         payload["is_email_public"] = bool(user_row.get("is_email_public", 0))
+        # Solo el booleano, nunca la columna: `_USER_COLS` excluye `avatar` a
+        # propósito porque son megabytes en base64. El cliente lo necesita para
+        # saber si ofrecer «quitar la foto» o solo la inicial.
+        async with open_db() as conn:
+            row = await conn.fetchone(sql("queries/login:has_avatar"), (user_id,))
+        payload["has_avatar"] = bool(row[0]) if row else False
     if role == "admin" and WEBMAIL_URL:
         payload["webmail_url"] = WEBMAIL_URL
     if group_name is not None:
@@ -174,3 +180,19 @@ async def upload_avatar(
 
     public_username = user["username"] if user else ""
     return {"ok": True, "avatar_url": f"/api/users/{public_username}/avatar"}
+
+
+@router.delete("/me/avatar")
+async def delete_avatar(
+    username: str = Depends(require_auth),
+) -> dict[str, Any]:
+    """Quita la foto y deja la inicial.
+
+    Sin fila de avatar, `GET /api/users/{username}/avatar` ya devuelve 204 y el
+    cliente pinta el fallback: no hay nada más que limpiar. Hasta ahora la única
+    forma de deshacerse de una foto era subir otra.
+    """
+    async with open_db() as conn:
+        await conn.execute(sql("queries/login:clear_avatar"), (username,))
+        await conn.commit()
+    return {"ok": True}

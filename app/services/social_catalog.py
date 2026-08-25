@@ -39,13 +39,22 @@ _ACTIVE_TABLES = {
     "knowledge": "knowledge_items",
     "knowledge_pack": "knowledge_packs",
 }
+# `is_active = 0` y no `NOT is_active`: la columna se declara `@BOOL@`, que es
+# INTEGER en SQLite y SMALLINT en PostgreSQL. SQLite acepta `NOT <entero>` sin
+# rechistar; PostgreSQL responde «argument of NOT must be type boolean, not type
+# smallint» y la petición muere con un 500. Pasó en el perfil público: la
+# pantalla pide recursos, perfil y seguimiento a la vez, así que se caía entera.
+#
+# No lo vio ninguna guarda porque este SQL se construye aquí, en Python, y
+# `test_sql_contra_motores.py` solo prepara lo que vive en `app/sql/` —y aun eso
+# se salta PostgreSQL sin `GAIA_TEST_PG_DSN`.
 PUBLICLY_AVAILABLE_SQL = (
     "("
     + " AND ".join(
         f"(resource_social.resource_type != '{kind}' OR NOT EXISTS ("
     f"SELECT 1 FROM\n{table} inactive_resource "
         "WHERE inactive_resource.id = resource_social.resource_id "
-        "AND NOT inactive_resource.is_active))"
+        "AND inactive_resource.is_active = 0))"
         for kind, table in _ACTIVE_TABLES.items()
     )
     + ")"

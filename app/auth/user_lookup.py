@@ -41,9 +41,15 @@ _USER_COLS = (
 async def _get_user_by(field: str, value: str) -> Optional[dict]:
     if field not in _ALLOWED_USER_FIELDS:
         raise ValueError(f"Campo no permitido para búsqueda de usuario: {field!r}")
+    # `username` e `email` se comparan sin distinguir mayúsculas: los dos llegan
+    # tecleados —de la URL de un perfil, del formulario de acceso— y la columna
+    # guarda siempre la forma normalizada. Normalizar solo el parámetro dejaba
+    # fuera las filas que un `UPDATE` a mano hubiera dejado con mayúsculas.
+    # `id` no: es un hexadecimal que genera el servidor y su índice sí se usa.
+    comparacion = f"{field} = ?" if field == "id" else f"LOWER({field}) = LOWER(?)"
     async with open_db() as conn:
         row = await conn.fetchone(
-            f"SELECT {_USER_COLS} FROM users WHERE {field} = ?", (value,)
+            f"SELECT {_USER_COLS} FROM users WHERE {comparacion}", (value,)
         )
         return dict(row) if row else None
 
@@ -64,7 +70,8 @@ async def get_user_by_identity(identity: str) -> Optional[dict]:
     """Resolve an internal user id or a public username."""
     async with open_db() as conn:
         row = await conn.fetchone(
-            f"SELECT {_USER_COLS} FROM users WHERE id = ? OR username = ?",
+            f"SELECT {_USER_COLS} FROM users "
+            f"WHERE id = ? OR LOWER(username) = LOWER(?)",
             (identity, normalize_username(identity)),
         )
         return dict(row) if row else None

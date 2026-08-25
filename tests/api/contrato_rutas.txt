@@ -16,6 +16,7 @@ DELETE /api/admin/tools/{item_id}
 DELETE /api/admin/users/{username}
 DELETE /api/admin/workflows/{workflow_id}
 DELETE /api/agents/{agent_id}
+DELETE /api/auth/me/avatar
 DELETE /api/auth/sessions
 DELETE /api/auth/sessions/{session_id}
 DELETE /api/auth/tokens/{token_id}

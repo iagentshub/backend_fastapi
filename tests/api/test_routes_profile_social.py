@@ -141,6 +141,114 @@ def test_avatar_subida_y_lectura(client):
     assert r2.headers["content-type"] == "image/png"
 
 
+def test_el_perfil_publico_no_distingue_mayusculas(client):
+    """El username llega en la URL del perfil, donde cualquiera lo teclea.
+
+    Las tres peticiones que hace esa pantalla lo resolvían de forma distinta:
+    `/api/users/{u}` normalizaba en Python y encontraba al usuario, mientras que
+    `/resources` y `/follow-status` comparaban el valor crudo contra la columna
+    y devolvían 404. La pantalla espera a las tres, así que un perfil que existe
+    se caía entero — y la primera, además, respondía 200 con el perfil vacío,
+    porque su consulta interna tampoco normalizaba.
+    """
+    _register_and_login(client, "mayusculas")
+
+    for escrito in ("mayusculas", "Mayusculas", "MAYUSCULAS"):
+        perfil = client.get(f"/api/users/{escrito}")
+        assert perfil.status_code == 200, f"{escrito}: {perfil.text}"
+        # Los campos salen de la consulta interna: sin LOWER devolvía {} y el
+        # perfil llegaba sin fecha de alta ni contadores, y sin ningún error.
+        cuerpo = perfil.json()
+        assert cuerpo["joined_at"], f"{escrito} devolvió el perfil vacío"
+        assert cuerpo["followers_count"] == 0
+
+        recursos = client.get(f"/api/users/{escrito}/resources?type=all")
+        assert recursos.status_code == 200, f"{escrito}: {recursos.text}"
+
+        seguimiento = client.get(f"/api/users/{escrito}/follow-status")
+        assert seguimiento.status_code == 200, f"{escrito}: {seguimiento.text}"
+
+
+def test_el_avatar_tampoco_distingue_mayusculas(client):
+    _register_and_login(client, "avatarmayus")
+    png_bytes = (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+        b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00"
+        b"\x00\x01\x01\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+    client.post(
+        "/api/auth/me/avatar",
+        files={"avatar": ("test.png", io.BytesIO(png_bytes), "image/png")},
+    )
+    assert client.get("/api/users/AvatarMayus/avatar").status_code == 200
+
+
+def test_seguir_a_alguien_escrito_con_mayusculas(client):
+    _register_and_login(client, "seguido")
+    _register_and_login(client, "seguidor")
+
+    assert client.post("/api/users/Seguido/follow").status_code in (200, 201)
+    estado = client.get("/api/users/SEGUIDO/follow-status").json()
+    assert estado["following"] is True
+    assert client.delete("/api/users/Seguido/follow").status_code == 200
+
+
+def test_me_dice_si_hay_foto_sin_traer_la_columna(client):
+    """`has_avatar` es lo que decide si el cliente ofrece quitar la foto."""
+    _register_and_login(client, "avatarflag")
+    assert client.get("/api/auth/me").json()["has_avatar"] is False
+
+    png_bytes = (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+        b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00"
+        b"\x00\x01\x01\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+    client.post(
+        "/api/auth/me/avatar",
+        files={"avatar": ("test.png", io.BytesIO(png_bytes), "image/png")},
+    )
+    payload = client.get("/api/auth/me").json()
+    assert payload["has_avatar"] is True
+    # La columna pesa megabytes en base64 y no tiene que viajar en /me.
+    assert "avatar" not in payload
+
+    client.delete("/api/auth/me/avatar")
+    assert client.get("/api/auth/me").json()["has_avatar"] is False
+
+
+def test_avatar_se_puede_quitar_y_vuelve_el_204(client):
+    """Hasta que existió el DELETE, la única forma de quitar una foto era
+    subir otra."""
+    _register_and_login(client, "avatarborra")
+    png_bytes = (
+        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+        b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00"
+        b"\x00\x01\x01\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82"
+    )
+    client.post(
+        "/api/auth/me/avatar",
+        files={"avatar": ("test.png", io.BytesIO(png_bytes), "image/png")},
+    )
+    assert client.get("/api/users/avatarborra/avatar").status_code == 200
+
+    r = client.delete("/api/auth/me/avatar")
+    assert r.status_code == 200, r.text
+    assert r.json()["ok"] is True
+
+    # 204 es lo que el cliente lee como «no hay foto» para pintar la inicial.
+    assert client.get("/api/users/avatarborra/avatar").status_code == 204
+
+
+def test_avatar_quitarlo_sin_tenerlo_no_falla(client):
+    _register_and_login(client, "avatarsinfoto")
+    assert client.delete("/api/auth/me/avatar").status_code == 200
+
+
+def test_avatar_no_se_quita_sin_sesion(client):
+    client.cookies.clear()
+    assert client.delete("/api/auth/me/avatar").status_code == 401
+
+
 def test_avatar_formato_no_permitido(client):
     _register_and_login(client, "badavataruser")
     r = client.post(

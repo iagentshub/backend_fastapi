@@ -8,7 +8,7 @@
 -- name: public_profile
 SELECT id, CASE WHEN avatar IS NULL OR avatar = '' THEN 0 ELSE 1 END, bio, languages, email, is_email_public, github, cv, created_at
 FROM users
-WHERE username = ? AND role <> 'guest';
+WHERE LOWER(username) = LOWER(?) AND role <> 'guest';
 
 -- name: count_followers
 SELECT COUNT(*)
@@ -59,4 +59,4 @@ LIMIT ? OFFSET ?;
 -- name: avatar_of
 SELECT avatar
 FROM users
-WHERE username=? AND role <> 'guest';
+WHERE LOWER(username) = LOWER(?) AND role <> 'guest';

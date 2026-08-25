@@ -157,6 +157,82 @@ def test_todas_las_consultas_preparan_en_postgres():
     assert rotas == [], "Consultas que PostgreSQL no acepta: " + "; ".join(rotas)
 
 
+# Fragmentos de SQL que se arman en Python y por tanto no están en `app/sql/`,
+# así que el catálogo de arriba no los ve. Cada uno va con el envoltorio mínimo
+# que lo convierte en una consulta preparable.
+#
+# `PUBLICLY_AVAILABLE_SQL` entró aquí después de tumbar el perfil público con un
+# 500 en PostgreSQL: llevaba `NOT inactive_resource.is_active` y esa columna se
+# declara `@BOOL@`, que es INTEGER en SQLite —que lo acepta— y SMALLINT en
+# PostgreSQL, que responde «argument of NOT must be type boolean». Un fragmento
+# que solo vive en Python no lo prepara nadie, y PostgreSQL solo corre aquí
+# cuando hay DSN: dos capas de ceguera sobre la misma línea.
+def _fragmentos_construidos_en_python() -> list[tuple[str, str]]:
+    from app.services.social_catalog import PUBLICLY_AVAILABLE_SQL
+
+    return [
+        (
+            "social_catalog:PUBLICLY_AVAILABLE_SQL",
+            f"SELECT 1 FROM resource_social WHERE {PUBLICLY_AVAILABLE_SQL}",
+        ),
+    ]
+
+
+def test_el_sql_armado_en_python_prepara_en_sqlite(tmp_path):
+    conn = sqlite3.connect(tmp_path / "fragmentos.db")
+    rotas: list[str] = []
+    try:
+        conn.executescript(schema_for("sqlite"))
+        for identificador, sentencia in _fragmentos_construidos_en_python():
+            try:
+                conn.execute(f"EXPLAIN {sentencia}", [None] * sentencia.count("?"))
+            except sqlite3.Error as exc:
+                rotas.append(f"{identificador}: {exc}")
+    finally:
+        conn.close()
+
+    assert rotas == [], "Fragmentos que SQLite no acepta: " + "; ".join(rotas)
+
+
+@pytest.mark.skipif(
+    not DSN,
+    reason="define GAIA_TEST_PG_DSN para preparar los fragmentos en PostgreSQL",
+)
+def test_el_sql_armado_en_python_prepara_en_postgres():
+    import asyncio
+
+    import asyncpg
+
+    from app.storage.db import AsyncConn
+    from app.storage.migrations.postgres import run_postgres_migrations
+
+    traducir = AsyncConn(None, True)._pg_sql
+
+    async def _correr() -> list[str]:
+        conn = await asyncpg.connect(DSN)
+        rotas: list[str] = []
+        schema = f"fragmentos_{uuid4().hex}"
+        try:
+            await conn.execute(f'CREATE SCHEMA "{schema}"')
+            await conn.execute(f'SET search_path TO "{schema}"')
+            for sentencia in schema_for("pg").split(";"):
+                if sentencia.strip():
+                    await conn.execute(sentencia)
+            await run_postgres_migrations(conn)
+            for identificador, sentencia in _fragmentos_construidos_en_python():
+                try:
+                    await conn.prepare(traducir(sentencia))
+                except asyncpg.PostgresError as exc:
+                    rotas.append(f"{identificador}: {exc}")
+        finally:
+            await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+            await conn.close()
+        return rotas
+
+    rotas = asyncio.run(_correr())
+    assert rotas == [], "Fragmentos que PostgreSQL no acepta: " + "; ".join(rotas)
+
+
 @pytest.mark.skipif(
     not DSN, reason="define GAIA_TEST_PG_DSN para probar la migración PostgreSQL"
 )
