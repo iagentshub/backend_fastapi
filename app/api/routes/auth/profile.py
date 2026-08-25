@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from fastapi import APIRouter, Depends, Request
@@ -19,11 +20,33 @@ from app.auth.auth import (
 )
 from app.config.content_languages import CONTENT_LANGUAGE_SET
 from app.errors import APIError
+from app.middleware.ratelimit import RateLimiter, principal_key
 from app.sql import sql
+from app.storage import avatars
 from app.storage.db import open_db
 from app.utils import flog
 
 router = APIRouter()
+
+# Una imagen entra entera en memoria para comprobar su tipo y guardarla. El
+# cliente ya la comprime a 512 px antes de enviarla, pero un `curl` no pasa por
+# ahí, y `max_request_bytes` vale 0 —sin límite— mientras el administrador no
+# diga otra cosa: sin freno, subir fotos es un grifo abierto contra la memoria
+# del worker y contra la base.
+#
+# Es el mismo par que ya protege la transferencia de binarios de las tools
+# (`app/api/routes/tools.py`): cuota por principal con techo por IP, y una sola
+# imagen procesándose a la vez por worker —las demás esperan sin crear otra
+# copia en memoria—.
+_avatar_slot = asyncio.Semaphore(1)
+_avatar_limiter = RateLimiter(
+    calls=20,
+    window=300,
+    key_func=principal_key,
+    shared=True,
+    name="avatar-upload",
+    ip_calls=60,
+)
 
 
 class ProfileBody(BaseModel):
@@ -67,12 +90,13 @@ async def me(
     if user_row:
         payload["email"] = user_row.get("email")
         payload["is_email_public"] = bool(user_row.get("is_email_public", 0))
-        # Solo el booleano, nunca la columna: `_USER_COLS` excluye `avatar` a
-        # propósito porque son megabytes en base64. El cliente lo necesita para
-        # saber si ofrecer «quitar la foto» o solo la inicial.
-        async with open_db() as conn:
-            row = await conn.fetchone(sql("queries/login:has_avatar"), (user_id,))
-        payload["has_avatar"] = bool(row[0]) if row else False
+        # La misma convención que el perfil público: la URL hecha, o `None` si
+        # no hay foto. El cliente no tiene que construirla ni recibir un
+        # booleano aparte que dijera lo mismo a medias — y el checksum que lleva
+        # dentro es lo que hace que la caché del navegador se entere del cambio.
+        payload["avatar_url"] = avatars.public_url(
+            username, await avatars.checksum_by_owner(user_id)
+        )
     if role == "admin" and WEBMAIL_URL:
         payload["webmail_url"] = WEBMAIL_URL
     if group_name is not None:
@@ -120,8 +144,8 @@ async def update_profile(
 async def upload_avatar(
     request: Request,
     username: str = Depends(require_auth),
+    _rl: None = Depends(_avatar_limiter),  # noqa: B008
 ) -> dict[str, Any]:
-    import base64
     from pathlib import Path as _Path
 
     from fastapi import UploadFile
@@ -151,23 +175,21 @@ async def upload_avatar(
         # igual. El 10 MB propio que había en esta línea era el tercero de tres
         # límites distintos para la misma subida, y su mensaje mentía desde que
         # el middleware cortaba en 2.
-        data = await file.read()
-        from app.utils.images import detect_avatar_mime
+        #
+        # El semáforo empieza aquí, antes de leer: es lo que evita que veinte
+        # subidas simultáneas tengan veinte imágenes en memoria a la vez.
+        async with _avatar_slot:
+            data = await file.read()
+            from app.utils.images import detect_avatar_mime
 
-        if detect_avatar_mime(data) is None:
-            raise APIError(
-                400,
-                "avatar_format_not_allowed",
-                "El contenido no es una imagen JPG, PNG o WebP válida.",
-            )
-
-        encoded = base64.b64encode(data).decode("ascii")
-        async with open_db() as conn:
-            await conn.execute(
-                sql("queries/login:update_avatar"),
-                (encoded, username),
-            )
-            await conn.commit()
+            mime = detect_avatar_mime(data)
+            if mime is None:
+                raise APIError(
+                    400,
+                    "avatar_format_not_allowed",
+                    "El contenido no es una imagen JPG, PNG o WebP válida.",
+                )
+            checksum = await avatars.save(username, data, mime)
         user = await get_user_by_id(username)
     except APIError:
         raise
@@ -179,7 +201,18 @@ async def upload_avatar(
         raise APIError(500, "internal_error", "Error interno del servidor.") from exc
 
     public_username = user["username"] if user else ""
-    return {"ok": True, "avatar_url": f"/api/users/{public_username}/avatar"}
+    flog.audit(
+        "avatar.updated",
+        resource_type="user",
+        resource_id=username,
+        details={"size_bytes": len(data), "mime": mime},
+        summary=f"{public_username} actualizó su foto de perfil",
+        username=username,
+    )
+    return {
+        "ok": True,
+        "avatar_url": avatars.public_url(public_username, checksum),
+    }
 
 
 @router.delete("/me/avatar")
@@ -188,11 +221,20 @@ async def delete_avatar(
 ) -> dict[str, Any]:
     """Quita la foto y deja la inicial.
 
-    Sin fila de avatar, `GET /api/users/{username}/avatar` ya devuelve 204 y el
-    cliente pinta el fallback: no hay nada más que limpiar. Hasta ahora la única
-    forma de deshacerse de una foto era subir otra.
+    Sin fila en `user_avatars`, `GET /api/users/{username}/avatar` responde 204
+    y el cliente pinta el fallback: no hay nada más que limpiar. Hasta que
+    existió esta ruta, la única forma de deshacerse de una foto era subir otra.
     """
-    async with open_db() as conn:
-        await conn.execute(sql("queries/login:clear_avatar"), (username,))
-        await conn.commit()
+    tenia = await avatars.checksum_by_owner(username) is not None
+    await avatars.delete(username)
+    if tenia:
+        # Se audita porque destruye un dato personal y no hay copia: el fichero
+        # original no se guarda en ninguna parte.
+        flog.audit(
+            "avatar.deleted",
+            resource_type="user",
+            resource_id=username,
+            summary="Foto de perfil eliminada",
+            username=username,
+        )
     return {"ok": True}

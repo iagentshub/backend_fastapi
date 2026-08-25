@@ -67,10 +67,15 @@ WHERE id = ? OR username = ?;
 -- name: list_users
 -- Sin los invitados: son usuarios efímeros que se borran solos, y en el panel
 -- de administración serían ruido que aparece y desaparece entre dos recargas.
-SELECT *
-FROM users
-WHERE role <> 'guest'
-ORDER BY created_at ASC;
+--
+-- El `SELECT *` fue peligroso mientras la foto era una columna de `users`: el
+-- panel se traía el base64 de **todos** los usuarios en cada carga. Desde que
+-- vive en `user_avatars` solo viaja su checksum, que es lo que arma la URL.
+SELECT u.*, a.checksum AS avatar_checksum
+FROM users u
+LEFT JOIN user_avatars a ON a.owner_id = u.id
+WHERE u.role <> 'guest'
+ORDER BY u.created_at ASC;
 
 -- name: set_password_by_username
 UPDATE users

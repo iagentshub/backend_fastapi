@@ -8,7 +8,6 @@ from urllib.parse import unquote
 
 import pytest
 
-
 ROOT = Path(__file__).resolve().parents[1]
 DOCS = ROOT / "docs"
 MARKDOWN_LINK = re.compile(r"\[[^\]]+\]\(([^)]+)\)")

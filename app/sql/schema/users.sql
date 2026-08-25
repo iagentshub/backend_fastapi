@@ -20,7 +20,6 @@ CREATE TABLE IF NOT EXISTS users (
     deletion_requested_at TEXT,
     deletion_token        TEXT,
     stripe_customer_id    TEXT,
-    avatar                TEXT,
     bio                   TEXT,
     languages             TEXT NOT NULL DEFAULT '[]',
     is_email_public       @BOOL@ NOT NULL DEFAULT 0,

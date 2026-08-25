@@ -199,3 +199,7 @@ WHERE id = ?;
 SELECT username
 FROM users
 WHERE deletion_requested_at IS NOT NULL AND deletion_requested_at <= ?;
+
+-- name: delete_user_avatar
+DELETE FROM user_avatars
+WHERE owner_id = ?;

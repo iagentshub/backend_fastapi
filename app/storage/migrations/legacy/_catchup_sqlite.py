@@ -242,7 +242,10 @@ async def _migrate_sqlite(conn: Any) -> None:
     cur = await conn.execute("PRAGMA table_info(users)")
     user_cols = {row[1] for row in await cur.fetchall()}
     for col, definition in [
-        ("avatar", "TEXT"),
+        # `avatar` salió de aquí al mudarse la foto a `user_avatars` (migración
+        # 39). Este paso es `repeatable=True` y corre en cada arranque: dejarlo
+        # significaba recrear la columna justo después de que la 39 la
+        # eliminara, en bucle y sin que nada fallara.
         ("bio", "TEXT"),
         ("languages", "TEXT NOT NULL DEFAULT '[]'"),
         ("is_email_public", "INTEGER NOT NULL DEFAULT 0"),

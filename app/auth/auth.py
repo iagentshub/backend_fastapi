@@ -285,11 +285,18 @@ async def get_user_role(username: str) -> str:
 async def list_users() -> list:
     async with open_db() as conn:
         rows = await conn.fetchall(sql("queries/auth:list_users"))
+        from app.storage import avatars
+
         result = []
         for row in rows:
             d = dict(row)
             d.pop("password_hash", None)
             d.pop("provider_sub", None)
+            # El checksum llega del JOIN y aquí se convierte en la URL, que es
+            # lo que el cliente sabe pintar. El hash suelto no le dice nada.
+            d["avatar_url"] = avatars.public_url(
+                d.get("username", ""), d.pop("avatar_checksum", None)
+            )
             result.append(d)
         return result
 

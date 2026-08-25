@@ -127,7 +127,10 @@ async def _migrate_pg(conn: Any) -> None:
     await conn.execute("DROP TABLE IF EXISTS resource_groups CASCADE")
     # 11. Social profile fields + follow + stars
     for col, definition in [
-        ("avatar", "TEXT"),
+        # `avatar` salió de aquí al mudarse la foto a `user_avatars` (migración
+        # 39). Este paso es `repeatable=True` y corre en cada arranque: dejarlo
+        # significaba recrear la columna justo después de que la 39 la
+        # eliminara, en bucle y sin que nada fallara.
         ("bio", "TEXT"),
         ("languages", "TEXT NOT NULL DEFAULT '[]'"),
         ("is_email_public", "SMALLINT NOT NULL DEFAULT 0"),

@@ -170,6 +170,23 @@ async def export_user_data(username: str) -> io.BytesIO:
                     json.dumps([dict(r) for r in rows], ensure_ascii=False, indent=2),
                 )
 
+            avatar_row = await conn.fetchone(
+                sql("queries/gdpr_export:user_avatar"), (user_id,)
+            )
+            if avatar_row is not None:
+                avatar = dict(avatar_row)
+                contenido = bytes(avatar.pop("content"))
+                extension = {
+                    "image/jpeg": "jpg",
+                    "image/png": "png",
+                    "image/webp": "webp",
+                }.get(avatar["mime"], "bin")
+                zf.writestr(f"avatar/avatar.{extension}", contenido)
+                zf.writestr(
+                    "avatar/manifest.json",
+                    json.dumps(avatar, ensure_ascii=False, indent=2),
+                )
+
             artifact_rows = await conn.fetchall(
                 sql("queries/gdpr_export:tool_artifacts"), (user_id,)
             )

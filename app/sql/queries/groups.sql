@@ -119,9 +119,13 @@ SET role = ?
 WHERE group_id = ? AND username = ?;
 
 -- name: list_members
-SELECT u.username, wm.role, wm.permissions, wm.joined_at, u.display_name
+-- El checksum del avatar, no la imagen: con él se arma la URL versionada y la
+-- lista no arrastra un fichero por miembro.
+SELECT u.username, wm.role, wm.permissions, wm.joined_at, u.display_name,
+       a.checksum
 FROM group_members wm
 JOIN users u ON u.id = wm.username
+LEFT JOIN user_avatars a ON a.owner_id = u.id
 WHERE wm.group_id = ?
 ORDER BY wm.joined_at ASC;
 

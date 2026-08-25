@@ -10,6 +10,7 @@ import json
 from typing import Any, Callable, Dict, List, Optional
 
 from app.sql import sql
+from app.storage import avatars
 from app.storage.db import IS_PG, open_db
 from app.utils import now_iso as _now
 from app.utils.generators import generate_id
@@ -234,6 +235,9 @@ class GroupStorage:
                     item["permissions"] = json.loads(item.get("permissions") or "{}")
                 except (TypeError, ValueError):
                     item["permissions"] = {}
+                item["avatar_url"] = avatars.public_url(
+                    item.get("username", ""), item.pop("checksum", None)
+                )
                 result.append(item)
             return result
 

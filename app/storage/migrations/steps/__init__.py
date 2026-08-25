@@ -23,6 +23,10 @@ from app.storage.migrations.legacy import (
     _migrate_users_json_sqlite,
 )
 from app.storage.migrations.registry import MigrationPair
+from app.storage.migrations.steps.avatars import (
+    _user_avatars_pg,
+    _user_avatars_sqlite,
+)
 from app.storage.migrations.steps.knowledge import (
     _knowledge_file_metadata_pg,
     _knowledge_file_metadata_sqlite,
@@ -140,6 +144,16 @@ MIGRATION_PAIRS: tuple[MigrationPair, ...] = (
     MigrationPair(36, "knowledge_truncation_metadata", _knowledge_truncation_metadata_sqlite, _knowledge_truncation_metadata_pg),
     MigrationPair(37, "social_iso_dates", _social_iso_dates_sqlite, _social_iso_dates_pg),
     MigrationPair(38, "tool_artifacts", _tool_artifacts_sqlite, _tool_artifacts_pg),
+    MigrationPair(39, "user_avatars", _user_avatars_sqlite, _user_avatars_pg),
+    # La 39 otra vez, y a propósito. El paso es idempotente —comprueba si la
+    # columna existe, trasvasa lo que quede y la dropea— y hubo un momento en el
+    # que el catch-up legacy, que es `repeatable=True` y corre en cada arranque,
+    # volvía a añadir `users.avatar` justo después de que la 39 la eliminara.
+    # Esa lista ya no la trae, pero la 39 quedó marcada como aplicada en las
+    # bases que pasaron por ahí y no vuelve a ejecutarse sola: sin este paso se
+    # quedan con una columna vacía para siempre. En una instalación donde la 39
+    # hizo su trabajo, no encuentra columna y no hace nada.
+    MigrationPair(40, "user_avatars_drop_legacy_column", _user_avatars_sqlite, _user_avatars_pg),
 )
 
 __all__ = ["MIGRATION_PAIRS"]

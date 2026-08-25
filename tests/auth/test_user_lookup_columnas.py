@@ -4,6 +4,10 @@
 avatar en base64 (hasta 13,3 MB) en cada petición autenticada. El riesgo de una
 lista escrita a mano es que una columna nueva no se añada aquí y desaparezca en
 silencio de todas las respuestas: este test la caza.
+
+El avatar ya no está en `users` —se mudó a `user_avatars`, en bytes— así que la
+exclusión que queda es `cv`. La tabla nueva cierra el problema de raíz: lo que
+no está en la fila no hay que acordarse de excluirlo.
 """
 
 from __future__ import annotations
@@ -38,12 +42,12 @@ async def test_la_lista_cubre_todas_las_columnas_menos_las_grandes(patch_data_di
     assert not inventadas, f"_USER_COLS nombra columnas que no existen: {sorted(inventadas)}"
 
 
-async def test_no_se_traen_avatar_ni_cv(patch_data_dir):
+async def test_no_se_trae_el_cv(patch_data_dir):
     await register_user("conavatar", "pass1234")
     async with open_db() as conn:
         await conn.execute(
-            "UPDATE users SET avatar = ?, cv = ? WHERE username = ?",
-            ("x" * 1000, "y" * 1000, "conavatar"),
+            "UPDATE users SET cv = ? WHERE username = ?",
+            ("y" * 1000, "conavatar"),
         )
         await conn.commit()
 
@@ -53,8 +57,15 @@ async def test_no_se_traen_avatar_ni_cv(patch_data_dir):
         await get_user_by_login("conavatar"),
     ):
         assert user is not None
-        assert "avatar" not in user
         assert "cv" not in user
+        # La foto ya no puede colarse: no hay columna que excluir.
+        assert "avatar" not in user
+
+
+async def test_la_foto_ya_no_es_una_columna_de_users(patch_data_dir):
+    """La mudanza a `user_avatars` es lo que quita la exclusión a mano."""
+    assert "avatar" not in await _columnas_reales()
+    assert "avatar" not in _USER_COLS
 
 
 async def test_sigue_trayendo_lo_que_necesita_el_login(patch_data_dir):

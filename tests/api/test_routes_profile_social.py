@@ -14,6 +14,20 @@ def _png_bytes() -> bytes:
     )
 
 
+# PNG de 1x1 válido, el mínimo que `detect_avatar_mime` reconoce.
+_PNG_MINIMO = (
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+    b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00"
+    b"\x00\x01\x01\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82"
+)
+# Otro PNG distinto, para comprobar que la versión de la URL sigue al contenido.
+_PNG_OTRO = (
+    b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
+    b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf0\xff\x0f\x00"
+    b"\x02\x03\x01\x00\x1c\x11\x1f\xfb\x00\x00\x00\x00IEND\xaeB`\x82"
+)
+
+
 def _register_and_login(client, username="socialuser", password="pass1234"):
     import asyncio
 
@@ -141,6 +155,41 @@ def test_avatar_subida_y_lectura(client):
     assert r2.headers["content-type"] == "image/png"
 
 
+def test_el_listado_del_admin_publica_la_url_de_la_foto(admin_client):
+    """El panel de personas pintaba la inicial y nada más.
+
+    Su consulta era `SELECT *`, que mientras la foto fue una columna de `users`
+    se traía el base64 de **todos** los usuarios en cada carga del panel.
+
+    Un solo actor a propósito: `admin_client` es el mismo objeto que `client`
+    con la cookie del administrador, así que autenticarse por medio como otro
+    usuario se la pisa y el listado responde 403.
+    """
+    sin_foto = admin_client.get("/api/admin/users").json()
+    assert all(u["avatar_url"] is None for u in sin_foto)
+
+    subida = admin_client.post(
+        "/api/auth/me/avatar",
+        files={"avatar": ("test.png", io.BytesIO(_PNG_MINIMO), "image/png")},
+    )
+    assert subida.status_code == 200, subida.text
+    # El fixture crea su propio administrador junto al de fábrica, así que hay
+    # más de un `role == "admin"`: se identifica por la URL que acaba de dar la
+    # subida, no por el rol.
+    esperada = subida.json()["avatar_url"]
+    quien = esperada.split("/")[3]
+
+    usuarios = admin_client.get("/api/admin/users").json()
+    fila = next(u for u in usuarios if u["username"] == quien)
+    assert fila["avatar_url"] == esperada
+    # La imagen no viaja en el listado, solo su dirección.
+    assert "avatar" not in fila
+    # Y quien no tiene foto sigue con None, no con una URL rota.
+    assert all(
+        u["avatar_url"] is None for u in usuarios if u["username"] != quien
+    )
+
+
 def test_el_perfil_publico_no_distingue_mayusculas(client):
     """El username llega en la URL del perfil, donde cualquiera lo teclea.
 
@@ -193,50 +242,109 @@ def test_seguir_a_alguien_escrito_con_mayusculas(client):
     assert client.delete("/api/users/Seguido/follow").status_code == 200
 
 
-def test_me_dice_si_hay_foto_sin_traer_la_columna(client):
-    """`has_avatar` es lo que decide si el cliente ofrece quitar la foto."""
-    _register_and_login(client, "avatarflag")
-    assert client.get("/api/auth/me").json()["has_avatar"] is False
+def test_me_publica_la_url_de_la_foto_con_su_version(client):
+    """`/me` usa la misma convención que el perfil público: la URL, o None.
 
-    png_bytes = (
-        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
-        b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00"
-        b"\x00\x01\x01\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82"
-    )
+    Antes devolvía un `has_avatar` booleano —que decía lo mismo a medias y
+    obligaba al cliente a construir la ruta— y la calculaba con una consulta
+    extra sobre `users`, donde la foto ya no vive.
+    """
+    _register_and_login(client, "avatarflag")
+    assert client.get("/api/auth/me").json()["avatar_url"] is None
+
     client.post(
         "/api/auth/me/avatar",
-        files={"avatar": ("test.png", io.BytesIO(png_bytes), "image/png")},
+        files={"avatar": ("test.png", io.BytesIO(_PNG_MINIMO), "image/png")},
     )
     payload = client.get("/api/auth/me").json()
-    assert payload["has_avatar"] is True
-    # La columna pesa megabytes en base64 y no tiene que viajar en /me.
+    assert payload["avatar_url"].startswith("/api/users/avatarflag/avatar?v=")
+    # La imagen pesa megabytes en algunas cuentas y no tiene que viajar en /me.
     assert "avatar" not in payload
 
     client.delete("/api/auth/me/avatar")
-    assert client.get("/api/auth/me").json()["has_avatar"] is False
+    assert client.get("/api/auth/me").json()["avatar_url"] is None
 
 
-def test_avatar_se_puede_quitar_y_vuelve_el_204(client):
-    """Hasta que existió el DELETE, la única forma de quitar una foto era
-    subir otra."""
-    _register_and_login(client, "avatarborra")
-    png_bytes = (
-        b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR\x00\x00\x00\x01\x00\x00\x00\x01"
-        b"\x08\x02\x00\x00\x00\x90wS\xde\x00\x00\x00\x0cIDATx\x9cc\xf8\x0f\x00"
-        b"\x00\x01\x01\x00\x05\x18\xd8N\x00\x00\x00\x00IEND\xaeB`\x82"
-    )
+def test_la_version_de_la_url_cambia_con_la_foto(client):
+    """La versión es el sha256 del contenido, no un contador del cliente.
+
+    El contador vivía en memoria de Flutter y volvía a cero al reconstruirse la
+    pantalla, así que la URL reaparecía apuntando a la foto anterior y el
+    navegador la servía de su caché.
+    """
+    _register_and_login(client, "avatarversion")
     client.post(
         "/api/auth/me/avatar",
-        files={"avatar": ("test.png", io.BytesIO(png_bytes), "image/png")},
+        files={"avatar": ("a.png", io.BytesIO(_PNG_MINIMO), "image/png")},
     )
-    assert client.get("/api/users/avatarborra/avatar").status_code == 200
+    primera = client.get("/api/auth/me").json()["avatar_url"]
 
-    r = client.delete("/api/auth/me/avatar")
-    assert r.status_code == 200, r.text
-    assert r.json()["ok"] is True
+    client.post(
+        "/api/auth/me/avatar",
+        files={"avatar": ("b.png", io.BytesIO(_PNG_OTRO), "image/png")},
+    )
+    segunda = client.get("/api/auth/me").json()["avatar_url"]
+    assert primera != segunda
 
-    # 204 es lo que el cliente lee como «no hay foto» para pintar la inicial.
-    assert client.get("/api/users/avatarborra/avatar").status_code == 204
+    # Y subir la misma imagen otra vez no cambia la URL: es el contenido lo que
+    # la identifica, así que la caché del navegador sigue sirviendo.
+    client.post(
+        "/api/auth/me/avatar",
+        files={"avatar": ("b-otra-vez.png", io.BytesIO(_PNG_OTRO), "image/png")},
+    )
+    assert client.get("/api/auth/me").json()["avatar_url"] == segunda
+
+
+def test_el_avatar_se_revalida_con_etag(client):
+    _register_and_login(client, "avataretag")
+    client.post(
+        "/api/auth/me/avatar",
+        files={"avatar": ("test.png", io.BytesIO(_PNG_MINIMO), "image/png")},
+    )
+
+    primera = client.get("/api/users/avataretag/avatar")
+    assert primera.status_code == 200
+    etag = primera.headers["etag"]
+    assert primera.headers["cache-control"] == "private, max-age=0, must-revalidate"
+
+    # Con el ETag por delante, la respuesta son cabeceras y nada más.
+    repetida = client.get(
+        "/api/users/avataretag/avatar", headers={"If-None-Match": etag}
+    )
+    assert repetida.status_code == 304
+    assert repetida.content == b""
+
+    # Un proxy puede debilitar el ETag; sigue siendo el mismo recurso.
+    debil = client.get(
+        "/api/users/avataretag/avatar", headers={"If-None-Match": f"W/{etag}"}
+    )
+    assert debil.status_code == 304
+
+    # Y un ETag viejo trae la imagen entera.
+    caducado = client.get(
+        "/api/users/avataretag/avatar", headers={"If-None-Match": '"otracosa"'}
+    )
+    assert caducado.status_code == 200
+
+
+def test_la_foto_no_deja_rastro_en_la_tabla_de_usuarios(client):
+    """La mudanza a `user_avatars` es el punto: `users` no vuelve a crecer."""
+    import asyncio
+
+    from app.storage.db import open_db
+
+    _register_and_login(client, "avatarfuera")
+    client.post(
+        "/api/auth/me/avatar",
+        files={"avatar": ("test.png", io.BytesIO(_PNG_MINIMO), "image/png")},
+    )
+
+    async def _columnas() -> set[str]:
+        async with open_db() as conn:
+            rows = await conn.fetchall("PRAGMA table_info(users)")
+        return {r[1] for r in rows}
+
+    assert "avatar" not in asyncio.run(_columnas())
 
 
 def test_avatar_quitarlo_sin_tenerlo_no_falla(client):

@@ -6,7 +6,10 @@
 -- que nadie puede seguir porque desaparece al cerrar su sesión.
 
 -- name: public_profile
-SELECT id, CASE WHEN avatar IS NULL OR avatar = '' THEN 0 ELSE 1 END, bio, languages, email, is_email_public, github, cv, created_at
+-- Sin la foto: vive en `user_avatars` y se resuelve aparte, con su checksum.
+-- Aquí llegó a haber un `CASE WHEN avatar = ''` que en PostgreSQL obligaba a
+-- traer la imagen entera de su almacenamiento externo solo para ver si estaba.
+SELECT id, bio, languages, email, is_email_public, github, cv, created_at
 FROM users
 WHERE LOWER(username) = LOWER(?) AND role <> 'guest';
 
@@ -31,7 +34,10 @@ FROM users u
 WHERE u.id != ? AND u.role <> 'guest';
 
 -- name: search_page
-SELECT u.username, CASE WHEN u.avatar IS NULL OR u.avatar = '' THEN 0 ELSE 1 END, (
+SELECT u.username, (
+SELECT COUNT(*)
+FROM user_avatars
+WHERE owner_id = u.id) AS has_avatar, (
 SELECT COUNT(*)
 FROM user_follows
 WHERE following = u.id) AS followers_count, (
@@ -44,7 +50,10 @@ ORDER BY u.username
 LIMIT ? OFFSET ?;
 
 -- name: list_page
-SELECT u.username, CASE WHEN u.avatar IS NULL OR u.avatar = '' THEN 0 ELSE 1 END, (
+SELECT u.username, (
+SELECT COUNT(*)
+FROM user_avatars
+WHERE owner_id = u.id) AS has_avatar, (
 SELECT COUNT(*)
 FROM user_follows
 WHERE following = u.id) AS followers_count, (
@@ -55,8 +64,3 @@ FROM users u
 WHERE u.id != ? AND u.role <> 'guest'
 ORDER BY u.username
 LIMIT ? OFFSET ?;
-
--- name: avatar_of
-SELECT avatar
-FROM users
-WHERE LOWER(username) = LOWER(?) AND role <> 'guest';

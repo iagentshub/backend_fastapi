@@ -7,13 +7,14 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query, Response
+from fastapi import APIRouter, Depends, Query, Request, Response
 
 from app.api.routes.auth import require_auth
 from app.auth.auth import get_user_by_username
 from app.errors import APIError
 from app.pagination.http import TOTAL_HEADER
 from app.sql import sql
+from app.storage import avatars
 from app.storage.db import open_db
 
 router = APIRouter(prefix="/api/users", tags=["users"])
@@ -45,17 +46,19 @@ async def _get_social_fields(username: str) -> dict[str, Any]:
             or 0
         )
     try:
-        langs = json.loads(row[3] or "[]")
+        langs = json.loads(row[2] or "[]")
     except (json.JSONDecodeError, TypeError):
         langs = []
     return {
-        "avatar_url": f"/api/users/{username}/avatar" if row[1] else None,
-        "bio": row[2],
+        "avatar_url": avatars.public_url(
+            username, await avatars.checksum_by_username(username)
+        ),
+        "bio": row[1],
         "languages": langs,
-        "email_public": row[4] if row[5] else None,
-        "github": row[6],
-        "cv": row[7],
-        "joined_at": row[8],
+        "email_public": row[3] if row[4] else None,
+        "github": row[5],
+        "cv": row[6],
+        "joined_at": row[7],
         "followers_count": followers_count,
         "following_count": following_count,
     }
@@ -106,31 +109,51 @@ async def search_users(
 
 
 @router.get("/{username}/avatar")
-async def get_avatar(username: str, _: str = Depends(require_auth)):
-    import base64
-    import binascii
+async def get_avatar(
+    username: str,
+    request: Request,
+    _: str = Depends(require_auth),
+):
+    """Sirve la foto con su ETag, para que la caché juegue a favor.
 
+    Antes no salía ni una cabecera de caché, así que el navegador aplicaba su
+    heurística y el cliente rompía la caché con un `?v=N` que era un contador en
+    memoria: volvía a cero al recargar la pantalla y la URL reaparecía apuntando
+    a la foto anterior. Ahora la versión es el sha256 del contenido —cambia la
+    foto, cambia la URL— y una recarga se resuelve con un 304 de unos bytes en
+    vez de descargar la imagen entera.
+
+    `private` porque la respuesta depende de quién pregunta: la ruta exige
+    sesión y un proxy compartido no debe guardarla para otros.
+    """
     from fastapi.responses import Response
 
-    async with open_db() as conn:
-        row = await conn.fetchone(
-            sql("queries/users:avatar_of"), (username,)
+    cabeceras_de_cache = {
+        "Cache-Control": "private, max-age=0, must-revalidate",
+    }
+
+    avatar = await avatars.get_by_username(username)
+    if avatar is None:
+        return Response(status_code=204, headers=cabeceras_de_cache)
+
+    etag = f'"{avatar.checksum}"'
+    # If-None-Match puede traer varios valores, y un proxy puede debilitarlos
+    # con el prefijo W/. Se compara contra cada uno en vez de contra la cadena.
+    entrantes = request.headers.get("if-none-match", "")
+    if any(
+        candidato.strip().removeprefix("W/") == etag
+        for candidato in entrantes.split(",")
+        if candidato.strip()
+    ):
+        return Response(
+            status_code=304, headers={**cabeceras_de_cache, "ETag": etag}
         )
 
-    if not row or not row[0]:
-        return Response(status_code=204)
-
-    try:
-        data = base64.b64decode(row[0])
-    except (binascii.Error, TypeError):
-        return Response(status_code=204)
-
-    from app.utils.images import detect_avatar_mime
-
-    mime = detect_avatar_mime(data)
-    if mime is None:
-        return Response(status_code=204)
-    return Response(content=data, media_type=mime)
+    return Response(
+        content=avatar.content,
+        media_type=avatar.mime,
+        headers={**cabeceras_de_cache, "ETag": etag},
+    )
 
 
 @router.get("/{username}")

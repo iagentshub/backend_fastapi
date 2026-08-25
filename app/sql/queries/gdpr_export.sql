@@ -87,6 +87,14 @@ WHERE EXISTS (
 )
 ORDER BY sha256;
 
+-- name: user_avatar
+-- La imagen entera: es un dato personal y el fichero original no se guarda en
+-- ninguna parte, así que la exportación es la única copia que el usuario puede
+-- recuperar. Sale del ZIP como fichero, no dentro del JSON.
+SELECT content, mime, checksum, size_bytes, updated_at
+FROM user_avatars
+WHERE owner_id=?;
+
 -- name: workflows
 SELECT *
 FROM agent_workflows

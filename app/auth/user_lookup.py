@@ -15,19 +15,20 @@ from app.utils.validation import normalize_username
 
 _ALLOWED_USER_FIELDS = frozenset({"id", "email", "username"})
 
-# Las dos columnas grandes de la fila, y las únicas que estas funciones NO
-# traen. El avatar se guarda en base64 y `POST /api/auth/me/avatar` admite
-# hasta 10 MB de fichero, unos 13,3 MB por fila; `cv` llega a 20.000
-# caracteres. Estas funciones están en el camino crítico de toda petición
-# autenticada (`_resolve_principal`, `_get_user_auth_state`, `get_user_role`),
-# así que un `SELECT *` transportaba esos megabytes en cada una para
-# descartarlos acto seguido: el avatar solo lo necesita
-# `GET /api/users/{u}/avatar`, que lo pide aparte.
+# La columna grande de la fila, y la única que estas funciones NO traen: `cv`
+# llega a 20.000 caracteres. Estas funciones están en el camino crítico de toda
+# petición autenticada (`_resolve_principal`, `_get_user_auth_state`,
+# `get_user_role`), así que un `SELECT *` transportaba ese texto en cada una
+# para descartarlo acto seguido.
+#
+# `avatar` estuvo aquí hasta que la foto se mudó a su propia tabla
+# (`app/sql/schema/user_avatars.sql`): era un TEXT en base64 de megabytes, y
+# mantenerlo fuera dependía de acordarse de esta lista.
 #
 # `tests/auth/test_user_lookup_columnas.py` compara esta lista con las
 # columnas reales de la tabla: una columna nueva rompe ese test en vez de
 # desaparecer en silencio de todas las respuestas.
-_EXCLUIDAS = ("avatar", "cv")
+_EXCLUIDAS = ("cv",)
 
 _USER_COLS = (
     "id, username, email, password_hash, display_name, birth_date, gender, "
