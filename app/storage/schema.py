@@ -94,6 +94,7 @@ TABLAS: tuple[str, ...] = (
     "resource_executions",
     "llm_orchestrations",
     "llm_orchestration_bindings",
+    "contact_requests",
 )
 
 

@@ -160,6 +160,12 @@ RATE_TEST_CALLS = int(os.getenv("GAIA_RATE_TEST_CALLS", "10"))
 RATE_TEST_WINDOW = int(os.getenv("GAIA_RATE_TEST_WINDOW", "60"))
 RATE_TESTALL_CALLS = int(os.getenv("GAIA_RATE_TESTALL_CALLS", "30"))
 RATE_TESTALL_WINDOW = int(os.getenv("GAIA_RATE_TESTALL_WINDOW", "60"))
+# Formulario de contacto público: lo puede enviar cualquiera sin sesión, así
+# que el cupo por IP es la única puerta. Cinco por hora deja pasar a quien se
+# equivoca y reescribe, y no da para una campaña de spam.
+RATE_CONTACT_CALLS = int(os.getenv("GAIA_RATE_CONTACT_CALLS", "5"))
+RATE_CONTACT_WINDOW = int(os.getenv("GAIA_RATE_CONTACT_WINDOW", "3600"))
+
 RATE_GUEST_CALLS = int(os.getenv("GAIA_RATE_GUEST_CALLS", "5"))
 RATE_GUEST_WINDOW = int(os.getenv("GAIA_RATE_GUEST_WINDOW", "60"))
 # ── Invitados ─────────────────────────────────────────────────────────────────

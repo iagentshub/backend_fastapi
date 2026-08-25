@@ -44,6 +44,22 @@ El registro recibe `username`, `email` y `password`. El login recibe `identifier
 
 ---
 
+## Contacto público
+
+| Método | Endpoint | Auth | Descripción |
+|---|---|---|---|
+| `POST` | `/api/public/contact` | — | Petición del formulario de precios (rate-limit: 5 / hora por IP) |
+| `GET` | `/api/admin/contact-requests` | Admin | Últimas peticiones recibidas (`limit`, 1-500) |
+
+Es el único endpoint que escribe sin credencial de ningún tipo. Acepta `type`
+(uno de `free`, `plan_dev`, `plan_biz`, `plan_ent`, `training`), `name`, `email`
+y `message`, más un campo trampa `website` que descarta la petición en silencio
+si viene relleno. La petición se guarda siempre y además se avisa por correo al
+buzón de la instalación (`GAIA_SMTP_FROM`): sin SMTP configurado la respuesta
+trae `notified: false` y el lead queda solo en la tabla.
+
+---
+
 ## Explorar
 
 | Método | Endpoint | Descripción |

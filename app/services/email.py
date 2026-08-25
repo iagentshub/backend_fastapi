@@ -8,7 +8,7 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime
 from email.mime.multipart import MIMEMultipart
 from email.mime.text import MIMEText
-from html import unescape
+from html import escape, unescape
 
 from app.utils import flog
 
@@ -222,6 +222,47 @@ def send_account_status_email(
 
 # Los cuatro correos transaccionales, en los idiomas que resuelve
 # LocaleMiddleware (SUPPORTED_LOCALES). Un idioma que falte cae al español.
+
+def send_contact_notification(
+    *, kind: str, name: str, email: str, message: str
+) -> bool:
+    """Avisa al operador de una petición del formulario público.
+
+    Va al buzón de la propia instalación (`GAIA_SMTP_FROM`): es el único
+    destino que se puede dar por bueno sin inventar otra opción de
+    configuración, y es el mismo desde el que ya salen los correos.
+
+    ponytail: si alguien necesita que los leads lleguen a otra dirección, eso
+    es una clave nueva en la config de plataforma; hoy no la pide nadie.
+
+    Devuelve si se llegó a encolar el envío. El llamador ya ha guardado la
+    fila, así que un False solo significa «revísalo en la tabla».
+    """
+    from app.config.session import SMTP_FROM, SMTP_USER
+
+    destino = SMTP_FROM or SMTP_USER
+    if not _smtp_available() or not destino:
+        flog.warning("[email] SMTP no configurado; la petición de contacto solo queda en la BD")
+        return False
+
+    # El contenido lo escribe un desconocido y acaba en el correo del operador:
+    # sin escapar, cualquiera puede meter marcado en su bandeja de entrada.
+    cuerpo = (
+        f"<strong>Tipo:</strong> {escape(kind)}<br>"
+        f"<strong>Nombre:</strong> {escape(name)}<br>"
+        f"<strong>Email:</strong> {escape(email)}<br><br>"
+        f"{escape(message).replace(chr(10), '<br>')}"
+    )
+    html = _build_email_html(
+        title="Formulario de contacto",
+        heading="Nueva petición de contacto",
+        body_html=cuerpo,
+        lang=_LANG_DEFECTO,
+    )
+    _send_smtp(destino, f"[iAgents Hub] Contacto: {kind}", html)
+    return True
+
+
 _TEXTOS: dict[str, dict[str, dict]] = {
     "copia_enlace": {
         "es": {"texto": "O copia este enlace en tu navegador:"},

@@ -50,6 +50,7 @@ GET /api/admin/centinel/tree
 GET /api/admin/check-update
 GET /api/admin/config-audit
 GET /api/admin/connections
+GET /api/admin/contact-requests
 GET /api/admin/explore
 GET /api/admin/groups
 GET /api/admin/knowledge
@@ -224,10 +225,10 @@ POST /api/knowledge/packs
 POST /api/knowledge/packs/upload-sessions
 POST /api/knowledge/packs/upload-sessions/{pack_id}/complete
 POST /api/knowledge/packs/upload-sessions/{pack_id}/files
-POST /api/knowledge/packs/{pack_id}/sync
-POST /api/knowledge/packs/{pack_id}/sync-manifest
 POST /api/knowledge/packs/{pack_id}/activate
 POST /api/knowledge/packs/{pack_id}/deactivate
+POST /api/knowledge/packs/{pack_id}/sync
+POST /api/knowledge/packs/{pack_id}/sync-manifest
 POST /api/knowledge/text
 POST /api/knowledge/url
 POST /api/knowledge/{item_id}/activate
@@ -242,6 +243,7 @@ POST /api/prompts/{scope}
 POST /api/prompts/{scope}/{prompt_id}/activate
 POST /api/prompts/{scope}/{prompt_id}/deactivate
 POST /api/prompts/{scope}/{source_id}/link
+POST /api/public/contact
 POST /api/resources/{resource_type}/{resource_id}/versions/{version}/restore
 POST /api/settings/notification-banners
 POST /api/sharing/{resource_type}/{resource_id}
@@ -253,10 +255,10 @@ POST /api/skills/{scope}/{skill_id}/deactivate
 POST /api/skills/{scope}/{source_id}/link
 POST /api/tools/private/{tool_id}/sync
 POST /api/tools/{scope}
-POST /api/tools/{scope}/{tool_id}/activate
-POST /api/tools/{scope}/{tool_id}/deactivate
 POST /api/tools/{scope}/{source_id}/link
+POST /api/tools/{scope}/{tool_id}/activate
 POST /api/tools/{scope}/{tool_id}/binary
+POST /api/tools/{scope}/{tool_id}/deactivate
 POST /api/users/{target}/follow
 POST /api/workflow-runs/{run_id}/cancel
 POST /api/workflows

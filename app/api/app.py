@@ -34,6 +34,7 @@ from app.api.routes import (
     logs,
     memory,
     prompts,
+    public,
     resource_executions,
     resource_linking,
     resource_management,
@@ -323,6 +324,7 @@ def create_app() -> FastAPI:
     app.include_router(social.router)
     app.include_router(explore.router)
     app.include_router(resource_linking.router)
+    app.include_router(public.router)
 
     @app.get("/api/health", tags=["health"])
     async def _health():

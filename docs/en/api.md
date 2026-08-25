@@ -43,6 +43,22 @@ Registration accepts `username`, `email`, and `password`. Login accepts `identif
 
 ---
 
+## Public contact
+
+| Method | Endpoint | Auth | Description |
+|---|---|---|---|
+| `POST` | `/api/public/contact` | — | Pricing contact form submission (rate-limited: 5 / hour per IP) |
+| `GET` | `/api/admin/contact-requests` | Admin | Latest submissions (`limit`, 1-500) |
+
+The only endpoint that writes without any credential. It accepts `type` (one of
+`free`, `plan_dev`, `plan_biz`, `plan_ent`, `training`), `name`, `email` and
+`message`, plus a `website` honeypot that silently discards the submission when
+filled in. The request is always stored and also emailed to the instance mailbox
+(`GAIA_SMTP_FROM`): without SMTP configured the response carries
+`notified: false` and the lead only lives in the table.
+
+---
+
 ## Explore
 
 | Method | Endpoint | Description |

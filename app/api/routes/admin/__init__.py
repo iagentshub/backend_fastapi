@@ -14,6 +14,7 @@ responsabilidad — no persiguiendo ciclos, que no los había:
     _router.py   `admin_router` compartido, sin lógica.
     updates.py   versión GHCR/GitHub + Watchtower.
     stats.py     metadatos de tablas, salud del servidor, /stats.
+    contact.py   lectura de las peticiones del formulario público.
     users.py     alta/edición/borrado de usuarios, impersonar.
     resources.py CRUD de conexiones, agentes, skills, prompts, memoria,
                  conocimiento, orquestaciones, grupos y reasignación de
@@ -28,6 +29,7 @@ from __future__ import annotations
 from app.api.routes.admin._router import admin_router
 
 from . import (  # noqa: F401 — registran rutas en admin_router al importarse
+    contact,
     explore,
     official_sources,
     resources,
