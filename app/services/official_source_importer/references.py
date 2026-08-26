@@ -35,7 +35,8 @@ _AGENT_RESOURCE_TYPES = frozenset(
 )
 
 
-def _reference_aliases(component: PackageComponent) -> set[str]:
+def component_aliases(component: PackageComponent) -> set[str]:
+    """Return the canonical aliases used by every component resolver."""
     path = PurePosixPath(component.source_path)
     aliases = {
         component.component_id.lower(),
@@ -61,6 +62,11 @@ def _reference_aliases(component: PackageComponent) -> set[str]:
         f"{prefix}/{relative}".lower() for relative in component.files if prefix
     )
     return {alias.strip("./") for alias in aliases if alias.strip("./")}
+
+
+# Compatibility for existing internal imports while callers migrate to the
+# public shared helper.
+_reference_aliases = component_aliases
 
 
 def reference_candidates(value: str, source_path: str = "") -> List[str]:
@@ -111,7 +117,7 @@ def _resolve_component_relations(components: List[PackageComponent]) -> None:
     aliases: Dict[str, set[str]] = defaultdict(set)
     by_id = {component.component_id: component for component in components}
     for component in components:
-        for alias in _reference_aliases(component):
+        for alias in component_aliases(component):
             aliases[alias].add(component.component_id)
 
     def resolve(value: str, source: PackageComponent) -> Optional[str]:

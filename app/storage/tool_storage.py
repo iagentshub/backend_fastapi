@@ -9,6 +9,7 @@ from typing import Any, Dict, List, Optional
 
 from app.config.tool_runtimes import TOOL_RUNTIME_BY_VALUE, TOOL_RUNTIMES
 from app.pagination.models import OffsetPage, OffsetParams
+from app.services.resource_visibility import VisibilityFilter
 from app.sql import sql
 
 # db se importa DOS veces a propósito: ver app/storage/_storage_helpers.py.
@@ -34,7 +35,6 @@ class ToolStorage(ResourceStorage):
     Sin migración legacy de ficheros (a diferencia de Skill): se instancia
     sin argumentos, igual que PromptStorage.
     """
-
     table = "tools"
     resource_type = "tool"
 
@@ -46,6 +46,7 @@ class ToolStorage(ResourceStorage):
         scope: str,
         page: OffsetParams,
         requested_group_id: str | None = None,
+        catalog_filter: VisibilityFilter | None = None,
     ) -> OffsetPage[Dict[str, Any]]:
         await self._ensure_migrated()
         spec = ScopedResourcePageSpec(
@@ -70,9 +71,8 @@ class ToolStorage(ResourceStorage):
             include_inactive=None,
             page=page,
             requested_group_id=requested_group_id,
+            extra_filters=(catalog_filter,) if catalog_filter else (),
         )
-
-    # ── internal helpers ─────────────────────────────────────────────────────
 
     async def _upsert(
         self, conn: Any, tool_id: str, owner_id: str, scope: str, data: Dict[str, Any]

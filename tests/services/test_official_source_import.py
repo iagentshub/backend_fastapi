@@ -106,6 +106,21 @@ def test_detector_prefers_canonical_roots_and_ignores_actions_and_docs() -> None
     assert reviewer.variants == ["plugins/demo/agents/reviewer.md"]
 
 
+def test_detector_can_skip_hashes_and_indexes_nested_skill_files() -> None:
+    components = detect_components(
+        "local-directory",
+        {
+            "skills/check/SKILL.md": "---\nname: Check\n---\nCheck",
+            "skills/check/references/guide.md": "Guide",
+        },
+        calculate_content_hashes=False,
+    )
+
+    skill = next(item for item in components if item.component_type == "skill")
+    assert skill.content_hash == ""
+    assert skill.files == {"references/guide.md": "Guide"}
+
+
 def test_detector_links_agents_to_resources_from_structured_references() -> None:
     files = {
         "agents/evaluator.md": (

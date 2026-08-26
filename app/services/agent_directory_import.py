@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from collections import defaultdict
 from pathlib import PurePosixPath
 from typing import Any, Iterable, Sequence
 
@@ -33,7 +34,10 @@ from app.services.directory_file_rules import (
     normalize_relative_path,
 )
 from app.services.official_source_importer.detection import detect_components
-from app.services.official_source_importer.references import reference_candidates
+from app.services.official_source_importer.references import (
+    component_aliases,
+    reference_candidates,
+)
 from app.services.official_source_sync import order_by_dependencies, strip_frontmatter
 from app.storage.agent_storage import AgentStorage
 from app.storage.db import open_db
@@ -104,25 +108,14 @@ def decode_directory_files(
     return files, sorted(ignored)
 
 
-def _component_aliases(component: PackageComponent) -> set[str]:
-    aliases: set[str] = set()
-    for value in (component.component_id, component.name, component.source_path):
-        aliases.update(reference_candidates(value, component.source_path))
-    path = PurePosixPath(component.source_path)
-    aliases.update(reference_candidates(path.stem, component.source_path))
-    if path.name.upper() == "SKILL.MD":
-        aliases.update(reference_candidates(path.parent.name, component.source_path))
-    return aliases
-
-
 def _component_alias_index(
     components: Iterable[PackageComponent],
 ) -> dict[str, set[str]]:
-    index: dict[str, set[str]] = {}
+    index: dict[str, set[str]] = defaultdict(set)
     for component in components:
-        for alias in _component_aliases(component):
-            index.setdefault(alias, set()).add(component.component_id)
-    return index
+        for alias in component_aliases(component):
+            index[alias].add(component.component_id)
+    return dict(index)
 
 
 def _local_target(
@@ -148,6 +141,7 @@ class AgentDirectoryImportService:
         self.knowledge = KnowledgeStorage()
         self.prompts = PromptStorage()
         self.tools = ToolStorage()
+        self._planned_catalog: AgentImportCatalog | None = None
 
     async def plan(
         self,
@@ -155,16 +149,43 @@ class AgentDirectoryImportService:
         ctx: GroupContext,
         *,
         catalog: AgentImportCatalog | None = None,
+        additional_catalog_queries: dict[str, list[str]] | None = None,
     ) -> tuple[AgentDirectoryImportPlan, list[PackageComponent]]:
         files, ignored_paths = decode_directory_files(uploads)
-        detected = detect_components("local-directory", files)
-        catalog = catalog or await AgentImportCatalog.load(ctx)
+        detected = detect_components(
+            "local-directory", files, calculate_content_hashes=False
+        )
         supported = [
             item
             for item in detected
             if item.component_type in SUPPORTED_DIRECTORY_COMPONENT_TYPES
         ]
         by_id = {item.component_id: item for item in supported}
+        agent_previews = {
+            item.component_id: parse_agent_import(
+                item.source_path, item.content.encode("utf-8")
+            )
+            for item in supported
+            if item.component_type == "agent"
+            and PurePosixPath(item.source_path).suffix.lower() in {".md", ".json"}
+        }
+        if catalog is None:
+            catalog_queries: dict[str, list[str]] = defaultdict(list)
+            for item in supported:
+                resource_kind = COMPONENT_TYPE_TO_RESOURCE_KIND.get(
+                    item.component_type
+                )
+                if resource_kind:
+                    catalog_queries[resource_kind].append(item.name)
+            for preview in agent_previews.values():
+                for reference in preview.references:
+                    catalog_queries[reference.kind].append(reference.source)
+            for kind, values in (additional_catalog_queries or {}).items():
+                catalog_queries[kind].extend(values)
+            catalog = await AgentImportCatalog.load_for_queries(  # type: ignore[arg-type]
+                ctx, catalog_queries
+            )
+        self._planned_catalog = catalog
         alias_index = _component_alias_index(
             item
             for item in supported
@@ -186,10 +207,7 @@ class AgentDirectoryImportService:
                 }:
                     ignored_paths.append(component.source_path)
                     continue
-                preview = parse_agent_import(
-                    component.source_path,
-                    component.content.encode("utf-8"),
-                )
+                preview = agent_previews[component.component_id]
                 dependency_order = list(
                     dict.fromkeys(
                         dependency
@@ -296,12 +314,51 @@ class AgentDirectoryImportService:
 
     async def apply(
         self,
-        uploads: Sequence[tuple[str, bytes]],
+        uploads: Sequence[tuple[str, bytes]] | None,
         options: AgentDirectoryApplyOptions,
         ctx: GroupContext,
+        *,
+        prepared: tuple[AgentDirectoryImportPlan, list[PackageComponent]] | None = None,
     ) -> AgentDirectoryImportResult:
-        catalog = await AgentImportCatalog.load(ctx)
-        plan, detected = await self.plan(uploads, ctx, catalog=catalog)
+        additional_queries: dict[str, list[str]] = defaultdict(list)
+        for choice in options.component_choices:
+            if choice.resource_id:
+                additional_queries["knowledge"].append(choice.resource_id)
+                additional_queries["knowledge_pack"].append(choice.resource_id)
+                additional_queries["prompt"].append(choice.resource_id)
+                additional_queries["skill"].append(choice.resource_id)
+                additional_queries["tool"].append(choice.resource_id)
+        for choice in options.reference_choices:
+            if choice.resource_id:
+                additional_queries["knowledge"].append(choice.resource_id)
+                additional_queries["knowledge_pack"].append(choice.resource_id)
+                additional_queries["prompt"].append(choice.resource_id)
+                additional_queries["skill"].append(choice.resource_id)
+                additional_queries["tool"].append(choice.resource_id)
+        if prepared is None:
+            if uploads is None:
+                raise RuntimeError("directory import uploads were not supplied")
+            plan, detected = await self.plan(
+                uploads,
+                ctx,
+                additional_catalog_queries=additional_queries,
+            )
+            catalog = self._planned_catalog
+            if catalog is None:  # Defensive: plan() always sets it above.
+                raise RuntimeError("directory import catalog was not planned")
+        else:
+            plan, detected = prepared
+            for item in plan.components:
+                if item.selected_existing_id:
+                    additional_queries[item.kind].append(item.selected_existing_id)
+                for reference in item.references:
+                    if reference.selected_id:
+                        additional_queries[reference.kind].append(
+                            reference.selected_id
+                        )
+            catalog = await AgentImportCatalog.load_for_queries(  # type: ignore[arg-type]
+                ctx, additional_queries
+            )
         planned = {item.component_id: item for item in plan.components}
         selected_ids = set(options.selected_agent_ids)
         if not selected_ids:

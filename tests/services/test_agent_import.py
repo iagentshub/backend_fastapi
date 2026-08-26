@@ -2,8 +2,11 @@ import json
 
 import pytest
 
+from app.api.routes.auth import GroupContext
 from app.errors import APIError
 from app.models.agent_import import AgentImportCandidate
+from app.pagination.models import OffsetPage
+from app.services import agent_import_catalog
 from app.services.agent_import import parse_agent_import
 from app.services.agent_import_catalog import AgentImportCatalog
 
@@ -100,6 +103,34 @@ def test_catalog_contains_uses_prebuilt_id_index() -> None:
 
     assert catalog.contains("skill", "skill-1") is True
     assert catalog.contains("skill", "missing") is False
+
+
+@pytest.mark.asyncio
+async def test_catalog_query_only_requests_the_referenced_resource_type(
+    monkeypatch,
+) -> None:
+    captured = []
+
+    class FakeSkills:
+        async def list_visible_page(self, **kwargs):
+            captured.append(kwargs)
+            return OffsetPage(
+                items=[{"id": "security", "name": "Security"}],
+                total=1,
+                params=kwargs["page"],
+            )
+
+    monkeypatch.setattr(agent_import_catalog, "_skills", FakeSkills())
+
+    catalog = await AgentImportCatalog.load_for_queries(
+        GroupContext("alice", "alice"), {"skill": ["Security"]}
+    )
+
+    assert [item.id for item in catalog.candidates("skill")] == ["security"]
+    assert catalog.candidates("knowledge") == []
+    assert len(captured) == 1
+    assert "LOWER(resource_row.id)" in captured[0]["catalog_filter"].sql
+    assert captured[0]["catalog_filter"].params == ("security", "security")
 
 
 @pytest.mark.parametrize(

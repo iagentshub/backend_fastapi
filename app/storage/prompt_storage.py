@@ -7,6 +7,7 @@ import re
 from typing import Any, Dict, List, Optional
 
 from app.pagination.models import OffsetPage, OffsetParams
+from app.services.resource_visibility import VisibilityFilter
 from app.sql import sql
 
 # db se importa DOS veces a propósito: ver app/storage/_storage_helpers.py.
@@ -42,6 +43,7 @@ class PromptStorage(ResourceStorage):
         scope: str,
         page: OffsetParams,
         requested_group_id: str | None = None,
+        catalog_filter: VisibilityFilter | None = None,
     ) -> OffsetPage[Dict[str, Any]]:
         await self._ensure_migrated()
         spec = ScopedResourcePageSpec(
@@ -63,6 +65,7 @@ class PromptStorage(ResourceStorage):
             include_inactive=None,
             page=page,
             requested_group_id=requested_group_id,
+            extra_filters=(catalog_filter,) if catalog_filter else (),
         )
 
     # ── internal helpers ─────────────────────────────────────────────────────

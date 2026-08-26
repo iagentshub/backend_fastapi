@@ -310,9 +310,6 @@ def extract_document_text(content_bytes: bytes, filename: str, mime: str = "") -
     return extract_document(content_bytes, filename, mime).text
 
 
-# ── Storage ────────────────────────────────────────────────────────────────────
-
-
 class KnowledgeStorage(ResourceStorage):
     table = "knowledge_items"
     resource_type = "knowledge"
@@ -326,9 +323,9 @@ class KnowledgeStorage(ResourceStorage):
         page: OffsetParams,
         permission_filter: VisibilityFilter | None = None,
         requested_group_id: str | None = None,
+        catalog_filter: VisibilityFilter | None = None,
     ) -> OffsetPage[Dict[str, Any]]:
         """Página de knowledge propio y compartido, incluidos packs."""
-
         if requested_group_id is not None:
             direct_sql = (
                 "EXISTS (SELECT 1 FROM resource_group_shares direct_share "
@@ -389,6 +386,9 @@ class KnowledgeStorage(ResourceStorage):
             clauses.append(f"(({pack_sql}) OR ({permission_filter.sql}))")
             params.extend(pack_params)
             params.extend(permission_filter.params)
+        if catalog_filter is not None:
+            clauses.append(catalog_filter.sql)
+            params.extend(catalog_filter.params)
         where = " AND ".join(f"({clause})" for clause in clauses)
         columns = (
             "k.id,k.owner_id,k.type,k.title,k.source,k.char_count,"

@@ -175,6 +175,8 @@ POST /api/admin/users
 POST /api/agent-builder/chat
 POST /api/agents
 POST /api/agents/import/preview
+GET /api/agents/import/catalog/{kind}
+POST /api/agents/import/catalog/resolve
 POST /api/agents/import/directory/apply
 POST /api/agents/import/directory/preview
 POST /api/agents/private/{agent_id}/sync

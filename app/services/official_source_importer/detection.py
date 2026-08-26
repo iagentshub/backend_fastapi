@@ -196,9 +196,38 @@ def _manifest_components(files: Dict[str, str]) -> Dict[str, Dict[str, Any]]:
     return {}
 
 
-def detect_components(source_id: str, files: Dict[str, str]) -> List[PackageComponent]:
+def _skill_companion_files(files: Dict[str, str]) -> Dict[str, Dict[str, str]]:
+    """Index skill companions once instead of rescanning every file per skill."""
+
+    skill_roots = {
+        PurePosixPath(path).parent.as_posix()
+        for path in files
+        if PurePosixPath(path).name.upper() == "SKILL.MD"
+    }
+    indexed: Dict[str, Dict[str, str]] = {root: {} for root in skill_roots}
+    for path, content in files.items():
+        pure = PurePosixPath(path)
+        direct_parent = pure.parent.as_posix()
+        parent = pure.parent
+        while parent.as_posix() not in {"", "."}:
+            root = parent.as_posix()
+            if root in indexed and not (
+                root == direct_parent and pure.name.upper() == "SKILL.MD"
+            ):
+                indexed[root][pure.relative_to(parent).as_posix()] = content
+            parent = parent.parent
+    return indexed
+
+
+def detect_components(
+    source_id: str,
+    files: Dict[str, str],
+    *,
+    calculate_content_hashes: bool = True,
+) -> List[PackageComponent]:
     candidates: List[Tuple[int, PackageComponent]] = []
     declared_components = _manifest_components(files)
+    skill_companions = _skill_companion_files(files)
     canonical_kinds = {
         _ROOT_KINDS[PurePosixPath(path).parts[0].lower()]
         for path in files
@@ -253,15 +282,7 @@ def detect_components(source_id: str, files: Dict[str, str]) -> List[PackageComp
         component_id = _slug(str(meta.get("id") or inferred))
         companion_files: Dict[str, str] = {}
         if kind == "skill":
-            prefix = pure.parent.as_posix().rstrip("/") + "/"
-            companion_files = {
-                candidate[len(prefix) :]: body
-                for candidate, body in files.items()
-                if candidate.startswith(prefix) and candidate != path
-            }
-        digest_source = content + "".join(
-            key + companion_files[key] for key in sorted(companion_files)
-        )
+            companion_files = skill_companions.get(pure.parent.as_posix(), {})
         language = str(meta.get("language") or meta.get("lang") or "").lower()
         content_language = language_label(language) or ""
         labels = ensure_origin_label(_string_list(meta.get("labels")), "official")
@@ -294,7 +315,19 @@ def detect_components(source_id: str, files: Dict[str, str]) -> List[PackageComp
                     [*_component_dependencies(meta, declared), *workflow_dependencies]
                 )
             ),
-            content_hash=hashlib.sha256(digest_source.encode()).hexdigest(),
+            content_hash=(
+                hashlib.sha256(
+                    (
+                        content
+                        + "".join(
+                            key + companion_files[key]
+                            for key in sorted(companion_files)
+                        )
+                    ).encode()
+                ).hexdigest()
+                if calculate_content_hashes
+                else ""
+            ),
             language=content_language,
             tool_language=tool_language if kind == "tool" else "",
             detected_by=detected_by,

@@ -73,6 +73,60 @@ def test_preview_has_no_own_size_limit_by_default(admin_client) -> None:
     assert len(response.json()["draft"]["system_prompt"]) == len(prompt)
 
 
+def test_import_catalog_is_searched_and_paginated_per_resource_type(
+    admin_client,
+) -> None:
+    for name in ("Security Review", "Security Operations", "Unrelated"):
+        created = admin_client.post(
+            "/api/skills/private", json={"name": name, "description": "d"}
+        )
+        assert created.status_code == 200, created.text
+
+    first = admin_client.get(
+        "/api/agents/import/catalog/skill", params={"q": "Security", "limit": 1}
+    )
+
+    assert first.status_code == 200, first.text
+    body = first.json()
+    assert body["total"] == 2
+    assert body["has_more"] is True
+    assert len(body["items"]) == 1
+    assert "Security" in body["items"][0]["name"]
+
+    second = admin_client.get(
+        "/api/agents/import/catalog/skill",
+        params={"q": "Security", "limit": 1, "offset": 1},
+    )
+    assert second.status_code == 200, second.text
+    assert second.json()["has_more"] is False
+
+
+def test_import_catalog_resolves_linked_ids_in_one_batched_request(
+    admin_client,
+) -> None:
+    created = admin_client.post(
+        "/api/skills/private",
+        json={"name": "Linked Skill", "description": "d"},
+    )
+    assert created.status_code == 200, created.text
+    skill_id = created.json()["id"]
+
+    response = admin_client.post(
+        "/api/agents/import/catalog/resolve",
+        json={
+            "resources": {
+                "skill": [skill_id],
+                "knowledge": ["missing-knowledge"],
+            }
+        },
+    )
+
+    assert response.status_code == 200, response.text
+    assert [item["id"] for item in response.json()["skill"]] == [skill_id]
+    assert response.json()["knowledge"] == []
+    assert "prompt" not in response.json()
+
+
 def test_preview_respects_admin_global_request_limit(admin_client) -> None:
     updated = admin_client.put(
         "/api/settings/platform", json={"max_request_bytes": 128}
@@ -135,6 +189,10 @@ def test_directory_preview_builds_multi_agent_shared_graph(admin_client) -> None
 
     assert response.status_code == 200, response.text
     body = response.json()
+    assert all(
+        "content_hash" not in item and "agent" not in item
+        for item in body["components"]
+    )
     agents = {
         item["name"]: item for item in body["components"] if item["kind"] == "agent"
     }
@@ -149,6 +207,7 @@ def test_directory_preview_builds_multi_agent_shared_graph(admin_client) -> None
 
 def test_directory_apply_creates_shared_dependency_once_and_is_atomic(
     admin_client,
+    monkeypatch,
 ) -> None:
     preview = admin_client.post(
         "/api/agents/import/directory/preview",
@@ -160,12 +219,17 @@ def test_directory_apply_creates_shared_dependency_once_and_is_atomic(
         for item in preview["components"]
         if item["kind"] == "agent"
     ]
+    monkeypatch.setattr(
+        "app.services.agent_directory_import.detect_components",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("apply must reuse the reviewed plan")
+        ),
+    )
 
     response = admin_client.post(
         "/api/agents/import/directory/apply",
-        files=_directory_files(),
         data={
-            "paths": json.dumps(_directory_paths()),
+            "session_id": preview["session_id"],
             "options": json.dumps({"selected_agent_ids": agent_ids}),
         },
     )
@@ -187,6 +251,16 @@ def test_directory_apply_creates_shared_dependency_once_and_is_atomic(
     }
     assert set(agents["Agent X"]["skills"]) == {created["a"], created["b"]}
     assert set(agents["Agent Y"]["skills"]) == {created["a"], created["z"]}
+
+    reused = admin_client.post(
+        "/api/agents/import/directory/apply",
+        data={
+            "session_id": preview["session_id"],
+            "options": json.dumps({"selected_agent_ids": agent_ids}),
+        },
+    )
+    assert reused.status_code == 422
+    assert reused.json()["detail"]["reason"] == "expired_import_session"
 
 
 def test_directory_importing_one_agent_only_materializes_its_dependency_closure(

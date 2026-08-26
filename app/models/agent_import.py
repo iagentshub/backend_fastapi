@@ -51,6 +51,22 @@ class AgentImportCandidate(BaseModel):
     name: str
 
 
+class AgentImportCatalogPage(BaseModel):
+    """Compact, independently pageable catalog for one resource type."""
+
+    items: list[AgentImportCandidate] = Field(default_factory=list)
+    total: int
+    limit: int
+    offset: int
+    has_more: bool
+
+
+class AgentImportCatalogResolveRequest(BaseModel):
+    """IDs grouped by type for one visibility-safe batched resolution."""
+
+    resources: dict[AgentImportResourceKind, list[str]] = Field(default_factory=dict)
+
+
 class AgentImportReference(BaseModel):
     """One typed relationship requested by an imported agent."""
 
@@ -88,8 +104,11 @@ class AgentDirectoryComponent(BaseModel):
     name: str
     description: str = ""
     source_path: str
-    content_hash: str
-    agent: AgentImportDraft | None = None
+    # Internal planning data.  The client only needs the compact component
+    # summary; apply() reuses these values server-side after rebuilding the
+    # validated plan.
+    content_hash: str = Field(default="", exclude=True)
+    agent: AgentImportDraft | None = Field(default=None, exclude=True)
     references: list[AgentImportReference] = Field(default_factory=list)
     default_action: Literal["create", "reuse", "review", "skip"] = Field(
         default="create"
@@ -105,6 +124,7 @@ class AgentDirectoryImportPlan(BaseModel):
     components: list[AgentDirectoryComponent] = Field(default_factory=list)
     issues: list[AgentImportIssue] = Field(default_factory=list)
     ignored_paths: list[str] = Field(default_factory=list)
+    session_id: str | None = None
 
     @property
     def agent_count(self) -> int:

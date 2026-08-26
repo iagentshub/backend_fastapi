@@ -10,6 +10,7 @@ import yaml
 
 from app.config.content_languages import CONTENT_LANGUAGE_LABELS
 from app.pagination.models import OffsetPage, OffsetParams
+from app.services.resource_visibility import VisibilityFilter
 from app.sql import sql
 
 # db se importa DOS veces a propósito: ver app/storage/_storage_helpers.py.
@@ -123,6 +124,7 @@ class SkillStorage(ResourceStorage):
         scope: str,
         page: OffsetParams,
         requested_group_id: str | None = None,
+        catalog_filter: VisibilityFilter | None = None,
     ) -> OffsetPage[Dict[str, Any]]:
         await self._ensure_migrated()
         spec = ScopedResourcePageSpec(
@@ -144,6 +146,7 @@ class SkillStorage(ResourceStorage):
             include_inactive=None,
             page=page,
             requested_group_id=requested_group_id,
+            extra_filters=(catalog_filter,) if catalog_filter else (),
         )
 
     def __init__(self, root_dir: Path) -> None:
