@@ -14,6 +14,13 @@ from typing import Any, Dict, List, Optional
 from app.api.routes.auth import GroupContext
 from app.auth.auth import get_user_role
 from app.errors import APIError
+from app.services.directory_file_rules import (
+    KNOWLEDGE_IGNORED_DIRECTORY_NAMES,
+    KNOWLEDGE_SECRET_FILE_NAMES,
+    InvalidDirectoryPath,
+    directory_skip_reason,
+    normalize_relative_path,
+)
 from app.services.document_executor import run_document_blocking
 from app.services.publishing import assert_can_publish
 from app.storage.group_shares import GroupShareStorage
@@ -167,32 +174,6 @@ _PACK_TEXT_NAMES = {
     "agents.md",
 }
 
-_PACK_IGNORED_DIRS = {
-    ".git",
-    ".svn",
-    ".hg",
-    "node_modules",
-    "build",
-    "dist",
-    ".dart_tool",
-    ".idea",
-    ".vscode",
-    "__pycache__",
-    ".pytest_cache",
-    ".mypy_cache",
-}
-
-_PACK_SECRET_NAMES = {
-    ".env",
-    "id_rsa",
-    "id_dsa",
-    "id_ecdsa",
-    "id_ed25519",
-    "credentials",
-    "credentials.json",
-    "secrets.json",
-}
-
 _PACK_MAX_FILES = 500
 
 _PACK_SESSION_MAX_FILES = 5000
@@ -318,18 +299,15 @@ async def _sync_social_visibility(
 
 
 def _pack_skip_reason(relative_path: str) -> Optional[str]:
-    path = PurePosixPath(relative_path)
-    lower_parts = {part.lower() for part in path.parts[:-1]}
-    name = path.name.lower()
-    if lower_parts & _PACK_IGNORED_DIRS:
-        return "directorio_ignorado"
-    if (
-        name in _PACK_SECRET_NAMES
-        or (name.startswith(".env.") and name != ".env.example")
-        or name.endswith((".pem", ".key", ".p12", ".pfx"))
-    ):
-        return "posible_secreto"
-    return None
+    reason = directory_skip_reason(
+        relative_path,
+        ignored_directory_names=KNOWLEDGE_IGNORED_DIRECTORY_NAMES,
+        secret_file_names=KNOWLEDGE_SECRET_FILE_NAMES,
+    )
+    return {
+        "ignored_directory": "directorio_ignorado",
+        "possible_secret": "posible_secreto",
+    }.get(reason)
 
 
 def _pack_file_is_extractable(relative_path: str) -> bool:
@@ -408,27 +386,20 @@ def _pack_kind(relative_path: str) -> str:
 
 
 def _normalize_pack_path(raw: str) -> str:
-    value = raw.replace("\\", "/").strip("/")
-    path = PurePosixPath(value)
-    if (
-        not value
-        or path.is_absolute()
-        or any(part in {"", ".", ".."} for part in path.parts)
-    ):
+    try:
+        return normalize_relative_path(raw)
+    except InvalidDirectoryPath as exc:
+        message = (
+            "Una ruta del pack supera los límites permitidos"
+            if exc.reason == "path_too_long"
+            else "El pack contiene una ruta no válida"
+        )
         raise APIError(
             422,
             "invalid_field",
-            "El pack contiene una ruta no válida",
+            message,
             extra={"field": "paths", "path": raw},
-        )
-    if len(path.parts) > 32 or len(value) > 500:
-        raise APIError(
-            422,
-            "invalid_field",
-            "Una ruta del pack supera los límites permitidos",
-            extra={"field": "paths", "path": raw},
-        )
-    return path.as_posix()
+        ) from None
 
 
 def _valid_sha256(value: str) -> bool:

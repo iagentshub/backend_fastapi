@@ -1,9 +1,9 @@
 """Qué hay en el repositorio: de cada fichero, qué componente es.
 
-La clasificación va por carpeta raíz y extensión; `_IGNORED_ROOTS` es lo que
-evita importar el `.github` o el `node_modules` de un repositorio ajeno.
+La clasificación va por carpeta raíz y extensión; `_IGNORED_ROOTS` evita
+importar `.git`, `node_modules` u otras carpetas ajenas al paquete. `.github`
+sí se inspecciona porque puede contener agentes de GitHub Copilot.
 """
-
 
 from __future__ import annotations
 
@@ -56,13 +56,13 @@ _PLATFORM_ROOTS = frozenset(
         ".cursor",
         ".kiro",
         ".gemini",
+        ".github",
     }
 )
 
 _IGNORED_ROOTS = frozenset(
     {
         ".git",
-        ".github",
         "benchmarks",
         "docs",
         "documentation",
@@ -89,6 +89,7 @@ _KIND_EXTENSIONS = {
     "hook": {".json", ".yaml", ".yml", ".py", ".sh", ".ps1", ".js", ".ts"},
     "mcp": {".json", ".yaml", ".yml", ".toml"},
 }
+
 
 def _component_location(
     path: str, *, declared: bool = False
@@ -131,12 +132,14 @@ def _component_location(
         priority += 5
     return kind, priority
 
+
 def _string_list(value: Any) -> List[str]:
     if isinstance(value, str):
         return [item.strip() for item in value.split(",") if item.strip()]
     if isinstance(value, list):
         return [str(item).strip() for item in value if str(item).strip()]
     return []
+
 
 def _component_dependencies(
     meta: Dict[str, Any], declared: Dict[str, Any]
@@ -159,6 +162,7 @@ def _component_dependencies(
         for value in relations.values():
             values.extend(_string_list(value))
     return list(dict.fromkeys(values))
+
 
 def _manifest_components(files: Dict[str, str]) -> Dict[str, Dict[str, Any]]:
     for path in (
@@ -190,6 +194,7 @@ def _manifest_components(files: Dict[str, str]) -> Dict[str, Dict[str, Any]]:
             if isinstance(item, dict) and item.get("source_path")
         }
     return {}
+
 
 def detect_components(source_id: str, files: Dict[str, str]) -> List[PackageComponent]:
     candidates: List[Tuple[int, PackageComponent]] = []
@@ -263,7 +268,9 @@ def detect_components(source_id: str, files: Dict[str, str]) -> List[PackageComp
         if content_language:
             labels.append(content_language)
         tool_language = infer_tool_runtime(path)
-        executable_candidate = kind in {"tool", "hook"} or detected_by == "undeclared_executable"
+        executable_candidate = (
+            kind in {"tool", "hook"} or detected_by == "undeclared_executable"
+        )
         executable = kind == "tool"
         blocked = executable_candidate and (
             (kind == "tool" and not infer_tool_runtime(path))

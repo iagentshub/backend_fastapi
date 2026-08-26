@@ -4,7 +4,6 @@ Un agente cita sus skills por alias, por ruta o entre backticks, y de ahí sale
 la dependencia que luego se materializa como relación entre recursos.
 """
 
-
 from __future__ import annotations
 
 import posixpath
@@ -35,6 +34,7 @@ _AGENT_RESOURCE_TYPES = frozenset(
     {"skill", "knowledge", "prompt", "command", "tool", "memory"}
 )
 
+
 def _reference_aliases(component: PackageComponent) -> set[str]:
     path = PurePosixPath(component.source_path)
     aliases = {
@@ -62,7 +62,9 @@ def _reference_aliases(component: PackageComponent) -> set[str]:
     )
     return {alias.strip("./") for alias in aliases if alias.strip("./")}
 
-def _reference_candidates(value: str, source_path: str) -> List[str]:
+
+def reference_candidates(value: str, source_path: str = "") -> List[str]:
+    """Canonical aliases shared by repository and local-directory imports."""
     cleaned = value.strip().strip("`'\"<>()[]{}.,;:").split("#", 1)[0]
     cleaned = cleaned.replace("\\", "/")
     if not cleaned:
@@ -83,6 +85,11 @@ def _reference_candidates(value: str, source_path: str) -> List[str]:
         candidates.append(pure.stem.lower())
     return list(dict.fromkeys(item for item in candidates if item))
 
+
+# Compatibility for the existing package detector and its focused tests.
+_reference_candidates = reference_candidates
+
+
 def _content_references(component: PackageComponent) -> List[str]:
     values = [match.group(1) for match in _REFERENCE_PATH.finditer(component.content)]
     values.extend(
@@ -92,6 +99,7 @@ def _content_references(component: PackageComponent) -> List[str]:
         match.group(1) for match in _BACKTICK_REFERENCE.finditer(component.content)
     )
     return list(dict.fromkeys(values))
+
 
 def _resolve_component_relations(components: List[PackageComponent]) -> None:
     """Resuelve relaciones exactas después de fijar IDs y variantes.
@@ -107,7 +115,7 @@ def _resolve_component_relations(components: List[PackageComponent]) -> None:
             aliases[alias].add(component.component_id)
 
     def resolve(value: str, source: PackageComponent) -> Optional[str]:
-        for candidate in _reference_candidates(value, source.source_path):
+        for candidate in reference_candidates(value, source.source_path):
             matches = aliases.get(candidate, set()) - {source.component_id}
             if len(matches) == 1:
                 return next(iter(matches))

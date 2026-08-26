@@ -46,11 +46,15 @@ def _slug(value: str) -> str:
     return re.sub(r"[^a-z0-9]+", "-", value.lower()).strip("-") or "component"
 
 
-def _strip_frontmatter(content: str) -> str:
+def strip_frontmatter(content: str) -> str:
     if not content.startswith("---"):
         return content
     parts = content.split("---", 2)
     return parts[2].lstrip() if len(parts) == 3 else content
+
+
+# Compatibility for callers that still use the former private helper.
+_strip_frontmatter = strip_frontmatter
 
 
 def select_components(
@@ -349,7 +353,7 @@ class OfficialSourceMaterializer:
     ) -> Optional[tuple[str, str]]:
         """Crea o actualiza el recurso del componente; devuelve (tipo, id)."""
         labels = self._labels(component)
-        content = _strip_frontmatter(component.content)
+        content = strip_frontmatter(component.content)
         reuse_id = str((existing or {}).get("resource_id") or "")
         kind = component.component_type
 
@@ -573,4 +577,5 @@ __all__ = [
     "OfficialSourceMaterializer",
     "order_by_dependencies",
     "select_components",
+    "strip_frontmatter",
 ]

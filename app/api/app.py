@@ -16,6 +16,7 @@ from app.api.routes import (
     agent_builder,
     agent_chat,
     agent_exports,
+    agent_imports,
     agent_preferences,
     agents,
     auth,
@@ -300,6 +301,7 @@ def create_app() -> FastAPI:
     app.include_router(connections.router)
     app.include_router(agent_chat.router)
     app.include_router(agent_exports.router)
+    app.include_router(agent_imports.router)
     app.include_router(agent_preferences.router)
     app.include_router(agents.router)
     app.include_router(skills.router)

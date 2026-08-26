@@ -174,6 +174,9 @@ POST /api/admin/update-now
 POST /api/admin/users
 POST /api/agent-builder/chat
 POST /api/agents
+POST /api/agents/import/preview
+POST /api/agents/import/directory/apply
+POST /api/agents/import/directory/preview
 POST /api/agents/private/{agent_id}/sync
 POST /api/agents/{agent_id}/activate
 POST /api/agents/{agent_id}/chat

@@ -50,6 +50,40 @@ def _extraction_columns(item: Dict[str, Any], content: str) -> tuple:
 
 
 class KnowledgePackStorage:
+    async def list_visible(
+        self, owner_id: str, username: str
+    ) -> List[Dict[str, Any]]:
+        """Return owned and shared packs with one visibility query."""
+
+        async with open_db() as conn:
+            rows = await conn.fetchall(
+                sql("queries/knowledge_packs:list_visible_to_user"),
+                (username, owner_id),
+            )
+        packs = [_pack_dict(row) for row in rows]
+        for pack in packs:
+            shared_group_id = pack.pop("shared_group_id", None)
+            if str(pack.get("owner_id") or "") != owner_id and shared_group_id:
+                pack["_shared"] = True
+                pack["_group_id"] = str(shared_group_id)
+        return packs
+
+    async def list_shared_with_group(
+        self, group_id: str
+    ) -> List[Dict[str, Any]]:
+        """Return all packs shared with one already-authorized group in one query."""
+
+        async with open_db() as conn:
+            rows = await conn.fetchall(
+                sql("queries/knowledge_packs:list_shared_with_group"),
+                (group_id,),
+            )
+        packs = [_pack_dict(row) for row in rows]
+        for pack in packs:
+            pack["_shared"] = True
+            pack["_group_id"] = group_id
+        return packs
+
     async def set_active(
         self, pack_id: str, owner_id: Optional[str], active: bool
     ) -> bool:

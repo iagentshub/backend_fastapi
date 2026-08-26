@@ -196,7 +196,7 @@ def test_share_knowledge_with_group(client):
     assert any(k["id"] == know["id"] and k.get("_shared") for k in items)
 
 
-def test_share_pack_grants_access_to_pack_and_individual_files(client):
+def test_share_pack_grants_access_to_pack_and_individual_files(client, monkeypatch):
     _register("sh_pack_owner")
     _register("sh_pack_member")
 
@@ -218,8 +218,22 @@ def test_share_pack_grants_access_to_pack_and_individual_files(client):
     assert shared.status_code == 200
 
     _set_cookie(client, "sh_pack_member")
-    packs = client.get("/api/knowledge/packs").json()
+    from app.api.routes.knowledge import packs as packs_routes
+
+    async def unexpected_single_pack_read(*args, **kwargs):
+        raise AssertionError("shared pack listing must not read packs one by one")
+
+    with monkeypatch.context() as patch:
+        patch.setattr(packs_routes._packs, "get", unexpected_single_pack_read)
+        packs = client.get("/api/knowledge/packs").json()
+        group_packs = client.get(
+            "/api/knowledge/packs", params={"group_id": group["id"]}
+        ).json()
     assert any(item["id"] == pack["id"] and item.get("_shared") for item in packs)
+    assert any(
+        item["id"] == pack["id"] and item.get("_group_id") == group["id"]
+        for item in group_packs
+    )
     items = client.get("/api/knowledge").json()
     pack_item = next(item for item in items if item["pack_id"] == pack["id"])
     assert pack_item["_shared_via_pack"] is True

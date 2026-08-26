@@ -1,5 +1,45 @@
 -- Consultas de app/storage/knowledge_packs.py.
 
+-- name: list_visible_to_user
+SELECT p.*, COALESCE(stats.file_count, 0) AS file_count,
+       COALESCE(stats.size_bytes, 0) AS size_bytes,
+       visible.shared_group_id
+FROM knowledge_packs p
+LEFT JOIN (
+    SELECT pack_id, COUNT(id) AS file_count,
+           COALESCE(SUM(size_bytes), 0) AS size_bytes
+    FROM knowledge_items
+    GROUP BY pack_id
+) stats ON stats.pack_id = p.id
+LEFT JOIN (
+    SELECT s.resource_id, MIN(s.group_id) AS shared_group_id
+    FROM resource_group_shares s
+    JOIN group_members m ON m.group_id = s.group_id
+    JOIN groups g ON g.id = s.group_id
+    WHERE m.username = ? AND s.resource_type = 'knowledge_pack'
+      AND g.is_active = 1
+    GROUP BY s.resource_id
+) visible ON visible.resource_id = p.id
+WHERE (p.owner_id = ? OR visible.resource_id IS NOT NULL)
+  AND COALESCE(p.upload_status, 'ready') = 'ready'
+ORDER BY p.created_at DESC;
+
+-- name: list_shared_with_group
+SELECT p.*, COALESCE(stats.file_count, 0) AS file_count,
+       COALESCE(stats.size_bytes, 0) AS size_bytes
+FROM knowledge_packs p
+JOIN resource_group_shares s
+  ON s.resource_id = p.id AND s.resource_type = 'knowledge_pack'
+LEFT JOIN (
+    SELECT pack_id, COUNT(id) AS file_count,
+           COALESCE(SUM(size_bytes), 0) AS size_bytes
+    FROM knowledge_items
+    GROUP BY pack_id
+) stats ON stats.pack_id = p.id
+WHERE s.group_id = ?
+  AND COALESCE(p.upload_status, 'ready') = 'ready'
+ORDER BY p.created_at DESC;
+
 -- name: list_pack_files
 SELECT k.id, k.pack_relative_path AS relative_path, k.pack_kind AS kind, k.mime_type, k.size_bytes, k.checksum, k.title, k.type, k.char_count, k.source_char_count, k.content_truncated, k.truncation_reason, k.is_active, k.created_at, k.updated_at
 FROM knowledge_items k

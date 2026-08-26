@@ -1,6 +1,5 @@
 """Leer un fichero del repositorio: frontmatter, mapas y qué es un agente."""
 
-
 from __future__ import annotations
 
 import json
@@ -23,6 +22,7 @@ def _frontmatter(text: str) -> Dict[str, Any]:
         return {}
     return value if isinstance(value, dict) else {}
 
+
 def _structured_mapping(content: str, suffix: str) -> Dict[str, Any]:
     try:
         if suffix == ".json":
@@ -35,6 +35,7 @@ def _structured_mapping(content: str, suffix: str) -> Dict[str, Any]:
         return {}
     return value if isinstance(value, dict) else {}
 
+
 def _is_agent_definition(
     path: PurePosixPath,
     content: str,
@@ -45,10 +46,12 @@ def _is_agent_definition(
     if declared:
         return True
     if path.suffix.lower() == ".md":
-        return bool(
-            meta.get("name")
-            and any(meta.get(key) for key in ("description", "model", "tools"))
+        body = (
+            content.split("---", 2)[-1].strip()
+            if content.startswith("---")
+            else content.strip()
         )
+        return bool(meta.get("name") and body)
     structured = _structured_mapping(content, path.suffix.lower())
     has_identity = bool(structured.get("name") or structured.get("id"))
     has_instructions = any(

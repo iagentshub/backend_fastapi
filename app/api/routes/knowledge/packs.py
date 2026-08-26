@@ -47,32 +47,9 @@ async def list_packs(
     if requested_group_id is not None:
         if role != "admin" and not await _groups.can_access(requested_group_id, user):
             raise APIError(403, "forbidden", "Sin acceso a este grupo")
-        ids = await _shares.get_group_shared_resource_ids(
-            requested_group_id, "knowledge_pack"
-        )
-        packs = []
-        for pack_id in ids:
-            pack = await _packs.get(pack_id, include_items=False)
-            if pack:
-                pack["_shared"] = True
-                pack["_group_id"] = requested_group_id
-                packs.append(pack)
+        packs = await _packs.list_shared_with_group(requested_group_id)
     else:
-        packs = await _packs.list(ctx.group_id)
-        own_ids = {pack["id"] for pack in packs}
-        for group in await _groups.list_for_user(user):
-            group_id = group["id"]
-            for pack_id in await _shares.get_group_shared_resource_ids(
-                group_id, "knowledge_pack"
-            ):
-                if pack_id in own_ids:
-                    continue
-                pack = await _packs.get(pack_id, include_items=False)
-                if pack:
-                    pack["_shared"] = True
-                    pack["_group_id"] = group_id
-                    packs.append(pack)
-                    own_ids.add(pack_id)
+        packs = await _packs.list_visible(ctx.group_id, user)
     return packs
 
 
