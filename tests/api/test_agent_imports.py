@@ -1,5 +1,8 @@
 import json
 
+from app.api.routes import agent_imports as agent_import_routes
+from app.services import agent_import_upload_sessions
+
 
 def test_preview_requires_authentication(client) -> None:
     response = client.post(
@@ -203,6 +206,116 @@ def test_directory_preview_builds_multi_agent_shared_graph(admin_client) -> None
     assert {
         reference["local_component_id"] for reference in agents["Agent Y"]["references"]
     } == {"a", "z"}
+
+
+def test_directory_progressive_upload_builds_the_same_review_session(
+    admin_client,
+) -> None:
+    paths = _directory_paths()
+    files = _directory_files()
+    created = admin_client.post(
+        "/api/agents/import/directory/upload-sessions",
+        json={"total_files": len(files)},
+    )
+    assert created.status_code == 200, created.text
+    upload_session_id = created.json()["session_id"]
+
+    for index, ((_, file_part), path) in enumerate(zip(files, paths, strict=True)):
+        filename, content, mime_type = file_part
+        uploaded = admin_client.post(
+            f"/api/agents/import/directory/upload-sessions/"
+            f"{upload_session_id}/files",
+            files={"file": (filename, content, mime_type)},
+            data={"file_index": index, "relative_path": path},
+        )
+        assert uploaded.status_code == 200, uploaded.text
+
+    completed = admin_client.post(
+        f"/api/agents/import/directory/upload-sessions/"
+        f"{upload_session_id}/complete"
+    )
+
+    assert completed.status_code == 200, completed.text
+    body = completed.json()
+    assert body["session_id"]
+    assert {item["name"] for item in body["components"] if item["kind"] == "agent"} == {
+        "Agent X",
+        "Agent Y",
+    }
+
+
+def test_directory_progressive_upload_requires_every_file(admin_client) -> None:
+    created = admin_client.post(
+        "/api/agents/import/directory/upload-sessions",
+        json={"total_files": 2},
+    ).json()
+
+    response = admin_client.post(
+        f"/api/agents/import/directory/upload-sessions/"
+        f"{created['session_id']}/complete"
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["reason"] == "incomplete_upload_session"
+
+
+def test_directory_progressive_upload_rejects_secret_before_staging(
+    admin_client,
+) -> None:
+    created = admin_client.post(
+        "/api/agents/import/directory/upload-sessions",
+        json={"total_files": 1},
+    ).json()
+
+    response = admin_client.post(
+        f"/api/agents/import/directory/upload-sessions/"
+        f"{created['session_id']}/files",
+        files={"file": (".env", b"TOKEN=secret", "text/plain")},
+        data={"file_index": 0, "relative_path": ".env"},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"]["reason"] == "possible_secret"
+
+
+def test_directory_progressive_upload_respects_admin_total_limit(
+    admin_client, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        agent_import_upload_sessions, "configured_max_bytes", lambda: 3
+    )
+    created = admin_client.post(
+        "/api/agents/import/directory/upload-sessions",
+        json={"total_files": 1},
+    ).json()
+
+    response = admin_client.post(
+        f"/api/agents/import/directory/upload-sessions/"
+        f"{created['session_id']}/files",
+        files={"file": ("agent.md", b"abcd", "text/markdown")},
+        data={"file_index": 0, "relative_path": "agent.md"},
+    )
+
+    assert response.status_code == 413
+    assert response.json()["detail"]["limit_bytes"] == 3
+
+
+def test_directory_preview_rejects_too_many_files_before_reading(
+    admin_client, monkeypatch
+) -> None:
+    monkeypatch.setattr(agent_import_routes, "DIRECTORY_IMPORT_MAX_FILES", 1)
+
+    response = admin_client.post(
+        "/api/agents/import/directory/preview",
+        files=[
+            ("files", ("a.md", b"A", "text/markdown")),
+            ("files", ("b.md", b"B", "text/markdown")),
+        ],
+        data={"paths": json.dumps(["agents/a.md", "agents/b.md"])},
+    )
+
+    assert response.status_code == 413
+    assert response.json()["detail"]["reason"] == "too_many_files"
 
 
 def test_directory_apply_creates_shared_dependency_once_and_is_atomic(

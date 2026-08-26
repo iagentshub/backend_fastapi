@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from pathlib import PurePosixPath
 
-KNOWLEDGE_IGNORED_DIRECTORY_NAMES = frozenset(
+_COMMON_IGNORED_DIRECTORY_NAMES = frozenset(
     {
         ".git",
         ".svn",
@@ -21,11 +21,10 @@ KNOWLEDGE_IGNORED_DIRECTORY_NAMES = frozenset(
     }
 )
 
-AGENT_IGNORED_DIRECTORY_NAMES = frozenset(
-    {".git", "node_modules", "dist", "build", "vendor", "__pycache__"}
-)
+KNOWLEDGE_IGNORED_DIRECTORY_NAMES = _COMMON_IGNORED_DIRECTORY_NAMES
+AGENT_IGNORED_DIRECTORY_NAMES = _COMMON_IGNORED_DIRECTORY_NAMES | {"vendor"}
 
-KNOWLEDGE_SECRET_FILE_NAMES = frozenset(
+_COMMON_SECRET_FILE_NAMES = frozenset(
     {
         ".env",
         "id_rsa",
@@ -38,9 +37,8 @@ KNOWLEDGE_SECRET_FILE_NAMES = frozenset(
     }
 )
 
-AGENT_SECRET_FILE_NAMES = frozenset(
-    {".env", ".npmrc", ".pypirc", "id_rsa", "id_ed25519", "credentials.json"}
-)
+KNOWLEDGE_SECRET_FILE_NAMES = _COMMON_SECRET_FILE_NAMES
+AGENT_SECRET_FILE_NAMES = _COMMON_SECRET_FILE_NAMES | {".npmrc", ".pypirc"}
 
 
 class InvalidDirectoryPath(ValueError):

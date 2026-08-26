@@ -39,6 +39,19 @@ de esa configuración. Incluye `tool_runtimes`, el catálogo efectivo de Tools,
 con sus códigos de API, extensiones, requisito de binario y destinos nativos.
 Los clientes deben usar ese catálogo en vez de duplicar listas fijas.
 
+### Límites estructurales de importación de directorios
+
+Estos topes protegen la normalización y el catálogo frente a árboles
+patológicos. No limitan los bytes ni sustituyen a `max_request_bytes`; aunque
+este valga `0` —sin límite—, una ruta maliciosamente profunda sigue siendo
+rechazada. Son configuración de arranque y requieren reiniciar el backend.
+
+| Variable | Por defecto | Descripción |
+|---|---:|---|
+| `GAIA_DIRECTORY_IMPORT_MAX_FILES` | `5000` | Número máximo de archivos por directorio importado. |
+| `GAIA_DIRECTORY_IMPORT_MAX_DEPTH` | `32` | Número máximo de segmentos de una ruta relativa. |
+| `GAIA_DIRECTORY_IMPORT_MAX_PATH_LENGTH` | `500` | Longitud máxima de una ruta relativa normalizada. |
+
 ### Destinos internos de Ollama
 
 | Variable | Por defecto | Descripción |

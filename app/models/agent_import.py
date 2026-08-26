@@ -131,6 +131,19 @@ class AgentDirectoryImportPlan(BaseModel):
         return sum(component.kind == "agent" for component in self.components)
 
 
+class AgentDirectoryUploadSessionBody(BaseModel):
+    """Structural metadata required before staging directory files."""
+
+    total_files: int = Field(ge=1)
+
+
+class AgentDirectoryUploadSession(BaseModel):
+    """Identity of a short-lived progressive directory upload."""
+
+    session_id: str
+    total_files: int
+
+
 class AgentDirectoryComponentChoice(BaseModel):
     """User decision for a dependency component in a directory plan."""
 

@@ -38,6 +38,19 @@ configuration to clients. It includes `tool_runtimes`, the effective Tool
 catalog with API codes, extensions, binary requirements, and native targets.
 Clients must use that catalog instead of duplicating fixed lists.
 
+### Structural directory import limits
+
+These limits protect normalization and cataloguing from pathological trees.
+They do not limit bytes or replace `max_request_bytes`: even when it is `0`
+—unlimited—, a maliciously deep path is still rejected. They are startup
+configuration and require a backend restart.
+
+| Variable | Default | Description |
+|---|---:|---|
+| `GAIA_DIRECTORY_IMPORT_MAX_FILES` | `5000` | Maximum files in one imported directory. |
+| `GAIA_DIRECTORY_IMPORT_MAX_DEPTH` | `32` | Maximum segments in a relative path. |
+| `GAIA_DIRECTORY_IMPORT_MAX_PATH_LENGTH` | `500` | Maximum normalized relative-path length. |
+
 ### Internal Ollama destinations
 
 | Variable | Default | Description |

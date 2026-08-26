@@ -9,6 +9,10 @@ from typing import Any, Iterable, Sequence
 
 from app.api.routes.auth import GroupContext
 from app.config import data as _cfg
+from app.config.directory_import import (
+    DIRECTORY_IMPORT_MAX_DEPTH,
+    DIRECTORY_IMPORT_MAX_PATH_LENGTH,
+)
 from app.errors import APIError
 from app.models.agent_import import (
     AgentDirectoryApplyOptions,
@@ -60,7 +64,11 @@ def normalize_directory_path(raw: str) -> str:
     """Normalize an untrusted browser/native relative path without escaping root."""
 
     try:
-        return normalize_relative_path(raw, max_depth=None, max_length=None)
+        return normalize_relative_path(
+            raw,
+            max_depth=DIRECTORY_IMPORT_MAX_DEPTH,
+            max_length=DIRECTORY_IMPORT_MAX_PATH_LENGTH,
+        )
     except InvalidDirectoryPath as exc:
         message = (
             "Una ruta de la carpeta supera los límites permitidos"
@@ -72,8 +80,16 @@ def normalize_directory_path(raw: str) -> str:
         ) from None
 
 
+def agent_directory_skip_reason(path: str) -> str | None:
+    return directory_skip_reason(
+        path,
+        ignored_directory_names=AGENT_IGNORED_DIRECTORY_NAMES,
+        secret_file_names=AGENT_SECRET_FILE_NAMES,
+    )
+
+
 def decode_directory_files(
-    uploads: Sequence[tuple[str, bytes]],
+    uploads: Iterable[tuple[str, bytes]],
 ) -> tuple[dict[str, str], list[str]]:
     """Decode safe UTF-8 files and preserve ignored paths for the review UI."""
 
@@ -85,11 +101,7 @@ def decode_directory_files(
             raise _invalid_directory(
                 "La carpeta contiene rutas duplicadas", reason="duplicate_path"
             )
-        if directory_skip_reason(
-            path,
-            ignored_directory_names=AGENT_IGNORED_DIRECTORY_NAMES,
-            secret_file_names=AGENT_SECRET_FILE_NAMES,
-        ):
+        if agent_directory_skip_reason(path):
             ignored.append(path)
             continue
         try:
@@ -145,7 +157,7 @@ class AgentDirectoryImportService:
 
     async def plan(
         self,
-        uploads: Sequence[tuple[str, bytes]],
+        uploads: Iterable[tuple[str, bytes]],
         ctx: GroupContext,
         *,
         catalog: AgentImportCatalog | None = None,

@@ -15,6 +15,7 @@ DELETE /api/admin/skills/{item_id}
 DELETE /api/admin/tools/{item_id}
 DELETE /api/admin/users/{username}
 DELETE /api/admin/workflows/{workflow_id}
+DELETE /api/agents/import/directory/upload-sessions/{session_id}
 DELETE /api/agents/{agent_id}
 DELETE /api/auth/me/avatar
 DELETE /api/auth/sessions
@@ -77,6 +78,7 @@ GET /api/admin/tools/{item_id}
 GET /api/admin/users
 GET /api/admin/workflows
 GET /api/agents
+GET /api/agents/import/catalog/{kind}
 GET /api/agents/{agent_id}
 GET /api/agents/{agent_id}/export/{fmt}
 GET /api/agents/{agent_id}/preferences
@@ -174,11 +176,13 @@ POST /api/admin/update-now
 POST /api/admin/users
 POST /api/agent-builder/chat
 POST /api/agents
-POST /api/agents/import/preview
-GET /api/agents/import/catalog/{kind}
 POST /api/agents/import/catalog/resolve
 POST /api/agents/import/directory/apply
 POST /api/agents/import/directory/preview
+POST /api/agents/import/directory/upload-sessions
+POST /api/agents/import/directory/upload-sessions/{session_id}/complete
+POST /api/agents/import/directory/upload-sessions/{session_id}/files
+POST /api/agents/import/preview
 POST /api/agents/private/{agent_id}/sync
 POST /api/agents/{agent_id}/activate
 POST /api/agents/{agent_id}/chat

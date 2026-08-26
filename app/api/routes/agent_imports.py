@@ -8,11 +8,14 @@ from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
 from pydantic import ValidationError
 
 from app.api.routes.auth import GroupContext, require_group_session
+from app.config.directory_import import DIRECTORY_IMPORT_MAX_FILES
 from app.errors import APIError
 from app.models.agent_import import (
     AgentDirectoryApplyOptions,
     AgentDirectoryImportPlan,
     AgentDirectoryImportResult,
+    AgentDirectoryUploadSession,
+    AgentDirectoryUploadSessionBody,
     AgentImportCatalogPage,
     AgentImportCatalogResolveRequest,
     AgentImportPreview,
@@ -21,6 +24,8 @@ from app.models.agent_import import (
 from app.pagination.models import OffsetParams
 from app.services.agent_directory_import import (
     AgentDirectoryImportService,
+    agent_directory_skip_reason,
+    normalize_directory_path,
     uploads_from_parts,
 )
 from app.services.agent_import import parse_agent_import
@@ -28,6 +33,12 @@ from app.services.agent_import_catalog import AgentImportCatalog
 from app.services.agent_import_sessions import (
     claim_import_session,
     create_import_session,
+)
+from app.services.agent_import_upload_sessions import (
+    claim_staged_uploads,
+    create_upload_session,
+    delete_upload_session,
+    store_upload_file,
 )
 
 router = APIRouter(prefix="/api/agents/import", tags=["agents"])
@@ -98,8 +109,82 @@ async def _directory_uploads(
             "La lista de rutas de la carpeta no es válida",
             extra={"field": "paths", "reason": "invalid_paths"},
         )
+    if len(files) > DIRECTORY_IMPORT_MAX_FILES:
+        raise APIError(
+            413,
+            "payload_too_large",
+            "El directorio contiene demasiados archivos",
+            extra={
+                "field": "files",
+                "reason": "too_many_files",
+                "max_files": DIRECTORY_IMPORT_MAX_FILES,
+            },
+        )
     contents = [await upload.read() for upload in files]
     return uploads_from_parts(paths, contents)
+
+
+@router.post(
+    "/directory/upload-sessions", response_model=AgentDirectoryUploadSession
+)
+async def create_agent_directory_upload_session(
+    body: AgentDirectoryUploadSessionBody,
+    ctx: GroupContext = Depends(require_group_session),
+) -> AgentDirectoryUploadSession:
+    session_id = await create_upload_session(body.total_files, ctx)
+    return AgentDirectoryUploadSession(
+        session_id=session_id, total_files=body.total_files
+    )
+
+
+@router.post("/directory/upload-sessions/{session_id}/files")
+async def upload_agent_directory_session_file(
+    session_id: str,
+    file_index: int = Form(...),
+    relative_path: str = Form(...),
+    file: UploadFile = File(...),
+    ctx: GroupContext = Depends(require_group_session),
+) -> dict[str, bool]:
+    path = normalize_directory_path(relative_path)
+    reason = agent_directory_skip_reason(path)
+    if reason:
+        raise APIError(
+            422,
+            "invalid_field",
+            "El archivo se ha omitido por seguridad",
+            extra={"field": "file", "reason": reason},
+        )
+    await store_upload_file(
+        session_id,
+        index=file_index,
+        relative_path=path,
+        upload=file,
+        ctx=ctx,
+    )
+    return {"ok": True}
+
+
+@router.post(
+    "/directory/upload-sessions/{session_id}/complete",
+    response_model=AgentDirectoryImportPlan,
+)
+async def complete_agent_directory_upload_session(
+    session_id: str,
+    ctx: GroupContext = Depends(require_group_session),
+) -> AgentDirectoryImportPlan:
+    async with claim_staged_uploads(session_id, ctx) as uploads:
+        plan, detected = await AgentDirectoryImportService().plan(uploads, ctx)
+        import_session_id = await create_import_session(plan, detected, ctx)
+    return plan.model_copy(update={"session_id": import_session_id})
+
+
+@router.delete("/directory/upload-sessions/{session_id}")
+async def cancel_agent_directory_upload_session(
+    session_id: str,
+    ctx: GroupContext = Depends(require_group_session),
+) -> dict[str, bool]:
+    await delete_upload_session(session_id, ctx)
+    return {"ok": True}
 
 
 @router.post("/directory/preview", response_model=AgentDirectoryImportPlan)
