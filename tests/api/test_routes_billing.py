@@ -519,7 +519,7 @@ def test_license_gate_blocks_standard_user_without_license(client):
     _setup_user(client, "alice")
     r = client.get("/api/connections")
     assert r.status_code == 403
-    assert r.json()["detail"]["code"] == "license_required"
+    assert r.json()["detail"]["code"] == "subscription_required"
 
 
 def test_license_gate_allogroup_assigned_user(client):
@@ -562,7 +562,7 @@ def test_canceled_subscription_license_does_not_grant_access(client):
     _login_as(client, "bobby")
     r = client.get("/api/connections")
     assert r.status_code == 403
-    assert r.json()["detail"]["code"] == "license_required"
+    assert r.json()["detail"]["code"] == "subscription_required"
 
 
 # ── /webhook ───────────────────────────────────────────────────────────────────

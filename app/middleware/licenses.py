@@ -1,4 +1,9 @@
-"""License gate for paid product API routes."""
+"""Puerta de suscripción del servicio gestionado.
+
+No tiene relación con la licencia del software (AGPL-3.0): solo se
+activa cuando el administrador enciende `billing_enabled`, que es lo
+que distingue al cloud gestionado de una instalación self-hosted.
+"""
 
 from __future__ import annotations
 
@@ -90,11 +95,20 @@ class LicenseGateMiddleware:
             await self.app(scope, receive, send)
             return
 
+        # El producto se distribuye bajo AGPL-3.0, así que «licencia» pasó a
+        # significar la licencia del software —que no restringe ninguna
+        # función— y no la plaza de suscripción que se comprueba aquí. Un 403
+        # que dijera «se requiere una licencia activa» se lee, desde que el
+        # repositorio es AGPL, como que el software no es libre. Lo que falta
+        # es la suscripción al servicio gestionado, y eso es lo que se nombra.
         response = JSONResponse(
             {
                 "detail": {
-                    "code": "license_required",
-                    "message": "Se requiere una licencia activa para usar esta función",
+                    "code": "subscription_required",
+                    "message": (
+                        "Se requiere una suscripción activa del servicio "
+                        "gestionado para usar esta función"
+                    ),
                 }
             },
             status_code=403,

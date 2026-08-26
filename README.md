@@ -43,4 +43,11 @@ API available at `http://localhost:8765`.
 
 ---
 
-[MIT](LICENSE)
+## Licencia
+
+[GNU Affero General Public License v3.0](LICENSE) (AGPL-3.0-only).
+
+Libre de usar, modificar y distribuir. Si modificas el código y ofreces el
+resultado como servicio a través de la red, la sección 13 de la licencia te
+obliga a poner tu versión del código fuente a disposición de sus usuarios.
+
