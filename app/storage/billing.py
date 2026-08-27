@@ -117,7 +117,7 @@ class BillingStorage:
             await conn.commit()
 
     async def ensure_owner_license(self, subscription: Dict[str, Any]) -> None:
-        """Ensure the buyer consumes one license for active paid subscriptions."""
+        """Ensure the buyer consumes one seat for active paid subscriptions."""
         if subscription["status"] in _ACTIVE_STATUSES_EXCLUDED:
             return
         await self.assign_license(

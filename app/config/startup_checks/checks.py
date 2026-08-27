@@ -165,7 +165,7 @@ def _check_billing(settings: dict) -> ConfigCheck:
             feature="Cobro de suscripciones (Stripe)",
             severity="error",
             detail=(
-                "La puerta de licencias está activa —el acceso a agentes, "
+                "La puerta de suscripción está activa —el acceso a agentes, "
                 "conexiones y conocimiento depende de una suscripción— pero "
                 "Stripe no puede cobrar sin estas variables."
             ),

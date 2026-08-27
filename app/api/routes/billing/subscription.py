@@ -395,7 +395,7 @@ async def change_seats(
         raise APIError(
             409,
             "seats_below_assigned",
-            f"No puedes bajar a {seats} licencias: ya hay {used} asignadas",
+            f"No puedes bajar a {seats} asientos: ya hay {used} asignados",
             extra={"seats": seats, "used": used},
         )
 

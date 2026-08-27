@@ -468,9 +468,9 @@ def test_change_seats_rejected_for_developer_tier(client):
     assert r.status_code == 400
 
 
-# ── /licenses + license gate ─────────────────────────────────────────────────
+# ── /licenses (ruta histórica de asientos) + subscription gate ──────────────
 
-def test_business_subscription_auto_assigns_owner_license(client):
+def test_business_subscription_auto_assigns_owner_seat(client):
     _setup_user(client, "alice")
     _subscribe(client, tier="business", seats=3)
 
@@ -484,7 +484,7 @@ def test_business_subscription_auto_assigns_owner_license(client):
     assert any(u["username"] == "alice" and u["licensed"] for u in data["users"])
 
 
-def test_assigning_licenses_respects_seat_limit_and_revoke_frees_slot(client):
+def test_assigning_seats_respects_limit_and_revoke_frees_slot(client):
     _setup_user(client, "alice")
     _setup_user(client, "bobby")
     _setup_user(client, "carol")
@@ -496,6 +496,9 @@ def test_assigning_licenses_respects_seat_limit_and_revoke_frees_slot(client):
     assert client.post("/api/billing/licenses/carol", json={}).status_code == 200
     over = client.post("/api/billing/licenses/david", json={})
     assert over.status_code == 409
+    assert over.json()["detail"]["code"] == "no_seats_available"
+    assert "asientos" in over.json()["detail"]["message"].lower()
+    assert "licencia" not in over.json()["detail"]["message"].lower()
 
     revoked = client.delete("/api/billing/licenses/bobby")
     assert revoked.status_code == 200
@@ -503,7 +506,7 @@ def test_assigning_licenses_respects_seat_limit_and_revoke_frees_slot(client):
     assert client.post("/api/billing/licenses/david", json={}).status_code == 200
 
 
-def test_non_owner_cannot_assign_licenses(client):
+def test_non_owner_cannot_assign_seats(client):
     _setup_user(client, "alice")
     _setup_user(client, "bobby")
     _login_as(client, "alice")

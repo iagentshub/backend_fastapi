@@ -95,7 +95,7 @@ def _license_error(exc: ValueError) -> HTTPException:
     messages = {
         "subscription_not_active": "No tienes una suscripción activa",
         "user_not_found": "Usuario no encontrado",
-        "license_already_assigned": "La licencia ya está asignada a este usuario",
+        "license_already_assigned": "El asiento ya está asignado a este usuario",
         "no_seats_available": "No hay asientos disponibles en tu plan",
     }
     status = {

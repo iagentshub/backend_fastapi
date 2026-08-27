@@ -1,4 +1,9 @@
-"""Reparto de las licencias contratadas entre los usuarios de la cuenta."""
+"""Reparto de asientos del servicio gestionado entre usuarios de la cuenta.
+
+La ruta conserva ``/licenses`` por compatibilidad con clientes existentes. En
+la interfaz y en los errores hablamos de asientos para no confundirlos con la
+licencia AGPL-3.0 del software.
+"""
 
 
 from __future__ import annotations
@@ -34,7 +39,7 @@ async def assign_license(
         raise APIError(
             400,
             "business_tier_required",
-            "Solo el plan Business permite asignar licencias",
+            "Solo el plan Business permite asignar asientos",
             extra={"action": "assign_licenses"},
         )
     target = await get_user_by_username(username)
@@ -63,7 +68,7 @@ async def revoke_license(
         raise APIError(
             400,
             "business_tier_required",
-            "Solo el plan Business permite quitar licencias",
+            "Solo el plan Business permite quitar asientos",
             extra={"action": "revoke_licenses"},
         )
     target = await get_user_by_username(username)
@@ -74,12 +79,12 @@ async def revoke_license(
     target_id = target["id"]
     if target_id == user:
         raise APIError(
-            400, "cannot_revoke_own_license", "No puedes quitar tu propia licencia"
+            400, "cannot_revoke_own_license", "No puedes quitar tu propio asiento"
         )
     if not await _billing.revoke_license(
         subscription_id=row["id"], target_username=target_id
     ):
         raise APIError(
-            404, "not_found", "Licencia no encontrada", extra={"resource": "license"}
+            404, "not_found", "Asiento no encontrado", extra={"resource": "license"}
         )
     return await _billing.license_summary_for_owner(user)
