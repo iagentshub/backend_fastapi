@@ -137,7 +137,12 @@ class WorkflowRunStorage:
         active_node = event.get("node_id") if event_type.endswith("_started") else None
         completed_delta = 1 if event_type in {"stage_done", "evaluation_done"} else 0
         async with open_db() as conn:
-            async with conn.transaction():
+            # SQLite no puede ascender de forma segura una transaccion diferida
+            # que ya ha leido a escritora si otro writer confirma entre medias.
+            # Reservar el writer antes de leer el contador evita el
+            # SQLITE_BUSY_SNAPSHOT observado al cancelar un workflow mientras
+            # se persiste su ultimo evento. PostgreSQL ignora ``immediate``.
+            async with conn.transaction(immediate=True):
                 row = await conn.fetchone(
                     sql("queries/workflow_runs:progress_of"),
                     (run_id,),

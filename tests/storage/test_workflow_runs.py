@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from contextlib import asynccontextmanager
 from datetime import datetime, timedelta, timezone
 
 import app.storage.workflow_runs as workflow_runs_module
@@ -32,6 +33,35 @@ async def test_events_are_ordered_replayable_and_private():
     replay = await storage.events_after(run["id"], 1)
     assert [event["sequence"] for event in replay] == [2, 3]
     assert [event["type"] for event in replay] == ["stage_done", "workflow_done"]
+
+
+async def test_append_event_reserves_sqlite_writer_before_read(monkeypatch):
+    transaction_modes: list[bool] = []
+
+    class FakeConnection:
+        @asynccontextmanager
+        async def transaction(self, *, immediate: bool = False):
+            transaction_modes.append(immediate)
+            yield
+
+        async def fetchone(self, _query, _params):
+            return {"last_sequence": 0, "completed_steps": 0, "total_steps": 1}
+
+        async def execute(self, _query, _params):
+            return None
+
+    @asynccontextmanager
+    async def fake_open_db():
+        yield FakeConnection()
+
+    monkeypatch.setattr(workflow_runs_module, "open_db", fake_open_db)
+
+    sequence = await WorkflowRunStorage().append_event(
+        "run-1", {"type": "cancelled"}
+    )
+
+    assert sequence == 1
+    assert transaction_modes == [True]
 
 
 async def test_fail_stale_marks_only_expired_active_runs():

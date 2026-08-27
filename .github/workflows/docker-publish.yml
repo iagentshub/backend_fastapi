@@ -5,28 +5,30 @@ permissions:
   packages: write
 
 on:
-  # El trigger push llevaba semanas sin disparar ningún run (probablemente
-  # desde la migración de organización del 2026-07-14) — este comentario es
-  # el commit de prueba para confirmar que el ciclo disable/enable del
-  # workflow lo desatascó.
-  push:
-    branches: [main]
-  workflow_dispatch:
+  # Publicar solo el SHA exacto que acaba de superar CI. Un `push` paralelo
+  # permitia publicar una imagen aunque pytest terminara en rojo.
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
 
 jobs:
-  # Imagen standalone del backend — ghcr.io/iagentshub/backend, tag 'fastapi' (única
-  # implementación por ahora) + 'latest' como alias mientras lo sea.
   publish:
+    if: >-
+      github.event.workflow_run.conclusion == 'success' &&
+      github.event.workflow_run.head_branch == 'main' &&
+      github.event.workflow_run.event == 'push'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          ref: ${{ github.event.workflow_run.head_sha }}
       - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
       - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Generar versión de build
+      - name: Generar version de build
         id: version
         run: echo "value=$(date -u +%Y%m%d%H%M%S)" >> "$GITHUB_OUTPUT"
       - id: meta
@@ -34,8 +36,8 @@ jobs:
         with:
           images: ghcr.io/iagentshub/backend
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
-            type=raw,value=fastapi,enable={{is_default_branch}}
+            type=raw,value=latest
+            type=raw,value=fastapi
             type=raw,value=fastapi-${{ steps.version.outputs.value }}
       - uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
         with:
@@ -46,104 +48,5 @@ jobs:
             GAIA_VERSION=${{ steps.version.outputs.value }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-  # Los cambios en el backend reconstruyen la imagen unificada React.
-  docker-react:
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout iagentshub (Dockerfile + scripts)
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          repository: iagentshub/iAgents
-          path: iagentshub
-
-      - name: Checkout backend
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          repository: iagentshub/backend_fastapi
-          path: backend
-
-      - name: Checkout frontend
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          repository: iagentshub/frontend_react
-          path: frontend
-
-      - name: Checkout Flutter app
-        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
-        with:
-          repository: iagentshub/app_flutter
-          path: app_flutter
-
-      - uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2
-        with:
-          # La versión sale del pubspec de app_flutter, que es donde la fija
-          # ese repo. Con `channel: stable` a secas, este workflow —que compila
-          # la imagen que de verdad se despliega— instalaba lo que hubiera ese
-          # día, mientras el CI de app_flutter validaba una versión distinta.
-          flutter-version-file: app_flutter/pubspec.yaml
-          channel: stable
-          cache: true
-
-      - name: Compilar Flutter Web bajo /app/
-        working-directory: app_flutter
-        run: |
-          flutter pub get
-          flutter analyze --no-fatal-infos
-          flutter test
-          tool/build_web.sh --base-href /app/
-
-      - name: Set up Docker Buildx
-        uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
-
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Preparar contexto de build
-        run: |
-          mkdir -p build-ctx
-          cp -r backend/ build-ctx/backend
-          cp -r frontend/ build-ctx/frontend
-          cp -r app_flutter/build/web build-ctx/flutter-web
-          D=iagentshub/docker
-          cp $D/Dockerfile.unified build-ctx/Dockerfile
-          cp $D/supervisord.conf build-ctx/supervisord.conf
-          cp $D/entrypoint-unified.sh build-ctx/entrypoint-unified.sh
-          # Docker solo lee el .dockerignore de la raíz del contexto, así que
-          # el de este repo no aplica aquí. Sin este, el COPY backend/ se
-          # lleva docs/, .git y basura del runner; tests/ sí se incluye
-          # deliberadamente para Centinel.
-          cp $D/dockerignore.unified build-ctx/.dockerignore
-
-      - name: Generar versión de build
-        id: version
-        run: echo "value=$(date -u +%Y%m%d%H%M%S)" >> "$GITHUB_OUTPUT"
-
-      - name: Obtener SHAs de backend y frontend
-        id: shas
-        run: |
-          echo "backend=$(git -C backend rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
-          echo "frontend=$(git -C frontend rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
-
-      - name: Build y push imagen multi-plataforma
-        uses: docker/build-push-action@ca052bb54ab0790a636c9b5f226502c73d547a25 # v5
-        with:
-          context: build-ctx
-          platforms: linux/amd64,linux/arm64
-          push: true
-          build-args: |
-            GAIA_VERSION=${{ steps.version.outputs.value }}
-            BACKEND_COMMIT=${{ steps.shas.outputs.backend }}
-            FRONTEND_COMMIT=${{ steps.shas.outputs.frontend }}
-          tags: |
-            ghcr.io/iagentshub/app:latest
-            ghcr.io/iagentshub/app:react-${{ steps.version.outputs.value }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
