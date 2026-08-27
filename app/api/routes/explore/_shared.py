@@ -44,3 +44,18 @@ async def _add_owner_usernames(rows: List[Dict[str, Any]]) -> None:
     usernames = {row["id"]: row["username"] for row in users}
     for row in rows:
         row["owner_username"] = usernames.get(str(row.get("owner") or ""))
+
+# La estrella que el que pregunta ya puso sobre la fila. Va en cada listado
+# porque no viajaba en ninguno: el cliente arrancaba con el icono apagado
+# aunque la fila llevara meses en `resource_stars`, y volver a pulsarlo hacía
+# un alta idempotente que decía "añadido" sin mover el contador.
+#
+# Las tres columnas son la clave primaria de la tabla, en su mismo orden. Y
+# `resource_stars.username` guarda el id del usuario, no su nombre: lo escribe
+# `require_auth`, que devuelve el id.
+STARRED_BY_REQUESTER = (
+    "EXISTS (SELECT 1 FROM resource_stars mine_star "
+    "WHERE mine_star.username = ? "
+    "AND mine_star.resource_type = resource_social.resource_type "
+    "AND mine_star.resource_id = resource_social.resource_id)"
+)

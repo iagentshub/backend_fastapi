@@ -16,6 +16,7 @@ import app.services.resource_relations as _relations
 from app.api.routes.auth import require_session
 from app.api.routes.explore._router import router
 from app.api.routes.explore._shared import (
+    STARRED_BY_REQUESTER,
     _add_owner_usernames,
     _validate_relation,
 )
@@ -194,14 +195,16 @@ async def explore(
                 )
                 response.headers[LINKED_HEADER] = str(already or 0)
         # El estado viaja en cada fila, no solo en el filtro: en `relation=all`
-        # conviven las dos y la tarjeta necesita saber cuál está mirando. El
-        # parámetro del SELECT va antes que los del WHERE porque la sustitución
-        # de marcadores es posicional.
-        page_params = [username, *params, limit, offset]
+        # conviven las dos y la tarjeta necesita saber cuál está mirando. Los
+        # dos parámetros del SELECT —enlazado y estrella, en ese orden— van
+        # antes que los del WHERE porque la sustitución de marcadores es
+        # posicional.
+        page_params = [username, username, *params, limit, offset]
         raw = await conn.fetchall(
             f"SELECT resource_type, resource_id, owner, name, description, category, "
             f"stars_count, linked_to_user, linked_to_id, trial_missing_deps, tags, labels, verified, "
-            f"{_LINKED_BY_REQUESTER} AS linked_by_me "
+            f"{_LINKED_BY_REQUESTER} AS linked_by_me, "
+            f"{STARRED_BY_REQUESTER} AS starred "
             f"FROM resource_social WHERE {where} "
             # Lo recién publicado debe ser descubrible aunque todavía no tenga
             # estrellas. El catálogo permite cargar páginas posteriores para
@@ -232,6 +235,7 @@ async def explore(
         # SQLite devuelve 0/1 y PostgreSQL un boolean: el cliente recibe siempre
         # un booleano JSON.
         row["linked_by_me"] = bool(row.get("linked_by_me"))
+        row["starred"] = bool(row.get("starred"))
         rows.append(row)
     packs = await _knowledge.pack_locations(
         [

@@ -168,12 +168,17 @@ def test_todas_las_consultas_preparan_en_postgres():
 # que solo vive en Python no lo prepara nadie, y PostgreSQL solo corre aquí
 # cuando hay DSN: dos capas de ceguera sobre la misma línea.
 def _fragmentos_construidos_en_python() -> list[tuple[str, str]]:
+    from app.api.routes.explore._shared import STARRED_BY_REQUESTER
     from app.services.social_catalog import PUBLICLY_AVAILABLE_SQL
 
     return [
         (
             "social_catalog:PUBLICLY_AVAILABLE_SQL",
             f"SELECT 1 FROM resource_social WHERE {PUBLICLY_AVAILABLE_SQL}",
+        ),
+        (
+            "explore/_shared:STARRED_BY_REQUESTER",
+            f"SELECT {STARRED_BY_REQUESTER} FROM resource_social",
         ),
     ]
 

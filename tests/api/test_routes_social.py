@@ -658,6 +658,9 @@ def test_star_unstar_actualiza_stars_count(client):
     r_explore = client.get("/api/explore", params={"type": "agent", "q": "Starrable"})
     found = next(x for x in r_explore.json() if x["resource_id"] == agent_id)
     assert found["stars_count"] == 1
+    # El estado propio viaja en la fila: sin él la tarjeta pintaba el icono
+    # apagado tras recargar y el segundo clic hacía un alta idempotente.
+    assert found["starred"] is True
 
     r_unstar = client.delete(f"/api/agent/{agent_id}/star")
     assert r_unstar.status_code == 200
@@ -666,6 +669,35 @@ def test_star_unstar_actualiza_stars_count(client):
     r_explore2 = client.get("/api/explore", params={"type": "agent", "q": "Starrable"})
     found2 = next(x for x in r_explore2.json() if x["resource_id"] == agent_id)
     assert found2["stars_count"] == 0
+    assert found2["starred"] is False
+
+
+def test_explore_marca_starred_solo_para_quien_puso_la_estrella(client):
+    _login(client, "starmine")
+    agent = _create_agent(client, "Mine Or Yours Agent")
+    agent_id = agent["id"]
+    client.put(
+        f"/api/agents/private/{agent_id}/visibility",
+        json={
+            "is_public": True,
+            "category": "Finance",
+            "trial_missing_deps": "warn",
+        },
+    )
+
+    _login(client, "starmine_viewer")
+    assert client.post(f"/api/agent/{agent_id}/star").status_code == 200
+    r_mine = client.get("/api/explore", params={"type": "agent", "q": "Mine Or Yours"})
+    found_mine = next(x for x in r_mine.json() if x["resource_id"] == agent_id)
+    assert found_mine["starred"] is True
+    assert found_mine["stars_count"] == 1
+
+    # Otro usuario ve el contador, no la estrella: son cosas distintas.
+    _login(client, "starmine_other")
+    r_other = client.get("/api/explore", params={"type": "agent", "q": "Mine Or Yours"})
+    found_other = next(x for x in r_other.json() if x["resource_id"] == agent_id)
+    assert found_other["starred"] is False
+    assert found_other["stars_count"] == 1
 
 
 def test_recursos_publicos_de_usuario(client):

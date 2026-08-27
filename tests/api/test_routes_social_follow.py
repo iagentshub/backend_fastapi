@@ -127,6 +127,31 @@ def test_feed_muestra_recursos_publicos_del_usuario_seguido(client):
     assert "updated_at" in found
 
 
+def test_feed_trae_el_estado_de_la_estrella(client):
+    _login(client, "flw_starfollower")
+    _register("flw_starfollowed")
+
+    _insert_resource_social("flw_starfollowed", "flw-star-agent-001", is_public=True)
+    client.post("/api/users/flw_starfollowed/follow")
+
+    r_antes = client.get("/api/feed")
+    assert r_antes.status_code == 200
+    fila_antes = next(
+        x for x in r_antes.json() if x["resource_id"] == "flw-star-agent-001"
+    )
+    assert fila_antes["starred"] is False
+
+    assert client.post("/api/agent/flw-star-agent-001/star").status_code == 200
+
+    r_despues = client.get("/api/feed")
+    fila = next(
+        x for x in r_despues.json() if x["resource_id"] == "flw-star-agent-001"
+    )
+    # El modelo del cliente lee `starred` desde que existe; hasta ahora la clave
+    # nunca llegaba y el icono se quedaba apagado siempre.
+    assert fila["starred"] is True
+
+
 def test_feed_no_muestra_recursos_privados_del_usuario_seguido(client):
     _login(client, "flw_privfollower")
     _register("flw_privfollowed")

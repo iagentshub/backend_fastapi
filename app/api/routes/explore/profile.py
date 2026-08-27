@@ -11,6 +11,7 @@ from fastapi import Depends, Query, Response
 from app.api.routes.auth import require_auth
 from app.api.routes.explore._router import router
 from app.api.routes.explore._shared import (
+    STARRED_BY_REQUESTER,
     _add_owner_usernames,
 )
 from app.api.routes.social._router import _social_limiter
@@ -236,10 +237,13 @@ async def get_feed(
                 f"SELECT COUNT(*) FROM resource_social WHERE {where}", tuple(params)
             )
             response.headers[TOTAL_HEADER] = str(total or 0)
-        params.extend([limit, offset])
+        # El parámetro de la estrella va delante de los del WHERE: la
+        # sustitución de marcadores es posicional.
+        page_params = [username, *params, limit, offset]
         raw = await conn.fetchall(
             f"SELECT resource_type, resource_id, owner, name, description, category, "
-            f"stars_count, tags, labels, updated_at "
+            f"stars_count, tags, labels, updated_at, "
+            f"{STARRED_BY_REQUESTER} AS starred "
             f"FROM resource_social "
             f"WHERE {where} "
             # Mismo desempate por clave primaria que el catálogo: el feed
@@ -247,7 +251,7 @@ async def get_feed(
             f"ORDER BY updated_at DESC, "
             f"resource_type ASC, resource_id ASC, owner ASC "
             f"LIMIT ? OFFSET ?",
-            tuple(params),
+            tuple(page_params),
         )
 
     rows = []
@@ -261,6 +265,8 @@ async def get_feed(
             row["labels"] = json.loads(row.get("labels") or '["private"]')
         except (ValueError, TypeError):
             row["labels"] = ["private"]
+        # SQLite devuelve 0/1 y PostgreSQL un boolean.
+        row["starred"] = bool(row.get("starred"))
         rows.append(row)
     await _add_owner_usernames(rows)
     return rows
