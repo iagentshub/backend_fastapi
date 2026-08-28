@@ -157,11 +157,30 @@ de fichero y límites de los proveedores.
 Los avisos de la campana pueden además saltar como notificación del sistema
 —fuera de la aplicación, con la pestaña cerrada— usando **Web Push**. Hace
 falta un par de claves VAPID, que identifica a esta instalación ante el
-servicio push de cada navegador:
+servicio push de cada navegador. Este comando imprime las tres variables listas
+para copiar:
 
 ```bash
-python -m py_vapid --gen
+python - <<'EOF'
+import base64
+from cryptography.hazmat.primitives import serialization
+from py_vapid import Vapid01
+
+v = Vapid01(); v.generate_keys()
+b64 = lambda b: base64.urlsafe_b64encode(b).rstrip(b"=").decode()
+print("GAIA_VAPID_PUBLIC_KEY=" + b64(v.public_key.public_bytes(
+    serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint)))
+print("GAIA_VAPID_PRIVATE_KEY=" + b64(
+    v.private_key.private_numbers().private_value.to_bytes(32, "big")))
+print("GAIA_VAPID_SUBJECT=mailto:CAMBIA@ESTO.com")
+EOF
 ```
+
+`python -m py_vapid --gen` también sirve, pero **no da las claves en el formato
+de las variables**: escribe `private_key.pem` y `public_key.pem`. En ese caso
+pega el contenido del PEM privado en `GAIA_VAPID_PRIVATE_KEY` y la salida de
+`python -m py_vapid --applicationServerKey` en la pública. El backend acepta las
+dos formas de la clave privada, con los saltos de línea escapados o sin escapar.
 
 | Variable | Por defecto | Descripción |
 |---|---|---|

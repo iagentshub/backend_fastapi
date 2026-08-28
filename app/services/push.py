@@ -236,7 +236,7 @@ def _cabeceras(endpoint: str) -> Dict[str, str]:
     partes = urlsplit(endpoint)
     origen = f"{partes.scheme}://{partes.netloc}"
 
-    vapid = Vapid01.from_string(private_key=VAPID_PRIVATE_KEY)
+    vapid = _vapid(VAPID_PRIVATE_KEY)
     # `sub` es obligatorio para py_vapid; `push_disponible()` garantiza que
     # existe antes de llegar aquí.
     reclamos: Dict[str, Any] = {
@@ -251,6 +251,31 @@ def _cabeceras(endpoint: str) -> Dict[str, str]:
     # Sin urgencia declarada algunos servicios agrupan y retrasan el aviso.
     cabeceras["Urgency"] = "normal"
     return cabeceras
+
+
+def _vapid(privada: str) -> Vapid01:
+    """Carga la clave privada en cualquiera de las formas que genera py_vapid.
+
+    `Vapid01.from_string` solo entiende la clave cruda o el DER en base64, pero
+    el comando que la documentación manda usar —`python -m py_vapid --gen`—
+    escribe un **PEM con cabeceras**. Quien copie ese fichero tal cual en la
+    variable de entorno se encuentra con «Could not deserialize key data» y
+    ninguna pista de qué formato se esperaba.
+
+    Aceptar las dos formas cuesta seis líneas y evita ese callejón.
+    """
+    if "BEGIN" in privada:
+        from cryptography.hazmat.primitives import serialization
+
+        # Un `.env` o un compose guardan el PEM con los saltos escapados; sin
+        # deshacerlos, `load_pem_private_key` no reconoce las cabeceras.
+        pem = privada.replace("\\n", "\n").encode()
+        clave = serialization.load_pem_private_key(pem, password=None)
+        cruda = clave.private_numbers().private_value.to_bytes(32, "big")
+        return Vapid01.from_string(
+            private_key=base64.urlsafe_b64encode(cruda).rstrip(b"=").decode()
+        )
+    return Vapid01.from_string(private_key=privada.strip())
 
 
 def _expira() -> int:

@@ -163,11 +163,30 @@ When that happens the failure is visible: the affected resource is returned with
 
 Bell notifications can also pop up as system notifications —outside the app,
 with the tab closed— using **Web Push**. This needs a VAPID key pair, which
-identifies this installation to each browser's push service:
+identifies this installation to each browser's push service. This command prints
+the three variables ready to copy:
 
 ```bash
-python -m py_vapid --gen
+python - <<'EOF'
+import base64
+from cryptography.hazmat.primitives import serialization
+from py_vapid import Vapid01
+
+v = Vapid01(); v.generate_keys()
+b64 = lambda b: base64.urlsafe_b64encode(b).rstrip(b"=").decode()
+print("GAIA_VAPID_PUBLIC_KEY=" + b64(v.public_key.public_bytes(
+    serialization.Encoding.X962, serialization.PublicFormat.UncompressedPoint)))
+print("GAIA_VAPID_PRIVATE_KEY=" + b64(
+    v.private_key.private_numbers().private_value.to_bytes(32, "big")))
+print("GAIA_VAPID_SUBJECT=mailto:CHANGE@THIS.com")
+EOF
 ```
+
+`python -m py_vapid --gen` also works, but **it does not produce the keys in the
+format the variables expect**: it writes `private_key.pem` and `public_key.pem`.
+In that case paste the private PEM into `GAIA_VAPID_PRIVATE_KEY` and the output
+of `python -m py_vapid --applicationServerKey` into the public one. The backend
+accepts both forms of the private key, with escaped newlines or without.
 
 | Variable | Default | Description |
 |---|---|---|

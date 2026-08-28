@@ -373,6 +373,61 @@ async def test_notify_no_espera_al_servicio_push(client, push_activo, monkeypatc
     await asyncio.sleep(0)
 
 
+def test_la_clave_privada_se_acepta_en_pem_y_en_crudo():
+    """`python -m py_vapid --gen` escribe un PEM, no la clave cruda.
+
+    `Vapid01.from_string` solo entiende la forma cruda, así que quien siguiera
+    la documentación al pie de la letra pegaba el PEM en la variable y recibía
+    «Could not deserialize key data» sin ninguna pista del formato esperado.
+    """
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    from app.services.push import _vapid
+
+    clave = ec.generate_private_key(ec.SECP256R1())
+    pem = clave.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ).decode()
+    cruda = (
+        base64.urlsafe_b64encode(
+            clave.private_numbers().private_value.to_bytes(32, "big")
+        )
+        .rstrip(b"=")
+        .decode()
+    )
+
+    firma = {
+        forma: _vapid(valor).sign({"aud": "https://x.example", "sub": "mailto:a@b.c"})
+        for forma, valor in (("pem", pem), ("cruda", cruda))
+    }
+    assert firma["pem"]["Authorization"].startswith("WebPush ")
+    assert firma["cruda"]["Authorization"].startswith("WebPush ")
+
+
+def test_un_pem_con_saltos_escapados_tambien_vale():
+    """Un `.env` o un compose guardan el PEM con los saltos como `\n`."""
+    from cryptography.hazmat.primitives import serialization
+    from cryptography.hazmat.primitives.asymmetric import ec
+
+    from app.services.push import _vapid
+
+    clave = ec.generate_private_key(ec.SECP256R1())
+    pem = clave.private_bytes(
+        serialization.Encoding.PEM,
+        serialization.PrivateFormat.PKCS8,
+        serialization.NoEncryption(),
+    ).decode()
+
+    escapado = pem.replace("\n", "\\n")
+    cabeceras = _vapid(escapado).sign(
+        {"aud": "https://x.example", "sub": "mailto:a@b.c"}
+    )
+    assert cabeceras["Authorization"].startswith("WebPush ")
+
+
 # ── Reintentos ────────────────────────────────────────────────────────────────
 
 @pytest.mark.asyncio
