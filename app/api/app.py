@@ -34,6 +34,7 @@ from app.api.routes import (
     llm_orchestrations,
     logs,
     memory,
+    notifications,
     prompts,
     public,
     resource_executions,
@@ -55,6 +56,7 @@ from app.config.cors import CORS_ORIGINS
 from app.config.maintenance import (
     GDPR_PURGE_SECONDS,
     LOG_PURGE_SECONDS,
+    NOTIFICATION_PURGE_SECONDS,
     RATELIMIT_PURGE_SECONDS,
 )
 from app.config.startup_checks import assert_config_ok, log_startup_report
@@ -121,6 +123,31 @@ async def _log_purge_loop() -> None:
             flog.error(f"[logs] Error en purga automática: {exc}")
 
 
+async def _notification_purge_loop() -> None:
+    """Purga los avisos vencidos. La retención la fija el admin.
+
+    Sin esto la tabla solo crece: las filas se borran con su usuario (RGPD)
+    pero nadie barre las viejas de una cuenta viva, y una instalación con
+    equipos activos genera avisos todos los días.
+    """
+    while True:
+        await asyncio.sleep(NOTIFICATION_PURGE_SECONDS)
+        try:
+            from app.services.platform_settings import _read_platform_cfg
+            from app.storage.notifications import purge_old
+
+            cfg = _read_platform_cfg()
+            n = await purge_old(
+                dias_leidas=int(cfg.get("notification_retention_days", 90)),
+                dias_sin_leer=int(cfg.get("notification_unread_retention_days", 365)),
+            )
+            if n:
+                flog.info(f"[notify] {n} aviso(s) vencidos purgados")
+        except Exception as exc:  # noqa: BLE001
+            # Ver _gdpr_purge_loop: la tarea no puede morir por una ronda.
+            flog.error(f"[notify] Error en purga automática: {exc}")
+
+
 async def _rate_limit_purge_loop() -> None:
     """Borra las ventanas de rate limit ya vencidas. Cadencia en config.
 
@@ -154,6 +181,9 @@ async def _lifespan(app: FastAPI):
     tasks = (
         asyncio.create_task(_gdpr_purge_loop(), name="gdpr-purge"),
         asyncio.create_task(_log_purge_loop(), name="log-purge"),
+        asyncio.create_task(
+            _notification_purge_loop(), name="notification-purge"
+        ),
         asyncio.create_task(_rate_limit_purge_loop(), name="ratelimit-purge"),
         asyncio.create_task(
             workflow_run_maintenance_loop(), name="workflow-run-maintenance"
@@ -308,6 +338,7 @@ def create_app() -> FastAPI:
     app.include_router(prompts.router)
     app.include_router(tools.router)
     app.include_router(memory.router)
+    app.include_router(notifications.router)
     app.include_router(settings.router)
     app.include_router(accounts.router)
     app.include_router(chats.router)

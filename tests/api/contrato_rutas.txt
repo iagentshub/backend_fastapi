@@ -32,6 +32,7 @@ DELETE /api/knowledge/packs/{pack_id}
 DELETE /api/knowledge/{item_id}
 DELETE /api/llm-orchestrations/{item_id}
 DELETE /api/memory/{filename}
+DELETE /api/notifications/push/subscribe
 DELETE /api/prompts/{scope}/{prompt_id}
 DELETE /api/settings/notification-banners/{banner_id}
 DELETE /api/sharing/{resource_type}/{resource_id}
@@ -119,6 +120,8 @@ GET /api/llm-orchestrations
 GET /api/llm-orchestrations/{item_id}
 GET /api/memory
 GET /api/memory/{filename}
+GET /api/notifications
+GET /api/notifications/push/key
 GET /api/prompts
 GET /api/prompts/{scope}/{prompt_id}
 GET /api/resource-executions
@@ -249,6 +252,8 @@ POST /api/llm-orchestrations
 POST /api/llm-orchestrations/{item_id}/activate
 POST /api/llm-orchestrations/{item_id}/deactivate
 POST /api/memory/{filename}
+POST /api/notifications/push/subscribe
+POST /api/notifications/read
 POST /api/prompts/private/{prompt_id}/sync
 POST /api/prompts/{scope}
 POST /api/prompts/{scope}/{prompt_id}/activate

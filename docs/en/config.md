@@ -158,3 +158,94 @@ Must be generated randomly before the first startup and not changed while sessio
 This secret also serves as the master key for encrypting API keys stored in the database (derived via PBKDF2-SHA256). **Changing it after API keys have been saved will make those keys unreadable** — users will need to re-enter their credentials.
 
 When that happens the failure is visible: the affected resource is returned with `credentials_unreadable: true` (plus `unreadable_fields` listing the exact fields), the client flags it as *needs attention* in the listing, and any action that would have used the credential — chat, test, model import, sync — responds with the `credential_unreadable` code instead of sending the encrypted value to the provider. The ciphertext is kept intact: restore the correct secret and the keys become readable again on their own.
+
+## Push notifications
+
+Bell notifications can also pop up as system notifications —outside the app,
+with the tab closed— using **Web Push**. This needs a VAPID key pair, which
+identifies this installation to each browser's push service:
+
+```bash
+python -m py_vapid --gen
+```
+
+| Variable | Default | Description |
+|---|---|---|
+| `GAIA_VAPID_PUBLIC_KEY` | *(empty)* | Public key. The browser receives it when subscribing. |
+| `GAIA_VAPID_PRIVATE_KEY` | *(empty)* | Private key used to sign every delivery. |
+| `GAIA_VAPID_SUBJECT` | *(empty)* | Operator contact (`mailto:` or `https://`). Required by RFC 8292; some services reject deliveries without it. |
+
+Without these variables push stays disabled and the app does not offer the
+toggle; the bell and email keep working as usual.
+
+**The pair is not rotated lightly.** The browser checks that the delivery key
+matches the one it subscribed with, so changing it invalidates every existing
+subscription at once and each user has to turn it on again.
+
+### Notification retention
+
+Notifications are swept automatically with **two separate windows**: a read one
+has already done its job, while an unread one may be all the user has left of
+the fact that something happened —the invitation that caused it disappears from
+`group_invitations` as soon as it is accepted—.
+
+| Setting (admin panel) | Default | What it sweeps |
+|---|---|---|
+| `notification_retention_days` | 90 | **Read** notifications older than that |
+| `notification_unread_retention_days` | 365 | **Unread** notifications older than that |
+
+| Variable | Default | Description |
+|---|---|---|
+| `GAIA_NOTIFICATION_PURGE_HOURS` | 24 | How often the broom passes. Not the policy: raising it leaves more rubbish between sweeps, it does not change what a user sees. |
+
+Push subscriptions need no purge: the push service answers 404 or 410 once the
+browser has dropped them and the row is deleted right then. Delivery itself does
+the cleaning.
+
+### What each user receives
+
+Two levels, and the general one wins over the specific one:
+
+1. **Per-channel switch** (`notify_email`, `notify_push`): turns off the whole
+   channel.
+2. **Per-category, per-channel switch**: fine-tunes inside a channel that is on.
+
+Categories are declared in `app/models/notification_kinds.py` and **published by
+the server** at `/api/settings`; the client renders whatever it receives. That
+way adding an event type never leaves the client with a missing switch.
+`tests/api/test_notification_kinds.py` checks that every emitted type, and every
+type with an email template, belongs to a category: an orphan would silently
+ignore the user's preferences.
+
+**The bell cannot be turned off.** It is the record of what happened, not an
+interruption, and without it the user would have no way to find out at all.
+
+### Push retries
+
+A delivery is retried up to **3 times** with exponential backoff (1 s, 2 s), and
+only for what can fix itself: 408, 429 and the 5xx. A 400, 401 or 403 is the
+message's or the signature's fault and repeating it yields the same error. A 404
+or 410 means the subscription is gone, so it is deleted rather than retried.
+
+If the service sends `Retry-After` it is honoured —it knows when to come back,
+and jumping the gun turns a 429 into a block— capped at 60 seconds: a
+notification is not worth a task sleeping for half an hour, and it is still in
+the bell anyway.
+
+### What it covers and what it does not
+
+| Where | Does it pop with the app closed? |
+|---|---|
+| Android (Chrome) and desktop | Yes, as long as the browser stays alive in the background |
+| macOS Safari | Yes |
+| iPhone, regular Safari tab | **No.** Apple does not allow it |
+| iPhone, app added to the Home Screen | Yes, since iOS 16.4 |
+
+That last case is the only gap and it does not depend on configuration: the app
+detects visitors on an iPhone who have not installed it and explains the
+missing step.
+
+Native Android and iOS would use FCM and APNs, which are a different channel.
+The `push_subscriptions` table already tells the type apart in its `kind`
+column, so adding them the day the apps ship touches neither the schema nor the
+notification producers.

@@ -152,6 +152,98 @@ nuevos reciben HTTP 429 con `Retry-After` en lugar de ocupar el executor general
 crecer en una cola sin límite. Auméntalo solo después de medir memoria, descriptores
 de fichero y límites de los proveedores.
 
+## Notificaciones push
+
+Los avisos de la campana pueden además saltar como notificación del sistema
+—fuera de la aplicación, con la pestaña cerrada— usando **Web Push**. Hace
+falta un par de claves VAPID, que identifica a esta instalación ante el
+servicio push de cada navegador:
+
+```bash
+python -m py_vapid --gen
+```
+
+| Variable | Por defecto | Descripción |
+|---|---|---|
+| `GAIA_VAPID_PUBLIC_KEY` | *(vacío)* | Clave pública. La recibe el navegador al suscribirse. |
+| `GAIA_VAPID_PRIVATE_KEY` | *(vacío)* | Clave privada con la que se firma cada envío. |
+| `GAIA_VAPID_SUBJECT` | *(vacío)* | Contacto del operador (`mailto:` o `https://`). Lo exige el RFC 8292 y algunos servicios rechazan los envíos que no lo llevan. |
+
+Sin estas variables el push queda desactivado y la aplicación no ofrece el
+interruptor; la campana y el correo siguen funcionando igual.
+
+**El par no se rota a la ligera.** El navegador comprueba que la clave del
+envío es la misma con la que se suscribió, así que cambiarla invalida de golpe
+todas las suscripciones existentes y cada usuario tiene que volver a activarlo.
+
+### Retención de los avisos
+
+Los avisos se barren solos, con **dos ventanas** distintas: una leída ya cumplió
+su función, mientras que una sin leer puede ser lo único que le quede al usuario
+de que aquello ocurrió —la invitación que la originó desaparece de
+`group_invitations` en cuanto se acepta—.
+
+| Ajuste (panel de admin) | Por defecto | Qué barre |
+|---|---|---|
+| `notification_retention_days` | 90 | Avisos **leídos** más antiguos que eso |
+| `notification_unread_retention_days` | 365 | Avisos **sin leer** más antiguos que eso |
+
+| Variable | Por defecto | Descripción |
+|---|---|---|
+| `GAIA_NOTIFICATION_PURGE_HOURS` | 24 | Cada cuánto se pasa la escoba. No es la política: subirlo deja más basura entre pasadas, no cambia lo que ve un usuario. |
+
+Las suscripciones push no necesitan purga: el servicio push responde 404 o 410
+cuando el navegador ya las tiró y la fila se borra en ese momento. Es la propia
+entrega la que limpia.
+
+### Qué recibe cada usuario
+
+Dos niveles, y el general manda sobre el particular:
+
+1. **Interruptor por canal** (`notify_email`, `notify_push`): apaga el canal
+   entero.
+2. **Interruptor por categoría y canal**: afina dentro del canal encendido.
+
+Las categorías las declara `app/models/notification_kinds.py` y las **publica el
+servidor** en `/api/settings`; el cliente pinta lo que reciba. Así añadir un tipo
+de evento no deja al cliente con un interruptor que falta.
+`tests/api/test_notification_kinds.py` comprueba que todo tipo emitido o con
+plantilla de correo pertenece a una categoría: uno huérfano ignoraría las
+preferencias del usuario en silencio.
+
+**La campana no se apaga.** Es el registro de lo que pasó, no una interrupción,
+y sin ella el usuario se quedaría sin forma de enterarse de nada.
+
+### Reintentos del push
+
+Un envío se reintenta hasta **3 veces** con retroceso exponencial (1 s, 2 s), y
+solo ante lo que puede arreglarse solo: 408, 429 y los 5xx. Un 400, 401 o 403 es
+culpa del mensaje o de la firma y repetirlo da el mismo error. Un 404 o un 410
+significan que la suscripción ya no existe, así que se borra en vez de
+reintentarse.
+
+Si el servicio manda `Retry-After`, se respeta —es él quien sabe cuándo volver, y
+adelantarse convierte un 429 en un bloqueo—, con un techo de 60 segundos: un
+aviso no vale tener una tarea dormida media hora, y además sigue en la campana.
+
+### Qué cubre y qué no
+
+| Dónde | ¿Salta con la aplicación cerrada? |
+|---|---|
+| Android (Chrome) y escritorio | Sí, mientras el navegador siga vivo en segundo plano |
+| macOS Safari | Sí |
+| iPhone, pestaña normal de Safari | **No.** Apple no lo permite |
+| iPhone, aplicación añadida a la pantalla de inicio | Sí, desde iOS 16.4 |
+
+Ese último caso es el único hueco y no depende de la configuración: la
+aplicación detecta a quien entra desde un iPhone sin haberla instalado y le
+explica el paso que le falta.
+
+Android e iOS **nativos** usarían FCM y APNs, que son otro canal. La tabla
+`push_subscriptions` ya distingue el tipo en su columna `kind`, así que
+añadirlos el día que se publiquen las aplicaciones no toca ni el esquema ni los
+productores de avisos.
+
 ## Secreto de sesión
 
 Debe generarse de forma aleatoria antes del primer arranque y no cambiarse mientras haya sesiones activas. Si no se configura, el sistema usa un valor almacenado en los datos de la plataforma — aceptable en desarrollo, no en producción.

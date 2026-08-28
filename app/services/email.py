@@ -263,10 +263,204 @@ def send_contact_notification(
     return True
 
 
+# Destino dentro de la app para cada tipo de aviso. Flutter sirve bajo
+# `<base href="/app/">` y nginx cae a /app/index.html en cualquier subruta
+# (`try_files $uri $uri/ /app/index.html`), así que estas URLs abren la
+# pantalla directamente y no la portada.
+_NOTIF_DESTINO: dict[str, str] = {
+    # La invitación se acepta desde la campana, que está en la barra superior de
+    # cualquier pantalla; `/app/manager` enseña las invitaciones que TU grupo ha
+    # enviado, no las que has recibido, así que llevaría al sitio equivocado.
+    #
+    # ponytail: aterriza en el escritorio y el badge canta. Un enlace directo a
+    # la invitación pediría una ruta propia en el router de Flutter, y hoy no
+    # hay ninguna pantalla de notificaciones que abrir.
+    "group_invite": "/app/dashboard",
+    "license_assigned": "/app/profile",
+}
+_NOTIF_DESTINO_POR_DEFECTO = "/app/manager"
+
+
+def send_notification_email(
+    *, email: str, kind: str, data: dict, lang: str = _LANG_DEFECTO
+) -> None:
+    """Manda por correo el mismo aviso que enciende la campana de la app.
+
+    Sin SMTP configurado —el caso por defecto de una instalación nueva— no pasa
+    nada: la notificación in-app ya está guardada y esto solo deja constancia en
+    el log. El correo es un canal adicional, nunca el único.
+    """
+    textos = _TEXTOS.get(f"notif_{kind}")
+    if textos is None:
+        # Un `kind` sin plantilla no es motivo para perder la notificación: ya
+        # está en la BD y el usuario la verá en la campana.
+        flog.warning(f"[email] Sin plantilla de correo para la notificación {kind!r}")
+        return
+    if not _smtp_available():
+        flog.warning(f"[email] SMTP no configurado; no se envió el aviso {kind!r}")
+        return
+
+    # `actor` y `group` los escribe un usuario y acaban en el buzón de otro: sin
+    # escapar, quien se ponga de nombre de grupo una etiqueta la mete en la
+    # bandeja de entrada ajena. Mismo motivo que en send_contact_notification.
+    campos = {clave: escape(str(valor)) for clave, valor in data.items()}
+    t = _textos(f"notif_{kind}", lang)
+    destino = _NOTIF_DESTINO.get(kind, _NOTIF_DESTINO_POR_DEFECTO)
+    html = _build_email_html(
+        title=t["title"],
+        heading=_formatear(t["heading"], campos),
+        body_html=_formatear(t["body"], campos),
+        cta_url=f"{_base_url()}{destino}",
+        cta_label=t["cta"],
+        lang=lang,
+    )
+    _send_smtp(email, _formatear(t["asunto"], campos), html)
+
+
+def _base_url() -> str:
+    """Origen público para los enlaces del correo.
+
+    Se lee en cada llamada, no al importar: `app.api.routes.auth._shared` hace
+    lo mismo y sus tests parchean el entorno en caliente. Y se lee aquí en vez
+    de reutilizar aquella función porque un servicio no puede importar de
+    `app.api.routes` sin invertir las capas.
+    """
+    import os
+
+    return os.getenv("GAIA_FRONTEND_URL", "").rstrip("/") or "http://localhost:8007"
+
+
+def _formatear(plantilla: str, campos: dict) -> str:
+    """`str.format` que no revienta si a la plantilla le falta un hueco."""
+    try:
+        return plantilla.format(**campos)
+    except (KeyError, IndexError):
+        return plantilla
+
+
 _TEXTOS: dict[str, dict[str, dict]] = {
     "copia_enlace": {
         "es": {"texto": "O copia este enlace en tu navegador:"},
         "en": {"texto": "Or copy this link into your browser:"},
+    },
+    # Avisos de la campana. La clave es "notif_" + el `kind` de la fila de
+    # `notifications`, y los huecos {actor} / {group} los rellena
+    # send_notification_email con los valores ya escapados.
+    "notif_group_invite": {
+        "es": {
+            "asunto": "{actor} te ha invitado al grupo {group}",
+            "title": "Invitación a un grupo",
+            "heading": "Te han invitado a {group}",
+            "body": "<strong>{actor}</strong> te ha invitado a unirte al grupo "
+                    "<strong>{group}</strong> en iAgents Hub.<br><br>Puedes "
+                    "aceptarla o rechazarla desde la campana de notificaciones.",
+            "cta": "Ver la invitación",
+        },
+        "en": {
+            "asunto": "{actor} invited you to the group {group}",
+            "title": "Group invitation",
+            "heading": "You have been invited to {group}",
+            "body": "<strong>{actor}</strong> invited you to join the group "
+                    "<strong>{group}</strong> on iAgents Hub.<br><br>You can "
+                    "accept or decline it from the notification bell.",
+            "cta": "View the invitation",
+        },
+    },
+    "notif_group_member_added": {
+        "es": {
+            "asunto": "Ya eres miembro de {group}",
+            "title": "Grupos",
+            "heading": "Te han añadido a {group}",
+            "body": "<strong>{actor}</strong> te ha añadido al grupo "
+                    "<strong>{group}</strong>. Ya puedes usar los recursos que "
+                    "el grupo comparta contigo.",
+            "cta": "Ir a mis grupos",
+        },
+        "en": {
+            "asunto": "You are now a member of {group}",
+            "title": "Groups",
+            "heading": "You were added to {group}",
+            "body": "<strong>{actor}</strong> added you to the group "
+                    "<strong>{group}</strong>. You can now use the resources the "
+                    "group shares with you.",
+            "cta": "Go to my groups",
+        },
+    },
+    "notif_group_member_removed": {
+        "es": {
+            "asunto": "Ya no perteneces a {group}",
+            "title": "Grupos",
+            "heading": "Te han sacado de {group}",
+            "body": "<strong>{actor}</strong> te ha eliminado del grupo "
+                    "<strong>{group}</strong>. Pierdes el acceso a los recursos "
+                    "que compartía contigo.",
+            "cta": "Ir a mis grupos",
+        },
+        "en": {
+            "asunto": "You no longer belong to {group}",
+            "title": "Groups",
+            "heading": "You were removed from {group}",
+            "body": "<strong>{actor}</strong> removed you from the group "
+                    "<strong>{group}</strong>. You lose access to the resources "
+                    "it shared with you.",
+            "cta": "Go to my groups",
+        },
+    },
+    "notif_group_role_changed": {
+        "es": {
+            "asunto": "Tu rol en {group} ha cambiado",
+            "title": "Grupos",
+            "heading": "Ahora eres {role} en {group}",
+            "body": "<strong>{actor}</strong> ha cambiado tu rol en el grupo "
+                    "<strong>{group}</strong>.",
+            "cta": "Ir a mis grupos",
+        },
+        "en": {
+            "asunto": "Your role in {group} has changed",
+            "title": "Groups",
+            "heading": "You are now {role} in {group}",
+            "body": "<strong>{actor}</strong> changed your role in the group "
+                    "<strong>{group}</strong>.",
+            "cta": "Go to my groups",
+        },
+    },
+    "notif_group_ownership_received": {
+        "es": {
+            "asunto": "Ahora eres propietario de {group}",
+            "title": "Grupos",
+            "heading": "{group} es tuyo",
+            "body": "<strong>{actor}</strong> te ha traspasado la propiedad del "
+                    "grupo <strong>{group}</strong>. Desde ahora gestionas sus "
+                    "miembros y sus permisos.",
+            "cta": "Gestionar el grupo",
+        },
+        "en": {
+            "asunto": "You are now the owner of {group}",
+            "title": "Groups",
+            "heading": "{group} is yours",
+            "body": "<strong>{actor}</strong> transferred ownership of the group "
+                    "<strong>{group}</strong> to you. You now manage its members "
+                    "and permissions.",
+            "cta": "Manage the group",
+        },
+    },
+    "notif_license_assigned": {
+        "es": {
+            "asunto": "Te han asignado una licencia de iAgents Hub",
+            "title": "Suscripción",
+            "heading": "Ya tienes licencia",
+            "body": "<strong>{actor}</strong> te ha asignado un asiento de su "
+                    "suscripción. Tu cuenta ya tiene acceso completo.",
+            "cta": "Ver mi cuenta",
+        },
+        "en": {
+            "asunto": "You have been assigned an iAgents Hub licence",
+            "title": "Subscription",
+            "heading": "Your licence is active",
+            "body": "<strong>{actor}</strong> assigned you a seat from their "
+                    "subscription. Your account now has full access.",
+            "cta": "View my account",
+        },
     },
     "verify": {
         "es": {

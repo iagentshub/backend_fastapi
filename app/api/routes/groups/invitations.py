@@ -12,6 +12,7 @@ from app.api.routes.groups._shared import (
     _assert_not_guest,
     _assert_not_personal_group,
     _groups,
+    _nombre_visible,
     router,
 )
 from app.auth.auth import (
@@ -19,6 +20,7 @@ from app.auth.auth import (
     get_user_role,
 )
 from app.errors import APIError
+from app.services.notifications import notify
 
 
 @router.get("/my-invitations")
@@ -95,7 +97,8 @@ async def invite_member(
         and await get_user_role(ctx.user) != "admin"
     ):
         raise APIError(403, "forbidden", "Sin permisos para invitar miembros")
-    if not await _groups.get(group_id):
+    grupo = await _groups.get(group_id)
+    if not grupo:
         raise APIError(
             404, "not_found", "Grupo no encontrado", extra={"resource": "group"}
         )
@@ -116,6 +119,16 @@ async def invite_member(
             extra={"resource": "invitation"},
         )
     inv["username"] = username
+    # Hasta aquí la invitación era solo una fila y el invitado únicamente se
+    # enteraba si entraba a mirar su perfil. `notify` no lanza, así que esto no
+    # puede convertir una invitación creada en un error para quien invita.
+    await notify(
+        user_id=target_user_id,
+        kind="group_invite",
+        actor=await _nombre_visible(ctx.user),
+        group=grupo.get("name", ""),
+        invitation_id=inv["id"],
+    )
     return inv
 
 @router.delete("/{group_id}/invitations/{inv_id}")

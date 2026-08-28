@@ -12,6 +12,7 @@ from typing import Any, Dict
 
 from fastapi import APIRouter
 
+from app.auth.user_lookup import get_user_by_id
 from app.errors import APIError
 from app.storage.groups import GroupStorage
 from app.storage.guest import is_guest
@@ -25,6 +26,15 @@ _PERMISSION_ACTIONS = {
     "connections": {"direct", "via_agent"},
     "knowledge": {"view"},
 }
+
+async def _nombre_visible(user_id: str) -> str:
+    """El username público de quien actúa.
+
+    `ctx.user` es el id interno, y es lo que llega a los avisos; enseñarlo tal
+    cual en una notificación o en un correo sería enseñar un identificador.
+    """
+    user = await get_user_by_id(user_id)
+    return str((user or {}).get("username") or "")
 
 def _assert_not_guest(user: str) -> None:
     if is_guest(user):

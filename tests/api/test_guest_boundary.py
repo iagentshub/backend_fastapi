@@ -36,6 +36,8 @@ CERRADOS = [
     ("GET", "/api/billing/subscription"),
     ("GET", "/api/feed"),
     ("GET", "/api/groups"),
+    ("GET", "/api/notifications"),
+    ("GET", "/api/notifications/push/key"),
     ("GET", "/api/social/feed"),
     ("GET", "/api/users"),
     ("POST", "/api/auth/tokens"),

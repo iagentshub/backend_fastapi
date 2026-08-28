@@ -27,6 +27,10 @@ from app.services.platform_settings import (
 class AdminSettingsUpdate(BaseModel):
     log_retention_days: Optional[int] = None
     audit_log_retention_days: Optional[int] = None
+    # Dos ventanas para los avisos: una leída ya cumplió, una sin leer es lo
+    # único que le queda al usuario de que aquello pasó.
+    notification_retention_days: Optional[int] = None
+    notification_unread_retention_days: Optional[int] = None
 
 
 @router.get("/admin")
@@ -36,6 +40,12 @@ async def get_admin_settings(_: str = Depends(require_admin)) -> dict:
     return {
         "log_retention_days": int(cfg.get("log_retention_days", 30)),
         "audit_log_retention_days": int(cfg.get("audit_log_retention_days", 365)),
+        "notification_retention_days": int(
+            cfg.get("notification_retention_days", 90)
+        ),
+        "notification_unread_retention_days": int(
+            cfg.get("notification_unread_retention_days", 365)
+        ),
     }
 
 
@@ -64,10 +74,31 @@ async def update_admin_settings(
                 extra={"field": "audit_log_retention_days"},
             )
         cfg["audit_log_retention_days"] = body.audit_log_retention_days
+    for campo, tope in (
+        ("notification_retention_days", 3650),
+        ("notification_unread_retention_days", 3650),
+    ):
+        valor = getattr(body, campo)
+        if valor is None:
+            continue
+        if not (1 <= valor <= tope):
+            raise APIError(
+                422,
+                "invalid_field",
+                f"{campo} debe estar entre 1 y {tope}",
+                extra={"field": campo},
+            )
+        cfg[campo] = valor
     _write_platform_cfg(cfg)
     return {
         "log_retention_days": int(cfg.get("log_retention_days", 30)),
         "audit_log_retention_days": int(cfg.get("audit_log_retention_days", 365)),
+        "notification_retention_days": int(
+            cfg.get("notification_retention_days", 90)
+        ),
+        "notification_unread_retention_days": int(
+            cfg.get("notification_unread_retention_days", 365)
+        ),
     }
 
 

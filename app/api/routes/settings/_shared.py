@@ -52,7 +52,33 @@ def _settings_response(prefs: dict) -> dict:
         "language": prefs.get("language", _DEFAULTS["language"]),
         "theme_configurable": configurable,
         "default_theme": default_theme,
+        # Activados de fábrica: una cuenta nueva tiene que enterarse de que la
+        # han invitado a un grupo sin haber configurado nada antes.
+        "notify_email": prefs.get("notify_email", True) is not False,
+        "notify_push": prefs.get("notify_push", True) is not False,
+        # El catálogo lo publica el servidor y el cliente pinta lo que reciba:
+        # una copia en el cliente se desincroniza en cuanto se añade un evento.
+        "notification_categories": _categorias_de(prefs),
     }
+
+
+def _categorias_de(prefs: dict) -> dict:
+    """Estado de cada categoría, rellenando lo que el usuario nunca tocó."""
+    from app.models.notification_kinds import categorias_publicas
+
+    guardado = prefs.get("notifications")
+    if not isinstance(guardado, dict):
+        guardado = {}
+    salida = {}
+    for categoria in categorias_publicas():
+        actual = guardado.get(categoria)
+        if not isinstance(actual, dict):
+            actual = {}
+        salida[categoria] = {
+            "email": actual.get("email", True) is not False,
+            "push": actual.get("push", True) is not False,
+        }
+    return salida
 
 async def _get_prefs(user_id: str) -> dict:
     async with open_db() as conn:

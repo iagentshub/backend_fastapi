@@ -12,6 +12,7 @@ from app.api.routes.groups._shared import (
     _assert_not_guest,
     _assert_not_personal_group,
     _groups,
+    _nombre_visible,
     _validate_permissions,
     router,
 )
@@ -21,6 +22,7 @@ from app.auth.auth import (
     get_user_role,
 )
 from app.errors import APIError
+from app.services.notifications import notify
 
 
 @router.get("/{group_id}/members")
@@ -76,11 +78,18 @@ async def add_member(
         raise APIError(
             404, "not_found", "Usuario no encontrado", extra={"resource": "user"}
         )
-    if not await _groups.get(group_id):
+    grupo = await _groups.get(group_id)
+    if not grupo:
         raise APIError(
             404, "not_found", "Grupo no encontrado", extra={"resource": "group"}
         )
     await _groups.add_member(group_id, target_user["id"], role)
+    await notify(
+        user_id=target_user["id"],
+        kind="group_member_added",
+        actor=await _nombre_visible(ctx.user),
+        group=grupo.get("name", ""),
+    )
     return {"ok": True, "group_id": group_id, "username": username, "role": role}
 
 @router.delete("/{group_id}/members/{username}")
@@ -111,6 +120,16 @@ async def remove_member(
     if not target_user or not await _groups.remove_member(group_id, target_user_id):
         raise APIError(
             404, "not_found", "Miembro no encontrado", extra={"resource": "member"}
+        )
+    # Solo si te saca otro: esta misma ruta es la de darse de baja uno mismo
+    # (ver la excepción de permisos de arriba), y avisarte de algo que acabas de
+    # hacer tú es ruido.
+    if target_user_id != ctx.user:
+        await notify(
+            user_id=target_user_id,
+            kind="group_member_removed",
+            actor=await _nombre_visible(ctx.user),
+            group=group.get("name", ""),
         )
     return {"ok": True}
 
@@ -160,6 +179,18 @@ async def update_member_role(
     ):
         raise APIError(
             404, "not_found", "Miembro no encontrado", extra={"resource": "member"}
+        )
+    # Solo el cambio de rol se avisa. Los permisos son un diccionario anidado
+    # que no se resume en una frase, y un correo que diga «te han cambiado los
+    # permisos» sin decir cuáles no ayuda a nadie.
+    if has_role:
+        grupo = await _groups.get(group_id)
+        await notify(
+            user_id=target_user_id,
+            kind="group_role_changed",
+            actor=await _nombre_visible(ctx.user),
+            group=(grupo or {}).get("name", ""),
+            role=role,
         )
     return {
         "ok": True,

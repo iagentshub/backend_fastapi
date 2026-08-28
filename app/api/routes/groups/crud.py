@@ -12,6 +12,7 @@ from app.api.routes.groups._shared import (
     _assert_not_guest,
     _assert_not_personal_group,
     _groups,
+    _nombre_visible,
     router,
 )
 from app.auth.auth import (
@@ -22,6 +23,7 @@ from app.auth.passwords import decode_claims
 from app.auth.sessions import reissue_access
 from app.errors import APIError
 from app.models.request_bodies import StatusBody, UsernameBody
+from app.services.notifications import notify
 
 
 @router.get("")
@@ -191,6 +193,12 @@ async def transfer_group_ownership(
         )
     if not await _groups.transfer_ownership(group_id, new_owner_id):
         raise APIError(400, "not_a_member", "El usuario no es miembro de este grupo")
+    await notify(
+        user_id=new_owner_id,
+        kind="group_ownership_received",
+        actor=await _nombre_visible(username),
+        group=group.get("name", ""),
+    )
     return {"ok": True}
 
 def _session_id(ga_token: Optional[str]) -> Optional[str]:

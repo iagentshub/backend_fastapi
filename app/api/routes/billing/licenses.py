@@ -18,8 +18,9 @@ from app.api.routes.billing._shared import (
     _license_error,
     router,
 )
-from app.auth.auth import get_user_by_username
+from app.auth.auth import get_user_by_id, get_user_by_username
 from app.errors import APIError
+from app.services.notifications import notify
 
 
 @router.get("/licenses")
@@ -53,6 +54,12 @@ async def assign_license(
         )
     except ValueError as exc:
         raise _license_error(exc)
+    actor = await get_user_by_id(user)
+    await notify(
+        user_id=target["id"],
+        kind="license_assigned",
+        actor=str((actor or {}).get("username") or ""),
+    )
     return await _billing.license_summary_for_owner(user)
 
 @router.delete("/licenses/{username}")

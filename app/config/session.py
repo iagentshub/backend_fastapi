@@ -140,6 +140,23 @@ SMTP_TLS: str = os.getenv("GAIA_SMTP_TLS", "starttls").lower()
 
 PASSWORD_RESET_EXPIRE_HOURS: int = int(os.getenv("GAIA_RESET_EXPIRE_HOURS", "1"))
 
+# ── Web Push (VAPID) ──────────────────────────────────────────────────────────
+# El par de claves con el que esta instalación se identifica ante el servicio
+# push de cada navegador (RFC 8292). Se genera una vez y no cambia:
+#
+#     python -m py_vapid --gen
+#
+# Cambiarlas invalida TODAS las suscripciones existentes de golpe —el navegador
+# comprueba que la clave del envío es la misma con la que se suscribió—, así
+# que no se rotan a la ligera. Vacías = push desactivado, y la campana y el
+# correo siguen funcionando igual.
+#
+# `SUBJECT` es un contacto (mailto: o https://) que el servicio push usa para
+# avisar al operador si la instalación empieza a mandar basura. Lo exige el RFC.
+VAPID_PUBLIC_KEY: str = os.getenv("GAIA_VAPID_PUBLIC_KEY", "").strip()
+VAPID_PRIVATE_KEY: str = os.getenv("GAIA_VAPID_PRIVATE_KEY", "").strip()
+VAPID_SUBJECT: str = os.getenv("GAIA_VAPID_SUBJECT", "").strip()
+
 # ── Webmail ───────────────────────────────────────────────────────────────────
 # URL del cliente de correo web que se muestra en el panel de admin.
 # Ejemplos: Mailpit dev → http://localhost:8025 | Dondominio → https://webmail.dondominio.com

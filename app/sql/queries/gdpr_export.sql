@@ -113,6 +113,25 @@ FROM memory_files
 WHERE owner_id = ?
 ORDER BY updated_at;
 
+-- Los avisos se exportan además de borrarse: al aceptar una invitación su fila
+-- de `group_invitations` desaparece, así que la notificación es lo único que
+-- queda de que aquello ocurrió y cuándo.
+-- Sin `p256dh` ni `auth`: son las claves con las que se cifra el mensaje para
+-- ese navegador, o sea credenciales vivas, igual que los hashes del refresh en
+-- `sessions`. Lo que hace la fila un dato personal —qué dispositivo y desde
+-- cuándo— sí va.
+-- name: push_subscriptions
+SELECT kind, user_agent, created_at, last_sent_at
+FROM push_subscriptions
+WHERE user_id = ?
+ORDER BY created_at;
+
+-- name: notifications
+SELECT kind, data, read_at, created_at
+FROM notifications
+WHERE user_id = ?
+ORDER BY created_at;
+
 -- name: stars
 SELECT resource_type, resource_id, created_at
 FROM resource_stars

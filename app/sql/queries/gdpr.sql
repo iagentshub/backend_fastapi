@@ -167,6 +167,14 @@ WHERE username = ?;
 DELETE FROM resource_group_shares
 WHERE shared_by = ?;
 
+-- name: delete_push_subscriptions
+DELETE FROM push_subscriptions
+WHERE user_id = ?;
+
+-- name: delete_notifications
+DELETE FROM notifications
+WHERE user_id = ?;
+
 -- name: delete_group_invitations
 DELETE FROM group_invitations
 WHERE username = ?;

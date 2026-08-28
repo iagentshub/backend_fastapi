@@ -15,6 +15,17 @@ Pillow>=10.4.0
 pillow-heif>=0.18.0
 pytesseract>=0.3.13
 asyncpg>=0.29.0
+# Web Push: las dos mitades del protocolo, por separado y a propósito.
+# `http-ece` cifra el payload (RFC 8188/8291) y `py-vapid` firma la cabecera de
+# autorización (RFC 8292); el POST lo hace httpx, que ya estaba. Ninguna de las
+# dos es algo que se escriba a mano sin equivocarse, y un error aquí no falla
+# ruidosamente: el navegador descarta el mensaje en silencio.
+#
+# `pywebpush` haría lo mismo en una llamada, pero desde su 2.0 arrastra aiohttp
+# entero —ocho paquetes— para un POST que este backend ya sabe hacer. Estas dos
+# solo dependen de `cryptography`, que ya es dependencia directa.
+http-ece>=1.2.0
+py-vapid>=1.9.0
 aiosqlite>=0.20.0
 stripe>=10.0.0
 pytest>=8.0.0

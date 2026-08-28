@@ -112,6 +112,40 @@ def _check_smtp() -> ConfigCheck:
         variables=("GAIA_SMTP_HOST",),
     )
 
+def _check_push() -> ConfigCheck:
+    """Web Push: las tres variables o ninguna.
+
+    Ninguna es un aviso —una instalación puede querer solo campana y correo—,
+    pero a medias es un error: la aplicación ofrece el interruptor, el usuario
+    lo activa y el envío falla después sin que nadie lo vea. El contacto no es
+    opcional, la firma exige `sub` (RFC 8292).
+    """
+    faltan = tuple(
+        var
+        for var, valor in (
+            ("GAIA_VAPID_PUBLIC_KEY", _session.VAPID_PUBLIC_KEY),
+            ("GAIA_VAPID_PRIVATE_KEY", _session.VAPID_PRIVATE_KEY),
+            ("GAIA_VAPID_SUBJECT", _session.VAPID_SUBJECT),
+        )
+        if not valor
+    )
+    gravedad = "ok" if not faltan else ("warning" if len(faltan) == 3 else "error")
+    detalle = {
+        "ok": "Claves VAPID configuradas.",
+        "warning": "Sin claves VAPID no salta ningún aviso fuera de la "
+        "aplicación; campana y correo siguen igual. Genéralas con "
+        "`python -m py_vapid --gen`.",
+        "error": "Configuración de push incompleta: queda desactivado aunque "
+        "haya claves puestas.",
+    }[gravedad]
+    return ConfigCheck(
+        key="push",
+        feature="Notificaciones push",
+        severity=gravedad,
+        detail=detalle,
+        variables=faltan or ("GAIA_VAPID_PUBLIC_KEY",),
+    )
+
 def _check_email_verify(settings: dict) -> ConfigCheck:
     enabled = bool(settings.get("email_verify", _session.EMAIL_VERIFY_ENABLED))
     if not enabled:

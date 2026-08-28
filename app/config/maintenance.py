@@ -53,6 +53,10 @@ GDPR_PURGE_SECONDS = _intervalo("GAIA_GDPR_PURGE_HOURS", 6, factor=_HORA)
 # cuánto se comprueba.
 LOG_PURGE_SECONDS = _intervalo("GAIA_LOG_PURGE_HOURS", 24, factor=_HORA)
 
+# Purga de avisos vencidos. La retención —dos ventanas, leídos y sin leer— es
+# la política y la fija el admin; esto solo es cada cuánto se comprueba.
+NOTIFICATION_PURGE_SECONDS = _intervalo("GAIA_NOTIFICATION_PURGE_HOURS", 24, factor=_HORA)
+
 # Purga de ventanas de rate limit ya vencidas. No afecta a ninguna cuota: una
 # ventana caducada deja de contar al caducar, no al borrarse.
 # Ver docs/adr/009-cuota-compartida-y-por-principal.md
