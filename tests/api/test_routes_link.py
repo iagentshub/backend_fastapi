@@ -269,8 +269,6 @@ def test_link_agente_guarda_linked_to_en_resource_social(client):
     from app.auth.auth import get_user_by_username
 
     assert row.get("linked_to_user") == asyncio.run(get_user_by_username(owner))["id"]
-    # No debe tener fork_of_id
-    assert not row.get("fork_of_id")
 
 
 def test_link_agente_no_publico_devuelve_403(client):
@@ -421,7 +419,6 @@ def test_link_skill_guarda_linked_to_en_resource_social(client):
     from app.auth.auth import get_user_by_username
 
     assert row.get("linked_to_user") == asyncio.run(get_user_by_username(owner))["id"]
-    assert not row.get("fork_of_id")
 
 
 def test_link_skill_no_publico_devuelve_403(client):

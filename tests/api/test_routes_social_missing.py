@@ -286,6 +286,9 @@ def test_explore_preview_skill_ok(client):
     data = r.json()
     assert data["resource_type"] == "skill"
     assert data["resource_id"] == skill_id
+    # El cuerpo real de la skill vive en `content`: la vista previa lo enseñaba
+    # vacío porque leía el `body` del modelo viejo.
+    assert data["content"] == "# skill content"
 
 
 def test_explore_preview_knowledge_ok(client):

@@ -4,6 +4,10 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.storage.migrations.steps._columnas import (
+    columna_existe_pg,
+    columna_existe_sqlite,
+)
 from app.storage.schema import tabla_ddl
 
 _SOCIAL_DATE_COLUMNS: dict[str, str] = {
@@ -29,8 +33,6 @@ _SOCIAL_COLUMNS: dict[str, tuple[str, ...]] = {
         "is_public",
         "category",
         "trial_missing_deps",
-        "fork_of_user",
-        "fork_of_id",
         "linked_to_user",
         "linked_to_id",
         "stars_count",
@@ -142,3 +144,25 @@ async def _social_iso_dates_pg(conn: Any) -> None:
         await conn.execute(
             f"ALTER TABLE {table} ALTER COLUMN created_at SET NOT NULL"
         )
+
+
+# `fork_of_user` y `fork_of_id` venían de un «fork» que nunca se implementó:
+# ninguna consulta las escribía ni las leía, así que en toda instalación están
+# a NULL. Se van del esquema; esto las retira de las bases que ya existen.
+_COLUMNAS_FORK = ("fork_of_user", "fork_of_id")
+
+
+async def _drop_social_fork_columns_sqlite(conn: Any) -> None:
+    for columna in _COLUMNAS_FORK:
+        if await columna_existe_sqlite(conn, "resource_social", columna):
+            await conn.execute(
+                f"ALTER TABLE resource_social DROP COLUMN {columna}"
+            )
+
+
+async def _drop_social_fork_columns_pg(conn: Any) -> None:
+    for columna in _COLUMNAS_FORK:
+        if await columna_existe_pg(conn, "resource_social", columna):
+            await conn.execute(
+                f"ALTER TABLE resource_social DROP COLUMN {columna}"
+            )
