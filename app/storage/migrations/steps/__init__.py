@@ -100,6 +100,8 @@ from app.storage.migrations.steps.shared import (
     _resource_social_page_index,
 )
 from app.storage.migrations.steps.social import (
+    _drop_social_fork_columns_pg,
+    _drop_social_fork_columns_sqlite,
     _social_iso_dates_pg,
     _social_iso_dates_sqlite,
 )
@@ -154,6 +156,7 @@ MIGRATION_PAIRS: tuple[MigrationPair, ...] = (
     # quedan con una columna vacía para siempre. En una instalación donde la 39
     # hizo su trabajo, no encuentra columna y no hace nada.
     MigrationPair(40, "user_avatars_drop_legacy_column", _user_avatars_sqlite, _user_avatars_pg),
+    MigrationPair(41, "drop_social_fork_columns", _drop_social_fork_columns_sqlite, _drop_social_fork_columns_pg),
 )
 
 __all__ = ["MIGRATION_PAIRS"]

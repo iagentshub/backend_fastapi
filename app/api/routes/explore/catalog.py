@@ -387,8 +387,10 @@ async def explore_preview(
                 "Recurso no encontrado o no es público",
                 extra={"resource": "skill"},
             )
-        base["body"] = (sk.get("body") or "")[:3000]
-        base["parameters"] = sk.get("parameters", [])
+        # El campo de la skill es `content`. La vista previa mandaba `body` y
+        # `parameters`, del modelo viejo, que hoy no escribe nadie: enseñaba el
+        # cuerpo vacío y una lista de parámetros vacía.
+        base["content"] = (sk.get("content") or "")[:3000]
         base["icon"] = sk.get("icon", "")
 
     elif resource_type == "prompt":

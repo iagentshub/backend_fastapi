@@ -8,8 +8,6 @@ CREATE TABLE IF NOT EXISTS resource_social (
     is_public          @BOOL@ NOT NULL DEFAULT 0,
     category           TEXT NOT NULL DEFAULT 'Other',
     trial_missing_deps TEXT NOT NULL DEFAULT 'warn',
-    fork_of_user       TEXT,
-    fork_of_id         TEXT,
     linked_to_user     TEXT,
     linked_to_id       TEXT,
     stars_count        INTEGER NOT NULL DEFAULT 0,

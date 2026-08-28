@@ -145,6 +145,9 @@ async def test_social_iso_dates_rebuilds_legacy_sqlite_tables_without_data_loss(
     assert follow == ("alice", "bob", "2026-01-02T03:04:05.000Z")
     assert star == ("alice", "agent", "a1", "2026-01-02T03:04:05.000Z")
     assert social == ("Agente", "2026-01-02T03:04:05.000Z")
+    # La tabla legacy traía `fork_of_user`/`fork_of_id` de un fork que nunca se
+    # implementó: el DDL canónico ya no las declara y el rebuild no las copia.
+    assert "fork_of" not in definitions["resource_social"]
     assert all("strftime" in definition for definition in definitions.values())
     assert indexes >= {
         "idx_uf_follower",
@@ -155,6 +158,47 @@ async def test_social_iso_dates_rebuilds_legacy_sqlite_tables_without_data_loss(
         "idx_rsoc_link_origin",
         "idx_rsoc_public_page",
     }
+
+
+async def test_drop_social_fork_columns_retira_las_columnas_muertas(tmp_path):
+    """La 41 se lleva `fork_of_*` de una base que ya existía, y es repetible."""
+    from app.storage.migrations.steps.social import _drop_social_fork_columns_sqlite
+
+    db = tmp_path / "fork-columns.db"
+    async with aiosqlite.connect(db) as conn:
+        await conn.executescript("""
+            CREATE TABLE resource_social (
+                resource_type TEXT NOT NULL, resource_id TEXT NOT NULL,
+                owner TEXT NOT NULL, name TEXT NOT NULL DEFAULT '',
+                fork_of_user TEXT, fork_of_id TEXT,
+                linked_to_user TEXT, linked_to_id TEXT,
+                PRIMARY KEY (resource_type, resource_id, owner)
+            );
+            INSERT INTO resource_social (resource_type, resource_id, owner, name)
+            VALUES ('agent', 'a1', 'alice', 'Agente');
+        """)
+
+        await _drop_social_fork_columns_sqlite(conn)
+        # Idempotente: el registro puede quedar marcado y el paso repetirse.
+        await _drop_social_fork_columns_sqlite(conn)
+
+        columnas = {
+            row[1]
+            for row in await conn.execute_fetchall(
+                "PRAGMA table_info(resource_social)"
+            )
+        }
+        fila = (
+            await conn.execute_fetchall(
+                "SELECT name, linked_to_id FROM resource_social"
+            )
+        )[0]
+
+    assert "fork_of_user" not in columnas
+    assert "fork_of_id" not in columnas
+    # Lo que sí se usa sigue donde estaba.
+    assert {"resource_type", "resource_id", "owner", "linked_to_id"} <= columnas
+    assert fila == ("Agente", None)
 
 
 async def test_social_iso_dates_converts_postgres_timestamp_and_defaults():
