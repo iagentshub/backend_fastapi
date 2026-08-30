@@ -159,3 +159,38 @@ def test_provider_fields_declared():
     assert "url" in keys
     assert "username" in keys
     assert "api_key" in keys
+
+
+# ── Contrato del body de login ────────────────────────────────────────────────
+
+def test_login_envia_identifier_no_solo_username():
+    """El hub remoto lee `identifier`; enviar solo `username` deja el
+    identificador vacío y responde 400 `missing_credentials`, que la
+    sincronización enseñaba como un fallo de autenticación."""
+    mock_resp = MagicMock()
+    mock_resp.__enter__ = lambda s: s
+    mock_resp.__exit__ = MagicMock(return_value=False)
+    mock_resp.read.return_value = b""
+    mock_resp.headers.get_all.return_value = ["ga_token=tok123; Path=/"]
+
+    with patch(
+        "app.connections.iagentshub.safe_urlopen", return_value=mock_resp
+    ) as urlopen:
+        assert _login("https://hub.example.com", "alice", "secret") == "tok123"
+
+    enviado = json.loads(urlopen.call_args[0][0].data.decode())
+    assert enviado["identifier"] == "alice"
+    assert enviado["password"] == "secret"
+    # `username` sigue viajando para los hubs remotos que aún no leen `identifier`.
+    assert enviado["username"] == "alice"
+
+
+def test_login_incluye_el_cuerpo_del_error_http():
+    """`str(HTTPError)` no dice más que «Bad Request»: sin el cuerpo, el 400 del
+    contrato de login era indistinguible de una contraseña mala."""
+    with patch(
+        "app.connections.iagentshub.safe_urlopen",
+        side_effect=_http_error(400, b'{"detail":{"code":"missing_credentials"}}'),
+    ):
+        with pytest.raises(ValueError, match="missing_credentials"):
+            _login("https://hub.example.com", "alice", "secret")

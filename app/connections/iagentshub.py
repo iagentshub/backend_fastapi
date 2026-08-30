@@ -13,18 +13,48 @@ from app.utils.safe_http import assert_url_allowed, safe_urlopen
 from .base import BaseProvider, FieldDef, TestResult, UnsafeProviderURL, register
 
 
+class HubLoginError(ValueError):
+    """Fallo de login contra un hub remoto, conservando el código HTTP."""
+
+    def __init__(self, message: str, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
+
+
 def _login(url: str, username: str, password: str) -> str:
     """Autentica contra el hub remoto y devuelve el ga_token. Lanza excepción si falla."""
-    payload = json.dumps({"username": username, "password": password}).encode()
+    # `identifier` es el campo que `LoginBody` lee hoy; `username` viaja además
+    # por compatibilidad con hubs remotos antiguos. Enviar solo `username`
+    # dejaba el identificador vacío en el hub actual, que responde 400
+    # `missing_credentials` — y la sincronización lo enseñaba como un fallo de
+    # autenticación sin decir que el usuario ni siquiera había llegado.
+    payload = json.dumps(
+        {"identifier": username, "username": username, "password": password}
+    ).encode()
     req = urllib.request.Request(
         f"{url}/api/auth/login",
         data=payload,
         headers={"content-type": "application/json"},
         method="POST",
     )
-    with safe_urlopen(req, timeout=10) as r:
-        r.read()
-        raw_cookies = r.headers.get_all("Set-Cookie") or []
+    try:
+        with safe_urlopen(req, timeout=10) as r:
+            r.read()
+            raw_cookies = r.headers.get_all("Set-Cookie") or []
+    except urllib.error.HTTPError as exc:
+        # `str(HTTPError)` es solo «HTTP Error 400: Bad Request»: el cuerpo lleva
+        # el `code` del hub remoto y es lo único que distingue una contraseña
+        # mala de un contrato de login que ya no coincide.
+        detalle = ""
+        try:
+            detalle = exc.read().decode("utf-8", errors="replace")[:200]
+        except OSError:
+            detalle = ""
+        raise HubLoginError(
+            f"HTTP {exc.code} en el login del hub remoto"
+            + (f": {detalle}" if detalle else ""),
+            status=exc.code,
+        ) from exc
     cookies = SimpleCookie()
     for raw_cookie in raw_cookies:
         cookies.load(raw_cookie)
@@ -88,6 +118,10 @@ class IAgentsHubProvider(BaseProvider):
             display = data.get("username") or username
             return TestResult(True, f"OK — conectado como {display}")
 
+        except HubLoginError as e:
+            if e.status == 401:
+                return TestResult(False, "Usuario o contraseña incorrectos")
+            return TestResult(False, str(e))
         except urllib.error.HTTPError as e:
             if e.code == 401:
                 return TestResult(False, "Usuario o contraseña incorrectos")
