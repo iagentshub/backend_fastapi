@@ -75,8 +75,11 @@ async def test_set_cancel_at_period_end(storage):
 
 
 async def test_event_idempotency(storage):
-    assert await storage.has_processed_event("evt_1") is False
-    await storage.record_event("evt_1", "customer.subscription.updated", {"id": "evt_1"})
-    assert await storage.has_processed_event("evt_1") is True
-    # Recording the same event id again must not raise (duplicate delivery from Stripe)
-    await storage.record_event("evt_1", "customer.subscription.updated", {"id": "evt_1"})
+    """La reserva la gana uno solo, y soltarla devuelve el evento al ruedo."""
+    evento = ("evt_1", "customer.subscription.updated", {"id": "evt_1"})
+    assert await storage.claim_event(*evento) is True
+    # La entrega duplicada de Stripe choca contra el PRIMARY KEY y no reserva.
+    assert await storage.claim_event(*evento) is False
+
+    await storage.discard_event("evt_1")
+    assert await storage.claim_event(*evento) is True

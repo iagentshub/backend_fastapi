@@ -95,17 +95,19 @@ UPDATE subscription_license_assignments
 SET status = 'revoked'
 WHERE subscription_id = ? AND username = ?;
 
--- name: stripe_event_seen
-SELECT 1
-FROM stripe_events
-WHERE stripe_event_id = ?;
-
--- name: insert_stripe_event_pg
+-- name: claim_stripe_event_pg
+-- Reserva el evento y dice si la ha ganado: sin fila devuelta, ya estaba.
 INSERT INTO stripe_events (stripe_event_id, type, processed_at, payload)
 VALUES (?, ?, ?, ?)
-ON CONFLICT (stripe_event_id) DO NOTHING;
+ON CONFLICT (stripe_event_id) DO NOTHING
+RETURNING stripe_event_id;
 
--- name: insert_stripe_event_sqlite
+-- name: claim_stripe_event_sqlite
 -- engine: sqlite
 INSERT OR IGNORE INTO stripe_events (stripe_event_id, type, processed_at, payload)
-VALUES (?, ?, ?, ?);
+VALUES (?, ?, ?, ?)
+RETURNING stripe_event_id;
+
+-- name: delete_stripe_event
+DELETE FROM stripe_events
+WHERE stripe_event_id = ?;

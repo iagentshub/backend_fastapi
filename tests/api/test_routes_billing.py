@@ -9,6 +9,7 @@ import json
 import time
 from unittest.mock import AsyncMock, patch
 
+import pytest
 import stripe
 
 import app.api.routes.billing._shared as billing_routes
@@ -655,6 +656,71 @@ def test_webhook_subscription_deleted_marks_canceled(client):
 
     state = client.get("/api/billing/subscription").json()
     assert state["tier"] == "free"  # canceled -> excluded from "active"
+
+
+def test_webhook_suscripcion_sin_usuario_deja_rastro(client):
+    """Un cobro que no se puede atribuir ya no se descarta en silencio.
+
+    Antes esta rama era un `return` mudo: el evento quedaba marcado como
+    procesado, Stripe no lo reintentaba y no quedaba ni una línea. El único
+    rastro era el payload en `stripe_events`, que no lee ningún endpoint.
+    """
+    sub_obj = {
+        "id": "sub_huerfana",
+        "customer": "cus_sin_enlazar",
+        "status": "active",
+        "cancel_at_period_end": False,
+        "current_period_end": 1893456000,
+        # Ni user_id ni el username heredado: el alta viene de fuera de la API.
+        "metadata": {"tier": "developer", "seats": "1"},
+        "items": {"data": [{"id": "si_1", "price": {"id": "price_x"}}]},
+    }
+    event = {"id": "evt_huerfano_1", "object": "event", "type": "customer.subscription.created", "data": {"object": sub_obj}}
+    payload = json.dumps(event).encode()
+
+    with patch.object(billing_webhook, "STRIPE_WEBHOOK_SECRET", _WEBHOOK_SECRET):
+        sig_header = _sign_payload(payload, _WEBHOOK_SECRET)
+        with patch.object(billing_webhook.flog, "audit") as mock_audit:
+            r = client.post("/api/billing/webhook", content=payload, headers={"stripe-signature": sig_header})
+
+    # 200 a propósito: un 5xx haría reintentar tres días por una causa que casi
+    # nunca es transitoria, y arriesga que Stripe deshabilite el endpoint.
+    assert r.status_code == 200, r.text
+
+    mock_audit.assert_called_once()
+    accion = mock_audit.call_args.args[0]
+    kwargs = mock_audit.call_args.kwargs
+    assert accion == "billing.webhook.unattributed"
+    assert kwargs["outcome"] == "FAILURE"
+    assert kwargs["resource_id"] == "sub_huerfana"
+    assert kwargs["details"]["stripe_customer_id"] == "cus_sin_enlazar"
+
+
+def test_webhook_fallo_del_manejador_permite_reintento(client):
+    """Reservar antes de procesar no puede convertir un fallo en pérdida.
+
+    La reserva se suelta si el manejador revienta; de lo contrario el reintento
+    de Stripe vería «ya procesado» y el evento se perdería para siempre.
+    """
+    event = {"id": "evt_reintento_1", "object": "event", "type": "customer.subscription.updated", "data": {"object": {"id": "sub_x"}}}
+    payload = json.dumps(event).encode()
+
+    with patch.object(billing_webhook, "STRIPE_WEBHOOK_SECRET", _WEBHOOK_SECRET):
+        sig_header = _sign_payload(payload, _WEBHOOK_SECRET)
+        cabeceras = {"stripe-signature": sig_header}
+        with patch.object(
+            billing_webhook,
+            "_handle_subscription_event",
+            new_callable=AsyncMock,
+            side_effect=[RuntimeError("la BD parpadeó"), None],
+        ) as mock_handle:
+            with pytest.raises(RuntimeError):
+                client.post("/api/billing/webhook", content=payload, headers=cabeceras)
+
+            r = client.post("/api/billing/webhook", content=payload, headers=cabeceras)
+
+    assert r.status_code == 200, r.text
+    assert mock_handle.call_count == 2
 
 
 # ── BE-09: /quote era el único POST de billing sin freno ──────────────────────

@@ -276,24 +276,47 @@ class BillingStorage:
             await conn.commit()
             return True
 
-    async def has_processed_event(self, stripe_event_id: str) -> bool:
-        async with open_db() as conn:
-            row = await conn.fetchone(
-                sql("queries/billing:stripe_event_seen"),
-                (stripe_event_id,),
-            )
-            return row is not None
+    async def claim_event(
+        self, stripe_event_id: str, event_type: str, payload: Dict[str, Any]
+    ) -> bool:
+        """Reserva el evento antes de procesarlo. False si ya lo tenía otro.
 
-    async def record_event(self, stripe_event_id: str, event_type: str, payload: Dict[str, Any]) -> None:
+        El INSERT es la cerradura. `stripe_event_id` es PRIMARY KEY, así que de
+        dos entregas simultáneas del mismo evento —Stripe avisa por escrito de
+        que ocurren— solo una gana la fila y solo esa ejecuta el manejador.
+        Antes esto eran un SELECT y un INSERT con el manejador entero en medio,
+        y las dos entregas pasaban el SELECT.
+
+        `RETURNING` es lo que distingue haber reservado de haber chocado: en el
+        conflicto no devuelve fila. El payload se guarda aquí, al reservar, que
+        es el momento en que se sabe con certeza que el evento llegó.
+        """
+        params = (
+            stripe_event_id,
+            event_type,
+            _now(),
+            json.dumps(payload, ensure_ascii=False),
+        )
         async with open_db() as conn:
             if IS_PG:
-                await conn.execute(
-                    sql("queries/billing:insert_stripe_event_pg"),
-                    (stripe_event_id, event_type, _now(), json.dumps(payload, ensure_ascii=False)),
+                row = await conn.fetchone(
+                    sql("queries/billing:claim_stripe_event_pg"), params
                 )
             else:
-                await conn.execute(
-                    sql("queries/billing:insert_stripe_event_sqlite"),
-                    (stripe_event_id, event_type, _now(), json.dumps(payload, ensure_ascii=False)),
+                row = await conn.fetchone(
+                    sql("queries/billing:claim_stripe_event_sqlite"), params
                 )
+            await conn.commit()
+            return row is not None
+
+    async def discard_event(self, stripe_event_id: str) -> None:
+        """Suelta la reserva para que el reintento de Stripe sí se procese.
+
+        Sin esto, un fallo transitorio a mitad del manejador dejaría el evento
+        marcado como procesado y el reintento se lo tragaría en silencio.
+        """
+        async with open_db() as conn:
+            await conn.execute(
+                sql("queries/billing:delete_stripe_event"), (stripe_event_id,)
+            )
             await conn.commit()
