@@ -24,19 +24,26 @@ LIMITE = 600
 # fichero -> líneas el día en que se puso la guarda (2026-08-25). Bajar estos
 # números al partir un fichero; nunca subirlos.
 DEUDA = {
-    "api/routes/resource_management.py": 751,
+    # 751 el día de la guarda. Bajó a 629 al separar el historial de versiones
+    # en `resource_versions_history.py`: su docstring ya decía que el fichero
+    # eran dos cosas. Sigue por encima del límite, así que sigue anotado.
+    "api/routes/resource_management.py": 629,
     "storage/knowledge.py": 740,
     "storage/tool_storage.py": 719,
     "storage/migrations/steps/misc.py": 716,
     "utils/flog.py": 673,
     "api/routes/admin/resources.py": 660,
-    "api/routes/tools.py": 632,
 }
 
 
 def _medidas() -> dict[str, int]:
+    # `as_posix()` y no `str()`: en Windows la ruta relativa sale con barras
+    # invertidas, ninguna clave casaba con las de DEUDA —que se escriben con
+    # `/`— y la guarda denunciaba los siete ficheros anotados como si fueran
+    # nuevos. La suite corre en Windows y en CI, así que la separación tiene que
+    # ser la misma en los dos sitios.
     return {
-        str(fichero.relative_to(APP)): len(
+        fichero.relative_to(APP).as_posix(): len(
             fichero.read_text(encoding="utf-8").splitlines()
         )
         for fichero in APP.rglob("*.py")

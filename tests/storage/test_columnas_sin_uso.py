@@ -28,7 +28,7 @@ def _columnas_declaradas() -> dict[str, list[str]]:
     for fichero in sorted(SCHEMA.glob("*.sql")):
         creacion = re.search(
             r"CREATE TABLE IF NOT EXISTS (\w+)\s*\((.*?)\n\);",
-            fichero.read_text(),
+            fichero.read_text(encoding="utf-8"),
             re.S,
         )
         if not creacion:
@@ -46,9 +46,9 @@ def _columnas_declaradas() -> dict[str, list[str]]:
 
 
 def _todo_lo_que_puede_nombrarlas() -> str:
-    partes = [f.read_text() for f in APP.rglob("*.py")]
+    partes = [f.read_text(encoding="utf-8") for f in APP.rglob("*.py")]
     partes += [
-        f.read_text()
+        f.read_text(encoding="utf-8")
         for f in (APP / "sql").rglob("*.sql")
         if f.parent.name != "schema"
     ]

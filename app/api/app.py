@@ -40,6 +40,7 @@ from app.api.routes import (
     resource_executions,
     resource_linking,
     resource_management,
+    resource_versions_history,
     settings,
     sharing,
     skill_builder,
@@ -407,6 +408,7 @@ def create_app() -> FastAPI:
     app.include_router(agent_builder.router)
     app.include_router(skill_builder.router)
     app.include_router(resource_management.router)
+    app.include_router(resource_versions_history.router)
     app.include_router(resource_executions.router)
     app.include_router(social.router)
     app.include_router(explore.router)
