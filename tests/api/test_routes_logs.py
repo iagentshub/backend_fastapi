@@ -92,6 +92,12 @@ def _insert(
     conn.close()
 
 
+def _get_logs(client, path: str = "/api/v2/admin/logs"):
+    """Pide el total exacto solo en las pruebas que lo validan."""
+    separator = "&" if "?" in path else "?"
+    return client.get(f"{path}{separator}include_total=true")
+
+
 @pytest.fixture()
 def log_db(tmp_path, monkeypatch):
     """Inserta app_logs en hub.db (la BD principal del test, creada por patch_data_dir).
@@ -109,7 +115,7 @@ def log_db(tmp_path, monkeypatch):
 
 
 def test_list_logs_unauthenticated(client):
-    r = client.get("/api/admin/logs")
+    r = client.get("/api/v2/admin/logs")
     assert r.status_code == 401
 
 
@@ -125,7 +131,7 @@ def test_list_logs_forbidden_non_admin(client, reset_rate_limiter):
     client.post(
         "/api/auth/login", json={"email": "std@example.com", "password": "pass1234"}
     )
-    r = client.get("/api/admin/logs")
+    r = client.get("/api/v2/admin/logs")
     assert r.status_code == 403
 
 
@@ -134,12 +140,12 @@ def test_list_logs_forbidden_non_admin(client, reset_rate_limiter):
 
 def test_list_logs_no_db_returns_empty(admin_client, tmp_path, monkeypatch):
     monkeypatch.setenv("GAIA_DATA_DIR", str(tmp_path))  # logs.sqlite3 no existe
-    r = admin_client.get("/api/admin/logs")
+    r = _get_logs(admin_client, "/api/v2/admin/logs")
     assert r.status_code == 200
     body = r.json()
     assert body["items"] == []
-    assert body["total"] == 0
-    assert body["pages"] == 0
+    assert body["page"]["total"] == 0
+    assert body["page"]["has_more"] is False
 
 
 # ── Listado básico ────────────────────────────────────────────────────────────
@@ -148,8 +154,8 @@ def test_list_logs_no_db_returns_empty(admin_client, tmp_path, monkeypatch):
 def test_list_logs_returns_entries(admin_client, log_db):
     _insert(log_db, date="2026-07-01", summary="first entry")
     _insert(log_db, date="2026-07-02", summary="second entry")
-    body = admin_client.get("/api/admin/logs").json()
-    assert body["total"] == 2
+    body = _get_logs(admin_client, "/api/v2/admin/logs").json()
+    assert body["page"]["total"] == 2
     summaries = [i["summary"] for i in body["items"]]
     assert "first entry" in summaries
     assert "second entry" in summaries
@@ -158,7 +164,7 @@ def test_list_logs_returns_entries(admin_client, log_db):
 def test_list_logs_sorted_newest_first(admin_client, log_db):
     _insert(log_db, date="2026-07-01", time_="08:00:00")
     _insert(log_db, date="2026-07-03", time_="12:00:00")
-    items = admin_client.get("/api/admin/logs").json()["items"]
+    items = _get_logs(admin_client, "/api/v2/admin/logs").json()["items"]
     assert items[0]["date"] >= items[-1]["date"]
 
 
@@ -166,7 +172,7 @@ def test_list_logs_breaks_timestamp_ties_with_newest_id(admin_client, log_db):
     _insert(log_db, date="2026-07-01", summary="first")
     _insert(log_db, date="2026-07-01", summary="second")
 
-    items = admin_client.get("/api/admin/logs").json()["items"]
+    items = _get_logs(admin_client, "/api/v2/admin/logs").json()["items"]
 
     assert [item["summary"] for item in items] == ["second", "first"]
 
@@ -181,7 +187,7 @@ def test_list_logs_response_fields(admin_client, log_db):
         source="FE",
         summary="test action",
     )
-    item = admin_client.get("/api/admin/logs").json()["items"][0]
+    item = _get_logs(admin_client, "/api/v2/admin/logs").json()["items"][0]
     assert item["date"] == "2026-07-01"
     assert item["ip"] == "1.2.3.4"
     assert item["username"] == "alice"
@@ -205,13 +211,13 @@ def test_filter_structured_audit_fields(admin_client, log_db):
     )
     _insert(log_db, date="2026-07-01", summary="diagnóstico")
 
-    response = admin_client.get(
-        "/api/admin/logs?category=audit&action=admin.impersonation.started"
-        "&resource_type=user&resource_id=alice&outcome=success"
+    response = _get_logs(
+        admin_client,
+        "/api/v2/admin/logs?category=audit&action=admin.impersonation.started&resource_type=user&resource_id=alice&outcome=success"
     )
     assert response.status_code == 200
     body = response.json()
-    assert body["total"] == 1
+    assert body["page"]["total"] == 1
     assert body["items"][0]["details_json"] == '{"reason":"support"}'
 
 
@@ -222,8 +228,8 @@ def test_filter_date_from(admin_client, log_db):
     _insert(log_db, date="2026-06-30")
     _insert(log_db, date="2026-07-01")
     _insert(log_db, date="2026-07-02")
-    body = admin_client.get("/api/admin/logs?date_from=2026-07-01").json()
-    assert body["total"] == 2
+    body = _get_logs(admin_client, "/api/v2/admin/logs?date_from=2026-07-01").json()
+    assert body["page"]["total"] == 2
     assert all(i["date"] >= "2026-07-01" for i in body["items"])
 
 
@@ -231,18 +237,19 @@ def test_filter_date_to(admin_client, log_db):
     _insert(log_db, date="2026-06-30")
     _insert(log_db, date="2026-07-01")
     _insert(log_db, date="2026-07-02")
-    body = admin_client.get("/api/admin/logs?date_to=2026-07-01").json()
-    assert body["total"] == 2
+    body = _get_logs(admin_client, "/api/v2/admin/logs?date_to=2026-07-01").json()
+    assert body["page"]["total"] == 2
     assert all(i["date"] <= "2026-07-01" for i in body["items"])
 
 
 def test_filter_date_range(admin_client, log_db):
     for day in ("2026-06-29", "2026-06-30", "2026-07-01", "2026-07-02"):
         _insert(log_db, date=day)
-    body = admin_client.get(
-        "/api/admin/logs?date_from=2026-06-30&date_to=2026-07-01"
+    body = _get_logs(
+        admin_client,
+        "/api/v2/admin/logs?date_from=2026-06-30&date_to=2026-07-01"
     ).json()
-    assert body["total"] == 2
+    assert body["page"]["total"] == 2
 
 
 # ── Filtro: level ─────────────────────────────────────────────────────────────
@@ -252,19 +259,19 @@ def test_filter_level_exact(admin_client, log_db):
     _insert(log_db, date="2026-07-01", level="INFO")
     _insert(log_db, date="2026-07-01", level="ERROR")
     _insert(log_db, date="2026-07-01", level="WARNING")
-    body = admin_client.get("/api/admin/logs?level=ERROR").json()
-    assert body["total"] == 1
+    body = _get_logs(admin_client, "/api/v2/admin/logs?level=ERROR").json()
+    assert body["page"]["total"] == 1
     assert body["items"][0]["level"] == "ERROR"
 
 
 def test_filter_level_no_match(admin_client, log_db):
     _insert(log_db, date="2026-07-01", level="INFO")
-    assert admin_client.get("/api/admin/logs?level=ERROR").json()["total"] == 0
+    assert _get_logs(admin_client, "/api/v2/admin/logs?level=ERROR").json()["page"]["total"] == 0
 
 
 def test_filter_level_case_insensitive(admin_client, log_db):
     _insert(log_db, date="2026-07-01", level="WARNING")
-    assert admin_client.get("/api/admin/logs?level=warning").json()["total"] == 1
+    assert _get_logs(admin_client, "/api/v2/admin/logs?level=warning").json()["page"]["total"] == 1
 
 
 # ── Filtro: source ────────────────────────────────────────────────────────────
@@ -273,20 +280,20 @@ def test_filter_level_case_insensitive(admin_client, log_db):
 def test_filter_source_be(admin_client, log_db):
     _insert(log_db, date="2026-07-01", source="BE")
     _insert(log_db, date="2026-07-01", source="FE")
-    body = admin_client.get("/api/admin/logs?source=BE").json()
-    assert body["total"] == 1
+    body = _get_logs(admin_client, "/api/v2/admin/logs?source=BE").json()
+    assert body["page"]["total"] == 1
     assert body["items"][0]["source"] == "BE"
 
 
 def test_filter_source_fe(admin_client, log_db):
     _insert(log_db, date="2026-07-01", source="BE")
     _insert(log_db, date="2026-07-01", source="FE")
-    assert admin_client.get("/api/admin/logs?source=FE").json()["total"] == 1
+    assert _get_logs(admin_client, "/api/v2/admin/logs?source=FE").json()["page"]["total"] == 1
 
 
 def test_filter_source_case_insensitive(admin_client, log_db):
     _insert(log_db, date="2026-07-01", source="BE")
-    assert admin_client.get("/api/admin/logs?source=be").json()["total"] == 1
+    assert _get_logs(admin_client, "/api/v2/admin/logs?source=be").json()["page"]["total"] == 1
 
 
 # ── Filtro: ip (parcial) ──────────────────────────────────────────────────────
@@ -295,14 +302,14 @@ def test_filter_source_case_insensitive(admin_client, log_db):
 def test_filter_ip_partial(admin_client, log_db):
     _insert(log_db, date="2026-07-01", ip="192.168.1.1")
     _insert(log_db, date="2026-07-01", ip="10.0.0.5")
-    body = admin_client.get("/api/admin/logs?ip=192.168").json()
-    assert body["total"] == 1
+    body = _get_logs(admin_client, "/api/v2/admin/logs?ip=192.168").json()
+    assert body["page"]["total"] == 1
     assert "192.168" in body["items"][0]["ip"]
 
 
 def test_filter_ip_no_match(admin_client, log_db):
     _insert(log_db, date="2026-07-01", ip="192.168.1.1")
-    assert admin_client.get("/api/admin/logs?ip=999.999").json()["total"] == 0
+    assert _get_logs(admin_client, "/api/v2/admin/logs?ip=999.999").json()["page"]["total"] == 0
 
 
 # ── Filtro: username (parcial) ────────────────────────────────────────────────
@@ -311,15 +318,15 @@ def test_filter_ip_no_match(admin_client, log_db):
 def test_filter_username_partial(admin_client, log_db):
     _insert(log_db, date="2026-07-01", username="alice")
     _insert(log_db, date="2026-07-01", username="bob")
-    body = admin_client.get("/api/admin/logs?username=ali").json()
-    assert body["total"] == 1
+    body = _get_logs(admin_client, "/api/v2/admin/logs?username=ali").json()
+    assert body["page"]["total"] == 1
     assert body["items"][0]["username"] == "alice"
 
 
 def test_filter_username_guest(admin_client, log_db):
     _insert(log_db, date="2026-07-01", username="guest")
     _insert(log_db, date="2026-07-01", username="admin")
-    assert admin_client.get("/api/admin/logs?username=guest").json()["total"] == 1
+    assert _get_logs(admin_client, "/api/v2/admin/logs?username=guest").json()["page"]["total"] == 1
 
 
 # ── Filtro: q (texto libre en summary) ───────────────────────────────────────
@@ -328,14 +335,14 @@ def test_filter_username_guest(admin_client, log_db):
 def test_filter_q_matches_summary(admin_client, log_db):
     _insert(log_db, date="2026-07-01", summary="POST /api/auth/login → 200")
     _insert(log_db, date="2026-07-01", summary="GET /api/agents → 200")
-    body = admin_client.get("/api/admin/logs?q=auth").json()
-    assert body["total"] == 1
+    body = _get_logs(admin_client, "/api/v2/admin/logs?q=auth").json()
+    assert body["page"]["total"] == 1
     assert "auth" in body["items"][0]["summary"]
 
 
 def test_filter_q_no_match(admin_client, log_db):
     _insert(log_db, date="2026-07-01", summary="nothing relevant")
-    assert admin_client.get("/api/admin/logs?q=xyz_unlikely").json()["total"] == 0
+    assert _get_logs(admin_client, "/api/v2/admin/logs?q=xyz_unlikely").json()["page"]["total"] == 0
 
 
 # ── Filtros combinados ────────────────────────────────────────────────────────
@@ -346,7 +353,7 @@ def test_filter_combined_level_and_source(admin_client, log_db):
     _insert(log_db, date="2026-07-01", level="ERROR", source="FE")
     _insert(log_db, date="2026-07-01", level="INFO", source="BE")
     assert (
-        admin_client.get("/api/admin/logs?level=ERROR&source=BE").json()["total"] == 1
+        _get_logs(admin_client, "/api/v2/admin/logs?level=ERROR&source=BE").json()["page"]["total"] == 1
     )
 
 
@@ -355,9 +362,10 @@ def test_filter_combined_date_and_username(admin_client, log_db):
     _insert(log_db, date="2026-07-02", username="alice")
     _insert(log_db, date="2026-07-01", username="bob")
     assert (
-        admin_client.get("/api/admin/logs?date_from=2026-07-02&username=alice").json()[
-            "total"
+        _get_logs(admin_client, "/api/v2/admin/logs?date_from=2026-07-02&username=alice").json()[
+            "page"
         ]
+        ["total"]
         == 1
     )
 
@@ -366,8 +374,8 @@ def test_filter_combined_ip_level_q(admin_client, log_db):
     _insert(log_db, date="2026-07-01", ip="10.0.0.1", level="ERROR", summary="DB error")
     _insert(log_db, date="2026-07-01", ip="10.0.0.1", level="INFO", summary="DB ok")
     _insert(log_db, date="2026-07-01", ip="10.0.0.2", level="ERROR", summary="DB error")
-    body = admin_client.get("/api/admin/logs?ip=10.0.0.1&level=ERROR&q=DB").json()
-    assert body["total"] == 1
+    body = _get_logs(admin_client, "/api/v2/admin/logs?ip=10.0.0.1&level=ERROR&q=DB").json()
+    assert body["page"]["total"] == 1
 
 
 # ── Paginación ────────────────────────────────────────────────────────────────
@@ -376,41 +384,84 @@ def test_filter_combined_ip_level_q(admin_client, log_db):
 def test_pagination_default_page_size(admin_client, log_db):
     for i in range(60):
         _insert(log_db, date="2026-07-01", time_=f"10:{i // 60:02d}:{i % 60:02d}")
-    body = admin_client.get("/api/admin/logs").json()
-    assert body["total"] == 60
-    assert body["page"] == 1
-    assert len(body["items"]) == 50  # default page_size
+    body = _get_logs(admin_client, "/api/v2/admin/logs").json()
+    assert body["page"]["total"] == 60
+    assert body["page"]["has_more"] is True
+    assert len(body["items"]) == 50
 
 
 def test_pagination_custom_page_size(admin_client, log_db):
     for i in range(10):
         _insert(log_db, date="2026-07-01", time_=f"10:00:{i:02d}")
-    body = admin_client.get("/api/admin/logs?page_size=3").json()
-    assert body["total"] == 10
+    body = _get_logs(admin_client, "/api/v2/admin/logs?limit=3").json()
+    assert body["page"]["total"] == 10
     assert len(body["items"]) == 3
-    assert body["pages"] == 4  # ceil(10/3)
+    assert body["page"]["has_more"] is True
 
 
 def test_pagination_second_page(admin_client, log_db):
     for i in range(5):
         _insert(log_db, date="2026-07-01", time_=f"10:00:{i:02d}", summary=f"entry {i}")
-    body = admin_client.get("/api/admin/logs?page_size=2&page=2").json()
-    assert body["page"] == 2
-    assert len(body["items"]) == 2
+    first = _get_logs(admin_client, "/api/v2/admin/logs?limit=2").json()
+    second = admin_client.get(
+        "/api/v2/admin/logs",
+        params={"limit": 2, "cursor": first["page"]["next_cursor"]},
+    ).json()
+    assert len(second["items"]) == 2
+    assert {item["id"] for item in first["items"]}.isdisjoint(
+        item["id"] for item in second["items"]
+    )
 
 
 def test_pagination_last_page_partial(admin_client, log_db):
     for i in range(5):
         _insert(log_db, date="2026-07-01", time_=f"10:00:{i:02d}")
-    body = admin_client.get("/api/admin/logs?page_size=3&page=2").json()
-    assert len(body["items"]) == 2  # 5 % 3 = 2
+    first = _get_logs(admin_client, "/api/v2/admin/logs?limit=3").json()
+    body = admin_client.get(
+        "/api/v2/admin/logs",
+        params={"limit": 3, "cursor": first["page"]["next_cursor"]},
+    ).json()
+    assert len(body["items"]) == 2
+    assert body["page"]["has_more"] is False
 
 
-def test_pagination_out_of_range_returns_empty(admin_client, log_db):
-    _insert(log_db, date="2026-07-01")
-    body = admin_client.get("/api/admin/logs?page=999&page_size=50").json()
-    assert body["total"] == 1
-    assert body["items"] == []
+def test_cursor_v2_logs_keeps_order_and_carries_total(admin_client, log_db):
+    for i in range(5):
+        _insert(
+            log_db,
+            date="2026-07-01",
+            time_=f"10:00:{i:02d}",
+            summary=f"cursor entry {i}",
+        )
+    first = admin_client.get(
+        "/api/v2/admin/logs",
+        params={"q": "cursor entry", "limit": 2, "include_total": True},
+    )
+    assert first.status_code == 200, first.text
+    payload = first.json()
+    assert payload["page"]["total"] == 5
+    assert payload["page"]["has_more"] is True
+    second = admin_client.get(
+        "/api/v2/admin/logs",
+        params={
+            "q": "cursor entry",
+            "limit": 2,
+            "include_total": True,
+            "cursor": payload["page"]["next_cursor"],
+        },
+    )
+    assert second.status_code == 200, second.text
+    assert second.json()["page"]["total"] == 5
+    first_ids = [item["id"] for item in payload["items"]]
+    second_ids = [item["id"] for item in second.json()["items"]]
+    assert first_ids == sorted(first_ids, reverse=True)
+    assert set(first_ids).isdisjoint(second_ids)
+
+
+def test_cursor_v2_logs_is_admin_only_and_rejects_offset(client, admin_client):
+    assert _get_logs(admin_client, "/api/v2/admin/logs?offset=1").status_code == 422
+    client.cookies.clear()
+    assert client.get("/api/v2/admin/logs").status_code in (401, 403)
 
 
 # ── GET /api/admin/logs/summary ───────────────────────────────────────────────

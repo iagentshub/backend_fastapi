@@ -30,22 +30,22 @@ def _guest_client(client):
 
 def test_guest_list_skills_all(client):
     _guest_client(client)
-    r = client.get("/api/skills?scope=all")
+    r = client.get("/api/v2/skills?scope=all")
     assert r.status_code == 200
-    assert isinstance(r.json(), list)
+    assert isinstance(r.json()["items"], list)
 
 
 def test_guest_list_skills_private(client):
     _guest_client(client)
     client.post("/api/skills/private", json=_PAYLOAD)
-    r = client.get("/api/skills?scope=private")
+    r = client.get("/api/v2/skills?scope=private")
     assert r.status_code == 200
-    assert any(s["name"] == "Skill Test" for s in r.json())
+    assert any(s["name"] == "Skill Test" for s in r.json()["items"])
 
 
 def test_guest_list_skills_public_only(client):
     _guest_client(client)
-    r = client.get("/api/skills?scope=public")
+    r = client.get("/api/v2/skills?scope=public")
     assert r.status_code == 200
 
 
@@ -54,25 +54,35 @@ def test_guest_sees_user_created_public_skills(client, admin_client):
     assert created.status_code == 200
 
     _guest_client(client)
-    public = client.get("/api/skills?scope=public")
+    public = client.get("/api/v2/skills?scope=public")
     assert public.status_code == 200
-    assert created.json()["id"] in {skill["id"] for skill in public.json()}
+    assert created.json()["id"] in {skill["id"] for skill in public.json()["items"]}
 
 
-def test_guest_list_skills_offset_limit(client):
+def test_guest_list_skills_cursor_limit(client):
     _guest_client(client)
     for i in range(3):
         client.post("/api/skills/private", json={**_PAYLOAD, "name": f"Skill{i}"})
-    r = client.get("/api/skills?scope=private&limit=2&offset=1")
-    assert r.status_code == 200
-    assert len(r.json()) <= 2
+    first = client.get("/api/v2/skills?scope=private&limit=2")
+    assert first.status_code == 200
+    second = client.get(
+        "/api/v2/skills",
+        params={
+            "scope": "private",
+            "limit": 2,
+            "cursor": first.json()["page"]["next_cursor"],
+        },
+    )
+    assert {item["id"] for item in first.json()["items"]}.isdisjoint(
+        item["id"] for item in second.json()["items"]
+    )
 
 
 # ── Scope inválido ─────────────────────────────────────────────────────────────
 
 
 def test_list_skills_invalid_scope(admin_client):
-    r = admin_client.get("/api/skills?scope=invalid")
+    r = admin_client.get("/api/v2/skills?scope=invalid")
     assert r.status_code == 400
 
 
@@ -119,9 +129,9 @@ def test_guest_private_skills_are_isolated_by_session(client):
     assert created.status_code == 200
 
     _guest_client(client)
-    private = client.get("/api/skills?scope=private")
+    private = client.get("/api/v2/skills?scope=private")
     assert private.status_code == 200
-    assert created.json()["id"] not in {skill["id"] for skill in private.json()}
+    assert created.json()["id"] not in {skill["id"] for skill in private.json()["items"]}
 
 
 def test_guest_private_skill_se_escribe_en_la_base_de_datos(client):
@@ -183,14 +193,23 @@ def test_guest_delete_public_skill_forbidden(client):
 def test_list_skills_with_limit(admin_client):
     for i in range(3):
         admin_client.post("/api/skills/private", json={**_PAYLOAD, "name": f"Pag{i}"})
-    r = admin_client.get("/api/skills?scope=private&limit=2")
+    r = admin_client.get("/api/v2/skills?scope=private&limit=2")
     assert r.status_code == 200
-    assert len(r.json()) <= 2
+    assert len(r.json()["items"]) <= 2
 
 
-def test_list_skills_with_offset(admin_client):
+def test_list_skills_with_cursor(admin_client):
     for i in range(4):
         admin_client.post("/api/skills/private", json={**_PAYLOAD, "name": f"Off{i}"})
-    r_all = admin_client.get("/api/skills?scope=private").json()
-    r_off = admin_client.get("/api/skills?scope=private&offset=1").json()
-    assert len(r_off) == len(r_all) - 1
+    first = admin_client.get("/api/v2/skills?scope=private&limit=2")
+    second = admin_client.get(
+        "/api/v2/skills",
+        params={
+            "scope": "private",
+            "limit": 2,
+            "cursor": first.json()["page"]["next_cursor"],
+        },
+    )
+    assert {item["id"] for item in first.json()["items"]}.isdisjoint(
+        item["id"] for item in second.json()["items"]
+    )

@@ -12,6 +12,8 @@ import asyncio
 from datetime import date, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from app.services.hub_sync import _RemotePage
+
 _CONN_OPENAI = {
     "type": "openai",
     "name": "Test OpenAI M2",
@@ -72,7 +74,7 @@ def _build_hub_mock(
 
     async def _mock_get(base_url, path, headers):
         url = f"{base_url}{path}"
-        if "/api/agents?" in url:
+        if "/api/v2/agents?" in url:
             return agent_summaries or []
         elif "/api/agents/" in url:
             agent_id = url.split("/api/agents/")[-1].split("?")[0]
@@ -81,15 +83,26 @@ def _build_hub_mock(
                 (a for a in details if a.get("id") == agent_id),
                 {"id": agent_id, "name": f"Agent {agent_id}", "description": ""},
             )
-        elif "/api/skills" in url:
+        elif "/api/v2/skills" in url:
             return skill_data or []
-        elif "/api/knowledge" in url:
+        elif "/api/v2/knowledge" in url:
             return know_data or []
-        elif "/api/connections" in url:
+        elif "/api/v2/connections" in url:
             return conn_data or []
         return []
 
     return AsyncMock(side_effect=_mock_get)
+
+
+def _cursor_mock(json_mock):
+    async def _mock_page(base_url, path, headers):
+        return _RemotePage(
+            await json_mock(base_url, path, headers),
+            has_more=False,
+            next_cursor=None,
+        )
+
+    return AsyncMock(side_effect=_mock_page)
 
 
 # ── 1. list_connections_raw non-admin con datos (línea 147) ──────────────────
@@ -115,9 +128,9 @@ def test_list_connections_guest_uses_session_resolve(client):
     client.post("/api/auth/guest")
     r = client.post("/api/connections", json=_CONN_OPENAI)
     conn_id = r.json()["id"]
-    r = client.get("/api/connections")
+    r = client.get("/api/v2/connections")
     assert r.status_code == 200
-    data = r.json()
+    data = r.json()["items"]
     assert any(c["id"] == conn_id for c in data)
 
 
@@ -224,6 +237,7 @@ def test_hub_sync_imports_remote_connections(admin_client):
     with (
         patch("app.connections.iagentshub._login", return_value="tok"),
         patch("app.services.hub_sync._get_remote_json", new=mock),
+            patch("app.services.hub_sync._get_remote_cursor_page", new=_cursor_mock(mock)),
     ):
         r = admin_client.post(f"/api/connections/{hub_conn['id']}/hub-sync")
     assert r.status_code == 200
@@ -248,6 +262,7 @@ def test_hub_sync_updates_existing_remote_connection(admin_client):
     with (
         patch("app.connections.iagentshub._login", return_value="tok"),
         patch("app.services.hub_sync._get_remote_json", new=mock1),
+            patch("app.services.hub_sync._get_remote_cursor_page", new=_cursor_mock(mock1)),
     ):
         r1 = admin_client.post(f"/api/connections/{hub_conn['id']}/hub-sync")
     assert r1.json()["connections"] == 1
@@ -256,6 +271,7 @@ def test_hub_sync_updates_existing_remote_connection(admin_client):
     with (
         patch("app.connections.iagentshub._login", return_value="tok"),
         patch("app.services.hub_sync._get_remote_json", new=mock2),
+            patch("app.services.hub_sync._get_remote_cursor_page", new=_cursor_mock(mock2)),
     ):
         r2 = admin_client.post(f"/api/connections/{hub_conn['id']}/hub-sync")
     assert r2.status_code == 200
@@ -281,6 +297,7 @@ def test_hub_sync_safe_name_conflict_adds_hub_label(admin_client):
     with (
         patch("app.connections.iagentshub._login", return_value="tok"),
         patch("app.services.hub_sync._get_remote_json", new=mock),
+            patch("app.services.hub_sync._get_remote_cursor_page", new=_cursor_mock(mock)),
     ):
         r = admin_client.post(f"/api/connections/{hub_conn['id']}/hub-sync")
     assert r.status_code == 200
@@ -310,6 +327,7 @@ def test_hub_sync_safe_name_double_conflict_adds_number(admin_client):
     with (
         patch("app.connections.iagentshub._login", return_value="tok"),
         patch("app.services.hub_sync._get_remote_json", new=mock),
+            patch("app.services.hub_sync._get_remote_cursor_page", new=_cursor_mock(mock)),
     ):
         r = admin_client.post(f"/api/connections/{hub_conn['id']}/hub-sync")
     assert r.status_code == 200
@@ -330,6 +348,7 @@ def test_hub_sync_imports_remote_agents(admin_client):
     with (
         patch("app.connections.iagentshub._login", return_value="tok"),
         patch("app.services.hub_sync._get_remote_json", new=mock),
+            patch("app.services.hub_sync._get_remote_cursor_page", new=_cursor_mock(mock)),
     ):
         r = admin_client.post(f"/api/connections/{hub_conn['id']}/hub-sync")
     assert r.status_code == 200
@@ -362,6 +381,7 @@ def test_hub_sync_updates_existing_agent_via_hub_source(admin_client):
     with (
         patch("app.connections.iagentshub._login", return_value="tok"),
         patch("app.services.hub_sync._get_remote_json", new=mock),
+            patch("app.services.hub_sync._get_remote_cursor_page", new=_cursor_mock(mock)),
         patch(
             "app.services.hub_sync._agent_storage.list",
             return_value=local_agents_with_src,
@@ -387,6 +407,7 @@ def test_hub_sync_imports_remote_skills(admin_client):
     with (
         patch("app.connections.iagentshub._login", return_value="tok"),
         patch("app.services.hub_sync._get_remote_json", new=mock),
+            patch("app.services.hub_sync._get_remote_cursor_page", new=_cursor_mock(mock)),
     ):
         r = admin_client.post(f"/api/connections/{hub_conn['id']}/hub-sync")
     assert r.status_code == 200
@@ -413,6 +434,7 @@ def test_hub_sync_imports_remote_knowledge(admin_client):
     with (
         patch("app.connections.iagentshub._login", return_value="tok"),
         patch("app.services.hub_sync._get_remote_json", new=mock),
+            patch("app.services.hub_sync._get_remote_cursor_page", new=_cursor_mock(mock)),
     ):
         r = admin_client.post(f"/api/connections/{hub_conn['id']}/hub-sync")
     assert r.status_code == 200
@@ -448,6 +470,7 @@ def test_hub_sync_full_all_types_ok(admin_client):
     with (
         patch("app.connections.iagentshub._login", return_value="tok"),
         patch("app.services.hub_sync._get_remote_json", new=mock),
+            patch("app.services.hub_sync._get_remote_cursor_page", new=_cursor_mock(mock)),
     ):
         r = admin_client.post(f"/api/connections/{hub_conn['id']}/hub-sync")
     assert r.status_code == 200
@@ -606,39 +629,15 @@ def test_list_accessible_personal_conns_in_team_group(client):
             return team_ctx
 
         app.dependency_overrides[require_group] = _team
-        r = client.get("/api/connections")
+        r = client.get("/api/v2/connections?include_models=true")
         assert r.status_code == 200
-        ids = [c["id"] for c in r.json()]
+        ids = [c["id"] for c in r.json()["items"]]
         assert personal_conn_id in ids
     finally:
         app.dependency_overrides.clear()
 
 
 # ── 18. _resolve_connections conexiones compartidas (líneas 93-96) ────────────
-
-
-def test_resolve_connections_includes_shared_from_group(admin_client):
-    """Conexiones compartidas con el group aparecen en la lista del usuario."""
-    conn = _create_conn(admin_client, {**_CONN_OPENAI, "name": "Shared Conn M2"})
-    shared_id = conn["id"]
-
-    from app.auth.auth import create_token, register_user
-
-    asyncio.run(
-        register_user("shared_u_m2", "pass1234", email="shared_u_m2@example.com")
-    )
-    admin_client.cookies.set("ga_token", create_token("shared_u_m2"))
-
-    with patch(
-        "app.storage.group_shares.GroupShareStorage.get_group_shared_resource_ids",
-        new_callable=AsyncMock,
-        return_value=[shared_id],
-    ):
-        r = admin_client.get("/api/connections")
-
-    assert r.status_code == 200
-    ids = [c["id"] for c in r.json()]
-    assert shared_id in ids
 
 
 # ── 19. _fetch_ollama_models ramas OSError (líneas 102-115) ─────────────────
@@ -653,9 +652,9 @@ def test_fetch_ollama_models_oserror_no_alt_host(client):
         "app.connections.ollama.OllamaProvider._fetch_tags",
         side_effect=OSError("refused"),
     ):
-        r = client.get("/api/connections")
+        r = client.get("/api/v2/connections?include_models=true")
     assert r.status_code == 200
-    assert isinstance(r.json(), list)
+    assert isinstance(r.json()["items"], list)
 
 
 def test_fetch_ollama_models_oserror_alt_host_also_fails(client):
@@ -667,7 +666,7 @@ def test_fetch_ollama_models_oserror_alt_host_also_fails(client):
         "app.connections.ollama.OllamaProvider._fetch_tags",
         side_effect=OSError("refused"),
     ):
-        r = client.get("/api/connections")
+        r = client.get("/api/v2/connections?include_models=true")
     assert r.status_code == 200
 
 
@@ -679,7 +678,7 @@ def test_fetch_ollama_models_generic_exception_returns_empty(client):
         "app.connections.ollama.OllamaProvider._fetch_tags",
         side_effect=ValueError("unexpected"),
     ):
-        r = client.get("/api/connections")
+        r = client.get("/api/v2/connections")
     assert r.status_code == 200
 
 
@@ -688,10 +687,10 @@ def test_fetch_ollama_models_localhost_unavailable_returns_base(client):
     _setup_user(client, "ollama_altok_m2")
     client.post("/api/connections", json=_CONN_OLLAMA_BASE)
 
-    r = client.get("/api/connections")
+    r = client.get("/api/v2/connections?include_models=true")
 
     assert r.status_code == 200
-    assert isinstance(r.json(), list)
+    assert isinstance(r.json()["items"], list)
 
 
 # ── 20. expansión de modelos: conexión con modelo explícito ─────────────────
@@ -701,9 +700,9 @@ def test_list_connections_ollama_with_explicit_model(client):
     """Conexión Ollama con modelo explícito se devuelve con name=model (líneas 131-136)."""
     _setup_user(client, "ollama_expl_m2")
     client.post("/api/connections", json=_CONN_OLLAMA_MODEL)
-    r = client.get("/api/connections")
+    r = client.get("/api/v2/connections")
     assert r.status_code == 200
-    data = r.json()
+    data = r.json()["items"]
     models = [c.get("model") for c in data]
     assert "llama3:latest" in models
 
@@ -713,11 +712,11 @@ def test_list_connections_ollama_deduplicates_same_model(client):
     _setup_user(client, "ollama_dedup_m2")
     client.post("/api/connections", json={**_CONN_OLLAMA_MODEL, "name": "Ollama1 M2"})
     client.post("/api/connections", json={**_CONN_OLLAMA_MODEL, "name": "Ollama2 M2"})
-    r = client.get("/api/connections")
+    r = client.get("/api/v2/connections")
     assert r.status_code == 200
-    data = r.json()
-    count = sum(1 for c in data if c.get("model") == "llama3:latest")
-    assert count == 1
+    data = r.json()["items"]
+    assert len(data) == 2
+    assert all(c["model"] == "llama3:latest" for c in data)
 
 
 # ── 21. get_tokens_daily (líneas 568-607) ────────────────────────────────────

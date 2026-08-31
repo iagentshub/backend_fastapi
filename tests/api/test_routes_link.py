@@ -673,9 +673,9 @@ def test_verified_admin_puede_marcar(admin_client):
     assert r.status_code == 200
     assert r.json()["ok"] is True
 
-    r2 = admin_client.get("/api/explore", params={"type": "agent"})
+    r2 = admin_client.get("/api/v2/explore", params={"type": "agent"})
     assert r2.status_code == 200
-    found = next((x for x in r2.json() if x["resource_id"] == agent_id), None)
+    found = next((x for x in r2.json()["items"] if x["resource_id"] == agent_id), None)
     assert found is not None
     assert bool(found.get("verified")) is True
 

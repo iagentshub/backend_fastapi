@@ -105,8 +105,8 @@ INSERT INTO official_import_drafts (id,source_id,owner_id,repository_url,provide
 VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?);
 
 -- name: insert_draft_component
-INSERT INTO official_import_components (draft_id,component_key,payload,selected,explicitly_selected,forced_type,forced_language,forced_tool_language,security_accepted,state)
-VALUES (?,?,?,?,?,?,?,?,?,?);
+INSERT INTO official_import_components (draft_id,component_key,payload,component_type,name,source_path,selected,explicitly_selected,forced_type,forced_language,forced_tool_language,security_accepted,state)
+VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?);
 
 -- name: get_draft
 SELECT *

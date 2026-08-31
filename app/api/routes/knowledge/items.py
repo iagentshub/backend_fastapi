@@ -5,9 +5,9 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import PurePosixPath
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict
 
-from fastapi import Depends, File, Form, Query, Response, UploadFile
+from fastapi import Depends, File, Form, UploadFile
 
 from app.api.routes.auth import GroupContext, require_group_session
 from app.api.routes.knowledge._router import router
@@ -30,36 +30,13 @@ from app.models.request_bodies import (
     KnowledgeUrlBody,
     LabelsBody,
 )
-from app.pagination.models import OffsetParams
 from app.services.document_executor import run_document_blocking
-from app.services.knowledge_listing import list_authenticated_knowledge
 from app.storage.knowledge import (
     ExtractedDocument,
     fetch_url_document,
 )
 from app.utils import flog
 from app.utils.origin import assert_resource_writable
-
-
-@router.get("", response_model=List[Dict[str, Any]])
-async def list_items(
-    type: Optional[str] = None,
-    owner_scope: str = "group",
-    requested_group_id: Optional[str] = Query(None, alias="group_id"),
-    limit: int = Query(50, ge=1, le=100),
-    offset: int = Query(0, ge=0),
-    response: Response = None,  # type: ignore[assignment]
-    ctx: GroupContext = Depends(require_group_session),
-) -> List[Dict[str, Any]]:
-    return await list_authenticated_knowledge(
-        _storage,
-        ctx=ctx,
-        owner_scope=owner_scope,
-        type=type,
-        page=OffsetParams(limit=limit, offset=offset),
-        response=response,
-        requested_group_id=requested_group_id,
-    )
 
 
 @router.post("/text")

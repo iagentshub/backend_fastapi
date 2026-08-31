@@ -9,6 +9,19 @@ from __future__ import annotations
 import asyncio
 from unittest.mock import AsyncMock, MagicMock, patch
 
+from app.services.hub_sync import _RemotePage
+
+
+def _cursor_mock(json_mock):
+    async def _mock_page(base_url, path, headers):
+        return _RemotePage(
+            await json_mock(base_url, path, headers),
+            has_more=False,
+            next_cursor=None,
+        )
+
+    return AsyncMock(side_effect=_mock_page)
+
 _CONN_OPENAI = {
     "type": "openai",
     "name": "Test OpenAI Missing",
@@ -273,6 +286,7 @@ def test_hub_sync_success_empty_hub(admin_client):
     with (
         patch("app.connections.iagentshub._login", return_value="fake-token"),
         patch("app.services.hub_sync._get_remote_json", new=mock_get),
+        patch("app.services.hub_sync._get_remote_cursor_page", new=_cursor_mock(mock_get)),
     ):
         r = admin_client.post(f"/api/connections/{created['id']}/hub-sync")
 
@@ -288,13 +302,17 @@ def test_hub_sync_reports_each_knowledge_save_failure(admin_client):
     created = _create_conn(admin_client, _CONN_IAGENTSHUB)
 
     async def mock_get(base_url, path, headers):
-        if path.startswith("/api/knowledge?"):
+        if path.startswith("/api/v2/knowledge?"):
             return [{"id": "doc-fallido", "title": "Documento"}]
         return []
 
     with (
         patch("app.connections.iagentshub._login", return_value="fake-token"),
         patch("app.services.hub_sync._get_remote_json", side_effect=mock_get),
+        patch(
+            "app.services.hub_sync._get_remote_cursor_page",
+            new=_cursor_mock(AsyncMock(side_effect=mock_get)),
+        ),
         patch(
             "app.services.hub_sync._know_storage.save",
             new=AsyncMock(side_effect=RuntimeError("escritura fallida")),
@@ -320,12 +338,12 @@ def test_list_connections_expands_ollama_base(client):
         "app.connections.ollama.OllamaProvider.fetch_models",
         return_value=["llama3:latest", "mistral:7b"],
     ):
-        r = client.get("/api/connections")
+        r = client.get("/api/v2/connections?include_models=true")
 
     assert r.status_code == 200
-    data = r.json()
-    names = [c.get("name") for c in data]
-    assert "llama3:latest" in names
+    data = r.json()["items"]
+    variants = data[0]["model_variants"]
+    assert "llama3:latest" in {variant["name"] for variant in variants}
 
 
 def test_list_connections_ollama_no_models_returns_base(client):
@@ -337,8 +355,8 @@ def test_list_connections_ollama_no_models_returns_base(client):
         "app.connections.ollama.OllamaProvider.fetch_models",
         return_value=[],
     ):
-        r = client.get("/api/connections")
+        r = client.get("/api/v2/connections?include_models=true")
 
     assert r.status_code == 200
-    data = r.json()
+    data = r.json()["items"]
     assert len(data) >= 1

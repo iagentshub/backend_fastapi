@@ -52,6 +52,14 @@ rechazada. Son configuración de arranque y requieren reiniciar el backend.
 | `GAIA_DIRECTORY_IMPORT_MAX_DEPTH` | `32` | Número máximo de segmentos de una ruta relativa. |
 | `GAIA_DIRECTORY_IMPORT_MAX_PATH_LENGTH` | `500` | Longitud máxima de una ruta relativa normalizada. |
 
+### Paginación cursor
+
+| Variable | Por defecto | Descripción |
+|---|---:|---|
+| `GAIA_CURSOR_TTL_SECONDS` | `3600` | Validez de un cursor firmado (mínimo 60 s, máximo 24 h). Rotar el secreto de sesión invalida los cursores emitidos. |
+| `GAIA_PAGINATION_TOTAL_TIMEOUT_SECONDS` | `2.0` | Presupuesto máximo para el `COUNT(*)` solicitado con `include_total=true` (0,05–30 s). |
+| `GAIA_PAGINATION_TOTAL_MAX_CONCURRENCY` | `1` | Máximo de totales exactos simultáneos por worker (1–8). La espera consume el mismo presupuesto anterior y evita ocupar todo el pool con cálculos opcionales. |
+
 ### Destinos internos de Ollama
 
 | Variable | Por defecto | Descripción |

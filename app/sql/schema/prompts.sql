@@ -17,6 +17,7 @@ CREATE TABLE IF NOT EXISTS prompts (
     PRIMARY KEY (id, owner_id)
 );
 CREATE INDEX IF NOT EXISTS idx_prompts_owner ON prompts(owner_id, scope, updated_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_prompts_visible_order ON prompts(updated_at DESC, id DESC);
 -- Sin índice para official_source_id: como official_component_id, la columna solo
 -- se escribe. El recorrido por fuente entra por resource_source_links. A
 -- diferencia de agents y skills —cuyo índice equivalente sí lo elige count_all

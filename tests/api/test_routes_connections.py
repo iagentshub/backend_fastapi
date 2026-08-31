@@ -36,9 +36,9 @@ def test_create_connection(admin_client):
 
 def test_list_connections_hides_api_key(admin_client):
     admin_client.post("/api/connections", json=_CONN_PAYLOAD)
-    r = admin_client.get("/api/connections")
+    r = admin_client.get("/api/v2/connections")
     assert r.status_code == 200
-    for conn in r.json():
+    for conn in r.json()["items"]:
         assert "api_key" not in conn
 
 
@@ -55,5 +55,5 @@ def test_delete_connection_not_found(admin_client):
 
 
 def test_connections_requires_auth(client):
-    r = client.get("/api/connections")
+    r = client.get("/api/v2/connections")
     assert r.status_code == 401

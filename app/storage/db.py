@@ -221,6 +221,43 @@ class AsyncConn:
             row = await cur.fetchone()
             return row[column] if row is not None else None
 
+    async def fetchval_with_timeout(
+        self,
+        query: str,
+        params: Tuple = (),
+        *,
+        column: int = 0,
+        timeout: float,
+    ) -> Any:
+        """Obtiene un escalar y detiene la consulta al agotar su presupuesto.
+
+        Cancelar el ``Future`` de aiosqlite no detiene el trabajo que ya está
+        ejecutando su hilo. ``interrupt()`` sí aborta la máquina virtual de
+        SQLite; después esperamos a que la tarea drene antes de permitir que la
+        conexión vuelva al pool. asyncpg dispone de timeout nativo y cancela la
+        consulta en PostgreSQL.
+        """
+
+        if self._is_pg:
+            return await self._conn.fetchval(
+                self._pg_sql(query),
+                *params,
+                column=column,
+                timeout=timeout,
+            )
+
+        task = asyncio.create_task(self.fetchval(query, params, column))
+        try:
+            return await asyncio.wait_for(asyncio.shield(task), timeout=timeout)
+        except (TimeoutError, asyncio.CancelledError):
+            cleanup = asyncio.create_task(self._interrupt_and_drain(task))
+            await asyncio.shield(cleanup)
+            raise
+
+    async def _interrupt_and_drain(self, task: asyncio.Task[Any]) -> None:
+        await self._conn.interrupt()
+        await asyncio.gather(task, return_exceptions=True)
+
     async def executemany(self, query: str, params_list: list) -> None:
         if self._is_pg:
             await self._conn.executemany(

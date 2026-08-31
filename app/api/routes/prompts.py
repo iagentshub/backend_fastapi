@@ -2,17 +2,15 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict
 
-from fastapi import APIRouter, Depends, Query, Response
+from fastapi import APIRouter, Depends
 
 from app.api.routes.auth import GroupContext, require_group_session
 from app.auth.auth import get_user_role
 from app.errors import APIError
 from app.models.request_bodies import CatalogResourcePayload
-from app.pagination.models import OffsetParams
 from app.services.publishing import assert_can_publish
-from app.services.scoped_resource_listing import list_authenticated_scoped_resources
 from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
 from app.storage.prompt_storage import PROMPT_ALIAS_RE, PromptStorage
@@ -48,28 +46,6 @@ def _mark_origin(pr: Dict[str, Any], user: str, group_id: str) -> None:
     ni un enlace, no hay badge que mostrar)."""
     if pr.get("_shared") or pr.get("owner_id") in (user, group_id):
         pr["origin_type"] = compute_origin_type(pr)
-
-
-@router.get("")
-async def list_prompts(
-    scope: str = "all",
-    owner_scope: str = "group",
-    group_id: Optional[str] = None,
-    limit: int = Query(50, ge=1, le=100),
-    offset: int = Query(0, ge=0),
-    response: Response = None,  # type: ignore[assignment]
-    ctx: GroupContext = Depends(require_group_session),
-) -> List[Dict[str, Any]]:
-    _check_scope(scope)
-    return await list_authenticated_scoped_resources(
-        _storage,
-        ctx=ctx,
-        scope=scope,
-        page=OffsetParams(limit=limit, offset=offset),
-        response=response,
-        requested_group_id=group_id,
-        mark_origin=_mark_origin,
-    )
 
 
 @router.get("/{scope}/{prompt_id}")

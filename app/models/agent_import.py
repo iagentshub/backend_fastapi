@@ -51,16 +51,6 @@ class AgentImportCandidate(BaseModel):
     name: str
 
 
-class AgentImportCatalogPage(BaseModel):
-    """Compact, independently pageable catalog for one resource type."""
-
-    items: list[AgentImportCandidate] = Field(default_factory=list)
-    total: int
-    limit: int
-    offset: int
-    has_more: bool
-
-
 class AgentImportCatalogResolveRequest(BaseModel):
     """IDs grouped by type for one visibility-safe batched resolution."""
 

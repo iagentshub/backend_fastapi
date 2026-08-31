@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, TypedDict
 
 from app.models.agent import Agent
-from app.pagination.models import OffsetPage, OffsetParams
+from app.pagination.models import CursorPage, CursorParams
 from app.services.resource_visibility import VisibilityFilter
 from app.sql import sql
 
@@ -66,10 +66,10 @@ class AgentStorage(ResourceStorage):
         active_group_id: str,
         scope: str,
         include_inactive: bool,
-        page: OffsetParams,
+        page: CursorParams,
         requested_group_id: str | None = None,
         extra_filters: tuple[VisibilityFilter, ...] = (),
-    ) -> OffsetPage[Dict[str, Any]]:
+    ) -> CursorPage[Dict[str, Any]]:
         await self._ensure_migrated()
         spec = ScopedResourcePageSpec(
             table=self.table,
@@ -159,7 +159,11 @@ class AgentStorage(ResourceStorage):
         # Ver skill_storage._upsert: upsert explícito para no perder las
         # columnas que este INSERT no nombra (las de fuente oficial).
         await conn.execute(
-            sql("queries/agents:upsert_pg" if _db.IS_PG else "queries/agents:upsert_sqlite"),
+            sql(
+                "queries/agents:upsert_pg"
+                if _db.IS_PG
+                else "queries/agents:upsert_sqlite"
+            ),
             (
                 agent_id,
                 owner_id,
@@ -225,7 +229,9 @@ class AgentStorage(ResourceStorage):
             if scope == "public":
                 row = await conn.fetchone(sql("queries/agents:get_public"), (agent_id,))
             elif scope == "private":
-                row = await conn.fetchone(sql("queries/agents:get_private"), (agent_id,))
+                row = await conn.fetchone(
+                    sql("queries/agents:get_private"), (agent_id,)
+                )
             else:
                 # prefer private, fall back to public
                 row = await conn.fetchone(sql("queries/agents:get_any"), (agent_id,))
@@ -336,9 +342,7 @@ class AgentStorage(ResourceStorage):
 
         async with open_db() as conn:
             if allow_public:
-                row = await conn.fetchone(
-                    sql("queries/agents:exists_any"), (agent_id,)
-                )
+                row = await conn.fetchone(sql("queries/agents:exists_any"), (agent_id,))
                 if not row:
                     return False
                 await conn.execute(sql("queries/agents:delete_any"), (agent_id,))
@@ -357,9 +361,7 @@ class AgentStorage(ResourceStorage):
                 )
                 if not row:
                     return False
-                await conn.execute(
-                    sql("queries/agents:delete_not_public"), (agent_id,)
-                )
+                await conn.execute(sql("queries/agents:delete_not_public"), (agent_id,))
             await conn.commit()
         await self.clear_labels(agent_id)
         return True

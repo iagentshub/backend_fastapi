@@ -44,16 +44,61 @@ must never be interpolated directly into SQL.
 
 ## Listings and pagination
 
-`app/pagination/` owns offset/cursor pages, HTTP headers, and the cursor codec.
-`app/storage/page_query.py` executes `COUNT(*)` and `LIMIT/OFFSET` against the
-same `WHERE`; each storage selects its columns and decodes only page rows.
+`app/pagination/` owns a single keyset implementation, the typed v2 envelope,
+bounded metrics, exact-total timeout, and HMAC cursor codec.
+Agents, Skills, Prompts, Tools, Knowledge, and Knowledge Packs traverse their
+indexes with a signed temporal keyset. Explore, users, logs, and administrative
+components use the same HTTP contract through a composite engine that supports
+ascending, descending, and mixed orders. All of them fetch
+`LIMIT + 1`, derive `has_more`, and do not run `COUNT(*)` unless the client
+sends `include_total=true`; that value is carried in the signed cursor for the
+rest of the traversal. There is no positional pagination branch or materialized
+paginator. The import catalog uses the same design for its five kinds, with
+independent filter-bound cursors.
+Exact totals share a bounded per-worker slot. PostgreSQL uses asyncpg's native
+timeout; SQLite interrupts its virtual machine and waits for the aiosqlite
+worker to finish before reusing the connection, so timed-out work cannot keep
+consuming the pool in the background.
 `app/services/resource_visibility.py` centralizes ownership, shares, active
 groups, and permissions so access control cannot drift from pagination across
 agents, skills, prompts, tools, and Knowledge.
 
-Migration 23 adds compound indexes for stable orders (`date DESC, id DESC`) in
-SQLite and PostgreSQL. `tests/performance/test_pagination.py` verifies that a
-50-item page over 10,000 rows decodes only those 50 objects.
+Migration 42 aligns agents, skills, prompts, and tools with their global visible
+order (`updated_at DESC, id DESC`) and the Knowledge and Knowledge Pack import
+catalogs with (`created_at DESC, id DESC`) in SQLite and PostgreSQL. It also
+removes the four `*_owner_page` indexes that duplicated the canonical owner indexes.
+Migration 43 aligns the public index with Explore's real order and adds derived
+columns plus dedicated official-component indexes for unfiltered, state, type,
+and state+type traversals. Filters run in SQL before `LIMIT + 1`; the complete
+draft is no longer materialized in Python.
+Migration 44 adds the physical orders for Feed, Connections, and
+orchestrations. Feed ends in `(resource_type, resource_id, owner)`; Connections
+merges persisted and virtual rows through `(updated_at, source_type, id)`.
+Admin Explore pages identifiers from a normalized union before hydrating only
+the visible page, while the table viewer keysets on simple or composite primary
+keys and rejects tables without a stable key.
+The default `snapshot_at` watermark excludes later inserts without holding a
+database transaction open; it is not transactional isolation against updates
+to an unseen item's ordering field.
+`tests/performance/test_pagination.py` verifies both that a page only decodes
+its own objects and that visible listings, including their keyset predicate, do
+not fall back to a temporary sort.
+`tests/performance/test_pagination_postgres.py` also runs `EXPLAIN (ANALYZE,
+BUFFERS)` against PostgreSQL 16 with the real owner, active-group, and sharing
+predicate. In the local 100,000-row measurement, the positional reference
+scanned 90,050 rows in 156.429 ms while keyset scanned 50 in 3.585 ms. The
+workflow runs manually and on pull requests that change pagination, SQL,
+indexes, storage, or visibility; it also starts the real API on PostgreSQL and
+checks Feed, Connections, Admin Explore, and metadata.
+
+Flutter, its Dashboard, Hub Sync, and the VS Code extension consume `/api/v2`
+and its strict `items + page` envelope; they do not accept legacy lists as v2
+responses. The former list GETs and their transition headers have been removed;
+Chat keeps its headers because it already uses a distinct cursor contract.
+`/api/admin/stats` exposes bounded per-resource request, latency, page-depth,
+total-reuse, and timeout metrics. These in-memory
+accumulators are process-local; multi-worker deployments must aggregate them in
+their observability system when they need a global view.
 
 The public catalog (`resource_social`) follows the same rule: its order ends in
 the primary key so two pages never repeat or drop a row — rows published by an

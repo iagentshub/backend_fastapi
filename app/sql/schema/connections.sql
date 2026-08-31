@@ -14,3 +14,5 @@ CREATE TABLE IF NOT EXISTS connections (
 -- Estaba declarado suelto en db.py::migrate_schema, dentro de la rama de
 -- SQLite: PostgreSQL nunca lo llegaba a crear. Aquí lo obtienen los dos.
 CREATE INDEX IF NOT EXISTS idx_connections_owner ON connections(owner_id);
+CREATE INDEX IF NOT EXISTS idx_connections_updated_page
+    ON connections(updated_at DESC, id);

@@ -21,6 +21,7 @@ from app.api.routes.llm_limits import official_llm_limiter
 from app.config.tool_runtimes import TOOL_RUNTIMES
 from app.errors import APIError
 from app.models.official_source import INTERNAL_SOURCE_ID, MATERIALIZABLE_TYPES
+from app.pagination.models import CursorParams
 from app.services.official_source_drafts import OfficialImportDraftService
 from app.services.official_source_importer import (
     GitHubImportError,
@@ -151,8 +152,18 @@ async def _fetch_payload(
 async def _draft_payload(
     draft: Dict[str, Any], *, applied: Optional[Dict[str, Any]] = None
 ) -> Dict[str, Any]:
-    page = await _storage.list_draft_components(str(draft["id"]), limit=500)
-    items = page["items"]
+    items: list[dict[str, Any]] = []
+    cursor: str | None = None
+    while True:
+        page = await _storage.list_draft_components_cursor(
+            str(draft["id"]), page=CursorParams(limit=500, cursor=cursor)
+        )
+        items.extend(page.items)
+        if not page.has_more:
+            break
+        cursor = page.next_cursor
+        if cursor is None:
+            raise RuntimeError("Página incompleta sin cursor siguiente")
     return {
         **draft,
         "draft_id": draft["id"],
@@ -377,27 +388,6 @@ async def admin_get_official_source_draft(
 ) -> Dict[str, Any]:
     draft = await _owned_draft(draft_id, admin)
     return await _draft_payload(draft)
-
-
-@admin_router.get("/official-source-drafts/{draft_id}/components")
-async def admin_list_official_source_draft_components(
-    draft_id: str,
-    offset: int = 0,
-    limit: int = 100,
-    component_type: Optional[str] = None,
-    state: Optional[str] = None,
-    q: str = "",
-    admin: str = Depends(require_admin),
-) -> Dict[str, Any]:
-    await _owned_draft(draft_id, admin)
-    return await _storage.list_draft_components(
-        draft_id,
-        offset=offset,
-        limit=limit,
-        component_type=component_type,
-        state=state,
-        query=q,
-    )
 
 
 @admin_router.patch("/official-source-drafts/{draft_id}/components/{component_key}")

@@ -16,7 +16,7 @@ _PAYLOAD = {
 
 
 def test_list_tools_invalid_scope(admin_client):
-    r = admin_client.get("/api/tools?scope=invalid")
+    r = admin_client.get("/api/v2/tools?scope=invalid")
     assert r.status_code == 400
 
 
@@ -75,24 +75,33 @@ def test_download_binary_nonexistent_tool(admin_client):
 def test_list_tools_with_limit(admin_client):
     for i in range(3):
         admin_client.post("/api/tools/private", json={**_PAYLOAD, "name": f"Pag{i}"})
-    r = admin_client.get("/api/tools?scope=private&limit=2")
+    r = admin_client.get("/api/v2/tools?scope=private&limit=2")
     assert r.status_code == 200
-    assert len(r.json()) <= 2
+    assert len(r.json()["items"]) <= 2
 
 
-def test_list_tools_with_offset(admin_client):
+def test_list_tools_with_cursor(admin_client):
     for i in range(4):
         admin_client.post("/api/tools/private", json={**_PAYLOAD, "name": f"Off{i}"})
-    r_all = admin_client.get("/api/tools?scope=private").json()
-    r_off = admin_client.get("/api/tools?scope=private&offset=1").json()
-    assert len(r_off) == len(r_all) - 1
+    first = admin_client.get("/api/v2/tools?scope=private&limit=2")
+    second = admin_client.get(
+        "/api/v2/tools",
+        params={
+            "scope": "private",
+            "limit": 2,
+            "cursor": first.json()["page"]["next_cursor"],
+        },
+    )
+    assert {item["id"] for item in first.json()["items"]}.isdisjoint(
+        item["id"] for item in second.json()["items"]
+    )
 
 
 # ── Auth ─────────────────────────────────────────────────────────────────────
 
 
 def test_list_tools_requires_auth(client):
-    r = client.get("/api/tools")
+    r = client.get("/api/v2/tools")
     assert r.status_code == 401
 
 
@@ -136,16 +145,16 @@ def _guest_client(client):
 
 def test_guest_lista_sus_tools(client):
     _guest_client(client)
-    r = client.get("/api/tools")
+    r = client.get("/api/v2/tools")
     assert r.status_code == 200
-    assert r.json() == []
+    assert r.json()["items"] == []
 
 
 def test_guest_guarda_una_tool_privada(client):
     _guest_client(client)
     r = client.post("/api/tools/private", json=_PAYLOAD)
     assert r.status_code == 200, r.text
-    assert any(t["id"] == r.json()["id"] for t in client.get("/api/tools").json())
+    assert any(t["id"] == r.json()["id"] for t in client.get("/api/v2/tools").json()["items"])
 
 
 def test_guest_no_publica_una_tool(client):

@@ -70,9 +70,9 @@ def test_agent_labels_stored_and_returned(client):
     assert "production" in agent["labels"]
 
     # GET /api/agents devuelve las labels
-    r = client.get("/api/agents")
+    r = client.get("/api/v2/agents")
     assert r.status_code == 200
-    found = next((a for a in r.json() if a["id"] == agent["id"]), None)
+    found = next((a for a in r.json()["items"] if a["id"] == agent["id"]), None)
     assert found is not None
     assert "public" in found["labels"]
     assert "production" in found["labels"]
@@ -128,17 +128,17 @@ def test_list_agents_filtered_by_label(client):
     fav = _create_agent(client, "Favorite Agent", labels=["private", "favorite"])
     _create_agent(client, "Normal Agent", labels=["private"])
 
-    r = client.get("/api/agents?label=favorite")
+    r = client.get("/api/v2/agents?label=favorite")
     assert r.status_code == 200
-    ids = [a["id"] for a in r.json()]
+    ids = [a["id"] for a in r.json()["items"]]
     assert fav["id"] in ids, "El agente con label 'favorite' debe aparecer"
 
     # Agente sin la label no debe aparecer
-    r_all = client.get("/api/agents")
-    assert len(r_all.json()) >= 2, "Sin filtro debe haber al menos 2 agentes"
+    r_all = client.get("/api/v2/agents")
+    assert len(r_all.json()["items"]) >= 2, "Sin filtro debe haber al menos 2 agentes"
 
-    r_fav = client.get("/api/agents?label=favorite")
-    for agent in r_fav.json():
+    r_fav = client.get("/api/v2/agents?label=favorite")
+    for agent in r_fav.json()["items"]:
         assert "favorite" in (agent.get("labels") or []), (
             f"Agente {agent['id']} devuelto pero no tiene label 'favorite'"
         )
@@ -152,9 +152,9 @@ def test_skill_labels_stored_and_returned(client):
     assert "labels" in skill, "save() debe devolver labels en la skill"
     assert "development" in skill["labels"]
 
-    r = client.get("/api/skills")
+    r = client.get("/api/v2/skills")
     assert r.status_code == 200
-    found = next((s for s in r.json() if s.get("id") == skill["id"]), None)
+    found = next((s for s in r.json()["items"] if s.get("id") == skill["id"]), None)
     assert found is not None, "La skill debe aparecer en GET /api/skills"
     assert "development" in (found.get("labels") or [])
 

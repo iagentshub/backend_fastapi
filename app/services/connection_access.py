@@ -25,10 +25,20 @@ class ConnectionAccessService:
         self._groups = GroupStorage()
 
     async def get_accessible(
-        self, connection_id: str, user: str, group_id: str
+        self,
+        connection_id: str,
+        user: str,
+        group_id: str,
+        *,
+        include_inactive: bool = False,
     ) -> Dict[str, Any] | None:
         if orchestration_id_from_connection(connection_id):
-            return await self._get_orchestration(connection_id, user, group_id)
+            return await self._get_orchestration(
+                connection_id,
+                user,
+                group_id,
+                include_inactive=include_inactive,
+            )
         return await self._get_physical(connection_id, user, group_id)
 
     async def list_accessible(
@@ -112,13 +122,18 @@ class ConnectionAccessService:
         return result
 
     async def _get_orchestration(
-        self, connection_id: str, user: str, group_id: str
+        self,
+        connection_id: str,
+        user: str,
+        group_id: str,
+        *,
+        include_inactive: bool = False,
     ) -> Dict[str, Any] | None:
         orchestration_id = orchestration_id_from_connection(connection_id)
         if not orchestration_id:
             return None
         item = await self._orchestrations.get_any(orchestration_id)
-        if not item or not item.get("is_active", True):
+        if not item or (not include_inactive and not item.get("is_active", True)):
             return None
         role = await get_user_role(user)
         shared_ids = await self._shares.get_group_shared_resource_ids(

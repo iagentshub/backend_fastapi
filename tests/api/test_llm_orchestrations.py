@@ -91,7 +91,7 @@ def test_balanced_requires_router_and_is_exposed_as_a_connection(admin_client):
         },
     ).json()
     virtual_id = f"llm-orchestration:{orchestration['id']}"
-    connections = admin_client.get("/api/connections").json()
+    connections = admin_client.get("/api/v2/connections").json()["items"]
     virtual = next(item for item in connections if item["id"] == virtual_id)
     assert virtual["type"] == "llm_orchestration"
     assert virtual["model"] == "balanced"
@@ -175,11 +175,11 @@ def test_llm_orchestration_appears_only_in_admin_explore(admin_client):
             ],
         },
     ).json()
-    admin_items = admin_client.get("/api/admin/explore?type=llm_orchestration").json()[
+    admin_items = admin_client.get("/api/v2/admin/explore?type=llm_orchestration").json()[
         "items"
     ]
     assert [entry["id"] for entry in admin_items] == [item["id"]]
-    public_items = admin_client.get("/api/explore").json()
+    public_items = admin_client.get("/api/v2/explore").json()["items"]
     assert all(
         entry.get("resource_type") != "llm_orchestration" for entry in public_items
     )
@@ -223,7 +223,7 @@ def test_llm_orchestration_can_be_shared_privately_with_a_group(admin_client):
         ).json()["group_ids"]
         assert group["id"] not in connection_groups
 
-    public_items = admin_client.get("/api/explore").json()
+    public_items = admin_client.get("/api/v2/explore").json()["items"]
     assert all(
         entry.get("resource_type") != "llm_orchestration" for entry in public_items
     )
@@ -278,7 +278,7 @@ def test_group_member_can_use_shared_orchestration_without_publication(
     assert shared["_binding_configured"] is False
     assert {candidate["connection_id"] for candidate in shared["candidates"]} == {""}
     available_connection_ids = {
-        connection["id"] for connection in client.get("/api/connections").json()
+        connection["id"] for connection in client.get("/api/v2/connections").json()["items"]
     }
     assert first["id"] not in available_connection_ids
     assert second["id"] in available_connection_ids
@@ -301,7 +301,7 @@ def test_group_member_can_use_shared_orchestration_without_publication(
         candidate["routing_hint"] for candidate in binding.json()["candidates"]
     ] == ["", ""]
     available_connection_ids = {
-        connection["id"] for connection in client.get("/api/connections").json()
+        connection["id"] for connection in client.get("/api/v2/connections").json()["items"]
     }
     assert virtual_id in available_connection_ids
 
@@ -344,10 +344,10 @@ def test_group_member_can_use_shared_orchestration_without_publication(
         == 200
     )
     available_connection_ids = {
-        connection["id"] for connection in client.get("/api/connections").json()
+        connection["id"] for connection in client.get("/api/v2/connections").json()["items"]
     }
     assert virtual_id not in available_connection_ids
     assert all(
         entry.get("resource_type") != "llm_orchestration"
-        for entry in client.get("/api/explore").json()
+        for entry in client.get("/api/v2/explore").json()["items"]
     )

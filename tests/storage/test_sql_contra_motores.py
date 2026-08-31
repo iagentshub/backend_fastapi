@@ -157,6 +157,55 @@ def test_todas_las_consultas_preparan_en_postgres():
     assert rotas == [], "Consultas que PostgreSQL no acepta: " + "; ".join(rotas)
 
 
+@pytest.mark.skipif(
+    not DSN, reason="define GAIA_TEST_PG_DSN para probar la migración 44"
+)
+def test_migration_44_is_recorded_and_builds_indexes_in_real_postgres():
+    """Aplica dos arranques sobre un esquema PG persistente y verifica la 44."""
+    import asyncio
+
+    import asyncpg
+
+    from app.storage.migrations.postgres import run_postgres_migrations
+
+    async def _correr() -> None:
+        conn = await asyncpg.connect(DSN)
+        schema = f"cursor_completion_{uuid4().hex}"
+        try:
+            await conn.execute(f'CREATE SCHEMA "{schema}"')
+            await conn.execute(f'SET search_path TO "{schema}"')
+            for sentencia in schema_for("pg").split(";"):
+                if sentencia.strip():
+                    await conn.execute(sentencia)
+
+            first = await run_postgres_migrations(conn)
+            second = await run_postgres_migrations(conn)
+            migration = await conn.fetchrow(
+                "SELECT name FROM schema_migrations WHERE version=44"
+            )
+            indexes = {
+                row["indexname"]
+                for row in await conn.fetch(
+                    "SELECT indexname FROM pg_indexes WHERE schemaname=$1", schema
+                )
+            }
+
+            assert 44 in first
+            assert 44 not in second
+            assert migration["name"] == "cursor_completion_indexes"
+            assert {
+                "idx_rsoc_feed_page",
+                "idx_connections_updated_page",
+                "idx_llm_orchestrations_updated_page",
+            } <= indexes
+        finally:
+            await conn.execute("SET search_path TO public")
+            await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+            await conn.close()
+
+    asyncio.run(_correr())
+
+
 # Fragmentos de SQL que se arman en Python y por tanto no están en `app/sql/`,
 # así que el catálogo de arriba no los ve. Cada uno va con el envoltorio mínimo
 # que lo convierte en una consulta preparable.

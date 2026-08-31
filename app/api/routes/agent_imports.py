@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 
-from fastapi import APIRouter, Depends, File, Form, Query, UploadFile
+from fastapi import APIRouter, Depends, File, Form, UploadFile
 from pydantic import ValidationError
 
 from app.api.routes.auth import GroupContext, require_group_session
@@ -16,12 +16,13 @@ from app.models.agent_import import (
     AgentDirectoryImportResult,
     AgentDirectoryUploadSession,
     AgentDirectoryUploadSessionBody,
-    AgentImportCatalogPage,
     AgentImportCatalogResolveRequest,
     AgentImportPreview,
     AgentImportResourceKind,
 )
-from app.pagination.models import OffsetParams
+from app.pagination.metrics import increment
+from app.pagination.models import CursorParams
+from app.pagination.total import ExactTotalTimeout
 from app.services.agent_directory_import import (
     AgentDirectoryImportService,
     agent_directory_skip_reason,
@@ -44,26 +45,26 @@ from app.services.agent_import_upload_sessions import (
 router = APIRouter(prefix="/api/agents/import", tags=["agents"])
 
 
-@router.get("/catalog/{kind}", response_model=AgentImportCatalogPage)
-async def search_agent_import_catalog(
+async def load_agent_import_catalog_page(
     kind: AgentImportResourceKind,
-    q: str = Query(default="", max_length=200),
-    limit: int = Query(default=50, ge=1, le=100),
-    offset: int = Query(default=0, ge=0),
-    ctx: GroupContext = Depends(require_group_session),
-) -> AgentImportCatalogPage:
-    """Search one resource type; catalogs remain independently pageable."""
-
-    page = await AgentImportCatalog.search_page(
-        ctx, kind, query=q, page=OffsetParams(limit=limit, offset=offset)
-    )
-    return AgentImportCatalogPage(
-        items=list(page.items),
-        total=page.total,
-        limit=limit,
-        offset=offset,
-        has_more=page.has_more,
-    )
+    q: str,
+    page_params: CursorParams,
+    ctx: GroupContext,
+):
+    try:
+        return await AgentImportCatalog.search_page(
+            ctx, kind, query=q, page=page_params
+        )
+    except ExactTotalTimeout as exc:
+        raise APIError(
+            503,
+            "pagination_total_timeout",
+            "El total exacto no estuvo disponible dentro del tiempo permitido",
+            extra={"resource": str(kind)},
+        ) from exc
+    except ValueError as exc:
+        increment(f"agent_import_{kind}", "invalid_cursors")
+        raise APIError(422, "invalid_cursor", "Cursor inválido") from exc
 
 
 @router.post("/catalog/resolve")

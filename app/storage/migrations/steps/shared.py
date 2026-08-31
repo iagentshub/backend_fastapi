@@ -34,6 +34,7 @@ async def _resource_social_origin_index(conn: Any) -> None:
         "WHERE linked_to_id IS NOT NULL"
     )
 
+
 async def _pagination_indexes(conn: Any) -> None:
     """Índices compuestos alineados con filtros y órdenes de páginas."""
     statements = (
@@ -56,6 +57,34 @@ async def _pagination_indexes(conn: Any) -> None:
     )
     for statement in statements:
         await conn.execute(statement)
+
+
+async def _scoped_resource_order_indexes(conn: Any) -> None:
+    """Alinea los listados visibles con su orden global real.
+
+    El filtro de visibilidad combina propietario, recursos públicos y shares.
+    Por eso los índices de la migración 23, cuyo primer campo era owner_id, no
+    podían proporcionar ``ORDER BY updated_at, id`` al conjunto combinado.
+    Los cuatro índices nuevos permiten recorrer ya ordenado y parar al llegar a
+    ``LIMIT + 1``. Los ``*_owner_page`` se retiran porque duplicaban exactamente
+    los índices ``*_owner`` del esquema canónico.
+    """
+
+    for table in ("agents", "skills", "prompts", "tools"):
+        await conn.execute(
+            f"CREATE INDEX IF NOT EXISTS idx_{table}_visible_order "
+            f"ON {table}(updated_at DESC,id DESC)"
+        )
+        await conn.execute(f"DROP INDEX IF EXISTS idx_{table}_owner_page")
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_knowledge_visible_order "
+        "ON knowledge_items(created_at DESC,id DESC)"
+    )
+    await conn.execute(
+        "CREATE INDEX IF NOT EXISTS idx_knowledge_packs_visible_order "
+        "ON knowledge_packs(created_at DESC,id DESC)"
+    )
+
 
 async def _resource_social_page_index(conn: Any) -> None:
     """Índice del catálogo público, la página más consultada del producto.

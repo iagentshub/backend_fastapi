@@ -4,7 +4,6 @@ Un borrador caduca (`delete_expired_drafts`); lo que sobrevive al aplicarse son
 recursos normales, no filas de aquí.
 """
 
-
 from __future__ import annotations
 
 import json
@@ -12,7 +11,13 @@ from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from app.config.content_languages import CONTENT_LANGUAGE_LABELS
+from app.pagination.cursor import cursor_context_signature
+from app.pagination.models import CursorPage, CursorParams
 from app.sql import sql
+from app.storage.composite_cursor_page import (
+    KeysetColumn,
+    fetch_composite_cursor_page,
+)
 from app.storage.db import open_db
 
 # Tablas de recurso que pueden llevar contenido oficial, con su tipo lógico.
@@ -69,6 +74,9 @@ class _DraftsMixin:
                             draft_id,
                             str(item["component_id"]),
                             json.dumps(item, ensure_ascii=False),
+                            str(item.get("component_type") or ""),
+                            str(item.get("name") or ""),
+                            str(item.get("source_path") or ""),
                             int(bool(item.get("selected", False))),
                             int(bool(item.get("explicitly_selected", False))),
                             item.get("forced_type"),
@@ -128,46 +136,55 @@ class _DraftsMixin:
             await conn.commit()
         return await self.get_draft(draft_id)
 
-    async def list_draft_components(
+    async def list_draft_components_cursor(
         self,
         draft_id: str,
         *,
-        offset: int = 0,
-        limit: int = 100,
+        page: CursorParams,
         component_type: Optional[str] = None,
         state: Optional[str] = None,
         query: str = "",
-    ) -> Dict[str, Any]:
+    ) -> CursorPage[Dict[str, Any]]:
         clauses = ["draft_id=?"]
         params: List[Any] = [draft_id]
         if state:
             clauses.append("state=?")
             params.append(state)
-        rows_query = "SELECT * FROM official_import_components WHERE " + " AND ".join(
-            clauses
+        if component_type:
+            clauses.append("component_type=?")
+            params.append(component_type)
+        if query:
+            clauses.append(
+                "(LOWER(name) LIKE LOWER(?) OR LOWER(source_path) LIKE LOWER(?))"
+            )
+            pattern = f"%{query}%"
+            params.extend((pattern, pattern))
+        where = " AND ".join(clauses)
+        context = cursor_context_signature(
+            {
+                "resource": "official_import_component",
+                "draft_id": draft_id,
+                "component_type": component_type,
+                "state": state,
+                "query": query,
+            }
         )
         async with open_db() as conn:
-            rows = await conn.fetchall(rows_query, tuple(params))
-        items = [self._draft_component_from_row(row) for row in rows]
-        if component_type:
-            items = [item for item in items if item["component_type"] == component_type]
-        if query:
-            needle = query.casefold()
-            items = [
-                item
-                for item in items
-                if needle in str(item.get("name", "")).casefold()
-                or needle in str(item.get("source_path", "")).casefold()
-            ]
-        total = len(items)
-        safe_limit = max(1, min(limit, 500))
-        safe_offset = max(0, offset)
-        return {
-            "items": items[safe_offset : safe_offset + safe_limit],
-            "total": total,
-            "offset": safe_offset,
-            "limit": safe_limit,
-        }
+            return await fetch_composite_cursor_page(
+                conn,
+                count_sql=(
+                    f"SELECT COUNT(*) FROM official_import_components WHERE {where}"
+                ),
+                select_sql=(f"SELECT * FROM official_import_components WHERE {where}"),
+                params=tuple(params),
+                columns=(
+                    KeysetColumn("component_key", "component_key", descending=False),
+                ),
+                context=context,
+                resource="official_import_component",
+                page=page,
+                decode=self._draft_component_from_row,
+            )
 
     async def update_draft_component(
         self, draft_id: str, component_key: str, updates: Dict[str, Any]
@@ -342,8 +359,7 @@ class _DraftsMixin:
         payload["labels"] = [
             label
             for label in payload.get("labels", [])
-            if not str(label).startswith("lang_")
-            or label in CONTENT_LANGUAGE_LABELS
+            if not str(label).startswith("lang_") or label in CONTENT_LANGUAGE_LABELS
         ]
         if (
             payload.get("language")

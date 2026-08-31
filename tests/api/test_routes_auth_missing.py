@@ -60,7 +60,7 @@ def test_require_auth_invalid_token(client):
 def test_require_group_invalid_token(client):
     """Ruta que usa require_group con token malformado → 401."""
     client.cookies.set("ga_token", "bad.token.xyz")
-    r = client.get("/api/agents")
+    r = client.get("/api/v2/agents")
     assert r.status_code == 401
 
 

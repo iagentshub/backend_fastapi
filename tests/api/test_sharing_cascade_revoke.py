@@ -125,11 +125,11 @@ def test_el_miembro_deja_de_ver_las_dependencias(client):
 
     _set_cookie(client, miembro)
     assert any(
-        s["id"] == recursos["skill"]["id"] for s in client.get("/api/skills").json()
+        s["id"] == recursos["skill"]["id"] for s in client.get("/api/v2/skills").json()["items"]
     )
     assert any(
         k["id"] == recursos["knowledge"]["id"]
-        for k in client.get("/api/knowledge").json()
+        for k in client.get("/api/v2/knowledge").json()["items"]
     )
 
     _set_cookie(client, duenno)
@@ -140,14 +140,14 @@ def test_el_miembro_deja_de_ver_las_dependencias(client):
 
     _set_cookie(client, miembro)
     assert not any(
-        s["id"] == recursos["skill"]["id"] for s in client.get("/api/skills").json()
+        s["id"] == recursos["skill"]["id"] for s in client.get("/api/v2/skills").json()["items"]
     )
     assert not any(
-        p["id"] == recursos["prompt"]["id"] for p in client.get("/api/prompts").json()
+        p["id"] == recursos["prompt"]["id"] for p in client.get("/api/v2/prompts").json()["items"]
     )
     assert not any(
         k["id"] == recursos["knowledge"]["id"]
-        for k in client.get("/api/knowledge").json()
+        for k in client.get("/api/v2/knowledge").json()["items"]
     )
 
 

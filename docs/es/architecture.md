@@ -44,17 +44,64 @@ interpolan valores de usuario directamente en SQL.
 
 ## Listados y paginación
 
-`app/pagination/` define páginas offset y cursor, cabeceras HTTP y el codec de
-cursores. `app/storage/page_query.py` ejecuta `COUNT(*)` y `LIMIT/OFFSET` sobre
-el mismo `WHERE`; cada storage selecciona sus columnas y decodifica únicamente
-las filas de la página. `app/services/resource_visibility.py` centraliza
-propiedad, shares, grupos activos y permisos para que seguridad y paginación no
-divergan entre agentes, skills, prompts, tools y Knowledge.
+`app/pagination/` contiene una única implementación keyset, el envoltorio
+tipado v2, métricas, timeout del total y el codec HMAC. Agents,
+Skills, Prompts, Tools, Knowledge y Knowledge Packs recorren exclusivamente el
+índice con un keyset temporal firmado. Explore, usuarios, logs y componentes
+administrativos usan el mismo contrato HTTP sobre un motor keyset compuesto
+capaz de expresar órdenes ascendentes, descendentes y mixtas,
+caducable y vinculado al usuario y a los filtros. Obtienen `LIMIT + 1`, derivan
+`has_more` y no ejecutan `COUNT(*)` salvo con `include_total=true`; ese total se
+transporta firmado durante el resto del recorrido. No existe una rama de
+paginación posicional ni un paginador materializado. El catálogo de importación
+usa el mismo principio para sus cinco tipos, con cursores independientes ligados
+a cada filtro.
+Los totales exactos comparten un cupo acotado por worker. PostgreSQL usa el
+timeout nativo de asyncpg; SQLite interrumpe la máquina virtual y espera a que
+el hilo de aiosqlite termine antes de reutilizar la conexión, de modo que un
+timeout no siga consumiendo el pool en segundo plano.
+`app/services/resource_visibility.py` centraliza propiedad, shares, grupos
+activos y permisos para que seguridad y paginación no diverjan entre agentes,
+skills, prompts, tools y Knowledge.
 
-La migración 23 añade índices compuestos para órdenes estables (`fecha DESC, id
-DESC`) en SQLite y PostgreSQL. El benchmark
-`tests/performance/test_pagination.py` verifica que una página de 50 sobre
-10.000 filas decodifica solo esos 50 objetos.
+La migración 42 alinea agentes, skills, prompts y tools con su orden visible
+global (`updated_at DESC, id DESC`) y los catálogos de importación de Knowledge
+y Knowledge Packs con (`created_at DESC, id DESC`) en SQLite y PostgreSQL.
+También retira los cuatro índices `*_owner_page` que duplicaban los índices
+canónicos por propietario.
+La migración 43 ajusta el índice público al orden real de Explore y añade a los
+componentes oficiales columnas derivadas e índices específicos para recorridos
+sin filtro, por estado, por tipo y por estado+tipo. Los filtros se aplican en
+SQL antes de `LIMIT + 1`; ya no se carga el borrador entero en Python.
+La migración 44 añade los órdenes físicos de Feed, Connections y
+orquestaciones. Feed termina en `(resource_type, resource_id, owner)`;
+Connections mezcla filas persistidas y virtuales mediante
+`(updated_at, tipo_fuente, id)`. Admin Explore pagina primero identificadores de
+una unión normalizada e hidrata solo la página visible; el visor de tablas usa
+la clave primaria simple o compuesta y rechaza tablas sin clave estable.
+El watermark `snapshot_at`, activo por defecto, acota el recorrido frente a
+nuevas altas sin mantener una transacción abierta. No es aislamiento
+transaccional frente a ediciones del campo de orden.
+El benchmark `tests/performance/test_pagination.py` verifica tanto que una
+página decodifica solo sus objetos como que el listado visible, incluido su
+predicado keyset, no vuelve a una ordenación temporal.
+`tests/performance/test_pagination_postgres.py` ejecuta además `EXPLAIN
+(ANALYZE, BUFFERS)` sobre PostgreSQL 16 con el predicado real de propietario,
+grupo activo y share. En la medición local de 100.000 filas, la referencia
+posicional recorrió 90.050 filas en 156,429 ms y keyset 50 en 3,585 ms. El workflow
+`pagination-postgres.yml` corre manualmente y en PR cuando cambian paginación,
+SQL, índices, storages o visibilidad; también arranca una API real sobre
+PostgreSQL y comprueba Feed, Connections, Admin Explore y metadata.
+
+Flutter, su Dashboard, Hub Sync y la extensión VS Code consumen `/api/v2` y el
+envoltorio estricto `items + page`; no aceptan listas legacy como respuesta v2.
+Los GET de listado anteriores y sus cabeceras de transición se eliminaron;
+Chat conserva sus cabeceras porque ya usa cursor con un contrato distinto.
+`/api/admin/stats` agrega por tipo peticiones, latencia, profundidad, totales,
+reutilización y timeouts, sin etiquetas por
+usuario ni cursor que disparen la cardinalidad. Los acumuladores viven en
+memoria y son por proceso; una instalación multi-worker debe agregarlos en su
+sistema de observabilidad si necesita una vista global.
 
 El catálogo público (`resource_social`) sigue la misma regla: su orden termina
 en la clave primaria para que dos páginas nunca repitan ni pierdan una fila

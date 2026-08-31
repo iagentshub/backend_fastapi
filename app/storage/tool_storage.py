@@ -8,8 +8,6 @@ import json
 from typing import Any, Dict, List, Optional
 
 from app.config.tool_runtimes import TOOL_RUNTIME_BY_VALUE, TOOL_RUNTIMES
-from app.pagination.models import OffsetPage, OffsetParams
-from app.services.resource_visibility import VisibilityFilter
 from app.sql import sql
 
 # db se importa DOS veces a propósito: ver app/storage/_storage_helpers.py.
@@ -18,10 +16,8 @@ from app.storage._storage_helpers import _PUBLIC_OWNER, _slug
 from app.storage.db import AsyncConn, open_db
 from app.storage.db_migrations import _compact_resource_data
 from app.storage.resource_base import ResourceStorage
-from app.storage.scoped_resource_page import (
-    ScopedResourcePageSpec,
-    list_scoped_resource_page,
-)
+from app.storage.scoped_resource_page import ScopedResourcePageSpec
+from app.storage.scoped_resource_pagination import ScopedResourcePaginationMixin
 
 # Catálogo de labels compartido; vive en skill_storage (ver comentario allí).
 from app.storage.skill_storage import SKILL_LABELS, ensure_origin_label
@@ -29,27 +25,18 @@ from app.utils import now_iso as _now
 from app.utils.generators import generate_id
 
 
-class ToolStorage(ResourceStorage):
+class ToolStorage(ScopedResourcePaginationMixin, ResourceStorage):
     """Async DB-backed tool storage (SQLite / PostgreSQL).
 
     Sin migración legacy de ficheros (a diferencia de Skill): se instancia
     sin argumentos, igual que PromptStorage.
     """
+
     table = "tools"
     resource_type = "tool"
 
-    async def list_visible_page(
-        self,
-        *,
-        user: str,
-        active_group_id: str,
-        scope: str,
-        page: OffsetParams,
-        requested_group_id: str | None = None,
-        catalog_filter: VisibilityFilter | None = None,
-    ) -> OffsetPage[Dict[str, Any]]:
-        await self._ensure_migrated()
-        spec = ScopedResourcePageSpec(
+    def _page_spec(self) -> ScopedResourcePageSpec:
+        return ScopedResourcePageSpec(
             table=self.table,
             columns=(
                 "resource_row.id, resource_row.owner_id, resource_row.name, "
@@ -63,21 +50,10 @@ class ToolStorage(ResourceStorage):
             resource_type=self.resource_type,
             decode=lambda row: self._row_to_dict(row, include_content=False),
         )
-        return await list_scoped_resource_page(
-            spec,
-            user=user,
-            active_group_id=active_group_id,
-            scope=scope,
-            include_inactive=None,
-            page=page,
-            requested_group_id=requested_group_id,
-            extra_filters=(catalog_filter,) if catalog_filter else (),
-        )
 
     async def _upsert(
         self, conn: Any, tool_id: str, owner_id: str, scope: str, data: Dict[str, Any]
     ) -> None:
-
         name = str(data.get("name") or "").strip()
         language = str(data.get("language") or "").strip()
         content = str(data.get("content") or "")

@@ -92,6 +92,78 @@ def admin_id(admin_client) -> str:
     )
 
 
+def test_draft_components_v2_cursor_filters_in_sql(admin_client, admin_id):
+    async def seed() -> str:
+        storage = OfficialSourceStorage()
+        source = {
+            "repository_url": "https://github.com/example/cursor-draft",
+            "provider": "github",
+            "repository_path": "example/cursor-draft",
+            "repository_owner": "example",
+            "repository_name": "cursor-draft",
+            "tracking_mode": "branch",
+            "tracking_ref": "main",
+            "resolved_version": "main",
+            "commit_sha": "cursor-sha",
+            "name": "Cursor draft",
+        }
+        components = [
+            {
+                **PackageComponent(
+                    source_id="draft",
+                    component_id=f"skill-{index}",
+                    component_type="skill",
+                    name=f"Cursor skill {index}",
+                    source_path=f"skills/{index}/SKILL.md",
+                    content_hash=f"hash-{index}",
+                ).as_dict(include_content=True),
+                "state": "new",
+                "selected": False,
+            }
+            for index in range(3)
+        ]
+        draft = await storage.create_draft(
+            owner_id=admin_id,
+            source=source,
+            components=components,
+        )
+        return str(draft["id"])
+
+    draft_id = asyncio.run(seed())
+    path = f"/api/v2/admin/official-source-drafts/{draft_id}/components"
+    first = admin_client.get(
+        path,
+        params={
+            "component_type": "skill",
+            "q": "Cursor skill",
+            "limit": 2,
+            "include_total": True,
+        },
+    )
+    assert first.status_code == 200, first.text
+    payload = first.json()
+    assert payload["page"]["total"] == 3
+    assert payload["page"]["has_more"] is True
+    second = admin_client.get(
+        path,
+        params={
+            "component_type": "skill",
+            "q": "Cursor skill",
+            "limit": 2,
+            "cursor": payload["page"]["next_cursor"],
+        },
+    )
+    assert second.status_code == 200, second.text
+    assert len(second.json()["items"]) == 1
+    assert admin_client.get(f"{path}?offset=1").status_code == 422
+    assert (
+        admin_client.get(
+            f"/api/admin/official-source-drafts/{draft_id}/components"
+        ).status_code
+        == 404
+    )
+
+
 def test_lo_sincronizado_es_un_recurso_normal_marcado_con_su_fuente(
     admin_client, admin_id
 ):
@@ -140,10 +212,10 @@ def test_lo_oficial_aparece_en_explore_como_una_fila_mas(
             "password": "pass1234",
         },
     )
-    explore = client.get("/api/explore")
+    explore = client.get("/api/v2/explore")
 
     assert explore.status_code == 200
-    rows = [item for item in explore.json() if item["name"] == "Checklists"]
+    rows = [item for item in explore.json()["items"] if item["name"] == "Checklists"]
     assert len(rows) == 1
     assert rows[0]["resource_type"] == "knowledge"
     assert "official" in rows[0]["labels"]
@@ -190,9 +262,9 @@ def test_explore_agrupa_los_recursos_oficiales_por_fuente(
             "owned_by_requester": False,
         }
     ]
-    flat = client.get("/api/explore", params={"include_official": "false"})
+    flat = client.get("/api/v2/explore", params={"include_official": "false"})
     assert flat.status_code == 200
-    assert all("official" not in item["labels"] for item in flat.json())
+    assert all("official" not in item["labels"] for item in flat.json()["items"])
 
 
 def test_detalle_y_grafo_del_pack_conservan_relaciones(client, admin_client, admin_id):
@@ -551,10 +623,10 @@ def test_el_admin_ve_en_explore_lo_que_el_mismo_sincroniza(admin_client, admin_i
     source_id = _seed_source()
     _materialize(source_id, ["checklists"], admin_id)
 
-    explore = admin_client.get("/api/explore")
+    explore = admin_client.get("/api/v2/explore")
 
     assert explore.status_code == 200
-    assert [item["name"] for item in explore.json()] == ["Checklists"]
+    assert [item["name"] for item in explore.json()["items"]] == ["Checklists"]
 
 
 def test_lo_propio_no_oficial_sigue_fuera_del_catalogo(admin_client):
@@ -568,9 +640,9 @@ def test_lo_propio_no_oficial_sigue_fuera_del_catalogo(admin_client):
         },
     )
 
-    explore = admin_client.get("/api/explore")
+    explore = admin_client.get("/api/v2/explore")
 
-    assert "Skill propia publicada" not in [item["name"] for item in explore.json()]
+    assert "Skill propia publicada" not in [item["name"] for item in explore.json()["items"]]
 
 
 def test_una_seleccion_vacia_deja_la_fuente_sin_objetos(admin_client, admin_id):

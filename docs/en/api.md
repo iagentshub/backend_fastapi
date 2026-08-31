@@ -10,27 +10,57 @@
 All endpoints require authentication via HTTP-only cookie (`ga_token`) unless marked **—**.
 
 This guide describes the most important usage contracts; it does not duplicate
-all 297 routes in the executable contract. The canonical list is maintained in
+all 320 routes in the executable contract. The canonical list is maintained in
 `tests/api/contrato_rutas.txt`. In development (`GAIA_DEV_MODE=true`), OpenAPI
 is also available at `/openapi.json` and the interactive UI at `/docs`.
 
 ## Pagination
 
-Agent, skill, prompt, tool, and Knowledge catalogs accept `limit` (1–100, 50
-by default) and `offset`. The body remains a list for compatibility;
-`X-Total-Count` reports the filtered total and `X-Has-More` reports whether a
-next page exists. Ownership, sharing, permission, active-state, and type
-filters run in SQL before `LIMIT`.
+All 15 v2 catalogs —agents, skills, prompts, tools, Knowledge, Knowledge Packs,
+imports, Explore, users, Feed, Connections, Admin Explore, table data, logs,
+and official-draft components— use keyset pagination. The next
+request sends the opaque `page.next_cursor` back as
+`cursor`. Their body is self-contained:
 
-Conversations and messages use `limit` and an opaque `cursor`. Responses expose
+```json
+{"items": [], "page": {"has_more": false, "next_cursor": null,
+ "total": null, "snapshot_at": "2026-08-30T10:00:00+00:00"}}
+```
+
+The former list GETs have been removed from both OpenAPI and the router. There
+is no positional compatibility route: first- and third-party clients must use
+v2. Chat already used cursors and temporarily keeps its header-based contract.
+
+An exact total is not computed by default. `include_total=true` computes it once
+under a timeout and carries it in following signed cursors, so a traversal does
+not repeat `COUNT(*)`. Timeout returns `503 pagination_total_timeout`;
+detecting another page only needs `LIMIT + 1`. `offset` receives
+`422 invalid_field`.
+The budget includes waiting for the worker's exact-total slot. On expiry,
+asyncpg cancels PostgreSQL work; SQLite calls `interrupt()` and drains the
+operation before returning that connection to the pool.
+
+`consistent=true` (default) records a high-water mark on the first page and
+excludes later inserts. It is not a long-lived transaction: updating an unseen
+item's ordering field may move it. `consistent=false` disables the watermark.
+Cursors are HMAC-signed, expire, and are bound to user, resource, and filters.
+
+The `/api/v2/agents/import/catalog/{kind}` search endpoint is also cursor-only for
+all five kinds (`skill`, `prompt`, `tool`, `knowledge`, and `knowledge_pack`).
+Its body uses the same `items + page` envelope; `total` is computed only with
+`include_total=true`. The v1 list GET was removed; batched resolution keeps
+`POST /api/agents/import/catalog/resolve` because it is not a paginated list.
+
+Conversations and messages also use `limit` and an opaque `cursor`. Responses expose
 `X-Next-Cursor` and `X-Has-More`; clients must not inspect or manufacture the
 cursor. Message pages remain chronological while older pages load backwards.
 
-Connections composes physical connections, Ollama models, and virtual
-orchestrations, while Admin Explore unifies heterogeneous types; both are
-paginated after composition with a mandatory limit. Bounded guest-session
-collections are also sliced in memory. These explicit exceptions live in
-`pagination/materialized.py`.
+Connections keyset-pages persisted connections and virtual orchestrations by
+`(updated_at, source_type, id)`. A normal list never calls Ollama;
+`include_models=true` nests variants under their base connection instead of
+creating fake paginated rows. Admin Explore pages identifiers from its
+normalized union before hydrating only the visible page. The table viewer uses
+each table's simple or composite primary key as an ascending keyset.
 
 ---
 
@@ -68,11 +98,13 @@ filled in. The request is always stored and also emailed to the instance mailbox
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/explore` | Catalog of public resources owned by other users |
+| `GET` | `/api/v2/explore` | Cursor-based catalog of public resources owned by other users |
 | `GET` | `/api/explore/{resource_type}/{resource_id}/preview` | Preview a public resource |
 
-`GET /api/explore` accepts `type`, `category`, `q`, `tag`, repeated `label`,
-repeated `language`, `relation`, `limit`, and `offset`. Supported content
+`GET /api/v2/explore` accepts `type`, `category`, `q`, `tag`, repeated `label`,
+repeated `language`, `relation`, `limit`, and `cursor`. Its stable mixed order
+is `updated_at DESC, stars_count DESC, resource_type, resource_id, owner`, with
+no `OFFSET`. Supported content
 languages are `es`, `en`, `fr`, `de`, `pt`, `it`, `zh`, `ja`, and `ar`. Selected
 languages are combined with OR, while the language group is combined with
 category and labels using AND. For example, `?language=es&label=production`
@@ -91,8 +123,12 @@ Any other value returns `422` with `code: invalid_field`. The default is `all`
 so clients that omit the parameter keep seeing what they saw before; the app
 asks for `new`, because discovering means seeing what you do not have.
 
-When `relation=new` leaves the first page empty, the response adds an
-`X-Linked-Count` header with how many results were left out for being already
+User search uses `GET /api/v2/users?q=...&limit=...&cursor=...`, ordered by
+`username, id`. Neither v2 list computes a total unless `include_total=true`
+is requested.
+
+When `relation=new` leaves the first page empty, the v2 response adds a
+`linked_matches` field with how many results were left out for being already
 linked. It tells "nothing found" apart from "you already have it all" without a
 second request, and it is only computed in that case.
 
@@ -111,10 +147,20 @@ All admin endpoints require the `admin` role.
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/admin/explore` | Unified inventory of users, groups, agents, connections, knowledge and orchestrations |
+| `GET` | `/api/v2/admin/explore` | Cursor-based unified inventory of users, groups, and resources |
 | `GET` | `/api/admin/resources/{resource_type}/{resource_id}/relations` | Object relationships used by the client to build its graph |
 
-`/api/admin/explore` accepts repeated `type`, `q`, `owner`, `limit`, and `offset` parameters. Every item includes the `resource_type` discriminator; the response also returns `total` and per-type counts. Valid types are `user`, `group`, `agent`, `connection`, `knowledge`, `workflow`, `llm_orchestration`, `skill`, `prompt`, `tool`, and `memory`.
+`/api/v2/admin/explore` accepts repeated `type`, `q`, `owner`, `role`, `active`,
+`verified`, `knowledge_type`, `limit`, and `cursor`. Every item includes
+`resource_type`. `include_counts=true` adds all eleven bounded counters and
+`include_total=true` requests the exact total. Valid types are `user`, `group`,
+`agent`, `connection`, `knowledge`, `workflow`, `llm_orchestration`, `skill`,
+`prompt`, `tool`, and `memory`.
+
+The table viewer uses
+`GET /api/v2/admin/metadata/tables/{table_name}/data?q=...&limit=...&cursor=...`.
+The allowlist and sensitive-column masking remain server-side; a table without
+a stable primary key returns `409 pagination_key_unavailable`.
 
 The backend returns typed relationships; Flutter builds `nodes` and `edges`
 from them. There is no `/graph` endpoint: keeping graph assembly in the client
@@ -156,6 +202,7 @@ avoids a different representation for every interface.
 | `GET` | `/api/admin/official-sources` | Registered sources and the objects each one has in the hub |
 | `POST` | `/api/admin/official-sources/import` | Register a GitHub repository and download its content |
 | `POST` | `/api/admin/official-sources/{id}/sync` | With no body, returns what the source brings; with `component_ids`, applies that selection |
+| `GET` | `/api/v2/admin/official-source-drafts/{draft_id}/components` | Cursor page with `component_type`, `state`, and `q` filters |
 | `PUT` | `/api/admin/official-sources/{id}` | Edit the source |
 | `DELETE` | `/api/admin/official-sources/{id}` | Delete the source and every object it brought |
 | `POST` | `/api/admin/resources/{type}/{id}/official` | Flag or unflag a resource as official by hand |
@@ -176,10 +223,10 @@ Flagging by hand uses the internal `official_by_iagentshub` source, which has no
 
 | Method | Endpoint | Auth | Description |
 |---|---|---|---|
-| `GET` | `/api/admin/logs` | Admin | List of available dates (`["YYYYMMDD", …]`), descending order |
-| `GET` | `/api/admin/logs/summary` | Admin | Per-file summary with BE/FE breakdown — see structure below |
-| `GET` | `/api/admin/logs/{date}` | Admin | Full content of `{date}.log` as plain text |
-| `POST` | `/api/admin/logs/client` | User | Receives a log entry from the frontend and writes it to today's log file |
+| `GET` | `/api/v2/admin/logs` | Admin | Filtered cursor viewer ordered by `ts DESC, id DESC` |
+| `GET` | `/api/admin/logs/summary` | Admin | Daily summary with BE/FE breakdown |
+| `GET` | `/api/admin/logs/export` | Admin | Full CSV export for the current filters |
+| `POST` | `/api/admin/logs/client` | Admin | Stores a frontend log entry |
 
 **`GET /api/admin/logs/summary`** — response (array):
 ```json
@@ -211,7 +258,7 @@ Valid levels: `DEBUG`, `INFO`, `OK`, `WARNING`, `ERROR`. The entry is written wi
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/agents` | List all agents |
+| `GET` | `/api/v2/agents` | List agents by cursor |
 | `POST` | `/api/agents` | Create a new agent |
 | `GET` | `/api/agents/{id}` | Get agent details |
 | `PUT` | `/api/agents/{id}` | Update agent configuration |
@@ -238,7 +285,7 @@ Skills have three visibility states: **public** (accessible to everyone), **priv
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/skills` | List all available skills (`?scope=all\|public\|private`); skills shared with the user appear with `_shared: true` |
+| `GET` | `/api/v2/skills` | List skills by cursor (`?scope=all\|public\|private`); shared skills include `_shared: true` |
 | `GET` | `/api/skills/{scope}/{id}` | Get a specific skill definition |
 | `POST` | `/api/skills/{scope}` | Save an owned skill with `private` or `public` scope; `owner_id` is automatically set to the authenticated user |
 | `DELETE` | `/api/skills/{scope}/{id}` | Delete an owned skill; system public skills are read-only |
@@ -256,7 +303,7 @@ extensions, and native targets are exposed by
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/tools` | Paginated list of accessible Tools |
+| `GET` | `/api/v2/tools` | Cursor-paginated list of accessible Tools |
 | `GET` | `/api/tools/{scope}/{tool_id}` | Metadata and textual implementation, never the binary BLOB |
 | `POST` | `/api/tools/{scope}` | Create or update metadata and record a version |
 | `DELETE` | `/api/tools/{scope}/{tool_id}` | Delete an owned Tool |
@@ -348,7 +395,7 @@ Only the direct owner of the resource (or an admin) can share it.
 Valid values for `{type}`: `agent`, `skill`, `connection`, `knowledge`,
 `knowledge_pack`, `workflow`, `llm_orchestration`, `prompt`, and `tool`.
 
-Resources shared with the user appear in the standard listing endpoints (`/api/skills`, `/api/agents`, etc.) with `_shared: true`. Recipients can use them but cannot edit or redistribute them.
+Resources shared with the user appear in the v2 listings (`/api/v2/skills`, `/api/v2/agents`, etc.) with `_shared: true`. Recipients can use them but cannot edit or redistribute them.
 
 Sharing an agent cascades to its private skills, prompts, Tools, and Knowledge — the `POST` returns them in `cascaded` — and **revoking it revokes them too**: the `DELETE` responds with `uncascaded` (no longer shared) and `kept`. Anything the user shared on its own is kept, as is anything another shared agent or orchestration in the same group still needs: removing it would leave that resource without a dependency. Orchestrations behave the same way with the agents they brought in.
 
@@ -359,10 +406,15 @@ Sharing an agent cascades to its private skills, prompts, Tools, and Knowledge �
 | Method | Endpoint | Description |
 |---|---|---|
 | `GET` | `/api/connections/providers` | List all available provider types (with field definitions) |
-| `GET` | `/api/connections` | List configured connections (API keys excluded); each item includes `tokens_in` and `tokens_out` with cumulative token usage |
+| `GET` | `/api/v2/connections` | Cursor-list accessible connections and orchestrations, always without secrets |
 | `GET` | `/api/connections/{id}` | Get details of a single connection |
 | `POST` | `/api/connections` | Add or update a connection |
 | `DELETE` | `/api/connections/{id}` | Remove a connection |
 | `POST` | `/api/connections/{id}/test` | Test a single connection |
 | `POST` | `/api/connections/test-all` | Test all (or selected) connections; each result includes `latency_ms` (integer in milliseconds, `null` if no test provider is available) |
 | `GET` | `/api/connections/tokens-daily` | Get the daily token consumption history (`?days=N`, default 14) |
+
+The list accepts `group_id`, `include_inactive`, `include_models`, `limit`, and
+`cursor`. Without `include_models` it does not call providers. When enabled,
+each base connection carries nested `model_variants`; selectors may flatten
+them locally without changing page limits or cursors.

@@ -118,14 +118,10 @@ async def test_social_iso_dates_rebuilds_legacy_sqlite_tables_without_data_loss(
         await _social_iso_dates_sqlite(conn)
         await _social_iso_dates_sqlite(conn)
 
-        follow = (
-            await conn.execute_fetchall("SELECT * FROM user_follows")
-        )[0]
+        follow = (await conn.execute_fetchall("SELECT * FROM user_follows"))[0]
         star = (await conn.execute_fetchall("SELECT * FROM resource_stars"))[0]
         social = (
-            await conn.execute_fetchall(
-                "SELECT name,updated_at FROM resource_social"
-            )
+            await conn.execute_fetchall("SELECT name,updated_at FROM resource_social")
         )[0]
         definitions = {
             row[0]: row[1]
@@ -184,9 +180,7 @@ async def test_drop_social_fork_columns_retira_las_columnas_muertas(tmp_path):
 
         columnas = {
             row[1]
-            for row in await conn.execute_fetchall(
-                "PRAGMA table_info(resource_social)"
-            )
+            for row in await conn.execute_fetchall("PRAGMA table_info(resource_social)")
         }
         fila = (
             await conn.execute_fetchall(
@@ -199,6 +193,182 @@ async def test_drop_social_fork_columns_retira_las_columnas_muertas(tmp_path):
     # Lo que sí se usa sigue donde estaba.
     assert {"resource_type", "resource_id", "owner", "linked_to_id"} <= columnas
     assert fila == ("Agente", None)
+
+
+async def test_scoped_resource_order_indexes_replace_duplicate_page_indexes(
+    tmp_path,
+):
+    from app.storage.migrations.steps.shared import _scoped_resource_order_indexes
+
+    async with aiosqlite.connect(tmp_path / "scoped-order.db") as conn:
+        for table in ("agents", "skills", "prompts", "tools"):
+            await conn.execute(
+                f"CREATE TABLE {table} ("
+                "id TEXT, owner_id TEXT, scope TEXT, updated_at TEXT)"
+            )
+            await conn.execute(
+                f"CREATE INDEX idx_{table}_owner_page "
+                f"ON {table}(owner_id,scope,updated_at DESC,id DESC)"
+            )
+        await conn.execute("CREATE TABLE knowledge_items (id TEXT, created_at TEXT)")
+        await conn.execute("CREATE TABLE knowledge_packs (id TEXT, created_at TEXT)")
+
+        await _scoped_resource_order_indexes(conn)
+        indexes = {
+            row[0]
+            for row in await conn.execute_fetchall(
+                "SELECT name FROM sqlite_master WHERE type='index'"
+            )
+        }
+
+    for table in ("agents", "skills", "prompts", "tools"):
+        assert f"idx_{table}_visible_order" in indexes
+        assert f"idx_{table}_owner_page" not in indexes
+    assert "idx_knowledge_visible_order" in indexes
+    assert "idx_knowledge_packs_visible_order" in indexes
+
+
+async def test_cursor_catalogs_backfills_components_and_builds_all_page_indexes(
+    tmp_path,
+):
+    from app.storage.migrations.steps.cursor_catalogs import _cursor_catalogs_sqlite
+
+    async with aiosqlite.connect(tmp_path / "cursor-catalogs.db") as conn:
+        await conn.executescript("""
+            CREATE TABLE resource_social (
+                is_public INTEGER, updated_at TEXT, stars_count INTEGER,
+                resource_type TEXT, resource_id TEXT, owner TEXT
+            );
+            CREATE TABLE official_import_components (
+                draft_id TEXT NOT NULL, component_key TEXT NOT NULL,
+                payload TEXT NOT NULL, state TEXT NOT NULL DEFAULT 'new',
+                PRIMARY KEY (draft_id, component_key)
+            );
+            INSERT INTO official_import_components VALUES (
+                'draft-1', 'skill-1',
+                '{"component_type":"skill","name":"Skill one","source_path":"skills/one/SKILL.md"}',
+                'new'
+            );
+        """)
+        await _cursor_catalogs_sqlite(conn)
+        row = (
+            await conn.execute_fetchall(
+                "SELECT component_type,name,source_path FROM official_import_components"
+            )
+        )[0]
+        indexes = {
+            item[0]
+            for item in await conn.execute_fetchall(
+                "SELECT name FROM sqlite_master WHERE type='index'"
+            )
+        }
+
+    assert row == ("skill", "Skill one", "skills/one/SKILL.md")
+    assert {
+        "idx_rsoc_public_page",
+        "idx_official_components_page",
+        "idx_official_components_state_page",
+        "idx_official_components_type_page",
+    } <= indexes
+
+
+async def test_cursor_catalogs_postgres_uses_jsonb_and_portable_indexes():
+    from app.storage.migrations.steps.cursor_catalogs import _cursor_catalogs_pg
+
+    class FakePgConnection:
+        def __init__(self) -> None:
+            self.statements: list[str] = []
+
+        async def fetchval(self, statement: str, *args):
+            self.statements.append(statement)
+            return True
+
+        async def execute(self, statement: str):
+            self.statements.append(statement)
+
+    conn = FakePgConnection()
+    await _cursor_catalogs_pg(conn)
+    sql_text = "\n".join(conn.statements)
+    assert "payload::jsonb->>'component_type'" in sql_text
+    assert "idx_rsoc_public_page" in sql_text
+    assert "idx_official_components_state_page" in sql_text
+    assert "idx_official_components_type_page" in sql_text
+    assert "?" not in sql_text
+
+
+async def test_existing_component_table_upgrades_before_cursor_indexes(tmp_path):
+    """El DDL canónico no debe referenciar columnas que solo añade la 43."""
+    from app.storage.db import migrate_schema
+
+    db = tmp_path / "existing-components.db"
+    async with aiosqlite.connect(db) as conn:
+        await conn.executescript("""
+            CREATE TABLE official_import_components (
+                draft_id TEXT NOT NULL,
+                component_key TEXT NOT NULL,
+                payload TEXT NOT NULL,
+                selected INTEGER NOT NULL DEFAULT 0,
+                explicitly_selected INTEGER NOT NULL DEFAULT 0,
+                forced_type TEXT,
+                forced_language TEXT,
+                forced_tool_language TEXT,
+                security_accepted INTEGER NOT NULL DEFAULT 0,
+                state TEXT NOT NULL DEFAULT 'new',
+                PRIMARY KEY (draft_id, component_key)
+            );
+        """)
+
+    await migrate_schema(db)
+
+    async with aiosqlite.connect(db) as conn:
+        columns = {
+            row[1]
+            for row in await conn.execute_fetchall(
+                "PRAGMA table_info(official_import_components)"
+            )
+        }
+        indexes = {
+            row[0]
+            for row in await conn.execute_fetchall(
+                "SELECT name FROM sqlite_master WHERE type='index'"
+            )
+        }
+    assert {"component_type", "name", "source_path"} <= columns
+    assert {
+        "idx_official_components_page",
+        "idx_official_components_state_page",
+        "idx_official_components_type_page",
+    } <= indexes
+
+
+async def test_migration_44_is_recorded_and_builds_cursor_completion_indexes(
+    tmp_path,
+):
+    """Una base SQLite persistente recibe la 44 una vez y conserva sus índices."""
+    from app.storage.db import migrate_schema
+
+    db = tmp_path / "cursor-completion.db"
+    await migrate_schema(db)
+    # Segundo arranque sobre la misma base: comprueba registro e idempotencia.
+    await migrate_schema(db)
+
+    async with aiosqlite.connect(db) as conn:
+        migration = await conn.execute_fetchall(
+            "SELECT name FROM schema_migrations WHERE version=44"
+        )
+        indexes = {
+            row[0]
+            for row in await conn.execute_fetchall(
+                "SELECT name FROM sqlite_master WHERE type='index'"
+            )
+        }
+
+    assert migration == [("cursor_completion_indexes",)]
+    assert {
+        "idx_rsoc_feed_page",
+        "idx_connections_updated_page",
+        "idx_llm_orchestrations_updated_page",
+    } <= indexes
 
 
 async def test_social_iso_dates_converts_postgres_timestamp_and_defaults():

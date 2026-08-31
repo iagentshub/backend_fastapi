@@ -69,7 +69,7 @@ async def _enlazar(marca: str, origen_id: str, origen_owner: str, mio: str) -> N
 
 def _ids(respuesta) -> set[str]:
     assert respuesta.status_code == 200, respuesta.text
-    return {item["resource_id"] for item in respuesta.json()}
+    return {item["resource_id"] for item in respuesta.json()["items"]}
 
 
 def _preparar(client) -> tuple[str, str, str]:
@@ -92,14 +92,14 @@ def _preparar(client) -> tuple[str, str, str]:
 def test_relacion_new_esconde_lo_que_ya_esta_enlazado(client):
     marca, nuevo, tenido = _preparar(client)
 
-    r = client.get("/api/explore", params={"q": marca, "relation": "new"})
+    r = client.get("/api/v2/explore", params={"q": marca, "relation": "new"})
     assert _ids(r) == {nuevo}
 
 
 def test_relacion_linked_devuelve_solo_lo_enlazado(client):
     marca, nuevo, tenido = _preparar(client)
 
-    r = client.get("/api/explore", params={"q": marca, "relation": "linked"})
+    r = client.get("/api/v2/explore", params={"q": marca, "relation": "linked"})
     assert _ids(r) == {tenido}
 
 
@@ -107,9 +107,9 @@ def test_sin_relacion_el_catalogo_sigue_completo(client):
     """El valor por defecto no cambia: quien no envíe el parámetro ve todo."""
     marca, nuevo, tenido = _preparar(client)
 
-    assert _ids(client.get("/api/explore", params={"q": marca})) == {nuevo, tenido}
+    assert _ids(client.get("/api/v2/explore", params={"q": marca})) == {nuevo, tenido}
     assert _ids(
-        client.get("/api/explore", params={"q": marca, "relation": "all"})
+        client.get("/api/v2/explore", params={"q": marca, "relation": "all"})
     ) == {nuevo, tenido}
 
 
@@ -117,9 +117,9 @@ def test_cada_fila_dice_si_ya_esta_enlazada(client):
     """En `all` conviven las dos, así que la marca viaja por fila."""
     marca, nuevo, tenido = _preparar(client)
 
-    r = client.get("/api/explore", params={"q": marca, "relation": "all"})
+    r = client.get("/api/v2/explore", params={"q": marca, "relation": "all"})
     assert r.status_code == 200, r.text
-    estado = {item["resource_id"]: item["linked_by_me"] for item in r.json()}
+    estado = {item["resource_id"]: item["linked_by_me"] for item in r.json()["items"]}
     assert estado == {nuevo: False, tenido: True}
 
 
@@ -127,11 +127,19 @@ def test_el_total_de_la_cabecera_respeta_el_filtro(client):
     """Si el COUNT no aplicara la condición, "cargar más" pediría páginas vacías."""
     marca, _, _ = _preparar(client)
 
-    r = client.get("/api/explore", params={"q": marca, "relation": "new", "limit": 1})
+    r = client.get(
+        "/api/v2/explore",
+        params={
+            "q": marca,
+            "relation": "new",
+            "limit": 1,
+            "include_total": True,
+        },
+    )
     assert r.status_code == 200, r.text
-    assert r.headers["X-Total-Count"] == "1"
+    assert r.json()["page"]["total"] == 1
     # Queda algo que enseñar: el cliente no necesita explicar ningún vacío.
-    assert "X-Linked-Count" not in r.headers
+    assert r.json()["linked_matches"] == 0
 
 
 def test_un_vacio_por_el_filtro_dice_cuanto_dejo_fuera(client):
@@ -148,10 +156,10 @@ def test_un_vacio_por_el_filtro_dice_cuanto_dejo_fuera(client):
 
     asyncio.run(sembrar())
 
-    r = client.get("/api/explore", params={"q": marca, "relation": "new"})
+    r = client.get("/api/v2/explore", params={"q": marca, "relation": "new"})
     assert r.status_code == 200, r.text
-    assert r.json() == []
-    assert r.headers["X-Linked-Count"] == "3"
+    assert r.json()["items"] == []
+    assert r.json()["linked_matches"] == 3
 
 
 def test_la_cabecera_solo_aparece_en_el_modo_que_esconde_cosas(client):
@@ -160,9 +168,9 @@ def test_la_cabecera_solo_aparece_en_el_modo_que_esconde_cosas(client):
     sin_resultados = {"q": f"{marca}-inexistente"}
 
     for modo in ("all", "linked"):
-        r = client.get("/api/explore", params={**sin_resultados, "relation": modo})
+        r = client.get("/api/v2/explore", params={**sin_resultados, "relation": modo})
         assert r.status_code == 200, r.text
-        assert "X-Linked-Count" not in r.headers
+        assert r.json()["linked_matches"] == 0
 
 
 def test_la_copia_de_otro_usuario_no_marca_mi_catalogo(client):
@@ -181,11 +189,11 @@ def test_la_copia_de_otro_usuario_no_marca_mi_catalogo(client):
 
     asyncio.run(sembrar())
 
-    assert _ids(client.get("/api/explore", params={"q": marca, "relation": "new"})) == {
+    assert _ids(client.get("/api/v2/explore", params={"q": marca, "relation": "new"})) == {
         original
     }
     assert (
-        _ids(client.get("/api/explore", params={"q": marca, "relation": "linked"}))
+        _ids(client.get("/api/v2/explore", params={"q": marca, "relation": "linked"}))
         == set()
     )
 
@@ -265,7 +273,7 @@ def test_un_pack_a_medias_sigue_siendo_descubrible(client):
 def test_un_modo_de_relacion_desconocido_es_422(client):
     _registrar(client, f"relmala{uuid4().hex[:6]}")
 
-    r = client.get("/api/explore", params={"relation": "mias"})
+    r = client.get("/api/v2/explore", params={"relation": "mias"})
     assert r.status_code == 422, r.text
     detalle = r.json()["detail"]
     assert detalle["code"] == "invalid_field"

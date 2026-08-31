@@ -35,22 +35,22 @@ def _guest_client(client):
 
 def test_guest_list_prompts_all(client):
     _guest_client(client)
-    r = client.get("/api/prompts?scope=all")
+    r = client.get("/api/v2/prompts?scope=all")
     assert r.status_code == 200
-    assert isinstance(r.json(), list)
+    assert isinstance(r.json()["items"], list)
 
 
 def test_guest_list_prompts_private(client):
     _guest_client(client)
     client.post("/api/prompts/private", json=_PAYLOAD)
-    r = client.get("/api/prompts?scope=private")
+    r = client.get("/api/v2/prompts?scope=private")
     assert r.status_code == 200
-    assert any(p["name"] == "Prompt Test" for p in r.json())
+    assert any(p["name"] == "Prompt Test" for p in r.json()["items"])
 
 
 def test_guest_list_prompts_public_only(client):
     _guest_client(client)
-    r = client.get("/api/prompts?scope=public")
+    r = client.get("/api/v2/prompts?scope=public")
     assert r.status_code == 200
 
 
@@ -59,28 +59,38 @@ def test_guest_sees_user_created_public_prompts(client, admin_client):
     assert created.status_code == 200
 
     _guest_client(client)
-    public = client.get("/api/prompts?scope=public")
+    public = client.get("/api/v2/prompts?scope=public")
     assert public.status_code == 200
-    assert created.json()["id"] in {p["id"] for p in public.json()}
+    assert created.json()["id"] in {p["id"] for p in public.json()["items"]}
 
 
-def test_guest_list_prompts_offset_limit(client):
+def test_guest_list_prompts_cursor_limit(client):
     _guest_client(client)
     for i in range(3):
         client.post(
             "/api/prompts/private",
             json={**_PAYLOAD, "name": f"Prompt{i}", "alias": f"prompt-{i}"},
         )
-    r = client.get("/api/prompts?scope=private&limit=2&offset=1")
-    assert r.status_code == 200
-    assert len(r.json()) <= 2
+    first = client.get("/api/v2/prompts?scope=private&limit=2")
+    assert first.status_code == 200
+    second = client.get(
+        "/api/v2/prompts",
+        params={
+            "scope": "private",
+            "limit": 2,
+            "cursor": first.json()["page"]["next_cursor"],
+        },
+    )
+    assert {item["id"] for item in first.json()["items"]}.isdisjoint(
+        item["id"] for item in second.json()["items"]
+    )
 
 
 # ── Scope inválido ─────────────────────────────────────────────────────────────
 
 
 def test_list_prompts_invalid_scope(admin_client):
-    r = admin_client.get("/api/prompts?scope=invalid")
+    r = admin_client.get("/api/v2/prompts?scope=invalid")
     assert r.status_code == 400
 
 
@@ -127,9 +137,9 @@ def test_guest_private_prompts_are_isolated_by_session(client):
     assert created.status_code == 200
 
     _guest_client(client)
-    private = client.get("/api/prompts?scope=private")
+    private = client.get("/api/v2/prompts?scope=private")
     assert private.status_code == 200
-    assert created.json()["id"] not in {p["id"] for p in private.json()}
+    assert created.json()["id"] not in {p["id"] for p in private.json()["items"]}
 
 
 def test_guest_private_prompt_se_escribe_en_la_base_de_datos(client):
@@ -194,17 +204,26 @@ def test_list_prompts_with_limit(admin_client):
             "/api/prompts/private",
             json={**_PAYLOAD, "name": f"Pag{i}", "alias": f"pag-{i}"},
         )
-    r = admin_client.get("/api/prompts?scope=private&limit=2")
+    r = admin_client.get("/api/v2/prompts?scope=private&limit=2")
     assert r.status_code == 200
-    assert len(r.json()) <= 2
+    assert len(r.json()["items"]) <= 2
 
 
-def test_list_prompts_with_offset(admin_client):
+def test_list_prompts_with_cursor(admin_client):
     for i in range(4):
         admin_client.post(
             "/api/prompts/private",
             json={**_PAYLOAD, "name": f"Off{i}", "alias": f"off-{i}"},
         )
-    r_all = admin_client.get("/api/prompts?scope=private").json()
-    r_off = admin_client.get("/api/prompts?scope=private&offset=1").json()
-    assert len(r_off) == len(r_all) - 1
+    first = admin_client.get("/api/v2/prompts?scope=private&limit=2")
+    second = admin_client.get(
+        "/api/v2/prompts",
+        params={
+            "scope": "private",
+            "limit": 2,
+            "cursor": first.json()["page"]["next_cursor"],
+        },
+    )
+    assert {item["id"] for item in first.json()["items"]}.isdisjoint(
+        item["id"] for item in second.json()["items"]
+    )

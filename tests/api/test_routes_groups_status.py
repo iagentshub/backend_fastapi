@@ -167,14 +167,14 @@ def test_shared_connection_blocked_when_source_group_disabled(admin_client):
     assert r.status_code == 200
 
     _set_cookie(admin_client, "group_status_member_f", group_id=group_target["id"])
-    conns = admin_client.get("/api/connections").json()
+    conns = admin_client.get("/api/v2/connections").json()["items"]
     assert any(c["id"] == conn["id"] for c in conns)
 
     _set_cookie(admin_client, "testadmin")
     admin_client.post(f"/api/admin/groups/{group_source['id']}/status", json={"status": "disabled"})
 
     _set_cookie(admin_client, "group_status_member_f", group_id=group_target["id"])
-    conns_after = admin_client.get("/api/connections").json()
+    conns_after = admin_client.get("/api/v2/connections").json()["items"]
     assert not any(c["id"] == conn["id"] for c in conns_after)
 
 

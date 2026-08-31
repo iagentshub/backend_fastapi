@@ -125,9 +125,9 @@ def test_explore_filter_by_tag(client):
 
     # Explore excluye los recursos propios del solicitante — se consulta como otro usuario
     _login(client, "taguser3_viewer")
-    r3 = client.get("/api/explore", params={"tag": "python"})
+    r3 = client.get("/api/v2/explore", params={"tag": "python"})
     assert r3.status_code == 200
-    results = r3.json()
+    results = r3.json()["items"]
     result_ids = [x["resource_id"] for x in results]
     assert python_id in result_ids
     assert java_id not in result_ids
@@ -200,22 +200,22 @@ def test_explore_language_filter_is_anded_with_regular_labels(client):
 
     _login(client, "taglanguageviewer")
     response = client.get(
-        "/api/explore", params={"language": "es", "label": "production"}
+        "/api/v2/explore", params={"language": "es", "label": "production"}
     )
     assert response.status_code == 200
-    result_ids = {item["resource_id"] for item in response.json()}
+    result_ids = {item["resource_id"] for item in response.json()["items"]}
     assert spanish_production in result_ids
     assert english_production not in result_ids
     assert spanish_draft not in result_ids
     item = next(
-        item for item in response.json() if item["resource_id"] == spanish_production
+        item for item in response.json()["items"] if item["resource_id"] == spanish_production
     )
     assert item["languages"] == ["es"]
 
 
 def test_explore_rejects_unknown_content_language(client):
     _login(client, "taglanguageinvalid")
-    response = client.get("/api/explore", params={"language": "klingon"})
+    response = client.get("/api/v2/explore", params={"language": "klingon"})
     assert response.status_code == 422
     assert response.json()["detail"]["field"] == "language"
 
@@ -322,10 +322,10 @@ def test_language_labels_are_valid_for_all_content_resources(client):
     assert knowledge.status_code == 200
     assert knowledge.json()["labels"] == ["private", "community", "lang_es"]
 
-    listed = client.get("/api/knowledge")
+    listed = client.get("/api/v2/knowledge")
     assert listed.status_code == 200
     stored = next(
-        item for item in listed.json() if item["id"] == knowledge.json()["id"]
+        item for item in listed.json()["items"] if item["id"] == knowledge.json()["id"]
     )
     assert stored["labels"] == ["private", "community", "lang_es"]
 

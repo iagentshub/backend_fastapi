@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 import csv
 import io
 from datetime import datetime, timedelta
@@ -13,6 +12,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 
 from app.api.routes.auth import require_admin
+from app.services.log_listing import build_log_where
 from app.services.platform_settings import _read_platform_cfg
 from app.sql import sql
 from app.storage.db import open_db
@@ -20,134 +20,6 @@ from app.utils import flog
 from app.utils.net import client_ip as _client_ip
 
 router = APIRouter(prefix="/api/admin/logs", tags=["admin-logs"])
-
-_PAGE_SIZE_DEFAULT = 50
-_PAGE_SIZE_MAX = 500
-
-
-def _build_where(
-    date_from: Optional[str],
-    date_to: Optional[str],
-    ip: Optional[str],
-    username: Optional[str],
-    level: Optional[str],
-    source: Optional[str],
-    category: Optional[str],
-    action: Optional[str],
-    resource_type: Optional[str],
-    resource_id: Optional[str],
-    outcome: Optional[str],
-    q: Optional[str],
-):
-    """Construye la cláusula WHERE y lista de parámetros."""
-    clauses: list[str] = []
-    params: list = []
-    if date_from:
-        clauses.append("date >= ?")
-        params.append(date_from)
-    if date_to:
-        clauses.append("date <= ?")
-        params.append(date_to)
-    if ip:
-        clauses.append("ip LIKE ?")
-        params.append(f"%{ip}%")
-    if username:
-        clauses.append("username LIKE ?")
-        params.append(f"%{username}%")
-    if level:
-        clauses.append("level = ?")
-        params.append(level.upper())
-    if source:
-        clauses.append("source = ?")
-        params.append(source.upper())
-    if category:
-        clauses.append("category = ?")
-        params.append(category.upper())
-    if action:
-        clauses.append("action = ?")
-        params.append(action.lower())
-    if resource_type:
-        clauses.append("resource_type = ?")
-        params.append(resource_type.lower())
-    if resource_id:
-        clauses.append("resource_id = ?")
-        params.append(resource_id)
-    if outcome:
-        clauses.append("outcome = ?")
-        params.append(outcome.upper())
-    if q:
-        clauses.append("summary LIKE ?")
-        params.append(f"%{q}%")
-    where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
-    return where, params
-
-
-@router.get("")
-async def list_logs(
-    date_from: Optional[str] = Query(None, description="Fecha inicio YYYY-MM-DD"),
-    date_to: Optional[str] = Query(None, description="Fecha fin YYYY-MM-DD"),
-    ip: Optional[str] = Query(None, description="Filtro parcial de IP"),
-    username: Optional[str] = Query(None, description="Filtro parcial de usuario"),
-    level: Optional[str] = Query(
-        None, description="Nivel exacto: DEBUG/INFO/OK/WARNING/ERROR"
-    ),
-    source: Optional[str] = Query(None, description="Fuente: BE o FE"),
-    category: Optional[str] = Query(
-        None, description="Categoría exacta: DIAGNOSTIC o AUDIT"
-    ),
-    action: Optional[str] = Query(None, description="Acción auditable exacta"),
-    resource_type: Optional[str] = Query(None, description="Tipo de recurso exacto"),
-    resource_id: Optional[str] = Query(None, description="ID de recurso exacto"),
-    outcome: Optional[str] = Query(
-        None, description="Resultado exacto: SUCCESS, DENIED o FAILURE"
-    ),
-    q: Optional[str] = Query(None, description="Texto libre en la acción"),
-    page: int = Query(1, ge=1),
-    page_size: int = Query(_PAGE_SIZE_DEFAULT, ge=1, le=_PAGE_SIZE_MAX),
-    _: str = Depends(require_admin),
-) -> dict:
-    """Logs filtrados y paginados."""
-    # La escritura en app_logs es por lotes (ver app/utils/flog.py), así que sin
-    # esto el visor omitiría hasta el último segundo de actividad — justo lo que
-    # busca quien abre el panel para ver qué acaba de pasar. Va en un hilo
-    # porque el volcado es síncrono y no puede bloquear el event loop.
-    await asyncio.to_thread(flog.flush)
-    where, params = _build_where(
-        date_from,
-        date_to,
-        ip,
-        username,
-        level,
-        source,
-        category,
-        action,
-        resource_type,
-        resource_id,
-        outcome,
-        q,
-    )
-    async with open_db() as conn:
-        total = (
-            await conn.fetchval(f"SELECT COUNT(*) FROM app_logs {where}", tuple(params))
-            or 0
-        )
-        offset = (page - 1) * page_size
-        rows = await conn.fetchall(
-            f"SELECT id, ts, date, time, ip, username, level, source, summary, "
-            f"category, action, resource_type, resource_id, outcome, details_json "
-            f"FROM app_logs {where} ORDER BY ts DESC, id DESC LIMIT ? OFFSET ?",
-            tuple(params + [page_size, offset]),
-        )
-    items = [dict(r) for r in rows]
-    pages = (total + page_size - 1) // page_size if total else 0
-    return {
-        "items": items,
-        "total": total,
-        "page": page,
-        "page_size": page_size,
-        "pages": pages,
-    }
-
 
 @router.get("/export")
 async def export_logs(
@@ -166,7 +38,7 @@ async def export_logs(
     _: str = Depends(require_admin),
 ):
     """Exporta los logs filtrados como fichero CSV."""
-    where, params = _build_where(
+    where, params = build_log_where(
         date_from,
         date_to,
         ip,

@@ -5,7 +5,7 @@ import pytest
 from app.api.routes.auth import GroupContext
 from app.errors import APIError
 from app.models.agent_import import AgentImportCandidate
-from app.pagination.models import OffsetPage
+from app.pagination.models import CursorPage, CursorParams
 from app.services import agent_import_catalog
 from app.services.agent_import import parse_agent_import
 from app.services.agent_import_catalog import AgentImportCatalog
@@ -114,10 +114,10 @@ async def test_catalog_query_only_requests_the_referenced_resource_type(
     class FakeSkills:
         async def list_visible_page(self, **kwargs):
             captured.append(kwargs)
-            return OffsetPage(
+            return CursorPage(
                 items=[{"id": "security", "name": "Security"}],
-                total=1,
-                params=kwargs["page"],
+                next_cursor=None,
+                has_more=False,
             )
 
     monkeypatch.setattr(agent_import_catalog, "_skills", FakeSkills())
@@ -129,6 +129,7 @@ async def test_catalog_query_only_requests_the_referenced_resource_type(
     assert [item.id for item in catalog.candidates("skill")] == ["security"]
     assert catalog.candidates("knowledge") == []
     assert len(captured) == 1
+    assert isinstance(captured[0]["page"], CursorParams)
     assert "LOWER(resource_row.id)" in captured[0]["catalog_filter"].sql
     assert captured[0]["catalog_filter"].params == ("security", "security")
 

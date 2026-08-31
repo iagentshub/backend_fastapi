@@ -48,11 +48,11 @@ def test_share_personal_connection_with_group_visible_to_member(client):
     _set_cookie(client, "rgroup_owner_a", group_id=group["id"])
     r = client.post(f"/api/sharing/connection/{conn['id']}")
     assert r.status_code == 200
-    own = next(c for c in client.get("/api/connections").json() if c["id"] == conn["id"])
+    own = next(c for c in client.get("/api/v2/connections").json()["items"] if c["id"] == conn["id"])
     assert own["origin_type"] == "owner"
 
     _set_cookie(client, "rgroup_member_a", group_id=group["id"])
-    conns = client.get("/api/connections").json()
+    conns = client.get("/api/v2/connections").json()["items"]
     assert any(c["id"] == conn["id"] for c in conns)
     shared = next(c for c in conns if c["id"] == conn["id"])
     assert shared["origin_type"] == "linked"
@@ -90,11 +90,11 @@ def test_shared_connection_only_appears_and_works_in_recipient_group(client):
     assert client.post(f"/api/sharing/connection/{conn['id']}").status_code == 200
 
     _set_cookie(client, "rgroup_member_context")
-    personal_ids = {item["id"] for item in client.get("/api/connections").json()}
+    personal_ids = {item["id"] for item in client.get("/api/v2/connections").json()["items"]}
     assert conn["id"] not in personal_ids
 
     _set_cookie(client, "rgroup_member_context", group_id=group["id"])
-    team_ids = {item["id"] for item in client.get("/api/connections").json()}
+    team_ids = {item["id"] for item in client.get("/api/v2/connections").json()["items"]}
     assert conn["id"] in team_ids
 
     specification = (
@@ -145,5 +145,5 @@ def test_unshare_connection_revokes_access(client):
     assert r.status_code == 200
 
     _set_cookie(client, "rgroup_member_d", group_id=group["id"])
-    conns = client.get("/api/connections").json()
+    conns = client.get("/api/v2/connections").json()["items"]
     assert not any(c["id"] == conn["id"] for c in conns)

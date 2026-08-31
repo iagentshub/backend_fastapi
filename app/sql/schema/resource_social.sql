@@ -27,5 +27,10 @@ CREATE INDEX IF NOT EXISTS idx_rsoc_link_origin
     WHERE linked_to_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_rsoc_public_page
     ON resource_social(
-        is_public, resource_type, updated_at DESC, stars_count DESC, resource_id
+        is_public, updated_at DESC, stars_count DESC,
+        resource_type, resource_id, owner
+    );
+CREATE INDEX IF NOT EXISTS idx_rsoc_feed_page
+    ON resource_social(
+        is_public, updated_at DESC, resource_type, resource_id, owner
     );
