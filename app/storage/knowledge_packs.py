@@ -5,12 +5,14 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Optional
 
-from app.pagination.models import OffsetPage, OffsetParams
+from app.pagination.models import CursorPage, CursorParams
 from app.services.resource_visibility import VisibilityFilter
 from app.sql import sql
 from app.storage import labels as label_index
 from app.storage.db import open_db
-from app.storage.page_query import fetch_offset_page
+from app.storage.knowledge_pack_page_query import (
+    fetch_pack_cursor_page,
+)
 from app.storage.skill_storage import ensure_origin_label
 from app.utils.generators import generate_date, generate_id
 
@@ -53,64 +55,25 @@ def _extraction_columns(item: Dict[str, Any], content: str) -> tuple:
 
 
 class KnowledgePackStorage:
-    async def list_visible_page(
+    async def list_visible_cursor_page(
         self,
         owner_id: str,
         username: str,
         *,
-        page: OffsetParams,
+        page: CursorParams,
         catalog_filter: VisibilityFilter | None = None,
-    ) -> OffsetPage[Dict[str, Any]]:
-        """Page owned/shared packs without aggregating the whole pack catalog."""
+        requested_group_id: str | None = None,
+    ) -> CursorPage[Dict[str, Any]]:
+        """Página keyset para consumidores cursor-only del catálogo."""
 
-        visible_join = (
-            "LEFT JOIN (SELECT s.resource_id,MIN(s.group_id) AS shared_group_id "
-            "FROM resource_group_shares s "
-            "JOIN group_members m ON m.group_id=s.group_id "
-            "JOIN groups g ON g.id=s.group_id "
-            "WHERE s.resource_type='knowledge_pack' "
-            "AND m.username=? AND g.is_active=1 GROUP BY s.resource_id) visible "
-            "ON visible.resource_id=p.id"
+        return await fetch_pack_cursor_page(
+            owner_id,
+            username,
+            page=page,
+            catalog_filter=catalog_filter,
+            decode=_pack_dict,
+            requested_group_id=requested_group_id,
         )
-        clauses = [
-            "(p.owner_id=? OR visible.resource_id IS NOT NULL)",
-            "COALESCE(p.upload_status, 'ready')='ready'",
-        ]
-        params: list[Any] = [username, owner_id]
-        if catalog_filter is not None:
-            clauses.append(catalog_filter.sql)
-            params.extend(catalog_filter.params)
-        where = " AND ".join(f"({clause})" for clause in clauses)
-        columns = (
-            "p.*, "
-            "(SELECT COUNT(*) FROM knowledge_items k WHERE k.pack_id=p.id) "
-            "AS file_count, "
-            "(SELECT COALESCE(SUM(k.size_bytes),0) FROM knowledge_items k "
-            "WHERE k.pack_id=p.id) AS size_bytes, "
-            "visible.shared_group_id"
-        )
-        async with open_db() as conn:
-            result = await fetch_offset_page(
-                conn,
-                count_sql=(
-                    f"SELECT COUNT(*) FROM knowledge_packs p {visible_join} "
-                    f"WHERE {where}"
-                ),
-                select_sql=(
-                    f"SELECT {columns} FROM knowledge_packs p {visible_join} "
-                    f"WHERE {where} "
-                    "ORDER BY p.created_at DESC,p.id DESC"
-                ),
-                params=tuple(params),
-                page=page,
-                decode=lambda row: _pack_dict(row),
-            )
-        for pack in result.items:
-            shared_group_id = pack.pop("shared_group_id", None)
-            if str(pack.get("owner_id") or "") != owner_id and shared_group_id:
-                pack["_shared"] = True
-                pack["_group_id"] = str(shared_group_id)
-        return result
 
     async def list_visible(
         self, owner_id: str, username: str

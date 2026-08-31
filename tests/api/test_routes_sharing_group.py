@@ -59,7 +59,7 @@ def test_shared_agent_appears_in_group_filter(client):
     assert r.status_code == 200, r.text
 
     # El dueño puede consultarlo con filtro de grupo
-    result = client.get(f"/api/agents?group_id={group['id']}").json()
+    result = client.get(f"/api/v2/agents?group_id={group['id']}").json()["items"]
     assert any(a["id"] == agent["id"] for a in result), (
         "El agente compartido no aparece en GET /api/agents?group_id=..."
     )
@@ -85,7 +85,7 @@ def test_group_filter_excludes_unshared_agents(client):
 
     client.post(f"/api/sharing/agent/{a_shared['id']}", json={"group_id": group["id"]})
 
-    result = client.get(f"/api/agents?group_id={group['id']}").json()
+    result = client.get(f"/api/v2/agents?group_id={group['id']}").json()["items"]
     ids = {a["id"] for a in result}
     assert a_shared["id"] in ids, "El agente compartido debe aparecer"
     assert a_private["id"] not in ids, "El agente no compartido no debe aparecer"
@@ -115,7 +115,7 @@ def test_admin_group_filter_excludes_unshared_agents(client):
 
     # El admin filtra por grupo — debe ver SOLO el compartido, no el privado del dueño
     _set_cookie(client, "grp_admin_3")
-    result = client.get(f"/api/agents?group_id={group['id']}").json()
+    result = client.get(f"/api/v2/agents?group_id={group['id']}").json()["items"]
     ids = {a["id"] for a in result}
     assert a_shared["id"] in ids, "El agente compartido debe aparecer para el admin"
     assert a_private["id"] not in ids, (
@@ -137,7 +137,7 @@ def test_admin_does_not_see_others_private_agents_without_group_filter(client):
     }).json()
 
     _set_cookie(client, "grp_admin_4")
-    result = client.get("/api/agents").json()
+    result = client.get("/api/v2/agents").json()["items"]
     assert not any(a["id"] == agent["id"] for a in result), (
         "Sin filtro de grupo, el admin NO debe ver agentes privados ajenos "
         "en su listado personal"
@@ -198,7 +198,7 @@ def test_admin_can_share_others_agent(client):
 
     # El miembro puede ver el agente con filtro de grupo
     _set_cookie(client, "grp_member_5")
-    result = client.get(f"/api/agents?group_id={group['id']}").json()
+    result = client.get(f"/api/v2/agents?group_id={group['id']}").json()["items"]
     assert any(a["id"] == agent["id"] for a in result)
 
 
@@ -231,7 +231,7 @@ def test_cascade_shares_private_skills(client):
 
     # El miembro puede ver la skill con filtro de grupo
     _set_cookie(client, "grp_member_6")
-    skills = client.get(f"/api/skills?group_id={group['id']}").json()
+    skills = client.get(f"/api/v2/skills?group_id={group['id']}").json()["items"]
     assert any(s["id"] == skill["id"] for s in skills), (
         "La skill no aparece en el filtro de grupo tras el cascade"
     )
@@ -263,7 +263,7 @@ def test_cascade_shares_knowledge(client):
 
     # El miembro puede ver el knowledge con filtro de grupo
     _set_cookie(client, "grp_member_7")
-    items = client.get(f"/api/knowledge?group_id={group['id']}").json()
+    items = client.get(f"/api/v2/knowledge?group_id={group['id']}").json()["items"]
     assert any(k["id"] == know["id"] for k in items), (
         "El knowledge no aparece en el filtro de grupo tras el cascade"
     )

@@ -4,41 +4,57 @@ from __future__ import annotations
 
 import pytest
 
-from app.pagination.models import OffsetParams
+from app.services.resource_visibility import build_visibility_filter
 from app.storage.db import open_db
-from app.storage.page_query import fetch_offset_page
 
 
 @pytest.mark.asyncio
-async def test_ten_thousand_rows_decode_only_requested_page() -> None:
+async def test_scoped_resource_page_uses_order_index_without_temp_sort() -> None:
+    """La ruta visible debe recorrer el índice ya ordenado, no ordenar la tabla."""
+
     async with open_db() as conn:
-        await conn.execute(
-            "CREATE TABLE IF NOT EXISTS pagination_probe "
-            "(id TEXT PRIMARY KEY, value TEXT NOT NULL)"
-        )
-        await conn.execute("DELETE FROM pagination_probe")
         await conn.executemany(
-            "INSERT INTO pagination_probe(id,value) VALUES (?,?)",
-            [(f"id-{index:05d}", f"value-{index}") for index in range(10_000)],
+            "INSERT INTO agents ("
+            "id,owner_id,name,scope,data,is_active,created_at,updated_at"
+            ") VALUES (?,?,?,?,?,?,?,?)",
+            [
+                (
+                    f"plan-{index:05d}",
+                    "plan-user" if index % 4 == 0 else f"other-{index % 7}",
+                    f"Agent {index}",
+                    "private",
+                    "{}",
+                    1,
+                    f"2026-08-01T00:{index % 60:02d}:00Z",
+                    f"2026-08-{1 + index % 28:02d}T{index % 24:02d}:00:00Z",
+                )
+                for index in range(10_000)
+            ],
         )
         await conn.commit()
-
-        decoded = 0
-
-        def decode(row):
-            nonlocal decoded
-            decoded += 1
-            return dict(row)
-
-        page = await fetch_offset_page(
-            conn,
-            count_sql="SELECT COUNT(*) FROM pagination_probe",
-            select_sql="SELECT id,value FROM pagination_probe ORDER BY id",
-            params=(),
-            page=OffsetParams(limit=50, offset=9_900),
-            decode=decode,
+        visibility = build_visibility_filter(
+            alias="resource_row",
+            user="plan-user",
+            active_group_id="plan-user",
+            resource_type="agent",
+            include_public=False,
+        )
+        plan = await conn.fetchall(
+            "EXPLAIN QUERY PLAN SELECT resource_row.id FROM agents resource_row "
+            f"WHERE ({visibility.sql}) AND resource_row.is_active = 1 "
+            "AND (resource_row.updated_at, resource_row.id) < (?, ?) "
+            "ORDER BY resource_row.updated_at DESC, resource_row.id DESC "
+            "LIMIT ?",
+            (
+                *visibility.params,
+                "2026-08-15T12:00:00Z",
+                "plan-05000",
+                51,
+            ),
         )
 
-    assert page.total == 10_000
-    assert len(page.items) == 50
-    assert decoded == 50
+    details = "\n".join(str(row[3]) for row in plan)
+    assert "idx_agents_visible_order" in details
+    assert "SEARCH resource_row" in details
+    assert "(updated_at,id)<(?,?)" in details
+    assert "USE TEMP B-TREE FOR ORDER BY" not in details

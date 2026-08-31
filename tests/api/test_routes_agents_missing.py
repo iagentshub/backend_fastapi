@@ -60,26 +60,28 @@ async def _fake_stream_gen(*args, **kwargs):
 
 def test_list_agents_invalid_scope_returns_400(admin_client):
     """Scope inválido en GET /api/agents devuelve 400."""
-    r = admin_client.get("/api/agents", params={"scope": "badscope"})
+    r = admin_client.get("/api/v2/agents", params={"scope": "badscope"})
     assert r.status_code == 400
     assert "Scope" in r.json()["detail"]["message"]
 
 
-# ── list_agents con offset y limit — líneas 120, 122 ─────────────────────────
+# ── list_agents con cursor y limit ───────────────────────────────────────────
 
 
-def test_list_agents_with_offset(admin_client):
-    """offset=N salta los primeros N agentes (línea 120)."""
+def test_list_agents_with_cursor(admin_client):
     admin_client.post("/api/agents", json={"name": "Offset Agent A"})
     admin_client.post("/api/agents", json={"name": "Offset Agent B"})
     admin_client.post("/api/agents", json={"name": "Offset Agent C"})
 
-    r_all = admin_client.get("/api/agents")
-    total = len(r_all.json())
-
-    r_offset = admin_client.get("/api/agents", params={"offset": 1})
-    assert r_offset.status_code == 200
-    assert len(r_offset.json()) == total - 1
+    first = admin_client.get("/api/v2/agents", params={"limit": 2})
+    second = admin_client.get(
+        "/api/v2/agents",
+        params={"limit": 2, "cursor": first.json()["page"]["next_cursor"]},
+    )
+    assert second.status_code == 200
+    assert {item["id"] for item in first.json()["items"]}.isdisjoint(
+        item["id"] for item in second.json()["items"]
+    )
 
 
 def test_list_agents_with_limit(admin_client):
@@ -88,9 +90,9 @@ def test_list_agents_with_limit(admin_client):
     admin_client.post("/api/agents", json={"name": "Limit Agent Y"})
     admin_client.post("/api/agents", json={"name": "Limit Agent Z"})
 
-    r = admin_client.get("/api/agents", params={"limit": 2})
+    r = admin_client.get("/api/v2/agents", params={"limit": 2})
     assert r.status_code == 200
-    assert len(r.json()) <= 2
+    assert len(r.json()["items"]) <= 2
 
 
 def test_list_agents_with_label_filter(admin_client):
@@ -100,9 +102,9 @@ def test_list_agents_with_label_filter(admin_client):
     )
     admin_client.post("/api/agents", json={"name": "Unlabeled Coverage Agent"})
 
-    r = admin_client.get("/api/agents", params={"label": "special"})
+    r = admin_client.get("/api/v2/agents", params={"label": "special"})
     assert r.status_code == 200
-    names = [a["name"] for a in r.json()]
+    names = [a["name"] for a in r.json()["items"]]
     assert "Special Label Agent" in names
     assert "Unlabeled Coverage Agent" not in names
 
@@ -271,15 +273,15 @@ def test_conn_owner_standard_returns_username():
 def test_guest_list_agents(client):
     """Guest puede listar agentes (líneas 94-104)."""
     _setup_guest(client)
-    r = client.get("/api/agents")
+    r = client.get("/api/v2/agents")
     assert r.status_code == 200
-    assert isinstance(r.json(), list)
+    assert isinstance(r.json()["items"], list)
 
 
 def test_guest_list_agents_only_private_scope(client):
     """Guest puede pedir scope=private (línea 97: private = s.agents)."""
     _setup_guest(client)
-    r = client.get("/api/agents", params={"scope": "private"})
+    r = client.get("/api/v2/agents", params={"scope": "private"})
     assert r.status_code == 200
 
 
@@ -291,24 +293,30 @@ def test_guest_list_agents_with_label_filter(client):
     )
     assert r.status_code == 200
 
-    r2 = client.get("/api/agents", params={"label": "g-label"})
+    r2 = client.get("/api/v2/agents", params={"label": "g-label"})
     assert r2.status_code == 200
-    names = [a["name"] for a in r2.json()]
+    names = [a["name"] for a in r2.json()["items"]]
     assert "Guest Labeled" in names
 
 
-def test_guest_list_agents_with_offset(client):
-    """Guest: offset (línea 101)."""
+def test_guest_list_agents_with_cursor(client):
     _setup_guest(client)
     client.post("/api/agents", json={"name": "Guest Off A"})
     client.post("/api/agents", json={"name": "Guest Off B"})
 
-    r_all = client.get("/api/agents", params={"scope": "private"})
-    total = len(r_all.json())
-
-    r_off = client.get("/api/agents", params={"scope": "private", "offset": 1})
-    assert r_off.status_code == 200
-    assert len(r_off.json()) == max(0, total - 1)
+    first = client.get(
+        "/api/v2/agents", params={"scope": "private", "limit": 1}
+    )
+    second = client.get(
+        "/api/v2/agents",
+        params={
+            "scope": "private",
+            "limit": 1,
+            "cursor": first.json()["page"]["next_cursor"],
+        },
+    )
+    assert second.status_code == 200
+    assert first.json()["items"][0]["id"] != second.json()["items"][0]["id"]
 
 
 def test_guest_list_agents_with_limit(client):
@@ -318,9 +326,9 @@ def test_guest_list_agents_with_limit(client):
     client.post("/api/agents", json={"name": "Guest Lim B"})
     client.post("/api/agents", json={"name": "Guest Lim C"})
 
-    r = client.get("/api/agents", params={"scope": "private", "limit": 2})
+    r = client.get("/api/v2/agents", params={"scope": "private", "limit": 2})
     assert r.status_code == 200
-    assert len(r.json()) <= 2
+    assert len(r.json()["items"]) <= 2
 
 
 def test_guest_save_agent(client):

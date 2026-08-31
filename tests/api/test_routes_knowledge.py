@@ -37,7 +37,7 @@ def alice(client, patch_data_dir):
 
 
 def test_list_items_requires_auth(client):
-    r = client.get("/api/knowledge")
+    r = client.get("/api/v2/knowledge")
     assert r.status_code == 401
 
 
@@ -50,17 +50,17 @@ def test_add_text_requires_auth(client):
 
 
 def test_list_items_empty(alice):
-    r = alice.get("/api/knowledge")
+    r = alice.get("/api/v2/knowledge")
     assert r.status_code == 200
-    assert r.json() == []
+    assert r.json()["items"] == []
 
 
 def test_list_items_after_add(alice):
     alice.post("/api/knowledge/text", json={"title": "Doc A", "content": "contenido A"})
     alice.post("/api/knowledge/text", json={"title": "Doc B", "content": "contenido B"})
-    r = alice.get("/api/knowledge")
+    r = alice.get("/api/v2/knowledge")
     assert r.status_code == 200
-    assert len(r.json()) == 2
+    assert len(r.json()["items"]) == 2
 
 
 def test_list_items_filter_by_type(alice):
@@ -76,15 +76,15 @@ def test_list_items_filter_by_type(alice):
             "/api/knowledge/url", json={"url": "https://example.com", "title": "Web"}
         )
 
-    r_text = alice.get("/api/knowledge?type=text")
+    r_text = alice.get("/api/v2/knowledge?type=text")
     assert r_text.status_code == 200
-    items_text = r_text.json()
+    items_text = r_text.json()["items"]
     assert all(i["type"] == "text" for i in items_text)
     assert len(items_text) == 1
 
-    r_url = alice.get("/api/knowledge?type=url")
+    r_url = alice.get("/api/v2/knowledge?type=url")
     assert r_url.status_code == 200
-    items_url = r_url.json()
+    items_url = r_url.json()["items"]
     assert all(i["type"] == "url" for i in items_url)
     assert len(items_url) == 1
 
@@ -96,13 +96,16 @@ def test_list_items_pagination(alice):
             json={"title": f"Doc {i}", "content": f"contenido {i}"},
         )
 
-    r = alice.get("/api/knowledge?limit=3&offset=0")
+    r = alice.get("/api/v2/knowledge?limit=3")
     assert r.status_code == 200
-    assert len(r.json()) == 3
+    assert len(r.json()["items"]) == 3
 
-    r2 = alice.get("/api/knowledge?limit=3&offset=3")
+    r2 = alice.get(
+        "/api/v2/knowledge",
+        params={"limit": 3, "cursor": r.json()["page"]["next_cursor"]},
+    )
     assert r2.status_code == 200
-    assert len(r2.json()) == 2
+    assert len(r2.json()["items"]) == 2
 
 
 def test_upload_directory_as_knowledge_pack(alice):
@@ -138,11 +141,11 @@ def test_upload_directory_as_knowledge_pack(alice):
     assert pack["items"][3]["kind"] == "script"
     assert pack["ignored"] == [{"path": ".env", "reason": "posible_secreto"}]
 
-    listed = alice.get("/api/knowledge/packs")
+    listed = alice.get("/api/v2/knowledge-packs")
     assert listed.status_code == 200
-    assert listed.json()[0]["file_count"] == 4
+    assert listed.json()["items"][0]["file_count"] == 4
 
-    individual = alice.get("/api/knowledge").json()
+    individual = alice.get("/api/v2/knowledge").json()["items"]
     assert {item["pack_id"] for item in individual} == {pack["id"]}
     assert {item["pack_relative_path"] for item in individual} == {
         "scripts/deploy.py",
@@ -168,7 +171,7 @@ def test_pack_deactivate_keeps_it_visible_and_reactivates(alice):
     response = alice.post(f"/api/knowledge/packs/{created['id']}/deactivate")
     assert response.status_code == 200, response.text
     assert response.json()["is_active"] is False
-    listed = alice.get("/api/knowledge/packs").json()
+    listed = alice.get("/api/v2/knowledge-packs").json()["items"]
     assert (
         next(pack for pack in listed if pack["id"] == created["id"])["is_active"]
         is False
@@ -379,7 +382,7 @@ def test_pack_upload_session_continues_after_failure_and_retries_file(alice):
     session = session_response.json()
     session_id = session["id"]
     assert session["upload_status"] == "uploading"
-    assert alice.get("/api/knowledge/packs").json() == []
+    assert alice.get("/api/v2/knowledge-packs").json()["items"] == []
 
     for path in ("docs/a.md", "docs/c.md"):
         uploaded = alice.post(
@@ -417,7 +420,7 @@ def test_pack_upload_session_continues_after_failure_and_retries_file(alice):
     assert completed.status_code == 200
     assert completed.json()["upload_status"] == "ready"
     assert completed.json()["file_count"] == 3
-    assert len(alice.get("/api/knowledge/packs").json()) == 1
+    assert len(alice.get("/api/v2/knowledge-packs").json()["items"]) == 1
 
 
 def test_delete_pack_removes_its_catalogued_items(alice):
@@ -427,8 +430,8 @@ def test_delete_pack_removes_its_catalogued_items(alice):
         files=[("files", ("a.md", b"contenido", "text/markdown"))],
     ).json()
     assert alice.delete(f"/api/knowledge/packs/{created['id']}").status_code == 200
-    assert alice.get("/api/knowledge/packs").json() == []
-    assert alice.get("/api/knowledge").json() == []
+    assert alice.get("/api/v2/knowledge-packs").json()["items"] == []
+    assert alice.get("/api/v2/knowledge").json()["items"] == []
 
 
 def test_publish_pack_exposes_pack_files_and_graph_as_one_unit(alice):
@@ -449,9 +452,9 @@ def test_publish_pack_exposes_pack_files_and_graph_as_one_unit(alice):
 
     _setup_user("bob_user")
     _auth_client(alice, "bob_user")
-    grouped = alice.get("/api/explore?pack_mode=true").json()
+    grouped = alice.get("/api/v2/explore?pack_mode=true").json()["items"]
     assert [item["resource_type"] for item in grouped] == ["knowledge_pack"]
-    individual = alice.get("/api/explore?pack_mode=false").json()
+    individual = alice.get("/api/v2/explore?pack_mode=false").json()["items"]
     assert {item["resource_type"] for item in individual} == {"knowledge"}
     assert {item["pack_id"] for item in individual} == {created["id"]}
 
@@ -569,7 +572,7 @@ def test_delete_item(alice):
     assert r.status_code == 200
     assert r.json()["ok"] is True
     # Ya no aparece en la lista
-    items = alice.get("/api/knowledge").json()
+    items = alice.get("/api/v2/knowledge").json()["items"]
     assert all(i["id"] != item["id"] for i in items)
 
 
@@ -668,7 +671,7 @@ def test_knowledge_active_toggle_and_labels_are_editable(alice):
     _auth_client(alice, "knowledge_reader")
     assert any(
         row["resource_type"] == "knowledge" and row["resource_id"] == item["id"]
-        for row in alice.get("/api/explore").json()
+        for row in alice.get("/api/v2/explore").json()["items"]
     )
 
     _auth_client(alice, "alice")
@@ -680,7 +683,7 @@ def test_knowledge_active_toggle_and_labels_are_editable(alice):
     _auth_client(alice, "knowledge_reader")
     assert all(
         row["resource_type"] != "knowledge" or row["resource_id"] != item["id"]
-        for row in alice.get("/api/explore").json()
+        for row in alice.get("/api/v2/explore").json()["items"]
     )
 
 
@@ -701,7 +704,7 @@ def test_pack_label_edit_applies_to_all_members(alice):
         "production",
         "lang_es",
     ]
-    items = alice.get("/api/knowledge").json()
+    items = alice.get("/api/v2/knowledge").json()["items"]
     assert items[0]["labels"] == updated.json()["labels"]
 
 
@@ -755,7 +758,7 @@ def test_edit_pack_updates_metadata_and_propagates_labels(alice):
         "lang_es",
         "lang_en",
     ]
-    items = alice.get("/api/knowledge").json()
+    items = alice.get("/api/v2/knowledge").json()["items"]
     assert items[0]["labels"] == payload["labels"]
 
 
@@ -835,7 +838,7 @@ def test_documento_recortado_lo_dice_en_la_ficha(alice, monkeypatch):
     assert ficha["source_char_count"] == 1_500_000
     assert ficha["char_count"] == len("lo que cupo")
 
-    listado = alice.get("/api/knowledge?type=document").json()
+    listado = alice.get("/api/v2/knowledge?type=document").json()["items"]
     fila = next(item for item in listado if item["id"] == ficha["id"])
     assert fila["content_truncated"] is True
     assert fila["source_char_count"] == 1_500_000

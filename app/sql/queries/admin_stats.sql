@@ -20,6 +20,11 @@ FROM sqlite_master
 WHERE type='table'
 ORDER BY name;
 
+-- name: pg_table_names
+-- engine: pg
+SELECT relname
+FROM pg_stat_user_tables;
+
 -- name: sqlite_table_size
 -- engine: sqlite
 SELECT SUM(payload)
@@ -32,6 +37,18 @@ SELECT column_name
 FROM information_schema.columns
 WHERE table_name=? AND table_schema='public'
 ORDER BY ordinal_position;
+
+-- name: pg_primary_key_columns
+-- engine: pg
+SELECT kcu.column_name
+FROM information_schema.table_constraints tc
+JOIN information_schema.key_column_usage kcu
+  ON tc.constraint_name=kcu.constraint_name
+ AND tc.table_schema=kcu.table_schema
+WHERE tc.table_schema='public'
+  AND tc.table_name=?
+  AND tc.constraint_type='PRIMARY KEY'
+ORDER BY kcu.ordinal_position;
 
 -- name: user_counts
 -- Sin invitados: son efímeros y contarlos haría que el total del panel subiera

@@ -104,9 +104,9 @@ def test_follow_status_antes_y_despues_de_seguir(client):
 
 def test_feed_vacio_si_no_sigo_a_nadie(client):
     _login(client, "flw_feedempty")
-    r = client.get("/api/feed")
+    r = client.get("/api/v2/feed")
     assert r.status_code == 200
-    assert r.json() == []
+    assert r.json()["items"] == []
 
 
 def test_feed_muestra_recursos_publicos_del_usuario_seguido(client):
@@ -117,9 +117,9 @@ def test_feed_muestra_recursos_publicos_del_usuario_seguido(client):
 
     client.post("/api/users/flw_feedfollowed/follow")
 
-    r = client.get("/api/feed")
+    r = client.get("/api/v2/feed")
     assert r.status_code == 200
-    items = r.json()
+    items = r.json()["items"]
     assert any(x["resource_id"] == "flw-test-agent-001" for x in items)
     found = next(x for x in items if x["resource_id"] == "flw-test-agent-001")
     assert found["owner"] != "flw_feedfollowed"
@@ -134,18 +134,22 @@ def test_feed_trae_el_estado_de_la_estrella(client):
     _insert_resource_social("flw_starfollowed", "flw-star-agent-001", is_public=True)
     client.post("/api/users/flw_starfollowed/follow")
 
-    r_antes = client.get("/api/feed")
+    r_antes = client.get("/api/v2/feed")
     assert r_antes.status_code == 200
     fila_antes = next(
-        x for x in r_antes.json() if x["resource_id"] == "flw-star-agent-001"
+        x
+        for x in r_antes.json()["items"]
+        if x["resource_id"] == "flw-star-agent-001"
     )
     assert fila_antes["starred"] is False
 
     assert client.post("/api/agent/flw-star-agent-001/star").status_code == 200
 
-    r_despues = client.get("/api/feed")
+    r_despues = client.get("/api/v2/feed")
     fila = next(
-        x for x in r_despues.json() if x["resource_id"] == "flw-star-agent-001"
+        x
+        for x in r_despues.json()["items"]
+        if x["resource_id"] == "flw-star-agent-001"
     )
     # El modelo del cliente lee `starred` desde que existe; hasta ahora la clave
     # nunca llegaba y el icono se quedaba apagado siempre.
@@ -160,7 +164,7 @@ def test_feed_no_muestra_recursos_privados_del_usuario_seguido(client):
 
     client.post("/api/users/flw_privfollowed/follow")
 
-    r = client.get("/api/feed")
+    r = client.get("/api/v2/feed")
     assert r.status_code == 200
-    items = r.json()
+    items = r.json()["items"]
     assert not any(x["resource_id"] == "flw-private-agent-001" for x in items)

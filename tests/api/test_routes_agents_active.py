@@ -31,10 +31,10 @@ def test_deactivate_hides_from_list(client):
     a = _create_agent(client, "Ocultable")
     assert client.post(f"/api/agents/{a['id']}/deactivate").status_code == 200
 
-    ids = [x["id"] for x in client.get("/api/agents").json()]
+    ids = [x["id"] for x in client.get("/api/v2/agents").json()["items"]]
     assert a["id"] not in ids
 
-    ids_incl = [x["id"] for x in client.get("/api/agents?include_inactive=true").json()]
+    ids_incl = [x["id"] for x in client.get("/api/v2/agents?include_inactive=true").json()["items"]]
     assert a["id"] in ids_incl
 
 
@@ -83,7 +83,7 @@ def test_reactivate_restores(client):
     assert r.status_code == 200
     assert r.json()["is_active"] is True
 
-    ids = [x["id"] for x in client.get("/api/agents").json()]
+    ids = [x["id"] for x in client.get("/api/v2/agents").json()["items"]]
     assert a["id"] in ids
 
 

@@ -27,10 +27,10 @@ def test_connection_deactivate_hides_from_list(client):
     assert c["is_active"] is True
 
     assert client.post(f"/api/connections/{c['id']}/deactivate").status_code == 200
-    ids = [x["id"] for x in client.get("/api/connections").json()]
+    ids = [x["id"] for x in client.get("/api/v2/connections").json()["items"]]
     assert c["id"] not in ids
     ids_incl = [
-        x["id"] for x in client.get("/api/connections?include_inactive=true").json()
+        x["id"] for x in client.get("/api/v2/connections?include_inactive=true").json()["items"]
     ]
     assert c["id"] in ids_incl
 
@@ -42,25 +42,25 @@ def test_connection_deactivate_hides_from_list(client):
             "/api/skills/private",
             {"name": "Skill activable", "category": "ai", "content": "secreto"},
             "/api/skills/private/{id}/deactivate",
-            "/api/skills",
+            "/api/v2/skills",
         ),
         (
             "/api/prompts/private",
             {"name": "Prompt activable", "alias": "activar_test", "content": "secreto"},
             "/api/prompts/private/{id}/deactivate",
-            "/api/prompts",
+            "/api/v2/prompts",
         ),
         (
             "/api/tools/private",
             {"name": "Tool activable", "language": "python", "content": "secreto"},
             "/api/tools/private/{id}/deactivate",
-            "/api/tools",
+            "/api/v2/tools",
         ),
         (
             "/api/knowledge/text",
             {"title": "Documento activable", "content": "secreto"},
             "/api/knowledge/{id}/deactivate",
-            "/api/knowledge",
+            "/api/v2/knowledge",
         ),
     ],
 )
@@ -77,7 +77,7 @@ def test_content_deactivate_keeps_card_visible_and_reactivates(
     assert response.status_code == 200, response.text
     assert response.json()["is_active"] is False
 
-    listed = client.get(list_path).json()
+    listed = client.get(list_path).json()["items"]
     inactive = next(item for item in listed if item["id"] == created["id"])
     assert inactive["is_active"] is False
 
@@ -107,7 +107,7 @@ def test_deactivated_public_content_disappears_from_explore(client):
     assert published.status_code == 200, published.text
     _login(client, "content_viewer")
     assert skill["id"] in {
-        item["resource_id"] for item in client.get("/api/explore").json()
+        item["resource_id"] for item in client.get("/api/v2/explore").json()["items"]
     }
 
     client.cookies.set("ga_token", create_token("content_explore"))
@@ -115,7 +115,7 @@ def test_deactivated_public_content_disappears_from_explore(client):
     assert response.status_code == 200, response.text
     client.cookies.set("ga_token", create_token("content_viewer"))
     assert skill["id"] not in {
-        item["resource_id"] for item in client.get("/api/explore").json()
+        item["resource_id"] for item in client.get("/api/v2/explore").json()["items"]
     }
     assert client.get(f"/api/explore/skill/{skill['id']}/preview").status_code == 404
 

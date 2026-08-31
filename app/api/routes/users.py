@@ -7,12 +7,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from fastapi import APIRouter, Depends, Query, Request, Response
+from fastapi import APIRouter, Depends, Request
 
 from app.api.routes.auth import require_auth
 from app.auth.auth import get_user_by_username
 from app.errors import APIError
-from app.pagination.http import TOTAL_HEADER
 from app.sql import sql
 from app.storage import avatars
 from app.storage.db import open_db
@@ -64,50 +63,6 @@ async def _get_social_fields(username: str) -> dict[str, Any]:
     }
 
 
-@router.get("")
-async def search_users(
-    q: str | None = None,
-    limit: int = Query(20, ge=1, le=50),
-    offset: int = Query(0, ge=0),
-    response: Response = None,  # type: ignore[assignment]
-    username: str = Depends(require_auth),
-) -> list[dict[str, Any]]:
-    async with open_db() as conn:
-        # La página se recorta en SQL, así que el total requiere un COUNT con
-        # el mismo WHERE.
-        if response is not None:
-            if q:
-                total = await conn.fetchval(
-                    sql("queries/users:count_matching"),
-                    (username, f"%{q}%"),
-                )
-            else:
-                total = await conn.fetchval(
-                    sql("queries/users:count_all"), (username,)
-                )
-            response.headers[TOTAL_HEADER] = str(total or 0)
-        if q:
-            pattern = f"%{q}%"
-            rows = await conn.fetchall(
-                sql("queries/users:search_page"),
-                (username, pattern, limit, offset),
-            )
-        else:
-            rows = await conn.fetchall(
-                sql("queries/users:list_page"),
-                (username, limit, offset),
-            )
-    return [
-        {
-            "username": row[0],
-            "avatar_url": f"/api/users/{row[0]}/avatar" if row[1] else None,
-            "followers_count": row[2],
-            "public_resources_count": row[3],
-        }
-        for row in rows
-    ]
-
-
 @router.get("/{username}/avatar")
 async def get_avatar(
     username: str,
@@ -145,9 +100,7 @@ async def get_avatar(
         for candidato in entrantes.split(",")
         if candidato.strip()
     ):
-        return Response(
-            status_code=304, headers={**cabeceras_de_cache, "ETag": etag}
-        )
+        return Response(status_code=304, headers={**cabeceras_de_cache, "ETag": etag})
 
     return Response(
         content=avatar.content,

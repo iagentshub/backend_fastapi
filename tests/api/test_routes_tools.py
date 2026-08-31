@@ -24,9 +24,9 @@ _ELF_X64 = b"\x7fELF\x02\x01" + (b"\x00" * 12) + b"\x3e\x00"
 
 
 def test_list_tools_empty(admin_client):
-    r = admin_client.get("/api/tools")
+    r = admin_client.get("/api/v2/tools")
     assert r.status_code == 200
-    assert isinstance(r.json(), list)
+    assert isinstance(r.json()["items"], list)
 
 
 def test_save_private_tool(admin_client):
@@ -200,7 +200,7 @@ def test_user_tool_implementation_is_held_for_review(admin_client):
 
 
 def test_tools_requires_auth(client):
-    r = client.get("/api/tools")
+    r = client.get("/api/v2/tools")
     assert r.status_code == 401
 
 
@@ -330,9 +330,9 @@ def test_list_tools_excludes_binary_b64(admin_client):
         f"/api/tools/private/{created['id']}/binary",
         files={"file": ("prog", _ELF_X64, "application/octet-stream")},
     )
-    r = admin_client.get("/api/tools?scope=private")
+    r = admin_client.get("/api/v2/tools?scope=private")
     assert r.status_code == 200
-    items = [it for it in r.json() if it["id"] == created["id"]]
+    items = [it for it in r.json()["items"] if it["id"] == created["id"]]
     assert len(items) == 1
     assert "binary_b64" not in items[0]
 

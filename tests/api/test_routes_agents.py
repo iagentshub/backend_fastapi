@@ -10,9 +10,9 @@ _AGENT_PAYLOAD = {
 
 
 def test_list_agents_empty(admin_client):
-    r = admin_client.get("/api/agents")
+    r = admin_client.get("/api/v2/agents")
     assert r.status_code == 200
-    assert r.json() == []
+    assert r.json()["items"] == []
 
 
 def test_create_agent(admin_client):
@@ -44,9 +44,9 @@ def test_update_agent_keeps_existing_id(admin_client):
 
 def test_list_agents_after_create(admin_client):
     admin_client.post("/api/agents", json=_AGENT_PAYLOAD)
-    r = admin_client.get("/api/agents")
+    r = admin_client.get("/api/v2/agents")
     assert r.status_code == 200
-    assert len(r.json()) >= 1
+    assert len(r.json()["items"]) >= 1
 
 
 def test_get_agent_by_id(admin_client):
@@ -74,7 +74,7 @@ def test_delete_agent_not_found(admin_client):
 
 
 def test_agents_requires_auth(client):
-    r = client.get("/api/agents")
+    r = client.get("/api/v2/agents")
     assert r.status_code == 401
 
 

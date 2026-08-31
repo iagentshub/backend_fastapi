@@ -29,7 +29,7 @@ def _wait_ready(base_url: str, timeout: float = 10.0) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         try:
-            httpx.get(f"{base_url}/api/skills", timeout=0.5)
+            httpx.get(f"{base_url}/api/v2/skills", timeout=0.5)
             return
         except Exception:  # noqa: BLE001
             # Sondeo de arranque: cualquier fallo significa 'aún no listo'.

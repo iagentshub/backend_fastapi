@@ -10,28 +10,72 @@
 Todos los endpoints requieren autenticación mediante cookie HTTP-only (`ga_token`) salvo los marcados con **—**.
 
 Esta guía describe los contratos de uso más importantes; no pretende duplicar
-las 297 rutas del contrato ejecutable. La lista canónica se mantiene en
+las 320 rutas del contrato ejecutable. La lista canónica se mantiene en
 `tests/api/contrato_rutas.txt`. En desarrollo (`GAIA_DEV_MODE=true`) también se
 publican OpenAPI en `/openapi.json` y la interfaz interactiva en `/docs`.
 
 ## Paginación
 
-Los catálogos de agentes, skills, prompts, tools y Knowledge aceptan `limit`
-(1–100, 50 por defecto) y `offset`. El cuerpo sigue siendo una lista por
-compatibilidad; `X-Total-Count` contiene el total filtrado y `X-Has-More`
-indica si existe otra página. Propiedad, compartición, permisos, estado y tipo
-se filtran en SQL antes de `LIMIT`.
+Los 15 catálogos v2 —agentes, skills, prompts, tools, Knowledge, Knowledge
+Packs, importación, Explore, usuarios, Feed, Connections, Admin Explore, visor
+de tablas, logs y componentes de borradores oficiales— usan paginación keyset.
+La primera petición envía solo `limit` (1–100, 50 por
+defecto); la siguiente reenvía sin interpretar `page.next_cursor` como
+`cursor`. El orden estable es `updated_at DESC, id DESC` y propiedad,
+compartición, permisos, estado y tipo se filtran en SQL antes de `LIMIT`.
 
-Conversaciones y mensajes usan `limit` y un `cursor` opaco. La respuesta
+```json
+{
+  "items": [],
+  "page": {
+    "has_more": false,
+    "next_cursor": null,
+    "total": null,
+    "snapshot_at": "2026-08-30T10:00:00+00:00"
+  }
+}
+```
+
+Los GET de listado anteriores se retiraron de OpenAPI y del router. No existe
+una ruta de compatibilidad posicional: clientes propios y externos deben usar
+v2. Chat ya era cursor y conserva por ahora su contrato específico mediante
+cabeceras.
+
+El total exacto no se calcula por defecto. `include_total=true` lo calcula una
+vez con un timeout y lo transporta firmado en los cursores siguientes, por lo
+que una navegación no repite `COUNT(*)`. Si vence el presupuesto responde
+`503 pagination_total_timeout`; para detectar otra página basta `LIMIT + 1`.
+El presupuesto incluye la espera por el cupo de totales del worker. Al vencer,
+PostgreSQL cancela la consulta mediante asyncpg y SQLite ejecuta `interrupt()`
+y drena el trabajo antes de devolver la conexión al pool.
+`offset` no forma parte de estos contratos y recibe `422 invalid_field`.
+
+`consistent=true` (predeterminado) fija un watermark temporal en la primera
+página y excluye altas posteriores durante el recorrido. No mantiene una
+transacción abierta: una edición de un elemento aún no visitado puede cambiar
+su posición. `consistent=false` desactiva expresamente ese watermark.
+
+Los cursores están firmados con HMAC, ligados a usuario, recurso y filtros y
+caducan. Manipularlos, reutilizarlos con otro filtro o tras rotar el secreto
+produce `422 invalid_cursor`; el cliente nunca debe interpretarlos.
+
+El buscador `/api/v2/agents/import/catalog/{kind}` también es cursor-only para sus
+cinco tipos (`skill`, `prompt`, `tool`, `knowledge` y `knowledge_pack`). Su
+cuerpo usa el mismo envoltorio `items + page`; `total` solo se calcula con
+`include_total=true`. La ruta GET v1 se eliminó; la resolución batched conserva
+`POST /api/agents/import/catalog/resolve` porque no es un listado paginado.
+
+Conversaciones y mensajes también usan `limit` y un `cursor` opaco. La respuesta
 publica `X-Next-Cursor` y `X-Has-More`; el cliente no debe interpretar ni
 fabricar el cursor. Las páginas de mensajes mantienen orden cronológico aunque
 se carguen hacia atrás.
 
-Connections compone conexiones físicas, modelos Ollama y orquestaciones
-virtuales, y Admin Explore unifica tipos heterogéneos; ambos se paginan tras la
-composición, siempre con límite obligatorio. Las sesiones guest también son
-colecciones acotadas en memoria. Estas excepciones están aisladas en
-`pagination/materialized.py`.
+Connections pagina conexiones persistidas y orquestaciones virtuales por
+`(updated_at, tipo_fuente, id)`. El listado normal no consulta Ollama;
+`include_models=true` anida las variantes en su conexión base sin crear filas
+paginadas ficticias. Admin Explore pagina primero identificadores de su unión
+normalizada y solo hidrata la página visible. El visor de tablas usa la clave
+primaria simple o compuesta de cada tabla como keyset ascendente.
 
 ---
 
@@ -69,11 +113,13 @@ trae `notified: false` y el lead queda solo en la tabla.
 
 | Método | Endpoint | Descripción |
 |---|---|---|
-| `GET` | `/api/explore` | Catálogo de recursos públicos de otros usuarios |
+| `GET` | `/api/v2/explore` | Catálogo cursor de recursos públicos de otros usuarios |
 | `GET` | `/api/explore/{resource_type}/{resource_id}/preview` | Vista previa de un recurso público |
 
-`GET /api/explore` admite `type`, `category`, `q`, `tag`, `label` repetido,
-`language` repetido, `relation`, `limit` y `offset`. Los idiomas de contenido
+`GET /api/v2/explore` admite `type`, `category`, `q`, `tag`, `label` repetido,
+`language` repetido, `relation`, `limit` y `cursor`. El orden estable es
+`updated_at DESC, stars_count DESC, resource_type, resource_id, owner`; el
+motor keyset conserva las direcciones mixtas sin `OFFSET`. Los idiomas de contenido
 soportados son `es`, `en`, `fr`, `de`, `pt`, `it`, `zh`, `ja` y `ar`. Los
 idiomas seleccionados se combinan entre sí con OR, pero el grupo de idioma se
 combina con categoría y labels mediante AND. Por ejemplo,
@@ -92,8 +138,12 @@ Cualquier otro valor devuelve `422` con `code: invalid_field`. El valor por
 defecto es `all` para no cambiar lo que ven los clientes que no envían el
 parámetro; la app pide `new`, porque descubrir es ver lo que no se tiene.
 
-Cuando `relation=new` deja la primera página vacía, la respuesta añade la
-cabecera `X-Linked-Count` con cuántos resultados quedaron fuera por estar ya
+La búsqueda de usuarios usa `GET /api/v2/users?q=...&limit=...&cursor=...`,
+ordenada por `username, id`. Ninguno de los dos listados v2 calcula el total salvo que se envíe
+`include_total=true`.
+
+Cuando `relation=new` deja la primera página vacía, la respuesta v2 añade el
+campo `linked_matches` con cuántos resultados quedaron fuera por estar ya
 enlazados. Permite distinguir «no hay nada» de «ya lo tienes todo» sin una
 segunda petición, y solo se calcula en ese caso.
 
@@ -112,10 +162,20 @@ Todos los endpoints de admin requieren el rol `admin`.
 
 | Método | Endpoint | Descripción |
 |---|---|---|
-| `GET` | `/api/admin/explore` | Inventario unificado de usuarios, grupos, agentes, conexiones, conocimiento y orquestaciones |
+| `GET` | `/api/v2/admin/explore` | Inventario cursor unificado de usuarios, grupos y recursos |
 | `GET` | `/api/admin/resources/{resource_type}/{resource_id}/relations` | Relaciones del objeto para construir su grafo en el cliente |
 
-`/api/admin/explore` admite `type` repetido, `q`, `owner`, `limit` y `offset`. Cada elemento incluye el discriminador `resource_type`; la respuesta también devuelve `total` y contadores por tipo. Los tipos válidos son `user`, `group`, `agent`, `connection`, `knowledge`, `workflow`, `llm_orchestration`, `skill`, `prompt`, `tool` y `memory`.
+`/api/v2/admin/explore` admite `type` repetido, `q`, `owner`, `role`, `active`,
+`verified`, `knowledge_type`, `limit` y `cursor`. Cada elemento incluye
+`resource_type`. `include_counts=true` añade los once contadores acotados y
+`include_total=true` solicita el total exacto. Los tipos válidos son `user`,
+`group`, `agent`, `connection`, `knowledge`, `workflow`, `llm_orchestration`,
+`skill`, `prompt`, `tool` y `memory`.
+
+El visor de tablas usa
+`GET /api/v2/admin/metadata/tables/{table_name}/data?q=...&limit=...&cursor=...`.
+El servidor conserva la lista blanca y el enmascarado de columnas sensibles;
+una tabla sin clave primaria estable responde `409 pagination_key_unavailable`.
 
 El backend devuelve relaciones tipadas; Flutter construye con ellas `nodes` y
 `edges`. No existe un endpoint `/graph`: mantener el armado en el cliente evita
@@ -157,6 +217,7 @@ tener una representación distinta por cada interfaz.
 | `GET` | `/api/admin/official-sources` | Fuentes registradas y los objetos que cada una tiene en el hub |
 | `POST` | `/api/admin/official-sources/import` | Dar de alta un repositorio de GitHub y descargar su contenido |
 | `POST` | `/api/admin/official-sources/{id}/sync` | Sin cuerpo, devuelve lo que trae la fuente; con `component_ids`, aplica esa selección |
+| `GET` | `/api/v2/admin/official-source-drafts/{draft_id}/components` | Componentes por cursor con filtros `component_type`, `state` y `q` |
 | `PUT` | `/api/admin/official-sources/{id}` | Editar la fuente |
 | `DELETE` | `/api/admin/official-sources/{id}` | Eliminar la fuente y todos los objetos que trajo |
 | `POST` | `/api/admin/resources/{type}/{id}/official` | Marcar o desmarcar un recurso como oficial a mano |
@@ -177,10 +238,10 @@ Marcar a mano usa la fuente interna `official_by_iagentshub`, que no tiene repos
 
 | Método | Endpoint | Auth | Descripción |
 |---|---|---|---|
-| `GET` | `/api/admin/logs` | Admin | Lista de fechas disponibles (`["YYYYMMDD", …]`), orden descendente |
-| `GET` | `/api/admin/logs/summary` | Admin | Resumen por fichero con desglose BE/FE — ver estructura más abajo |
-| `GET` | `/api/admin/logs/{date}` | Admin | Contenido completo del fichero `{date}.log` como texto plano |
-| `POST` | `/api/admin/logs/client` | Usuario | Recibe una entrada de log desde el frontend y la escribe en el fichero del día |
+| `GET` | `/api/v2/admin/logs` | Admin | Visor filtrado por cursor, ordenado por `ts DESC, id DESC` |
+| `GET` | `/api/admin/logs/summary` | Admin | Resumen diario con desglose BE/FE |
+| `GET` | `/api/admin/logs/export` | Admin | Exportación CSV completa de los filtros actuales |
+| `POST` | `/api/admin/logs/client` | Admin | Registra una entrada del frontend |
 
 **`GET /api/admin/logs/summary`** — respuesta (array):
 ```json
@@ -212,7 +273,7 @@ Niveles válidos: `DEBUG`, `INFO`, `OK`, `WARNING`, `ERROR`. La entrada se escri
 
 | Método | Endpoint | Descripción |
 |---|---|---|
-| `GET` | `/api/agents` | Listar todos los agentes |
+| `GET` | `/api/v2/agents` | Listar agentes por cursor |
 | `POST` | `/api/agents` | Crear un nuevo agente |
 | `GET` | `/api/agents/{id}` | Obtener detalles de un agente |
 | `PUT` | `/api/agents/{id}` | Actualizar la configuración de un agente |
@@ -239,7 +300,7 @@ Las skills tienen tres estados de visibilidad: **pública** (accesible a todos),
 
 | Método | Endpoint | Descripción |
 |---|---|---|
-| `GET` | `/api/skills` | Listar todas las skills disponibles (`?scope=all\|public\|private`); las skills compartidas con el usuario aparecen con `_shared: true` |
+| `GET` | `/api/v2/skills` | Listar skills por cursor (`?scope=all\|public\|private`); las compartidas aparecen con `_shared: true` |
 | `GET` | `/api/skills/{scope}/{id}` | Obtener la definición de una skill concreta |
 | `POST` | `/api/skills/{scope}` | Guardar una skill propia con scope `private` o `public`; el campo `owner_id` se fija automáticamente al usuario autenticado |
 | `DELETE` | `/api/skills/{scope}/{id}` | Eliminar una skill propia; las skills públicas del sistema son de solo lectura |
@@ -257,7 +318,7 @@ sus extensiones y los destinos nativos se publica en
 
 | Método | Endpoint | Descripción |
 |---|---|---|
-| `GET` | `/api/tools` | Lista paginada de Tools accesibles |
+| `GET` | `/api/v2/tools` | Lista cursor de Tools accesibles |
 | `GET` | `/api/tools/{scope}/{tool_id}` | Metadatos e implementación textual, nunca el BLOB binario |
 | `POST` | `/api/tools/{scope}` | Crear o actualizar metadatos y registrar una versión |
 | `DELETE` | `/api/tools/{scope}/{tool_id}` | Eliminar una Tool propia |
@@ -354,7 +415,7 @@ Solo el dueño directo del recurso (o un admin) puede compartirlo.
 Tipos válidos para `{type}`: `agent`, `skill`, `connection`, `knowledge`,
 `knowledge_pack`, `workflow`, `llm_orchestration`, `prompt` y `tool`.
 
-Los recursos compartidos con el usuario aparecen en los listados normales (`/api/skills`, `/api/agents`, etc.) con el campo `_shared: true`. El receptor puede usarlos pero no editarlos ni redistribuirlos.
+Los recursos compartidos con el usuario aparecen en los listados v2 (`/api/v2/skills`, `/api/v2/agents`, etc.) con el campo `_shared: true`. El receptor puede usarlos pero no editarlos ni redistribuirlos.
 
 Compartir un agente arrastra sus skills, prompts, Tools y Knowledge privados —el `POST` los devuelve en `cascaded`— y **retirarlo los retira**: el `DELETE` responde con `uncascaded` (lo que ha dejado de estar compartido) y `kept` (lo que se conserva). Se conserva lo que el usuario compartió por su cuenta y lo que otro agente u orquestación compartido del mismo grupo sigue necesitando: retirarlo dejaría a ese otro recurso sin una dependencia. Una orquestación se comporta igual con los agentes que arrastró.
 
@@ -365,10 +426,15 @@ Compartir un agente arrastra sus skills, prompts, Tools y Knowledge privados —
 | Método | Endpoint | Descripción |
 |---|---|---|
 | `GET` | `/api/connections/providers` | Listar todos los tipos de proveedor disponibles (con definición de campos) |
-| `GET` | `/api/connections` | Listar las conexiones configuradas (sin claves API); cada elemento incluye los campos `tokens_in` y `tokens_out` con el consumo acumulado |
+| `GET` | `/api/v2/connections` | Listar por cursor conexiones y orquestaciones accesibles, siempre sin secretos |
 | `GET` | `/api/connections/{id}` | Obtener los detalles de una conexión concreta |
 | `POST` | `/api/connections` | Añadir o actualizar una conexión |
 | `DELETE` | `/api/connections/{id}` | Eliminar una conexión |
 | `POST` | `/api/connections/{id}/test` | Testar una conexión concreta |
 | `POST` | `/api/connections/test-all` | Testar todas (o las indicadas) las conexiones; cada resultado incluye `latency_ms` (entero en milisegundos, `null` si no hay proveedor de test) |
 | `GET` | `/api/connections/tokens-daily` | Obtener el historial de consumo de tokens diario (`?days=N`, por defecto 14) |
+
+El listado acepta `group_id`, `include_inactive`, `include_models`, `limit` y
+`cursor`. Sin `include_models` no consulta proveedores. Al activarlo, cada
+conexión base devuelve sus `model_variants` anidadas; los selectores pueden
+aplanarlas localmente sin alterar los límites ni los cursores de la página.

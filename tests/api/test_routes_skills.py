@@ -12,9 +12,9 @@ _SKILL_PAYLOAD = {
 
 
 def test_list_skills_empty(admin_client):
-    r = admin_client.get("/api/skills")
+    r = admin_client.get("/api/v2/skills")
     assert r.status_code == 200
-    assert isinstance(r.json(), list)
+    assert isinstance(r.json()["items"], list)
 
 
 def test_save_private_skill(admin_client):
@@ -126,5 +126,5 @@ def test_other_user_cannot_edit_or_delete_public_skill(admin_client):
 
 
 def test_skills_requires_auth(client):
-    r = client.get("/api/skills")
+    r = client.get("/api/v2/skills")
     assert r.status_code == 401

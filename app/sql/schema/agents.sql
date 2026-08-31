@@ -23,4 +23,5 @@ CREATE TABLE IF NOT EXISTS agents (
     PRIMARY KEY (id, owner_id)
 );
 CREATE INDEX IF NOT EXISTS idx_agents_owner ON agents(owner_id, scope, updated_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_agents_visible_order ON agents(updated_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_agents_official ON agents(official_source_id);

@@ -3,13 +3,10 @@
 El servidor cataloga, valida y distribuye; nunca ejecuta código. Python y Shell
 usan fuente textual. C++ conserva la fuente cuando existe y requiere además un
 artefacto nativo identificado por sistema, arquitectura y SHA-256.
-
 Estas rutas estuvieron cerradas a los invitados mientras su sesión era un dict
 en memoria: GuestSession no contemplaba tools y escribir la rama habría sido
 duplicar cada handler. Hoy el invitado es un usuario efímero y las tools son
-parte de su espacio personal como el resto. Lo único que sigue cerrado es
-publicar (`assert_can_publish`), igual que en skills y prompts.
-Ver docs/adr/012-el-invitado-es-un-usuario-efimero.md.
+personales; solo publicar sigue cerrado. Véase el ADR 012 sobre invitados.
 """
 
 from __future__ import annotations
@@ -18,10 +15,10 @@ import asyncio
 import hashlib
 import re
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, File, Query, Request, Response, UploadFile
+from fastapi import APIRouter, Depends, File, Request, Response, UploadFile
 from fastapi.responses import StreamingResponse
 
 from app.api.routes.auth import GroupContext, require_group_session
@@ -35,9 +32,7 @@ from app.config.tool_runtimes import (
 from app.errors import APIError
 from app.middleware.ratelimit import RateLimiter, principal_key
 from app.models.request_bodies import CatalogResourcePayload
-from app.pagination.models import OffsetParams
 from app.services.publishing import assert_can_publish
-from app.services.scoped_resource_listing import list_authenticated_scoped_resources
 from app.services.tool_policy import (
     TOOL_SECURITY_LABELS,
     assert_tool_consumable,
@@ -173,28 +168,6 @@ async def _assert_read_access(
                 tl["_shared"] = True
                 return
     raise APIError(403, "forbidden", "No tienes acceso a esta tool")
-
-
-@router.get("")
-async def list_tools(
-    scope: str = "all",
-    owner_scope: str = "group",
-    group_id: Optional[str] = None,
-    limit: int = Query(50, ge=1, le=100),
-    offset: int = Query(0, ge=0),
-    response: Response = None,  # type: ignore[assignment]
-    ctx: GroupContext = Depends(require_group_session),
-) -> List[Dict[str, Any]]:
-    _check_scope(scope)
-    return await list_authenticated_scoped_resources(
-        _storage,
-        ctx=ctx,
-        scope=scope,
-        page=OffsetParams(limit=limit, offset=offset),
-        response=response,
-        requested_group_id=group_id,
-        mark_origin=_mark_origin,
-    )
 
 
 @router.get("/{scope}/{tool_id}")

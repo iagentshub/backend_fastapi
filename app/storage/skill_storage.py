@@ -9,8 +9,6 @@ from typing import Any, Dict, List, Optional
 import yaml
 
 from app.config.content_languages import CONTENT_LANGUAGE_LABELS
-from app.pagination.models import OffsetPage, OffsetParams
-from app.services.resource_visibility import VisibilityFilter
 from app.sql import sql
 
 # db se importa DOS veces a propósito: ver app/storage/_storage_helpers.py.
@@ -19,10 +17,8 @@ from app.storage._storage_helpers import _PUBLIC_OWNER, _slug
 from app.storage.db import DB_ERRORS, AsyncConn, open_db
 from app.storage.db_migrations import _compact_resource_data
 from app.storage.resource_base import ResourceStorage
-from app.storage.scoped_resource_page import (
-    ScopedResourcePageSpec,
-    list_scoped_resource_page,
-)
+from app.storage.scoped_resource_page import ScopedResourcePageSpec
+from app.storage.scoped_resource_pagination import ScopedResourcePaginationMixin
 from app.utils import flog
 from app.utils import now_iso as _now
 from app.utils.generators import generate_id
@@ -110,24 +106,14 @@ def _parse_skill_md(raw: str, default_id: str = "") -> Dict[str, Any]:
     return meta
 
 
-class SkillStorage(ResourceStorage):
+class SkillStorage(ScopedResourcePaginationMixin, ResourceStorage):
     """Async DB-backed skill storage (SQLite / PostgreSQL)."""
 
     table = "skills"
     resource_type = "skill"
 
-    async def list_visible_page(
-        self,
-        *,
-        user: str,
-        active_group_id: str,
-        scope: str,
-        page: OffsetParams,
-        requested_group_id: str | None = None,
-        catalog_filter: VisibilityFilter | None = None,
-    ) -> OffsetPage[Dict[str, Any]]:
-        await self._ensure_migrated()
-        spec = ScopedResourcePageSpec(
+    def _page_spec(self) -> ScopedResourcePageSpec:
+        return ScopedResourcePageSpec(
             table=self.table,
             columns=(
                 "resource_row.id, resource_row.owner_id, resource_row.name, "
@@ -137,16 +123,6 @@ class SkillStorage(ResourceStorage):
             ),
             resource_type=self.resource_type,
             decode=lambda row: self._row_to_dict(row, include_content=False),
-        )
-        return await list_scoped_resource_page(
-            spec,
-            user=user,
-            active_group_id=active_group_id,
-            scope=scope,
-            include_inactive=None,
-            page=page,
-            requested_group_id=requested_group_id,
-            extra_filters=(catalog_filter,) if catalog_filter else (),
         )
 
     def __init__(self, root_dir: Path) -> None:

@@ -9,30 +9,17 @@ T = TypeVar("T")
 
 
 @dataclass(frozen=True, slots=True)
-class OffsetParams:
-    """Página solicitada mediante límite y desplazamiento."""
+class CursorParams:
+    """Página keyset solicitada mediante un cursor opaco opcional."""
 
     limit: int
-    offset: int = 0
+    cursor: str | None = None
+    include_total: bool = False
+    consistent: bool = True
 
     def __post_init__(self) -> None:
         if self.limit < 1:
             raise ValueError("limit debe ser mayor que cero")
-        if self.offset < 0:
-            raise ValueError("offset no puede ser negativo")
-
-
-@dataclass(frozen=True, slots=True)
-class OffsetPage(Generic[T]):
-    """Resultado de una consulta paginada con total exacto."""
-
-    items: Sequence[T]
-    total: int
-    params: OffsetParams
-
-    @property
-    def has_more(self) -> bool:
-        return self.params.offset + len(self.items) < self.total
 
 
 @dataclass(frozen=True, slots=True)
@@ -41,6 +28,9 @@ class CursorPosition:
 
     created_at: str
     item_id: str
+    snapshot_at: str | None = None
+    total: int | None = None
+    page_number: int = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -50,3 +40,5 @@ class CursorPage(Generic[T]):
     items: Sequence[T]
     next_cursor: str | None
     has_more: bool
+    total: int | None = None
+    snapshot_at: str | None = None

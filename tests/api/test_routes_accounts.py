@@ -9,9 +9,22 @@ from __future__ import annotations
 
 import asyncio
 import json
-from unittest.mock import MagicMock, patch
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import httpx
+
+from app.services.hub_sync import _RemotePage
+
+
+def _cursor_mock(json_mock):
+    async def _mock_page(base_url, path, headers):
+        return _RemotePage(
+            await json_mock(base_url, path, headers),
+            has_more=False,
+            next_cursor=None,
+        )
+
+    return AsyncMock(side_effect=_mock_page)
 
 
 def _setup_user(client, username="accuser"):
@@ -459,7 +472,7 @@ def test_sync_account_visible_in_connections_for_admin_user(admin_client):
     assert r.status_code == 200
     assert r.json()["sync_summary"]["connections_created"] == 1
 
-    conns = client.get("/api/connections").json()
+    conns = client.get("/api/v2/connections").json()["items"]
     assert any(c.get("model") == "gpt-4o" for c in conns)
 
 
@@ -563,13 +576,12 @@ def test_sync_account_iagentshub_creates_mirror_connection_mocked(client):
         },
     ).json()["id"]
 
-    from unittest.mock import AsyncMock
-
     mock_get = AsyncMock(return_value=[])
 
     with (
         patch("app.connections.iagentshub._login", return_value="fake-token"),
         patch("app.services.hub_sync._get_remote_json", new=mock_get),
+        patch("app.services.hub_sync._get_remote_cursor_page", new=_cursor_mock(mock_get)),
     ):
         r = client.post(f"/api/accounts/{account_id}/sync")
 

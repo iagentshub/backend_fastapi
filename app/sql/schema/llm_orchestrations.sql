@@ -13,3 +13,5 @@ CREATE TABLE IF NOT EXISTS llm_orchestrations (
 );
 CREATE INDEX IF NOT EXISTS idx_llm_orchestrations_owner
     ON llm_orchestrations(owner_id, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_llm_orchestrations_updated_page
+    ON llm_orchestrations(updated_at DESC, id);

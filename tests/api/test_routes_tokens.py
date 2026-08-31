@@ -160,13 +160,13 @@ def test_paridad_cookie_bearer_en_require_group(client):
     _register(client, "pat_groups")
     token = _make_token(client)
 
-    con_cookie = client.get("/api/agents")
+    con_cookie = client.get("/api/v2/agents")
     assert con_cookie.status_code == 200
 
     client.cookies.clear()
-    con_bearer = client.get("/api/agents", headers=_bearer(token))
+    con_bearer = client.get("/api/v2/agents", headers=_bearer(token))
     assert con_bearer.status_code == 200
-    assert con_bearer.json() == con_cookie.json()
+    assert con_bearer.json()["items"] == con_cookie.json()["items"]
 
 
 def test_bearer_tiene_prioridad_sobre_la_cookie(client):
@@ -314,7 +314,7 @@ def test_group_ajeno_cae_al_personal(client):
     client.cookies.clear()
 
     r = client.get(
-        "/api/agents",
+        "/api/v2/agents",
         headers={**_bearer(token), "X-iAgents-Group": group_id},
     )
     # No es miembro → fallback al group personal, nunca 200 sobre el ajeno

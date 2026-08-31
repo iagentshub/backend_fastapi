@@ -6,7 +6,7 @@ import os
 import re
 from typing import Any
 
-from fastapi import Depends, Query
+from fastapi import Depends
 
 # Por módulo, no por valor: el tope se lee en caliente y los tests lo ajustan.
 import app.storage.guest as _guest_cfg
@@ -14,7 +14,7 @@ from app.api.routes.admin._router import admin_router
 from app.api.routes.auth import require_admin
 from app.config.data import AGENTS_DIR as _AGENTS_DIR
 from app.config.startup_checks import report as config_report
-from app.errors import APIError
+from app.pagination.metrics import snapshot as pagination_metrics_snapshot
 from app.sql import sql
 from app.storage.db import IS_PG, open_db
 from app.utils import flog
@@ -59,94 +59,6 @@ async def admin_metadata_tables(_: str = Depends(require_admin)) -> list:
                     }
                 )
             return result
-
-
-_HIDDEN_COLS = frozenset(
-    {
-        "password_hash",
-        "token",
-        "reset_token",
-        "verification_token",
-        "deletion_token",
-        "jwt_secret",
-        "stripe_secret_key",
-    }
-)
-
-
-@admin_router.get("/metadata/tables/{table_name}/data")
-async def admin_metadata_table_data(
-    table_name: str,
-    q: str | None = Query(None),
-    page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=200),
-    _: str = Depends(require_admin),
-) -> dict:
-    """Datos paginados de una tabla. Columnas sensibles enmascaradas."""
-    async with open_db() as conn:
-        valid = {
-            r[0]
-            for r in await conn.fetchall(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-                if not IS_PG
-                else "SELECT relname FROM pg_stat_user_tables"
-            )
-        }
-        if table_name not in valid:
-            raise APIError(
-                404, "not_found", "Tabla no encontrada", extra={"resource": "table"}
-            )
-
-        if IS_PG:
-            col_rows = await conn.fetchall(
-                sql("queries/admin_stats:pg_column_names"),
-                (table_name,),
-            )
-            col_names = [r[0] for r in col_rows]
-        else:
-            col_rows = await conn.fetchall(f'PRAGMA table_info("{table_name}")')
-            col_names = [r[1] for r in col_rows]
-
-        if not col_names:
-            raise APIError(404, "table_no_columns", "Sin columnas")
-
-        if q:
-            cast = "::text" if IS_PG else ""
-            clauses = [f'CAST("{c}"{cast} AS TEXT) LIKE ?' for c in col_names]
-            where = "WHERE " + " OR ".join(clauses)
-            params = [f"%{q}%"] * len(col_names)
-        else:
-            where, params = "", []
-
-        total = await conn.fetchval(
-            f'SELECT COUNT(*) FROM "{table_name}" {where}', tuple(params)
-        )
-        offset = (page - 1) * page_size
-        rows = await conn.fetchall(
-            f'SELECT * FROM "{table_name}" {where} LIMIT ? OFFSET ?',
-            tuple(params + [page_size, offset]),
-        )
-
-        exposed = [c for c in col_names if c not in _HIDDEN_COLS]
-        idx_map = [col_names.index(c) for c in exposed]
-        data_rows = [
-            [
-                "[oculto]"
-                if col_names[i] in _HIDDEN_COLS
-                else (str(row[i]) if row[i] is not None else None)
-                for i in idx_map
-            ]
-            for row in rows
-        ]
-        pages = (total + page_size - 1) // page_size if total else 0
-        return {
-            "columns": exposed,
-            "rows": data_rows,
-            "total": total or 0,
-            "page": page,
-            "page_size": page_size,
-            "pages": pages,
-        }
 
 
 def _server_health() -> dict[str, Any]:
@@ -353,5 +265,6 @@ async def admin_stats(_: str = Depends(require_admin)) -> dict[str, Any]:
         "avg_latency_ms": avg_latency_ms,
         "top_error_endpoint": top_error_endpoint,
         "top_error_count": top_error_count,
+        "pagination": pagination_metrics_snapshot(),
         **_server_health(),
     }

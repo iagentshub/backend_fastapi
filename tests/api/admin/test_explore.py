@@ -14,14 +14,21 @@ def test_admin_explore_unifies_and_filters_resource_types(admin_client):
         "/api/agents", json={**_AGENT_PAYLOAD, "name": "Explore Agent Unique"}
     ).json()
 
-    response = admin_client.get("/api/admin/explore?type=agent&q=unique")
+    response = admin_client.get(
+        "/api/v2/admin/explore?type=agent&q=unique&include_total=true"
+    )
 
     assert response.status_code == 200
     payload = response.json()
-    assert payload["total"] == 1
+    assert payload["page"]["total"] == 1
     assert payload["items"][0]["id"] == created["id"]
     assert payload["items"][0]["resource_type"] == "agent"
-    assert set(payload["counts"]) == {
+    assert payload["counts"] is None
+
+    counted = admin_client.get(
+        "/api/v2/admin/explore?type=agent&q=unique&include_counts=true"
+    ).json()
+    assert set(counted["counts"]) == {
         "user",
         "group",
         "agent",
@@ -37,7 +44,7 @@ def test_admin_explore_unifies_and_filters_resource_types(admin_client):
 
 
 def test_admin_explore_rejects_unknown_type(admin_client):
-    response = admin_client.get("/api/admin/explore?type=folder")
+    response = admin_client.get("/api/v2/admin/explore?type=folder")
 
     assert response.status_code == 422
     assert response.json()["detail"]["field"] == "type"
@@ -53,7 +60,7 @@ def test_admin_explore_forbidden_for_standard(client, reset_rate_limiter):
         },
     )
 
-    assert client.get("/api/admin/explore").status_code == 403
+    assert client.get("/api/v2/admin/explore").status_code == 403
 
 
 def _via(item):

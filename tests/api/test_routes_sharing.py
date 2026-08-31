@@ -91,7 +91,7 @@ def test_share_agent_visible_to_group_member(client):
 
     # El miembro puede ver el agente en su lista general (sin filtro de grupo)
     _set_cookie(client, "sh_member_c")
-    agents = client.get("/api/agents").json()
+    agents = client.get("/api/v2/agents").json()["items"]
     shared = next((a for a in agents if a["id"] == agent["id"]), None)
     assert shared is not None
     assert shared.get("_shared") is True
@@ -143,7 +143,7 @@ def test_unshare_agent_revokes_access(client):
 
     # El miembro ya no debe ver el agente
     _set_cookie(client, "sh_member_g")
-    agents = client.get("/api/agents").json()
+    agents = client.get("/api/v2/agents").json()["items"]
     assert not any(a["id"] == agent["id"] for a in agents)
 
 
@@ -163,13 +163,13 @@ def test_share_skill_with_group(client):
     assert r.status_code == 200
 
     # El dueño sigue viendo origin_type='owner' en su propia lista
-    owner_skills = client.get("/api/skills?scope=all").json()
+    owner_skills = client.get("/api/v2/skills?scope=all").json()["items"]
     own = next(s for s in owner_skills if s["id"] == skill["id"])
     assert own["origin_type"] == "owner"
 
     # El miembro ve la skill en su lista (vista general sin filtro de grupo)
     _set_cookie(client, "sh_member_h")
-    skills = client.get("/api/skills?scope=all").json()
+    skills = client.get("/api/v2/skills?scope=all").json()["items"]
     shared = next(s for s in skills if s["id"] == skill["id"])
     assert shared.get("_shared")
     assert shared["origin_type"] == "linked"
@@ -192,7 +192,7 @@ def test_share_knowledge_with_group(client):
 
     # El miembro ve el conocimiento compartido
     _set_cookie(client, "sh_member_i")
-    items = client.get("/api/knowledge").json()
+    items = client.get("/api/v2/knowledge").json()["items"]
     assert any(k["id"] == know["id"] and k.get("_shared") for k in items)
 
 
@@ -225,16 +225,16 @@ def test_share_pack_grants_access_to_pack_and_individual_files(client, monkeypat
 
     with monkeypatch.context() as patch:
         patch.setattr(packs_routes._packs, "get", unexpected_single_pack_read)
-        packs = client.get("/api/knowledge/packs").json()
+        packs = client.get("/api/v2/knowledge-packs").json()["items"]
         group_packs = client.get(
-            "/api/knowledge/packs", params={"group_id": group["id"]}
-        ).json()
+            "/api/v2/knowledge-packs", params={"group_id": group["id"]}
+        ).json()["items"]
     assert any(item["id"] == pack["id"] and item.get("_shared") for item in packs)
     assert any(
         item["id"] == pack["id"] and item.get("_group_id") == group["id"]
         for item in group_packs
     )
-    items = client.get("/api/knowledge").json()
+    items = client.get("/api/v2/knowledge").json()["items"]
     pack_item = next(item for item in items if item["pack_id"] == pack["id"])
     assert pack_item["_shared_via_pack"] is True
 

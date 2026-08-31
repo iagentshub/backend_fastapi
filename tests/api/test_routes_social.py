@@ -80,12 +80,12 @@ def test_agente_publico_aparece_en_explore(client):
 
     # Explore excluye los recursos propios del solicitante — se consulta como otro usuario
     _login(client, "exploretest1_viewer")
-    r = client.get("/api/explore")
+    r = client.get("/api/v2/explore")
     assert r.status_code == 200
-    ids = [x["resource_id"] for x in r.json()]
+    ids = [x["resource_id"] for x in r.json()["items"]]
     assert agent_id in ids
 
-    found = next(x for x in r.json() if x["resource_id"] == agent_id)
+    found = next(x for x in r.json()["items"] if x["resource_id"] == agent_id)
     assert found["resource_type"] == "agent"
     assert found["owner"] != user
     assert found["owner_username"] == user
@@ -99,12 +99,12 @@ def test_agente_publico_desactivado_no_se_descubre_previsualiza_ni_enlaza(client
     client.post(f"/api/agents/{agent['id']}/deactivate")
 
     _login(client, "explore_inactive_viewer")
-    catalog = client.get("/api/explore", params={"type": "agent", "q": agent["name"]})
+    catalog = client.get("/api/v2/explore", params={"type": "agent", "q": agent["name"]})
     preview = client.get(f"/api/explore/agent/{agent['id']}/preview")
     linked = client.post(f"/api/agents/private/{agent['id']}/link")
 
     assert catalog.status_code == 200
-    assert catalog.json() == []
+    assert catalog.json()["items"] == []
     assert preview.status_code == 404
     assert linked.status_code == 409
     assert linked.json()["detail"]["code"] == "resource_inactive"
@@ -126,13 +126,13 @@ def test_crear_agente_publico_lo_publica_sin_segunda_peticion(client):
 
     _login(client, "explore_direct_viewer")
     response = client.get(
-        "/api/explore", params={"type": "agent", "q": "Agente público directo"}
+        "/api/v2/explore", params={"type": "agent", "q": "Agente público directo"}
     )
 
     assert response.status_code == 200
-    assert [item["resource_id"] for item in response.json()] == [agent_id]
-    assert response.json()[0]["owner"] != owner
-    assert response.json()[0]["owner_username"] == owner
+    assert [item["resource_id"] for item in response.json()["items"]] == [agent_id]
+    assert response.json()["items"][0]["owner"] != owner
+    assert response.json()["items"][0]["owner_username"] == owner
 
 
 def test_hacer_privado_un_agente_guardado_lo_retira_de_explore(client):
@@ -159,10 +159,10 @@ def test_hacer_privado_un_agente_guardado_lo_retira_de_explore(client):
 
     _login(client, "explore_direct_private_viewer")
     response = client.get(
-        "/api/explore", params={"type": "agent", "q": created["name"]}
+        "/api/v2/explore", params={"type": "agent", "q": created["name"]}
     )
     assert response.status_code == 200
-    assert response.json() == []
+    assert response.json()["items"] == []
 
 
 def test_grafo_publico_de_agente_incluye_solo_dependencias_publicadas(client):
@@ -280,7 +280,7 @@ def test_publicar_agente_no_distribuye_tool_en_revision_ni_deja_agente_parcial(c
     assert response.json()["detail"]["labels"] == ["review"]
     assert all(
         agent["name"] != "Agente que no debe publicarse"
-        for agent in client.get("/api/agents").json()
+        for agent in client.get("/api/v2/agents").json()["items"]
     )
 
 
@@ -338,7 +338,7 @@ def test_usuario_no_puede_publicar_tool_aprobada_ajena(client):
     assert response.json()["detail"]["code"] == "forbidden"
     _login(client, "visibility_foreign_tool_viewer")
     assert not any(
-        item["resource_id"] == tool["id"] for item in client.get("/api/explore").json()
+        item["resource_id"] == tool["id"] for item in client.get("/api/v2/explore").json()["items"]
     )
 
 
@@ -517,10 +517,10 @@ def test_explore_muestra_antes_un_agente_recien_publicado_sin_estrellas(client):
             await conn.commit()
 
     asyncio.run(seed_catalog())
-    response = client.get("/api/explore", params={"q": "Orden reciente"})
+    response = client.get("/api/v2/explore", params={"q": "Orden reciente"})
 
     assert response.status_code == 200
-    assert [item["resource_id"] for item in response.json()] == [
+    assert [item["resource_id"] for item in response.json()["items"]] == [
         "new-no-stars",
         "popular-old",
     ]
@@ -542,8 +542,8 @@ def test_agente_privado_desaparece_de_explore(client):
 
     # Explore excluye los recursos propios del solicitante — se consulta como otro usuario
     _login(client, "exploretest2_viewer")
-    r = client.get("/api/explore")
-    assert any(x["resource_id"] == agent_id for x in r.json())
+    r = client.get("/api/v2/explore")
+    assert any(x["resource_id"] == agent_id for x in r.json()["items"])
 
     _switch(client, "exploretest2")
     r2 = client.put(
@@ -557,8 +557,8 @@ def test_agente_privado_desaparece_de_explore(client):
     assert r2.status_code == 200
 
     _switch(client, "exploretest2_viewer")
-    r3 = client.get("/api/explore")
-    assert not any(x["resource_id"] == agent_id for x in r3.json())
+    r3 = client.get("/api/v2/explore")
+    assert not any(x["resource_id"] == agent_id for x in r3.json()["items"])
 
 
 def test_categoria_invalida_devuelve_422(client):
@@ -598,16 +598,16 @@ def test_explore_filtra_por_tipo_y_categoria(client):
 
     # Explore excluye los recursos propios del solicitante — se consulta como otro usuario
     _login(client, "filtertest_viewer")
-    r_agents = client.get("/api/explore", params={"type": "agent"})
+    r_agents = client.get("/api/v2/explore", params={"type": "agent"})
     assert r_agents.status_code == 200
-    assert all(x["resource_type"] == "agent" for x in r_agents.json())
-    assert any(x["resource_id"] == agent["id"] for x in r_agents.json())
-    assert not any(x["resource_id"] == skill["id"] for x in r_agents.json())
+    assert all(x["resource_type"] == "agent" for x in r_agents.json()["items"])
+    assert any(x["resource_id"] == agent["id"] for x in r_agents.json()["items"])
+    assert not any(x["resource_id"] == skill["id"] for x in r_agents.json()["items"])
 
-    r_writing = client.get("/api/explore", params={"category": "Writing"})
+    r_writing = client.get("/api/v2/explore", params={"category": "Writing"})
     assert r_writing.status_code == 200
-    assert all(x["category"] == "Writing" for x in r_writing.json())
-    assert any(x["resource_id"] == skill["id"] for x in r_writing.json())
+    assert all(x["category"] == "Writing" for x in r_writing.json()["items"])
+    assert any(x["resource_id"] == skill["id"] for x in r_writing.json()["items"])
 
 
 def test_explore_busqueda_por_texto(client):
@@ -624,13 +624,13 @@ def test_explore_busqueda_por_texto(client):
 
     # Explore excluye los recursos propios del solicitante — se consulta como otro usuario
     _login(client, "qtest_viewer")
-    r = client.get("/api/explore", params={"q": "Xylophone"})
+    r = client.get("/api/v2/explore", params={"q": "Xylophone"})
     assert r.status_code == 200
-    assert any(x["resource_id"] == agent["id"] for x in r.json())
+    assert any(x["resource_id"] == agent["id"] for x in r.json()["items"])
 
-    r2 = client.get("/api/explore", params={"q": "zzznotfoundzzz"})
+    r2 = client.get("/api/v2/explore", params={"q": "zzznotfoundzzz"})
     assert r2.status_code == 200
-    assert not any(x["resource_id"] == agent["id"] for x in r2.json())
+    assert not any(x["resource_id"] == agent["id"] for x in r2.json()["items"])
 
 
 def test_star_unstar_actualiza_stars_count(client):
@@ -655,8 +655,8 @@ def test_star_unstar_actualiza_stars_count(client):
     assert body["ok"] is True
     assert body["stars"] == 1
 
-    r_explore = client.get("/api/explore", params={"type": "agent", "q": "Starrable"})
-    found = next(x for x in r_explore.json() if x["resource_id"] == agent_id)
+    r_explore = client.get("/api/v2/explore", params={"type": "agent", "q": "Starrable"})
+    found = next(x for x in r_explore.json()["items"] if x["resource_id"] == agent_id)
     assert found["stars_count"] == 1
     # El estado propio viaja en la fila: sin él la tarjeta pintaba el icono
     # apagado tras recargar y el segundo clic hacía un alta idempotente.
@@ -666,8 +666,8 @@ def test_star_unstar_actualiza_stars_count(client):
     assert r_unstar.status_code == 200
     assert r_unstar.json()["stars"] == 0
 
-    r_explore2 = client.get("/api/explore", params={"type": "agent", "q": "Starrable"})
-    found2 = next(x for x in r_explore2.json() if x["resource_id"] == agent_id)
+    r_explore2 = client.get("/api/v2/explore", params={"type": "agent", "q": "Starrable"})
+    found2 = next(x for x in r_explore2.json()["items"] if x["resource_id"] == agent_id)
     assert found2["stars_count"] == 0
     assert found2["starred"] is False
 
@@ -687,15 +687,15 @@ def test_explore_marca_starred_solo_para_quien_puso_la_estrella(client):
 
     _login(client, "starmine_viewer")
     assert client.post(f"/api/agent/{agent_id}/star").status_code == 200
-    r_mine = client.get("/api/explore", params={"type": "agent", "q": "Mine Or Yours"})
-    found_mine = next(x for x in r_mine.json() if x["resource_id"] == agent_id)
+    r_mine = client.get("/api/v2/explore", params={"type": "agent", "q": "Mine Or Yours"})
+    found_mine = next(x for x in r_mine.json()["items"] if x["resource_id"] == agent_id)
     assert found_mine["starred"] is True
     assert found_mine["stars_count"] == 1
 
     # Otro usuario ve el contador, no la estrella: son cosas distintas.
     _login(client, "starmine_other")
-    r_other = client.get("/api/explore", params={"type": "agent", "q": "Mine Or Yours"})
-    found_other = next(x for x in r_other.json() if x["resource_id"] == agent_id)
+    r_other = client.get("/api/v2/explore", params={"type": "agent", "q": "Mine Or Yours"})
+    found_other = next(x for x in r_other.json()["items"] if x["resource_id"] == agent_id)
     assert found_other["starred"] is False
     assert found_other["stars_count"] == 1
 
@@ -742,13 +742,13 @@ def test_recursos_publicos_de_usuario(client):
     assert any(item["resource_id"] == agent_id for item in legacy.json())
 
     _login(client, "pubresviewer")
-    users = client.get("/api/users", params={"q": user}).json()
+    users = client.get("/api/v2/users", params={"q": user}).json()["items"]
     card = next(item for item in users if item["username"] == user)
     assert card["public_resources_count"] == 1
 
 
 def test_explore_requiere_auth(client):
-    r = client.get("/api/explore")
+    r = client.get("/api/v2/explore")
     assert r.status_code == 401
 
 
@@ -916,6 +916,6 @@ def test_try_requiere_auth(client):
 
 def test_explore_and_feed_reject_negative_pagination(client):
     _login(client, "social_pagevalidator")
-    for path in ("/api/explore", "/api/feed"):
+    for path in ("/api/v2/explore", "/api/v2/feed"):
         assert client.get(path, params={"limit": -1}).status_code == 422
         assert client.get(path, params={"offset": -1}).status_code == 422

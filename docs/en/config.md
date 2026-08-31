@@ -51,6 +51,14 @@ configuration and require a backend restart.
 | `GAIA_DIRECTORY_IMPORT_MAX_DEPTH` | `32` | Maximum segments in a relative path. |
 | `GAIA_DIRECTORY_IMPORT_MAX_PATH_LENGTH` | `500` | Maximum normalized relative-path length. |
 
+### Cursor pagination
+
+| Variable | Default | Description |
+|---|---:|---|
+| `GAIA_CURSOR_TTL_SECONDS` | `3600` | Signed cursor lifetime (minimum 60 s, maximum 24 h). Rotating the session secret invalidates issued cursors. |
+| `GAIA_PAGINATION_TOTAL_TIMEOUT_SECONDS` | `2.0` | Maximum budget for a `COUNT(*)` requested with `include_total=true` (0.05–30 s). |
+| `GAIA_PAGINATION_TOTAL_MAX_CONCURRENCY` | `1` | Maximum concurrent exact totals per worker (1–8). Queueing consumes the same timeout budget and prevents optional counts from occupying the whole pool. |
+
 ### Internal Ollama destinations
 
 | Variable | Default | Description |
