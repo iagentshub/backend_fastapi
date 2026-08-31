@@ -54,12 +54,22 @@ jobs:
       # El GITHUB_TOKEN de este repo no puede disparar workflows en iAgents, y
       # su cron "horario" GitHub lo atrasa de 3 a 7 h: un cambio que solo
       # tocara este repo tardaba media tarde en llegar a la imagen desplegada.
-      # Que falte o caduque el secreto no pone en rojo un build correcto, pero
-      # deja una anotación visible; el cron sigue de respaldo.
+      # Sin secreto es una instalación que no participa en el aviso: anotación y
+      # seguir. Con secreto y respuesta 401/403 el paso falla, porque es una
+      # avería de la cadena de entrega —token caducado o sin permisos— y hoy se
+      # veía igual que no tenerlo: el mismo warning amarillo dentro de un job
+      # verde, que nadie mira. El de app_flutter llevaba meses dando 403 en cada
+      # push sin que constara en ninguna parte. El cron sigue de respaldo.
       - name: Avisar a iAgents para reconstruir la imagen unificada
         env:
           GH_TOKEN: ${{ secrets.IAGENTS_DISPATCH_TOKEN }}
         run: |
-          if [ -z "$GH_TOKEN" ] || ! gh api -X POST repos/iagentshub/iAgents/dispatches -f event_type=upstream-push; then
-            echo "::warning::No se pudo avisar a iAgents; la imagen esperará al cron."
+          if [ -z "$GH_TOKEN" ]; then
+            echo "::warning::Sin IAGENTS_DISPATCH_TOKEN: la imagen esperará al cron."
+            exit 0
+          fi
+          if ! salida=$(gh api -X POST repos/iagentshub/iAgents/dispatches \
+              -f event_type=upstream-push --silent 2>&1); then
+            echo "::error::El aviso a iAgents falló con el token configurado: $salida"
+            exit 1
           fi
