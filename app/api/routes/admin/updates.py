@@ -6,7 +6,7 @@ import os
 import re
 
 import httpx
-from fastapi import BackgroundTasks, Depends
+from fastapi import Depends
 from pydantic import BaseModel
 
 from app.api.routes.admin._router import admin_router
@@ -217,23 +217,38 @@ async def admin_set_auto_update(
 
 
 async def _trigger_watchtower_update(token: str) -> None:
-    """Si Watchtower encuentra una imagen nueva, sustituye ESTE MISMO
-    contenedor a mitad de la petición — por eso se dispara en segundo plano
-    en vez de esperar su respuesta desde el endpoint: perder la conexión aquí
-    es la señal esperada de que se está aplicando, no un fallo real."""
+    """Pide a Watchtower que ejecute la actualización en segundo plano.
+
+    El modo asíncrono de su API responde antes de sustituir este contenedor,
+    pero nos permite distinguir una petición aceptada de un Watchtower parado
+    o ausente. Sin esta comprobación el panel mostraba un falso éxito.
+    """
     try:
-        async with httpx.AsyncClient(timeout=120) as client:
-            await client.post(
-                "http://watchtower:8080/v1/update",
+        async with httpx.AsyncClient(timeout=10) as client:
+            response = await client.post(
+                "http://watchtower:8080/v1/update?async=true",
                 headers={"Authorization": f"Bearer {token}"},
             )
-    except httpx.HTTPError as exc:
-        flog.debug(f"[admin] Watchtower cerró o rechazó la conexión: {exc}")
+    except httpx.RequestError as exc:
+        flog.warning(f"[admin] Watchtower no está accesible: {exc}")
+        raise APIError(
+            503,
+            "update_now_unavailable",
+            "No se puede contactar con Watchtower. En instalaciones de "
+            "producción la imagen se despliega automáticamente mediante "
+            "GitHub Actions; vuelve a comprobar la versión en unos segundos.",
+        ) from exc
+    if response.status_code not in (200, 202):
+        raise APIError(
+            502,
+            "update_now_rejected",
+            f"Watchtower rechazó la actualización (HTTP {response.status_code}).",
+        )
 
 
 @admin_router.post("/update-now")
 async def admin_update_now(
-    background_tasks: BackgroundTasks, _: str = Depends(require_admin)
+    _: str = Depends(require_admin),
 ) -> dict:
     """Fuerza ahora mismo el ciclo de comprobación+actualización que
     Watchtower ejecuta cada WATCHTOWER_INTERVAL segundos, vía su propia API
@@ -251,5 +266,5 @@ async def admin_update_now(
             "compose pull && docker compose up -d) para poder disparar "
             "actualizaciones desde aquí.",
         )
-    background_tasks.add_task(_trigger_watchtower_update, token)
+    await _trigger_watchtower_update(token)
     return {"triggered": True}

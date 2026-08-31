@@ -298,28 +298,41 @@ def test_update_now_triggers_watchtower(admin_client, monkeypatch):
     assert r.status_code == 200
     assert r.json() == {"triggered": True}
     assert calls == [
-        ("http://watchtower:8080/v1/update", {"Authorization": "Bearer secret-token"})
+        (
+            "http://watchtower:8080/v1/update?async=true",
+            {"Authorization": "Bearer secret-token"},
+        )
     ]
 
 
-def test_update_now_swallows_connection_errors(admin_client, monkeypatch):
-    """Watchtower puede sustituir este mismo contenedor a mitad de la
-    petición si aplica una actualización — perder la conexión no debe
-    convertirse en un error de cara al cliente."""
+def test_update_now_reports_unreachable_watchtower(admin_client, monkeypatch):
     monkeypatch.setenv("WATCHTOWER_HTTP_API_TOKEN", "secret-token")
 
     async def fake_post(self, url, **kwargs):
-        raise httpx.ConnectError("conexión perdida")
+        raise httpx.ConnectError("conexión rechazada")
 
     with (
         patch.object(httpx.AsyncClient, "post", new=fake_post),
-        patch("app.api.routes.admin.updates.flog.debug") as debug,
+        patch("app.api.routes.admin.updates.flog.warning") as warning,
     ):
         r = admin_client.post("/api/admin/update-now")
 
-    assert r.status_code == 200
-    assert r.json() == {"triggered": True}
-    assert "Watchtower cerró o rechazó" in debug.call_args.args[0]
+    assert r.status_code == 503
+    assert r.json()["detail"]["code"] == "update_now_unavailable"
+    assert "Watchtower no está accesible" in warning.call_args.args[0]
+
+
+def test_update_now_reports_watchtower_rejection(admin_client, monkeypatch):
+    monkeypatch.setenv("WATCHTOWER_HTTP_API_TOKEN", "secret-token")
+
+    async def fake_post(self, url, **kwargs):
+        return _mock_action_response(401)
+
+    with patch.object(httpx.AsyncClient, "post", new=fake_post):
+        r = admin_client.post("/api/admin/update-now")
+
+    assert r.status_code == 502
+    assert r.json()["detail"]["code"] == "update_now_rejected"
 
 
 def test_update_now_forbidden_for_standard(client, reset_rate_limiter):
