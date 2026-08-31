@@ -1,0 +1,11 @@
+{
+    "schema_version": 2,
+    "commit": "f6daa7baebdefd07dd8501b7ada9b8ab43b6d2dc",
+    "indexed_at": "2026-08-31T09:50:58Z",
+    "project": "C-Users-jariv-Desktop-IAgentsHub-backend_fastapi",
+    "nodes": 8511,
+    "edges": 50880,
+    "original_size": 25296896,
+    "compressed_size": 5203780,
+    "compression_level": 9
+}
