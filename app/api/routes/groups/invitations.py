@@ -20,6 +20,7 @@ from app.auth.auth import (
     get_user_role,
 )
 from app.errors import APIError
+from app.models.request_bodies import GroupInvitationBody
 from app.services.notifications import notify
 
 
@@ -79,12 +80,12 @@ async def list_group_invitations(
 @router.post("/{group_id}/invitations")
 async def invite_member(
     group_id: str,
-    body: Dict[str, Any],
+    body: GroupInvitationBody,
     ctx: GroupContext = Depends(require_group),
 ) -> Dict[str, Any]:
     _assert_not_guest(ctx.user)
     _assert_not_personal_group(group_id, ctx.user)
-    username = str(body.get("username") or "").strip().lower()
+    username = str(body.username or "").strip().lower()
     if not username:
         raise APIError(
             400,
