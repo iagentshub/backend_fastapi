@@ -108,7 +108,7 @@ async def compare_pack_sync_manifest(
             413,
             "file_too_large",
             "El directorio supera los límites de sincronización",
-            extra={"max_total_mb": _PACK_SESSION_MAX_TOTAL_BYTES // (1024 * 1024)},
+            extra={"limit_bytes": _PACK_SESSION_MAX_TOTAL_BYTES},
         )
     existing = {
         str(item["relative_path"]): str(item.get("checksum") or "")
@@ -255,7 +255,7 @@ async def sync_pack(
                 413,
                 "file_too_large",
                 "El directorio supera los límites de sincronización",
-                extra={"max_total_mb": _PACK_SESSION_MAX_TOTAL_BYTES // (1024 * 1024)},
+                extra={"limit_bytes": _PACK_SESSION_MAX_TOTAL_BYTES},
             )
         mime_type = str((declared or {}).get("mime_type") or upload.content_type or "")
         extraction = None

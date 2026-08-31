@@ -185,6 +185,13 @@ _PACK_SESSION_MAX_FILES = 5000
 # subida, que reparte el directorio en muchas peticiones y por eso ningún
 # middleware puede contarlo.
 # Ver docs/adr/011-un-solo-limite-de-tamano-y-lo-pone-el-admin.md
+#
+# Es **defensa del proceso**, no política de producto, y por eso sigue siendo
+# una constante y no un ajuste del panel: acota lo que una sola sesión puede
+# acumular antes de que nadie confirme nada. Un límite que protege la memoria no
+# debe poder subirlo el administrador, que es justo quien lo tocaría el día que
+# algo no cabe. Lo que sí es política —cuánto pesa una petición— lo decide
+# `max_request_bytes`.
 _PACK_SESSION_MAX_TOTAL_BYTES = 500 * 1024 * 1024
 
 
