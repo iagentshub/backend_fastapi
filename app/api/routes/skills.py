@@ -7,6 +7,7 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, Depends, Query, Response
 
 from app.api.routes.auth import GroupContext, require_group_session
+from app.api.routes.labels import validate_labels
 from app.auth.auth import get_user_role
 from app.config.data import SKILLS_DIR
 from app.errors import APIError
@@ -18,9 +19,7 @@ from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
 from app.storage.resource_versions import ResourceVersionStorage
 from app.storage.skill_storage import (
-    SKILL_ASSIGNABLE_LABELS,
     SKILL_CATEGORIES,
-    SKILL_LABELS,
     SkillStorage,
     ensure_origin_label,
 )
@@ -129,48 +128,10 @@ async def save_skill(
         )
     payload.pop("tags", None)
     role = await get_user_role(user)
-    allowed_labels = (
-        SKILL_LABELS
-        if role == "admin"
-        else SKILL_ASSIGNABLE_LABELS | {"community", "fork"}
+    labels = validate_labels(
+        payload.get("labels"), role=role, scope=scope, recurso="La skill"
     )
-    raw_labels = payload.get("labels")
-    if raw_labels is not None:
-        if not isinstance(raw_labels, list):
-            raise APIError(
-                422,
-                "invalid_field",
-                "Las labels deben ser una lista del catálogo del sistema",
-                extra={"field": "labels"},
-            )
-        labels = list(
-            dict.fromkeys(
-                str(label).strip() for label in raw_labels if str(label).strip()
-            )
-        )
-        invalid_labels = [label for label in labels if label not in allowed_labels]
-        if invalid_labels:
-            raise APIError(
-                422,
-                "invalid_field",
-                "La skill contiene labels que no existen en el catálogo del sistema",
-                extra={"field": "labels", "invalid": invalid_labels},
-            )
-        visibility = [label for label in labels if label in {"private", "public"}]
-        environments = [
-            label
-            for label in labels
-            if label in {"production", "staging", "development", "test"}
-        ]
-        if len(visibility) > 1 or len(environments) > 1:
-            raise APIError(
-                422,
-                "invalid_field",
-                "La skill contiene labels mutuamente excluyentes",
-                extra={"field": "labels"},
-            )
-        if not visibility:
-            labels.insert(0, scope if scope in {"private", "public"} else "private")
+    if labels is not None:
         payload["labels"] = labels
     if role != "admin":
         payload["labels"] = ensure_origin_label(

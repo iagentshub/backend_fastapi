@@ -42,37 +42,37 @@ def test_label_links_agent_and_skill_across_types(client):
 def test_label_index_updated_on_relabel(client):
     _login(client, "lblidx_relabel")
     agent = client.post(
-        "/api/agents", json={"name": "Recategorizable", "labels": ["viejo"]}
+        "/api/agents", json={"name": "Recategorizable", "labels": ["draft"]}
     ).json()
     assert any(
-        x["resource_id"] == agent["id"] for x in client.get("/api/labels/viejo").json()
+        x["resource_id"] == agent["id"] for x in client.get("/api/labels/draft").json()
     )
 
     client.post(
         "/api/agents",
-        json={"id": agent["id"], "name": "Recategorizable", "labels": ["nuevo"]},
+        json={"id": agent["id"], "name": "Recategorizable", "labels": ["review"]},
     )
-    assert client.get("/api/labels/viejo").json() == []
+    assert client.get("/api/labels/draft").json() == []
     assert any(
-        x["resource_id"] == agent["id"] for x in client.get("/api/labels/nuevo").json()
+        x["resource_id"] == agent["id"] for x in client.get("/api/labels/review").json()
     )
 
 
 def test_label_index_cleared_on_delete(client):
     _login(client, "lblidx_delete")
     agent = client.post(
-        "/api/agents", json={"name": "Borrable", "labels": ["temporal"]}
+        "/api/agents", json={"name": "Borrable", "labels": ["deprecated"]}
     ).json()
     client.delete(f"/api/agents/{agent['id']}")
-    assert client.get("/api/labels/temporal").json() == []
+    assert client.get("/api/labels/deprecated").json() == []
 
 
 def test_label_scoped_by_owner(client):
     _login(client, "lblidx_alice")
     a = client.post(
-        "/api/agents", json={"name": "De Alice", "labels": ["compartida"]}
+        "/api/agents", json={"name": "De Alice", "labels": ["favorite"]}
     ).json()
 
     _login(client, "lblidx_bob")
-    r = client.get("/api/labels/compartida")
+    r = client.get("/api/labels/favorite")
     assert all(x["resource_id"] != a["id"] for x in r.json())

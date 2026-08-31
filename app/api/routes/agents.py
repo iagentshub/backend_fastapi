@@ -11,6 +11,7 @@ from app.api.routes.auth import (
     GroupContext,
     require_group_session,
 )
+from app.api.routes.labels import validate_labels
 from app.auth.auth import get_user_role
 from app.config.data import AGENTS_DIR, MEMORY_DIR, SKILLS_DIR
 from app.errors import APIError
@@ -37,7 +38,6 @@ from app.storage.memory_storage import MemoryStorage
 from app.storage.prompt_storage import PromptStorage
 from app.storage.resource_versions import ResourceVersionStorage
 from app.storage.skill_storage import (
-    ORIGIN_LABELS,
     SkillStorage,
     ensure_origin_label,
 )
@@ -262,25 +262,6 @@ async def save_agent(
     if scope == "public":
         assert_can_publish(user)
     role = await get_user_role(user)
-    labels = [str(label) for label in (payload.get("labels") or [scope]) if label]
-    invalid = (
-        [] if role == "admin" else [label for label in labels if label == "official"]
-    )
-    if invalid:
-        message = (
-            "El origen del recurso solo puede definirlo un administrador"
-            if any(label in ORIGIN_LABELS for label in invalid)
-            else "El agente contiene labels fuera del catálogo del sistema"
-        )
-        raise APIError(
-            422,
-            "invalid_field",
-            message,
-            extra={"field": "labels", "invalid": invalid},
-        )
-    payload["labels"] = ensure_origin_label(
-        labels, None if role == "admin" else "community"
-    )
     # Restrict editing to owner: if payload has an existing ID owned by someone else, block it
     agent_id_in_payload = payload.get("id")
     existing = None
@@ -299,6 +280,33 @@ async def save_agent(
                     "forbidden",
                     "Solo el propietario puede editar este agente",
                 )
+
+    # Las labels se comprueban después de saber si el recurso se puede escribir:
+    # uno enlazado lleva la etiqueta `linked`, que es del sistema y no está en
+    # el conjunto asignable, así que validando antes se le contestaría que su
+    # etiqueta no existe en el catálogo en vez de que el recurso es de solo
+    # lectura, que es la razón de verdad.
+    #
+    # Antes aquí solo se miraba si alguien se autoproclamaba `official` —lo
+    # importante, y eso sí estaba defendido—, pero el mensaje de error anunciaba
+    # además una comprobación contra el catálogo cuya rama era inalcanzable: la
+    # lista de inválidas no podía contener otra cosa. El campo dejaba de ser el
+    # conjunto cerrado que el resto del sistema da por hecho, y `list[Any]` sin
+    # cota convertía un solo POST en una inserción por etiqueta en
+    # `resource_labels`.
+    # Antes solo miraba si alguien se autoproclamaba `official` —lo importante,
+    # y eso sí estaba defendido—, pero el mensaje de error anunciaba además una
+    # comprobación contra el catálogo cuya rama era inalcanzable: la lista de
+    # inválidas no podía contener otra cosa. El campo dejaba de ser el conjunto
+    # cerrado que el resto del sistema da por hecho, y `list[Any]` sin cota
+    # convertía un solo POST en una inserción por etiqueta en `resource_labels`.
+    labels = validate_labels(
+        payload.get("labels"), role=role, scope=scope, recurso="El agente"
+    )
+    payload["labels"] = ensure_origin_label(
+        labels if labels is not None else [scope],
+        None if role == "admin" else "community",
+    )
     if agent_id_in_payload and not existing:
         # Un id entrante solo es válido para editar una fila existente;
         # en altas el id lo genera siempre el servidor.

@@ -94,13 +94,18 @@ def test_list_agents_with_limit(admin_client):
 
 
 def test_list_agents_with_label_filter(admin_client):
-    """Filtra agentes por label (línea 118)."""
+    """Filtra agentes por label (línea 118).
+
+    La etiqueta sale del catálogo: este test usaba `"special"`, que no existe en
+    él, y pasaba solo porque el agente era el único recurso que no comprobaba el
+    campo. Lo que prueba es el filtro, no que se admita cualquier cadena.
+    """
     admin_client.post(
-        "/api/agents", json={"name": "Special Label Agent", "labels": ["special"]}
+        "/api/agents", json={"name": "Special Label Agent", "labels": ["favorite"]}
     )
     admin_client.post("/api/agents", json={"name": "Unlabeled Coverage Agent"})
 
-    r = admin_client.get("/api/agents", params={"label": "special"})
+    r = admin_client.get("/api/agents", params={"label": "favorite"})
     assert r.status_code == 200
     names = [a["name"] for a in r.json()]
     assert "Special Label Agent" in names
@@ -287,11 +292,11 @@ def test_guest_list_agents_with_label_filter(client):
     """Guest: filtrar por label (línea 99)."""
     _setup_guest(client)
     r = client.post(
-        "/api/agents", json={"name": "Guest Labeled", "labels": ["g-label"]}
+        "/api/agents", json={"name": "Guest Labeled", "labels": ["favorite"]}
     )
     assert r.status_code == 200
 
-    r2 = client.get("/api/agents", params={"label": "g-label"})
+    r2 = client.get("/api/agents", params={"label": "favorite"})
     assert r2.status_code == 200
     names = [a["name"] for a in r2.json()]
     assert "Guest Labeled" in names

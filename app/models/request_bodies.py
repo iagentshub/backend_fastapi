@@ -169,7 +169,14 @@ class ResourcePayload(ExtensibleRequestBody):
     id: str | None = None
     name: str | None = None
     description: str | None = None
-    labels: list[Any] | None = None
+    # El catálogo cerrado tiene 26 entradas, así que 64 sobra para cualquier
+    # recurso legítimo. La cota va aquí y no en cada router porque es el sitio
+    # barato —pydantic rechaza antes de tocar la base de datos— y porque
+    # `sync_labels` hace un INSERT por etiqueta distinta: sin cota, un solo POST
+    # con cien mil etiquetas son cien mil inserciones dentro de la transacción
+    # del guardado, y el techo de cuerpo que lo frenaría (`max_request_bytes`)
+    # vale 0 por defecto.
+    labels: list[Any] | None = Field(default=None, max_length=64)
     tags: Any = None
     scope: str | None = None
     is_active: bool | None = None
