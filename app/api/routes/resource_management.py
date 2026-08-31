@@ -6,7 +6,7 @@ import asyncio
 import json
 from typing import Any, Dict, Literal
 
-from fastapi import APIRouter, Depends, Request
+from fastapi import APIRouter, Depends, Query, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -19,6 +19,8 @@ from app.auth.auth import get_user_role
 from app.config.data import AGENTS_DIR, SKILLS_DIR
 from app.errors import APIError
 from app.models.llm_orchestration import orchestration_id_from_connection
+from app.pagination.http import publish_offset_page
+from app.pagination.models import OffsetParams
 from app.services.connection_access import connection_access
 from app.services.tool_access import resolve_accessible_tools
 from app.services.workflow_errors import WorkflowPublicError, workflow_error_event
@@ -101,10 +103,26 @@ async def _owned_resource(
 async def versions(
     resource_type: str,
     resource_id: str,
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    response: Response = None,  # type: ignore[assignment]
     ctx: GroupContext = Depends(require_group_session),
 ) -> list[Dict[str, Any]]:
+    """Historial de un recurso, de la versión más reciente a la más antigua.
+
+    Era la última ruta de listado que quedó sin paginar. Devuelve solo metadatos
+    —id, versión, autor, motivo, fecha—, así que no arrastraba los snapshots,
+    pero tampoco tenía cota.
+    """
     await _owned_resource(resource_type, resource_id, ctx.group_id)
-    return await _versions.list(resource_type, resource_id, ctx.group_id)
+    page = await _versions.list(
+        resource_type,
+        resource_id,
+        ctx.group_id,
+        page=OffsetParams(limit=limit, offset=offset),
+    )
+    publish_offset_page(response, page)
+    return list(page.items)
 
 
 @router.get("/resources/{resource_type}/{resource_id}/versions/{version}")
