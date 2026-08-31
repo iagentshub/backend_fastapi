@@ -9,6 +9,7 @@ test_connection no-provider, delete no-admin, tokens-daily.
 from __future__ import annotations
 
 import asyncio
+from datetime import date, timedelta
 from unittest.mock import AsyncMock, MagicMock, patch
 
 _CONN_OPENAI = {
@@ -749,12 +750,13 @@ def test_get_tokens_daily_with_data(client):
 
     user = asyncio.run(get_user_by_username(username))
     assert user is not None
+    recent_day = (date.today() - timedelta(days=1)).isoformat()
 
     async def _insert():
         async with open_db() as db:
             await db.execute(
                 "INSERT OR IGNORE INTO token_daily (day, owner_id, tokens) VALUES (?, ?, ?)",
-                ("2026-06-01", user["id"], 1500),
+                (recent_day, user["id"], 1500),
             )
             await db.commit()
 
@@ -764,7 +766,7 @@ def test_get_tokens_daily_with_data(client):
     data = r.json()
     assert isinstance(data, list)
     days = [item["day"] for item in data]
-    assert "2026-06-01" in days
+    assert recent_day in days
 
 
 def test_get_tokens_daily_days_extreme_values(client):
