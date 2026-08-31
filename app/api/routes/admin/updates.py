@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 import os
 import re
+from urllib.parse import urlsplit
 
 import httpx
 from fastapi import Depends
@@ -87,6 +89,34 @@ async def _latest_github_commit_sha(repo: str, branch: str = "main") -> str | No
             return resp.json().get("sha")
     except httpx.HTTPError:
         return None
+
+
+async def auto_update_available() -> bool:
+    """Si esta instalación puede de verdad controlar Watchtower desde el panel.
+
+    No basta con que DOCKER_PROXY_URL esté definida: el compose de producción
+    la define igual, pero deja "docker-proxy" y "watchtower" en el perfil
+    `manual-updates` y deploy.sh los para — allí las actualizaciones las
+    despliega GitHub Actions con un tag inmutable. Sin esta comprobación el
+    panel pintaba un interruptor encendido (el valor persistido, que por
+    defecto es True) sobre un contenedor que no existía: mentía en reposo y
+    solo respondía 502 cuando alguien lo tocaba.
+
+    Se prueba el proxy y no Watchtower a propósito: que Watchtower esté parado
+    es justo lo que significa el interruptor en OFF, no que falte la función.
+    """
+    parsed = urlsplit(os.environ.get("DOCKER_PROXY_URL", ""))
+    if not parsed.hostname:
+        return False
+    try:
+        _, writer = await asyncio.wait_for(
+            asyncio.open_connection(parsed.hostname, parsed.port or 2375),
+            timeout=1.0,
+        )
+    except (OSError, asyncio.TimeoutError):
+        return False
+    writer.close()
+    return True
 
 
 @admin_router.get("/check-update")

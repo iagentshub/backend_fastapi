@@ -477,3 +477,45 @@ def test_generic_platform_put_cannot_change_auto_update(admin_client, monkeypatc
     assert r.status_code == 200
     after = admin_client.get("/api/settings/platform").json()["auto_update_enabled"]
     assert after == before
+
+
+def test_platform_marca_auto_update_no_disponible_sin_proxy(admin_client, monkeypatch):
+    """Sin DOCKER_PROXY_URL no hay forma de arrancar ni parar Watchtower, así
+    que el panel no debe ofrecer el interruptor."""
+    monkeypatch.delenv("DOCKER_PROXY_URL", raising=False)
+    r = admin_client.get("/api/settings/platform")
+    assert r.status_code == 200
+    assert r.json()["auto_update_available"] is False
+
+
+def test_platform_marca_auto_update_no_disponible_si_el_proxy_no_responde(
+    admin_client, monkeypatch
+):
+    """El caso de producción: la variable está puesta, pero "docker-proxy" vive
+    en el perfil `manual-updates` y no se ha arrancado. El interruptor salía
+    encendido —su valor persistido por defecto— sobre un contenedor ausente."""
+    monkeypatch.setenv("DOCKER_PROXY_URL", "http://docker-proxy:2375")
+
+    async def refuse(*args, **kwargs):
+        raise OSError("Name or service not known")
+
+    monkeypatch.setattr("asyncio.open_connection", refuse)
+    r = admin_client.get("/api/settings/platform")
+    assert r.status_code == 200
+    assert r.json()["auto_update_available"] is False
+    # El valor persistido sigue intacto: se oculta el control, no se reescribe.
+    assert r.json()["auto_update_enabled"] is True
+
+
+def test_platform_marca_auto_update_disponible_si_el_proxy_acepta(
+    admin_client, monkeypatch
+):
+    monkeypatch.setenv("DOCKER_PROXY_URL", "http://docker-proxy:2375")
+
+    async def accept(host, port):
+        assert (host, port) == ("docker-proxy", 2375)
+        return MagicMock(), MagicMock()
+
+    monkeypatch.setattr("asyncio.open_connection", accept)
+    r = admin_client.get("/api/settings/platform")
+    assert r.json()["auto_update_available"] is True

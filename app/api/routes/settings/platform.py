@@ -174,10 +174,22 @@ async def get_platform_config_public() -> dict:
     }
 
 
+async def _with_auto_update_available(cfg: dict) -> dict:
+    """`cfg` más la capacidad real de gobernar Watchtower desde el panel.
+
+    Va aquí y no en `_read_platform_cfg` porque es un dato calculado, no
+    persistido: `_write_platform_cfg` recibe justo lo que devuelve esa
+    función y acabaría escribiendo la sonda en settings.json.
+    """
+    from app.api.routes.admin.updates import auto_update_available
+
+    return {**cfg, "auto_update_available": await auto_update_available()}
+
+
 @router.get("/platform")
 async def get_platform_config(_: str = Depends(require_admin)) -> dict:
     """Devuelve la configuración global de la plataforma (solo admin)."""
-    return _read_platform_cfg()
+    return await _with_auto_update_available(_read_platform_cfg())
 
 
 @router.put("/platform")
@@ -264,4 +276,6 @@ async def update_platform_config(
 
     cfg.update(update)
     _write_platform_cfg(cfg)
-    return cfg
+    # El cliente repinta la pestaña con esta respuesta: sin el flag, guardar
+    # cualquier otro campo hacía desaparecer la tarjeta de actualizaciones.
+    return await _with_auto_update_available(cfg)

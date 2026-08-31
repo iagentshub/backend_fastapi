@@ -50,3 +50,16 @@ jobs:
           labels: ${{ steps.meta.outputs.labels }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+      # El GITHUB_TOKEN de este repo no puede disparar workflows en iAgents, y
+      # su cron "horario" GitHub lo atrasa de 3 a 7 h: un cambio que solo
+      # tocara este repo tardaba media tarde en llegar a la imagen desplegada.
+      # continue-on-error a propósito — que falte el secreto no puede poner en
+      # rojo un build correcto, y el cron sigue de respaldo.
+      - name: Avisar a iAgents para reconstruir la imagen unificada
+        continue-on-error: true
+        env:
+          GH_TOKEN: ${{ secrets.IAGENTS_DISPATCH_TOKEN }}
+        run: |
+          test -n "$GH_TOKEN"
+          gh api -X POST repos/iagentshub/iAgents/dispatches -f event_type=upstream-push
