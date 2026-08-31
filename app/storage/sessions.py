@@ -45,6 +45,7 @@ REASON_LOGOUT_ALL = "logout_all"
 REASON_MANUAL = "revoked_by_user"
 REASON_PASSWORD = "password_changed"
 REASON_ACCOUNT_DISABLED = "account_disabled"
+REASON_ROLE_DOWNGRADED = "role_downgraded"
 REASON_REFRESH_REUSE = "refresh_reuse"
 
 

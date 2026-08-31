@@ -44,7 +44,6 @@ from app.services.knowledge_pack_listing import (
 )
 from app.services.log_listing import build_log_where, list_logs_cursor
 from app.services.metadata_cursor_listing import (
-    ADMIN_HIDDEN_COLUMNS,
     list_metadata_cursor,
 )
 from app.services.user_directory_listing import list_user_directory_cursor
@@ -325,7 +324,6 @@ async def list_admin_metadata_table_v2(
             admin=admin,
             table_name=table_name,
             query=q,
-            hidden_columns=ADMIN_HIDDEN_COLUMNS,
             page=page,
         )
     except (ExactTotalTimeout, ValueError) as exc:

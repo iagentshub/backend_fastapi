@@ -1,3 +1,8 @@
+-- sensitive-columns: endpoint, p256dh, auth
+-- Las claves de cifrado del navegador (RFC 8291) y su endpoint. Estas tres
+-- juntas son exactamente lo que hace falta para mandarle notificaciones a
+-- alguien haciéndose pasar por la aplicación, así que no son como los hashes
+-- de arriba: se pueden usar tal cual, no hay que reconstruir nada.
 -- A dónde empujar un aviso. Una fila por navegador o dispositivo, no por
 -- usuario: la misma persona tiene el portátil, el móvil y el trabajo, y espera
 -- que le salte en los tres.

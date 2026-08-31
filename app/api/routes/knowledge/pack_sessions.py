@@ -127,7 +127,7 @@ async def upload_pack_session_file(
             413,
             "file_too_large",
             "El pack supera el límite total de 500 MB",
-            extra={"max_total_mb": _PACK_SESSION_MAX_TOTAL_BYTES // (1024 * 1024)},
+            extra={"limit_bytes": _PACK_SESSION_MAX_TOTAL_BYTES},
         )
     client_checksum = reported_checksum.strip().lower()
     if client_checksum and not _valid_sha256(client_checksum):

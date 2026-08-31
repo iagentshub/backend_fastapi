@@ -106,3 +106,49 @@ async def test_al_topar_la_purga_libera_hueco(tmp_data_dir, monkeypatch):
     tercero = await create_guest_user()
 
     assert await get_user_by_identity(tercero) is not None
+
+
+@pytest.mark.asyncio
+async def test_altas_simultaneas_no_se_pasan_del_tope(tmp_data_dir, monkeypatch):
+    """El punto 22 quitó el factor workers y dejó la misma carrera en pequeño.
+
+    El COUNT y el INSERT viajaban por conexiones distintas, así que N altas
+    simultáneas leían todas el mismo recuento y entraban todas: el tope se
+    rebasaba en tantos como peticiones coincidieran en la ventana. Y el bloque
+    que parecía comprobar junto al INSERT releía una variable de Python.
+
+    Cada invitado de más no es solo una fila en `users`: arrastra todo lo que
+    cree en su sesión, y el tope es la única pieza que dimensiona la demo.
+    """
+    import asyncio
+
+    from app.errors import APIError
+    from app.sql import sql
+    from app.storage.db import open_db
+
+    monkeypatch.setattr(guest_mod, "MAX_SESSIONS", 3)
+
+    async def intentar():
+        try:
+            return await create_guest_user()
+        except APIError:
+            return None
+
+    resultados = await asyncio.gather(*(intentar() for _ in range(12)))
+
+    async with open_db() as conn:
+        activos = await conn.fetchval(sql("queries/guest:count_guests"))
+
+    assert activos == 3, f"el tope se rebasó: {activos} invitados con MAX_SESSIONS=3"
+    assert len([r for r in resultados if r]) == 3
+
+
+@pytest.mark.asyncio
+async def test_el_tope_a_cero_desactiva_el_invitado(tmp_data_dir, monkeypatch):
+    """Desactivar el modo invitado no puede depender de la forma del chequeo."""
+    from app.errors import APIError
+
+    monkeypatch.setattr(guest_mod, "MAX_SESSIONS", 0)
+    with pytest.raises(APIError) as exc:
+        await create_guest_user()
+    assert exc.value.status_code == 503

@@ -41,7 +41,11 @@ from app.config.data import DATA_DIR
 from app.sql import sql
 from app.storage.db import IS_PG, open_db
 from app.storage.guest import is_guest
-from app.storage.sessions import REASON_ACCOUNT_DISABLED, REASON_PASSWORD
+from app.storage.sessions import (
+    REASON_ACCOUNT_DISABLED,
+    REASON_PASSWORD,
+    REASON_ROLE_DOWNGRADED,
+)
 from app.utils import flog
 from app.utils.generators import generate_date, generate_id
 from app.utils.validation import is_valid_username, normalize_username
@@ -329,10 +333,11 @@ async def admin_update_user(username: str, **fields) -> bool:
     clauses = [(sql, fields[col]) for col, sql in _ADMIN_SQL.items() if col in fields]
     if not clauses:
         return True
+    from app.auth.roles import rank_of
+
     async with open_db() as conn:
-        if not await conn.fetchone(
-            sql("queries/auth:username_exists"), (username,)
-        ):
+        actual = await conn.fetchone(sql("queries/auth:role_by_username"), (username,))
+        if actual is None:
             return False
         await conn.execute(
             "UPDATE users SET "
@@ -342,16 +347,30 @@ async def admin_update_user(username: str, **fields) -> bool:
         )
         # Desactivar una cuenta corta sus sesiones ahora, no cuando caduque la
         # caché de 60 s de _get_user_auth_state — y, sobre todo, se lleva por
-        # delante el refresh, que esa caché no mira. El cambio de rol no revoca:
-        # el rol se lee de la fila de usuario en cada request (con esa misma
-        # caché), así que ya se aplica solo, y expulsar a alguien por darle
-        # permisos sería desconcertante.
+        # delante el refresh, que esa caché no mira.
+        #
+        # El cambio de rol es asimétrico y aquí solo estaba pensado la mitad:
+        # ascender no expulsa —echar a alguien por darle permisos sería
+        # desconcertante— pero degradar sí. El rol se lee de esa misma caché de
+        # 60 s, que es por proceso, así que sin revocar la retirada de admin
+        # tardaba hasta un minuto y cada worker la aplicaba por su cuenta: dos
+        # peticiones seguidas del mismo cliente podían responder 403 una y 200
+        # la otra según a qué worker cayeran. Revocar no depende de ninguna
+        # caché —`is_live` consulta la fila de sesión en cada request— así que
+        # se aplica igual en los cuatro.
+        motivo = None
         if fields.get("is_active") in (0, False):
+            motivo = REASON_ACCOUNT_DISABLED
+        elif "role" in fields and rank_of(str(fields["role"])) < rank_of(
+            str(actual["role"] or "standard")
+        ):
+            motivo = REASON_ROLE_DOWNGRADED
+        if motivo:
             await conn.execute(
                 sql("queries/sessions:revoke_sessions_by_identity"),
                 (
                     generate_date(),
-                    REASON_ACCOUNT_DISABLED,
+                    motivo,
                     username,
                     normalize_username(username),
                 ),

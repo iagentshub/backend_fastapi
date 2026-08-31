@@ -3,6 +3,12 @@
 Los límites son la defensa contra un repositorio hostil: un JSON enorme, un
 archivo que se descomprime hasta llenar el disco o un árbol con cien mil
 ficheros. Van juntos y en un solo sitio porque se revisan juntos.
+
+Son **defensa del proceso**, no política de producto, y por eso ninguno es
+configurable desde el panel: lo que un administrador puede subir es el tamaño de
+una petición (`max_request_bytes`), no cuánto está dispuesto este proceso a
+descomprimir en memoria. Distinguir las dos clases es lo que evita que la
+siguiente cifra se escriba sin saber a cuál pertenece.
 """
 
 

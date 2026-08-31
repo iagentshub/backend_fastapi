@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import re
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 from app.sql import sql
 
@@ -30,6 +30,14 @@ class PromptStorage(ScopedResourcePaginationMixin, ResourceStorage):
 
     table = "prompts"
     resource_type = "prompt"
+    # Los cuatro identificadores del listado, literales para que las guardas
+    # de SQL los sigan viendo. La lógica del método vive en ResourceStorage.
+    list_queries = {
+        "public": "queries/prompts:list_public",
+        "private_by_owner": "queries/prompts:list_private_by_owner",
+        "private": "queries/prompts:list_private",
+        "all": "queries/prompts:list_all",
+    }
 
     def _page_spec(self) -> ScopedResourcePageSpec:
         return ScopedResourcePageSpec(
@@ -119,26 +127,6 @@ class PromptStorage(ScopedResourcePaginationMixin, ResourceStorage):
 
     # ── public API ───────────────────────────────────────────────────────────
 
-    async def list(
-        self, scope: str = "all", owner_id: Optional[str] = None
-    ) -> List[Dict[str, Any]]:
-        await self._ensure_migrated()
-
-        async with open_db() as conn:
-            if scope == "public":
-                rows = await conn.fetchall(sql("queries/prompts:list_public"))
-            elif scope == "private":
-                if owner_id:
-                    rows = await conn.fetchall(
-                        sql("queries/prompts:list_private_by_owner"),
-                        (owner_id,),
-                    )
-                else:
-                    rows = await conn.fetchall(sql("queries/prompts:list_private"))
-            else:  # all
-                rows = await conn.fetchall(sql("queries/prompts:list_all"))
-        return [self._row_to_dict(r, include_content=False) for r in rows]
-
     async def get(
         self, scope: str, prompt_id: str, owner_id: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
@@ -158,16 +146,6 @@ class PromptStorage(ScopedResourcePaginationMixin, ResourceStorage):
                 params,
             )
         return self._row_to_dict(row) if row else None
-
-    async def get_any(
-        self, prompt_id: str, owner_id: Optional[str] = None
-    ) -> Optional[Dict[str, Any]]:
-        """Fetch a prompt from any scope — public first, then private."""
-        for scope in ("public", "private"):
-            result = await self.get(scope, prompt_id, owner_id=owner_id)
-            if result:
-                return result
-        return None
 
     async def find_by_alias(
         self, alias: str, owner_id: Optional[str] = None

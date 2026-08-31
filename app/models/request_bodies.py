@@ -25,6 +25,54 @@ class ExtensibleRequestBody(RequestBody):
     model_config = ConfigDict(extra="allow")
 
 
+# Los cinco cuerpos de `groups/`, que se quedaron como `Dict[str, Any]` cuando
+# el resto del backend pasó a pydantic. No es «parsear a mano» —FastAPI ya
+# rechaza un cuerpo que no sea objeto— pero producía los mismos efectos: en el
+# esquema OpenAPI eran un objeto libre, o sea que estos cinco endpoints no
+# estaban ni en el único contrato que se genera solo.
+#
+# Los campos van sin `Literal` ni `max_length` a propósito: las comprobaciones
+# de dominio se quedan en el handler porque cada una tiene su código de error
+# —`name_too_long`, `invalid_field`, `role_or_permissions_required`— y pasarlas
+# a pydantic las convertiría a todas en el 422 genérico, cambiando el contrato
+# que los clientes ya leen.
+
+# El tope del nombre vivía escrito dos veces dentro de los handlers de crear y
+# de renombrar, que es donde peor se encuentra.
+GROUP_NAME_MAX_LENGTH = 80
+GROUP_ROLES = ("owner", "admin", "member")
+
+
+class GroupBody(RequestBody):
+    """Alta y renombrado de un grupo."""
+
+    name: str | None = None
+
+
+class GroupMemberBody(RequestBody):
+    """Alta directa de un miembro."""
+
+    username: str | None = None
+    role: str | None = None
+
+
+class GroupMemberUpdateBody(RequestBody):
+    """Cambio de rol, de permisos, o de los dos.
+
+    `model_fields_set` distingue «no lo mandó» de «lo mandó vacío», que es lo
+    que antes hacía el `"role" in body`.
+    """
+
+    role: str | None = None
+    permissions: dict[str, Any] | None = None
+
+
+class GroupInvitationBody(RequestBody):
+    """Invitación por nombre de usuario."""
+
+    username: str | None = None
+
+
 class AccountBody(RequestBody):
     provider: str | None = None
     api_key: str | None = None
@@ -169,7 +217,14 @@ class ResourcePayload(ExtensibleRequestBody):
     id: str | None = None
     name: str | None = None
     description: str | None = None
-    labels: list[Any] | None = None
+    # El catálogo cerrado tiene 26 entradas, así que 64 sobra para cualquier
+    # recurso legítimo. La cota va aquí y no en cada router porque es el sitio
+    # barato —pydantic rechaza antes de tocar la base de datos— y porque
+    # `sync_labels` hace un INSERT por etiqueta distinta: sin cota, un solo POST
+    # con cien mil etiquetas son cien mil inserciones dentro de la transacción
+    # del guardado, y el techo de cuerpo que lo frenaría (`max_request_bytes`)
+    # vale 0 por defecto.
+    labels: list[Any] | None = Field(default=None, max_length=64)
     tags: Any = None
     scope: str | None = None
     is_active: bool | None = None

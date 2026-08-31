@@ -11,18 +11,19 @@ from app.pagination.models import CursorPage, CursorParams
 from app.sql import sql
 from app.storage.composite_cursor_page import KeysetColumn, fetch_composite_cursor_page
 from app.storage.db import IS_PG, open_db
+from app.storage.schema import columnas_sensibles
 
-ADMIN_HIDDEN_COLUMNS = frozenset(
-    {
-        "password_hash",
-        "token",
-        "reset_token",
-        "verification_token",
-        "deletion_token",
-        "jwt_secret",
-        "stripe_secret_key",
-    }
-)
+# Cuánto de un valor binario se resume en lugar de volcarlo. Las filas se
+# serializaban tal cual, así que abrir `user_avatars` devolvía las imágenes
+# convertidas a la representación de texto de sus bytes.
+_RESUMEN_BINARIO = "@{n} bytes@"
+
+
+def _valor_visible(valor: Any) -> Any:
+    """El contenido de una columna, o su tamaño si es binaria."""
+    if isinstance(valor, (bytes, bytearray, memoryview)):
+        return _RESUMEN_BINARIO.format(n=len(bytes(valor)))
+    return valor
 
 
 @dataclass(frozen=True, slots=True)
@@ -70,9 +71,20 @@ async def list_metadata_cursor(
     admin: str,
     table_name: str,
     query: str | None,
-    hidden_columns: frozenset[str],
     page: CursorParams,
 ) -> MetadataCursorResult:
+    """Página de una tabla, con las columnas sensibles fuera.
+
+    Lo sensible se declara con `-- sensitive-columns:` en el propio DDL, el
+    mismo mecanismo que `-- gdpr-identity:`. Aquí había una lista negra de siete
+    nombres literales, y una lista negra de secretos solo es correcta el día que
+    se escribe: desde entonces habían entrado `refresh_hash`, `token_hash`,
+    `code_hash`, `p256dh` y `auth` —ninguna lleva «token» ni «secret» como
+    nombre completo—, y dos de los siete ya no correspondían a ninguna columna.
+    La columna nueva se declara donde se crea, no en un fichero que hay que
+    acordarse de visitar.
+    """
+    hidden_columns = columnas_sensibles().get(table_name, frozenset())
     async with open_db() as conn:
         if table_name not in await _tables(conn):
             raise APIError(
@@ -125,6 +137,6 @@ async def list_metadata_cursor(
             context=context,
             resource="admin_metadata",
             page=page,
-            decode=lambda row: [row[column] for column in exposed],
+            decode=lambda row: [_valor_visible(row[column]) for column in exposed],
         )
     return MetadataCursorResult(columns=exposed, page=result)

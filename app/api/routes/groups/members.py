@@ -22,6 +22,11 @@ from app.auth.auth import (
     get_user_role,
 )
 from app.errors import APIError
+from app.models.request_bodies import (
+    GROUP_ROLES,
+    GroupMemberBody,
+    GroupMemberUpdateBody,
+)
 from app.services.notifications import notify
 
 
@@ -52,13 +57,16 @@ async def list_members(
 @router.post("/{group_id}/members")
 async def add_member(
     group_id: str,
-    body: Dict[str, Any],
+    body: GroupMemberBody,
     ctx: GroupContext = Depends(require_group),
 ) -> Dict[str, Any]:
     _assert_not_guest(ctx.user)
     _assert_not_personal_group(group_id, ctx.user)
-    username = str(body.get("username") or "").strip()
-    role = str(body.get("role") or "member").strip()
+    # Sin `.lower()`, al contrario que la invitación. Da igual quién gane:
+    # `get_user_by_username` normaliza con `normalize_username`, que ya baja a
+    # minúsculas, así que las dos formas resuelven el mismo usuario.
+    username = str(body.username or "").strip()
+    role = str(body.role or "member").strip()
     if not username:
         raise APIError(
             400,
@@ -66,7 +74,7 @@ async def add_member(
             "El username es obligatorio",
             extra={"field": "username"},
         )
-    if role not in ("owner", "admin", "member"):
+    if role not in GROUP_ROLES:
         raise APIError(400, "invalid_field", "Rol inválido", extra={"field": "role"})
     if (
         not await _groups.can_manage(group_id, ctx.user)
@@ -137,19 +145,19 @@ async def remove_member(
 async def update_member_role(
     group_id: str,
     username: str,
-    body: Dict[str, Any],
+    body: GroupMemberUpdateBody,
     ctx: GroupContext = Depends(require_group),
 ) -> Dict[str, Any]:
     _assert_not_guest(ctx.user)
     _assert_not_personal_group(group_id, ctx.user)
-    has_role = "role" in body
-    role = str(body.get("role") or "").strip()
-    permissions = body.get("permissions")
+    has_role = "role" in body.model_fields_set
+    role = str(body.role or "").strip()
+    permissions = body.permissions
     if not has_role and permissions is None:
         raise APIError(
             422, "role_or_permissions_required", "Rol o permisos obligatorios"
         )
-    if has_role and role not in ("owner", "admin", "member"):
+    if has_role and role not in GROUP_ROLES:
         raise APIError(400, "invalid_field", "Rol inválido", extra={"field": "role"})
     if permissions is not None and not isinstance(permissions, dict):
         raise APIError(

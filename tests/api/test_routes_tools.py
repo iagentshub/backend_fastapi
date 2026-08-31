@@ -278,7 +278,10 @@ def test_restore_binary_rolls_back_if_history_write_fails(admin_client, monkeypa
         raise APIError(503, "internal_error", "No se pudo registrar la versión")
 
     monkeypatch.setattr(
-        "app.api.routes.resource_management._versions.create",
+        # El historial vive en su propio módulo desde que resource_management.py
+        # se partió en dos; el nombre viejo seguía existiendo allí sin usarse, y
+        # parchearlo dejaba el test pasando por donde ya no pasa nada.
+        "app.api.routes.resource_versions_history._versions.create",
         fail_version,
     )
     response = admin_client.post(

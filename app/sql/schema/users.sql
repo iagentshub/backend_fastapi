@@ -1,3 +1,6 @@
+-- sensitive-columns: password_hash, verification_token, reset_token, deletion_token
+-- El hash de la contraseña y los tres tokens de un solo uso: verificar el
+-- correo, restablecer la contraseña y confirmar el borrado de la cuenta.
 CREATE TABLE IF NOT EXISTS users (
     id                    TEXT PRIMARY KEY,
     username              TEXT UNIQUE NOT NULL,

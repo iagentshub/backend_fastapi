@@ -39,7 +39,10 @@ DEUDA = {
     "llm_orchestrations.py:list_llm_orchestrations",
     "memory.py:list_memory",
     "resource_executions.py:list_resource_executions",
-    "resource_management.py:versions",
+    # El historial se movió a su propio módulo y quedó acotado por el tope de
+    # versiones por recurso (`app/config/resource_versions.py`), así que su
+    # tamaño ya no depende de cuánto se edite un recurso.
+    "resource_versions_history.py:versions",
     "resource_management.py:list_workflows",
     # Catálogos y agregados de tamaño fijo, no tablas que crezcan.
     "admin/official_sources.py:admin_list_official_sources",

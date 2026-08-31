@@ -22,7 +22,12 @@ from app.auth.auth import (
 from app.auth.passwords import decode_claims
 from app.auth.sessions import reissue_access
 from app.errors import APIError
-from app.models.request_bodies import StatusBody, UsernameBody
+from app.models.request_bodies import (
+    GROUP_NAME_MAX_LENGTH,
+    GroupBody,
+    StatusBody,
+    UsernameBody,
+)
 from app.services.notifications import notify
 
 
@@ -47,21 +52,21 @@ async def list_groups(
 
 @router.post("")
 async def create_group(
-    body: Dict[str, Any],
+    body: GroupBody,
     ctx: GroupContext = Depends(require_group),
 ) -> Dict[str, Any]:
     _assert_not_guest(ctx.user)
-    name = str(body.get("name") or "").strip()
+    name = str(body.name or "").strip()
     if not name:
         raise APIError(
             400, "field_required", "El nombre es obligatorio", extra={"field": "name"}
         )
-    if len(name) > 80:
+    if len(name) > GROUP_NAME_MAX_LENGTH:
         raise APIError(
             400,
             "name_too_long",
-            "El nombre no puede superar los 80 caracteres",
-            extra={"max_length": 80},
+            f"El nombre no puede superar los {GROUP_NAME_MAX_LENGTH} caracteres",
+            extra={"max_length": GROUP_NAME_MAX_LENGTH},
         )
     group = await _groups.create(name, created_by=ctx.user)
     return {**group, "type": "team", "active": False}
@@ -69,7 +74,7 @@ async def create_group(
 @router.patch("/{group_id}")
 async def update_group(
     group_id: str,
-    body: Dict[str, Any],
+    body: GroupBody,
     ctx: GroupContext = Depends(require_group),
 ) -> Dict[str, Any]:
     _assert_not_guest(ctx.user)
@@ -77,7 +82,7 @@ async def update_group(
         raise APIError(
             400, "personal_group_forbidden", "El grupo Personal no se puede renombrar"
         )
-    name = str(body.get("name") or "").strip()
+    name = str(body.name or "").strip()
     if not name:
         raise APIError(
             400, "field_required", "El nombre es obligatorio", extra={"field": "name"}

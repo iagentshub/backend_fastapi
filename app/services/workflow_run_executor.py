@@ -159,9 +159,22 @@ async def workflow_run_maintenance_loop() -> None:
     purge_tick = 0
     while True:
         await asyncio.sleep(WORKFLOW_TICK_SECONDS)
-        await _storage.fail_stale()
-        purge_tick += 1
-        if purge_tick >= cada:
-            purge_tick = 0
-            await _storage.purge()
-            await _executions.purge_stale()
+        try:
+            await _storage.fail_stale()
+            purge_tick += 1
+            if purge_tick >= cada:
+                purge_tick = 0
+                await _storage.purge()
+                await _executions.purge_stale()
+        except Exception as exc:  # noqa: BLE001
+            # Los otros tres bucles de fondo ya lo tenían y este no: las dos
+            # llamadas van a la base de datos, y un `database is locked` o una
+            # conexión caída en un reinicio de PostgreSQL sacaba la excepción
+            # del `while` y terminaba la tarea. Sin reintento y sin una línea en
+            # el log, porque la tupla de `_lifespan` mantiene viva la tarea y su
+            # excepción no se recoge hasta el apagado, que la descarta.
+            #
+            # Con el bucle muerto, una ejecución cuyo worker murió se queda «en
+            # curso» para siempre en la pantalla de workflows, que es un estado
+            # que el usuario no puede resolver de ninguna manera.
+            flog.error(f"[workflow] Error en la ronda de mantenimiento: {exc}")

@@ -726,6 +726,77 @@ def test_webhook_fallo_del_manejador_permite_reintento(client):
     assert mock_handle.call_count == 2
 
 
+def _evento_suscripcion(event_id, sub_id, *, unit_amount=None, quantity=1, status="active", tipo="customer.subscription.updated", customer="cus_imp"):
+    """Evento con items como los manda Stripe: el precio vive en price.unit_amount."""
+    item = {"id": "si_1", "quantity": quantity, "price": {"id": "price_x"}}
+    if unit_amount is not None:
+        item["price"]["unit_amount"] = unit_amount
+    return {
+        "id": event_id,
+        "object": "event",
+        "type": tipo,
+        "data": {"object": {
+            "id": sub_id,
+            "customer": customer,
+            "status": status,
+            "cancel_at_period_end": False,
+            "current_period_end": 1893456000,
+            "metadata": {"username": "alice", "tier": "developer", "seats": str(quantity), "interval": "month", "self_hosted": "0"},
+            "items": {"data": [item]},
+        }},
+    }
+
+
+def _enviar(client, event):
+    payload = json.dumps(event).encode()
+    with patch.object(billing_webhook, "STRIPE_WEBHOOK_SECRET", _WEBHOOK_SECRET):
+        sig_header = _sign_payload(payload, _WEBHOOK_SECRET)
+        return client.post("/api/billing/webhook", content=payload, headers={"stripe-signature": sig_header})
+
+
+def test_webhook_actualiza_el_importe_desde_el_evento(client):
+    """El importe tiene que venir de quien cobra, no de la fila que ya había.
+
+    Antes se copiaba de `existing`, así que un cambio hecho desde el panel de
+    Stripe dejaba la fila diciendo tres asientos con el precio de dos.
+    """
+    _setup_user(client, "alice")
+
+    assert _enviar(client, _evento_suscripcion("evt_imp_1", "sub_imp", unit_amount=2000)).status_code == 200
+    fila = asyncio.run(billing_routes._billing.get_by_stripe_subscription_id("sub_imp"))
+    assert fila["amount_cents"] == 2000
+
+    # Soporte sube a tres asientos desde el panel: el importe tiene que seguirlo.
+    assert _enviar(client, _evento_suscripcion("evt_imp_2", "sub_imp", unit_amount=2000, quantity=3)).status_code == 200
+    fila = asyncio.run(billing_routes._billing.get_by_stripe_subscription_id("sub_imp"))
+    assert fila["amount_cents"] == 6000
+
+
+def test_webhook_sin_precio_conserva_el_importe_y_avisa(client):
+    """Sin precio en el evento se conserva el anterior, pero deja constancia."""
+    _setup_user(client, "alice")
+    _enviar(client, _evento_suscripcion("evt_sin_1", "sub_sin", unit_amount=1500))
+
+    with patch.object(billing_webhook.flog, "warning") as aviso:
+        assert _enviar(client, _evento_suscripcion("evt_sin_2", "sub_sin")).status_code == 200
+
+    fila = asyncio.run(billing_routes._billing.get_by_stripe_subscription_id("sub_sin"))
+    assert fila["amount_cents"] == 1500
+    assert aviso.called
+
+
+def test_webhook_no_resucita_una_suscripcion_cancelada(client):
+    """Stripe reentrega y no garantiza el orden; una cancelación es terminal."""
+    _setup_user(client, "alice")
+    _enviar(client, _evento_suscripcion("evt_ord_1", "sub_ord", unit_amount=2000))
+    _enviar(client, _evento_suscripcion("evt_ord_2", "sub_ord", unit_amount=2000, status="canceled", tipo="customer.subscription.deleted"))
+
+    # Un `updated` viejo reentregado después del `deleted`.
+    assert _enviar(client, _evento_suscripcion("evt_ord_3", "sub_ord", unit_amount=2000)).status_code == 200
+    fila = asyncio.run(billing_routes._billing.get_by_stripe_subscription_id("sub_ord"))
+    assert fila["status"] == "canceled"
+
+
 # ── BE-09: /quote era el único POST de billing sin freno ──────────────────────
 
 
