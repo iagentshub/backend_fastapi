@@ -19,6 +19,7 @@ from typing import Optional
 
 from fastapi import Cookie, Header
 
+from app.auth.roles import ROLE_RANK, rank_of
 from app.auth.user_lookup import get_user_by_identity
 from app.config.session import LOGIN_MAX_FAILS, LOGIN_WINDOW
 from app.errors import APIError
@@ -215,12 +216,10 @@ async def _assert_account_ok(username: str, issued_at: Optional[float]) -> str:
 # Rol desconocido (p. ej. "gestor", que admin.py:497 acepta en BD) → rango de
 # usuario registrado: pasa las puertas de "standard", no las de "admin". Es el
 # comportamiento que ya tenían, porque nadie ramifica sobre esos roles.
-_STANDARD_RANK = 1
-_ROLE_RANK = {"guest": 0, "standard": _STANDARD_RANK, "admin": 2}
 
 
 def _assert_min_role(role: str, minimum: str) -> None:
-    if _ROLE_RANK.get(role, _STANDARD_RANK) < _ROLE_RANK[minimum]:
+    if rank_of(role) < ROLE_RANK[minimum]:
         if minimum == "admin":
             raise APIError(403, "forbidden", "Acceso restringido")
         raise APIError(

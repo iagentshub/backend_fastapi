@@ -5,6 +5,15 @@ SELECT 1
 FROM users
 WHERE username = ?;
 
+-- name: role_by_username
+-- El rol de antes del UPDATE: es lo que decide si el cambio es un ascenso o una
+-- degradación, y solo la degradación revoca las sesiones. Sustituye a
+-- `username_exists` en admin_update_user: la fila que se necesita ya dice que
+-- el usuario existe.
+SELECT role
+FROM users
+WHERE username = ?;
+
 -- name: email_exists
 SELECT 1
 FROM users

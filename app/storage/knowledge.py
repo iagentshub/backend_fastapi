@@ -92,12 +92,8 @@ class _TextParser(HTMLParser):
 # Ver docs/adr/013-la-extraccion-no-pierde-texto-en-silencio.md
 MAX_EXTRACTED_CHARS = 20_000_000
 
-# Lo mismo para la descarga de una URL: 2 MB cortaba páginas largas a mitad de
-# HTML y devolvía un texto incompleto indistinguible de uno entero.
-#
-# También es defensa del proceso y no política: lo que acota es cuánto se trae a
-# memoria de un servidor ajeno, no cuánto puede subir un usuario. No es
-# configurable a propósito.
+# Lo mismo para la descarga de una URL: 2 MB cortaba páginas a mitad de HTML.
+# Defensa del proceso, no política del admin: no es configurable a propósito.
 _MAX_DOWNLOAD_BYTES = 20 * 1024 * 1024
 
 # Un PDF malformado —contenidos anidados, fuentes rotas, árbol de páginas con
