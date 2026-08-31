@@ -1,3 +1,6 @@
+-- sensitive-columns: refresh_hash, prev_refresh_hash
+-- El material de renovación de sesión. Son hashes, así que no se puede
+-- reconstruir el token a partir de ellos, pero no tienen por qué verse.
 -- Sesiones de navegador, una fila por login. El access token la referencia por
 -- su claim `sid` y se valida contra esta tabla en cada request autenticado.
 --

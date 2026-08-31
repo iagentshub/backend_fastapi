@@ -28,7 +28,10 @@ Las migraciones incrementales permanecen en :mod:`app.storage.migrations`.
 
 from __future__ import annotations
 
-from app.sql import sql
+import re
+from functools import lru_cache
+
+from app.sql import SQL_DIR, sql
 
 _DIALECTOS: dict[str, dict[str, str]] = {
     "sqlite": {
@@ -136,3 +139,32 @@ def schema_for(dialecto: str) -> str:
 
 SCHEMA_SQLITE = schema_for("sqlite")
 SCHEMA_PG = schema_for("pg")
+
+
+# Lo sensible se declara donde se crea la columna, no en un fichero aparte que
+# hay que acordarse de visitar. Es el mismo mecanismo que `-- gdpr-identity:`,
+# que resolvió el mismo problema para el borrado RGPD: una lista escrita lejos
+# del DDL solo es correcta el día que se escribe.
+_SENSIBLES = re.compile(r"^--\s*sensitive-columns:\s*([A-Za-z0-9_, ]+)$", re.MULTILINE)
+
+
+@lru_cache(maxsize=1)
+def columnas_sensibles() -> dict[str, frozenset[str]]:
+    """{tabla: columnas que no deben salir en crudo}, leídas del propio DDL.
+
+    Sustituye a una lista negra de siete nombres literales que vivía dentro del
+    explorador de tablas del panel. Una lista negra de secretos solo es correcta
+    el día que se escribe: desde entonces habían entrado `refresh_hash`,
+    `token_hash`, `code_hash`, `p256dh` y `auth`, ninguna de las cuales lleva la
+    palabra `token` ni `secret` como nombre completo. Dos de los siete nombres,
+    además, ya no correspondían a ninguna columna del esquema.
+    """
+    declaradas: dict[str, frozenset[str]] = {}
+    for tabla in TABLAS:
+        ddl = (SQL_DIR / "schema" / f"{tabla}.sql").read_text(encoding="utf-8")
+        marca = _SENSIBLES.search(ddl)
+        if marca:
+            declaradas[tabla] = frozenset(
+                nombre.strip() for nombre in marca.group(1).split(",") if nombre.strip()
+            )
+    return declaradas

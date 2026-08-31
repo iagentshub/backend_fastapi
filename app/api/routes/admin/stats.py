@@ -17,6 +17,7 @@ from app.config.startup_checks import report as config_report
 from app.errors import APIError
 from app.sql import sql
 from app.storage.db import IS_PG, open_db
+from app.storage.schema import columnas_sensibles
 from app.utils import flog
 
 
@@ -61,17 +62,19 @@ async def admin_metadata_tables(_: str = Depends(require_admin)) -> list:
             return result
 
 
-_HIDDEN_COLS = frozenset(
-    {
-        "password_hash",
-        "token",
-        "reset_token",
-        "verification_token",
-        "deletion_token",
-        "jwt_secret",
-        "stripe_secret_key",
-    }
-)
+# Cuánto de un BLOB se resume en lugar de volcarlo. La fila se serializaba con
+# `str(row[i])`, así que abrir `user_avatars` con page_size=200 devolvía
+# doscientas imágenes convertidas a la representación de texto de sus bytes.
+_RESUMEN_BINARIO = "@{n} bytes@"
+
+
+def _valor_visible(valor: object) -> object:
+    """El contenido de una columna, o su tamaño si es binaria."""
+    if valor is None:
+        return None
+    if isinstance(valor, (bytes, bytearray, memoryview)):
+        return _RESUMEN_BINARIO.format(n=len(bytes(valor)))
+    return str(valor)
 
 
 @admin_router.get("/metadata/tables/{table_name}/data")
@@ -110,11 +113,25 @@ async def admin_metadata_table_data(
         if not col_names:
             raise APIError(404, "table_no_columns", "Sin columnas")
 
+        # Lo sensible se declara en el propio DDL con `-- sensitive-columns:`,
+        # el mismo mecanismo que `-- gdpr-identity:`. Antes era una lista negra
+        # de siete nombres literales dentro de este fichero, y una lista negra
+        # de secretos solo es correcta el día que se escribe: desde entonces
+        # habían entrado refresh_hash, token_hash, code_hash, p256dh y auth
+        # —ninguna lleva «token» ni «secret» como nombre completo— y dos de los
+        # siete ya no correspondían a ninguna columna.
+        ocultas = columnas_sensibles().get(table_name, frozenset())
+
         if q:
             cast = "::text" if IS_PG else ""
-            clauses = [f'CAST("{c}"{cast} AS TEXT) LIKE ?' for c in col_names]
-            where = "WHERE " + " OR ".join(clauses)
-            params = [f"%{q}%"] * len(col_names)
+            # El filtro se construía sobre TODAS las columnas, ocultas
+            # incluidas: la columna salía como «[oculto]» pero `total` decía
+            # cuántas filas casaban, así que se podía confirmar un valor
+            # concreto sin verlo nunca. El enmascarado era solo de pintura.
+            buscables = [c for c in col_names if c not in ocultas]
+            clauses = [f'CAST("{c}"{cast} AS TEXT) LIKE ?' for c in buscables]
+            where = "WHERE " + " OR ".join(clauses) if clauses else ""
+            params = [f"%{q}%"] * len(buscables)
         else:
             where, params = "", []
 
@@ -127,17 +144,9 @@ async def admin_metadata_table_data(
             tuple(params + [page_size, offset]),
         )
 
-        exposed = [c for c in col_names if c not in _HIDDEN_COLS]
+        exposed = [c for c in col_names if c not in ocultas]
         idx_map = [col_names.index(c) for c in exposed]
-        data_rows = [
-            [
-                "[oculto]"
-                if col_names[i] in _HIDDEN_COLS
-                else (str(row[i]) if row[i] is not None else None)
-                for i in idx_map
-            ]
-            for row in rows
-        ]
+        data_rows = [[_valor_visible(row[i]) for i in idx_map] for row in rows]
         pages = (total + page_size - 1) // page_size if total else 0
         return {
             "columns": exposed,

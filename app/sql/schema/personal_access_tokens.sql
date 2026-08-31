@@ -1,3 +1,5 @@
+-- sensitive-columns: token_hash
+-- El PAT con el que entra la extensión de VS Code.
 CREATE TABLE IF NOT EXISTS personal_access_tokens (
     id           TEXT PRIMARY KEY,
     username     TEXT NOT NULL,
