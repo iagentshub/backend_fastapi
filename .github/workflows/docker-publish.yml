@@ -54,12 +54,12 @@ jobs:
       # El GITHUB_TOKEN de este repo no puede disparar workflows en iAgents, y
       # su cron "horario" GitHub lo atrasa de 3 a 7 h: un cambio que solo
       # tocara este repo tardaba media tarde en llegar a la imagen desplegada.
-      # continue-on-error a propósito — que falte el secreto no puede poner en
-      # rojo un build correcto, y el cron sigue de respaldo.
+      # Que falte o caduque el secreto no pone en rojo un build correcto, pero
+      # deja una anotación visible; el cron sigue de respaldo.
       - name: Avisar a iAgents para reconstruir la imagen unificada
-        continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.IAGENTS_DISPATCH_TOKEN }}
         run: |
-          test -n "$GH_TOKEN"
-          gh api -X POST repos/iagentshub/iAgents/dispatches -f event_type=upstream-push
+          if [ -z "$GH_TOKEN" ] || ! gh api -X POST repos/iagentshub/iAgents/dispatches -f event_type=upstream-push; then
+            echo "::warning::No se pudo avisar a iAgents; la imagen esperará al cron."
+          fi
