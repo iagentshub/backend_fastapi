@@ -48,7 +48,16 @@ async def webhook(request: Request) -> Dict[str, Any]:
 
     event_id = event["id"]
     event_type = event["type"]
-    event_dict = event.to_dict() if hasattr(event, "to_dict") else event
+    manejado = event_type in _HANDLED_EVENTS
+
+    # El objeto entero solo de lo que se procesa. El id, el tipo y la fecha son
+    # columnas, así que de un evento al que no hacemos nada no se pierde nada
+    # que no siguiéramos teniendo — y la tabla crecía con todo lo que Stripe
+    # mandase, no con lo que se maneja: cuanto más amplia la suscripción en su
+    # panel, más datos de terceros guardados sin que nadie los mire.
+    event_dict: Dict[str, Any] = {}
+    if manejado:
+        event_dict = event.to_dict() if hasattr(event, "to_dict") else event
 
     # Reservar antes de procesar, no después. La guarda anterior era un SELECT
     # y la marca se escribía al final, con el manejador entero en la ventana:
@@ -57,7 +66,7 @@ async def webhook(request: Request) -> Dict[str, Any]:
     if not await _billing.claim_event(event_id, event_type, event_dict):
         return {"received": True}
 
-    if event_type in _HANDLED_EVENTS:
+    if manejado:
         try:
             await _handle_subscription_event(event["data"]["object"], event_type)
         except Exception:

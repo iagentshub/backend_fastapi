@@ -320,3 +320,25 @@ class BillingStorage:
                 sql("queries/billing:delete_stripe_event"), (stripe_event_id,)
             )
             await conn.commit()
+
+    async def purge_events(self, dias: int) -> int:
+        """Borra los eventos de Stripe más antiguos que `dias`. Devuelve cuántos.
+
+        Era la única tabla del esquema sin ningún `DELETE`: no la barre nadie y
+        tampoco la alcanza el borrado RGPD, porque no tiene columna de dueño que
+        relacione la fila con una persona. Crecía además con todo lo que Stripe
+        mandase, no con lo que se procesa.
+
+        Cuánto se guarda es política y la fija el admin; esto solo la aplica.
+        """
+        from datetime import datetime, timedelta, timezone
+
+        # `processed_at` se escribe con `now_iso()`, así que el corte se genera
+        # igual y la comparación de textos ISO ordena bien.
+        corte = (datetime.now(timezone.utc) - timedelta(days=dias)).isoformat()
+        async with open_db() as conn:
+            borradas = await conn.fetchall(
+                sql("queries/billing:purge_stripe_events"), (corte,)
+            )
+            await conn.commit()
+        return len(borradas)

@@ -83,3 +83,29 @@ async def test_event_idempotency(storage):
 
     await storage.discard_event("evt_1")
     assert await storage.claim_event(*evento) is True
+
+
+async def test_purge_events_respeta_la_retencion(storage):
+    """Era la única tabla del esquema de la que no se borraba nunca nada."""
+    from datetime import datetime, timedelta, timezone
+
+    from app.sql import sql
+    from app.storage.db import open_db
+
+    await storage.claim_event("evt_reciente", "customer.subscription.updated", {})
+    # Un evento viejo se escribe a mano: `claim_event` siempre pone la hora
+    # actual, y lo que se quiere ejercer aquí es justo el corte por fecha.
+    antiguo = (datetime.now(timezone.utc) - timedelta(days=400)).isoformat()
+    async with open_db() as conn:
+        # `fetchone` y no `execute`: la consulta lleva RETURNING, y un cursor
+        # sin consumir deja la sentencia en curso y hace fallar el commit.
+        await conn.fetchone(
+            sql("queries/billing:claim_stripe_event_sqlite"),
+            ("evt_viejo", "customer.subscription.updated", antiguo, "{}"),
+        )
+        await conn.commit()
+
+    assert await storage.purge_events(365) == 1
+    # El viejo se fue y el reciente sigue: su id no se puede volver a reservar.
+    assert await storage.claim_event("evt_viejo", "customer.subscription.updated", {}) is True
+    assert await storage.claim_event("evt_reciente", "customer.subscription.updated", {}) is False

@@ -107,10 +107,17 @@ async def _gdpr_purge_loop() -> None:
 
 
 async def _log_purge_loop() -> None:
-    """Purga entradas de log más antiguas que la retención configurada.
+    """Purga lo que caduca por antigüedad: entradas de log y eventos de Stripe.
 
     La retención es la política y la fija el admin; esto solo es cada cuánto se
     comprueba.
+
+    Los eventos de Stripe cuelgan de aquí en vez de tener su propio bucle: son
+    la misma cadencia diaria, y un sexto `asyncio.sleep` se multiplica por
+    `GAIA_WORKERS`. Comparten además la retención de auditoría, porque son lo
+    mismo: la constancia de un hecho sensible que alguien puede necesitar
+    reconstruir mucho después —y la conservación fiscal es justo la razón por la
+    que no se les puede poner un plazo corto por defecto—.
     """
     while True:
         await asyncio.sleep(LOG_PURGE_SECONDS)
@@ -118,9 +125,32 @@ async def _log_purge_loop() -> None:
             from app.api.routes.logs import purge_old_logs
 
             await purge_old_logs()
+            await _purge_stripe_events()
         except Exception as exc:  # noqa: BLE001
             # Ver _gdpr_purge_loop: la tarea no puede morir por una ronda.
             flog.error(f"[logs] Error en purga automática: {exc}")
+
+
+async def _purge_stripe_events() -> None:
+    """Aplica la retención de auditoría a `stripe_events`.
+
+    Era la única tabla del esquema de la que no se borraba nunca nada, y no la
+    alcanza el borrado RGPD porque no tiene columna de dueño.
+    """
+    from app.services.platform_settings import _read_platform_cfg
+    from app.storage.billing import BillingStorage
+
+    try:
+        dias = int(_read_platform_cfg().get("audit_log_retention_days", 365))
+    except (OSError, TypeError, ValueError) as exc:
+        # Igual que en purge_old_logs: este número decide qué se borra, así que
+        # el respaldo es conservador y se ve.
+        flog.error(f"[billing] Retención ilegible; se usan 365 días: {exc}")
+        dias = 365
+
+    borrados = await BillingStorage().purge_events(dias)
+    if borrados:
+        flog.ok(f"[billing] {borrados} evento(s) de Stripe purgados")
 
 
 async def _notification_purge_loop() -> None:

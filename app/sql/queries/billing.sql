@@ -111,3 +111,8 @@ RETURNING stripe_event_id;
 -- name: delete_stripe_event
 DELETE FROM stripe_events
 WHERE stripe_event_id = ?;
+
+-- name: purge_stripe_events
+DELETE FROM stripe_events
+WHERE processed_at < ?
+RETURNING stripe_event_id;
