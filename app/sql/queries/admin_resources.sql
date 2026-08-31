@@ -1,44 +1,5 @@
 -- Consultas de app/api/routes/admin/resources.py.
 
--- name: user_ids
-SELECT id, username
-FROM users;
-
--- name: list_connections
-SELECT id, owner_id, provider_account_id, name, data, tokens_in, tokens_out, is_active, created_at
-FROM connections
-ORDER BY created_at DESC;
-
--- name: connection_tokens
-SELECT id, owner_id, tokens_in, tokens_out
-FROM connections;
-
--- name: list_memory_files
-SELECT id, owner_id, content, updated_at
-FROM memory_files
-ORDER BY updated_at DESC;
-
--- name: list_groups
-SELECT g.id, g.name, g.created_by, u.username, g.created_at, g.is_active
-FROM groups g
-LEFT JOIN users u ON u.id = g.created_by
-ORDER BY g.created_at DESC;
-
--- name: members_per_group
-SELECT group_id, COUNT(*)
-FROM group_members
-GROUP BY group_id;
-
--- name: connections_per_owner
-SELECT owner_id, COUNT(*), COALESCE(SUM(tokens_in), 0), COALESCE(SUM(tokens_out), 0)
-FROM connections
-GROUP BY owner_id;
-
--- name: knowledge_per_owner
-SELECT owner_id, COUNT(*)
-FROM knowledge_items
-GROUP BY owner_id;
-
 -- name: social_exists
 SELECT 1
 FROM resource_social
@@ -53,3 +14,34 @@ WHERE resource_type=? AND resource_id=?;
 SELECT id, username, is_active
 FROM users
 WHERE username=?;
+
+-- Recuentos que la tarjeta de grupo del panel pinta. Acotados a los grupos de
+-- la página: agregar sobre las tablas completas para pintar los que caben en
+-- pantalla es lo que este trabajo vino a quitar.
+-- name: members_per_group
+SELECT group_id, COUNT(*)
+FROM group_members
+WHERE group_id IN (@ids@)
+GROUP BY group_id;
+
+-- name: connections_per_owner
+SELECT owner_id, COUNT(*), COALESCE(SUM(tokens_in), 0), COALESCE(SUM(tokens_out), 0)
+FROM connections
+WHERE owner_id IN (@ids@)
+GROUP BY owner_id;
+
+-- name: knowledge_per_owner
+SELECT owner_id, COUNT(*)
+FROM knowledge_items
+WHERE owner_id IN (@ids@)
+GROUP BY owner_id;
+
+-- name: agents_per_owner
+-- Salía de recorrer AGENTS_DIR/private/*/config.json, los ficheros que dejó la
+-- migración a base de datos y nadie borró: en una instalación creada después
+-- el glob no encuentra nada y el panel enseñaba cero agentes en todos los
+-- grupos. Los agentes viven en `agents`.
+SELECT owner_id, COUNT(*)
+FROM agents
+WHERE owner_id IN (@ids@)
+GROUP BY owner_id;

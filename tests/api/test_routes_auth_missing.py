@@ -194,9 +194,9 @@ def test_change_password_empty_fields(client, reset_rate_limiter):
 def test_admin_list_users_filter_q(admin_client):
     _direct_register("qalice_filter")
     _direct_register("qbob_filter")
-    r = admin_client.get("/api/admin/users?q=qalice")
+    r = admin_client.get("/api/v2/admin/explore?type=user&limit=100&q=qalice")
     assert r.status_code == 200
-    users = r.json()
+    users = r.json()["items"]
     usernames = [u["username"] for u in users]
     assert "qalice_filter" in usernames
     assert "qbob_filter" not in usernames
@@ -206,9 +206,9 @@ def test_admin_list_users_filter_q(admin_client):
 
 def test_admin_list_users_filter_role(admin_client):
     _direct_register("role_std_user")
-    r = admin_client.get("/api/admin/users?role=standard")
+    r = admin_client.get("/api/v2/admin/explore?type=user&limit=100&role=standard")
     assert r.status_code == 200
-    users = r.json()
+    users = r.json()["items"]
     assert all(u.get("role") == "standard" for u in users)
     assert any(u["username"] == "role_std_user" for u in users)
 
@@ -228,9 +228,9 @@ def test_admin_list_users_filter_active_false(admin_client):
             await conn.commit()
 
     asyncio.run(_setup())
-    r = admin_client.get("/api/admin/users?active=false")
+    r = admin_client.get("/api/v2/admin/explore?type=user&limit=100&active=false")
     assert r.status_code == 200
-    users = r.json()
+    users = r.json()["items"]
     assert any(u["username"] == "inactive_filter" for u in users)
     assert all(u.get("is_active") == 0 for u in users)
 
@@ -250,9 +250,9 @@ def test_admin_list_users_filter_verified_false(admin_client):
             await conn.commit()
 
     asyncio.run(_setup())
-    r = admin_client.get("/api/admin/users?verified=false")
+    r = admin_client.get("/api/v2/admin/explore?type=user&limit=100&verified=false")
     assert r.status_code == 200
-    users = r.json()
+    users = r.json()["items"]
     assert any(u["username"] == "unverif_filter" for u in users)
     assert all(u.get("is_verified") == 0 for u in users)
 
@@ -346,9 +346,9 @@ def test_admin_list_knowledge_with_items(admin_client):
     admin_client.post("/api/knowledge/text", json={
         "title": "Test Knowledge Item", "content": "Contenido de prueba"
     })
-    r = admin_client.get("/api/admin/knowledge")
+    r = admin_client.get("/api/v2/admin/explore?type=knowledge&limit=100")
     assert r.status_code == 200
-    items = r.json()
+    items = r.json()["items"]
     assert len(items) >= 1
     for item in items:
         assert "content" not in item
@@ -376,16 +376,16 @@ def test_admin_delete_knowledge_ok(admin_client):
 # ── admin_list_groups (líneas 829-878) ───────────────────────────────────
 
 def test_admin_list_groups(admin_client):
-    r = admin_client.get("/api/admin/groups")
+    r = admin_client.get("/api/v2/admin/explore?type=group&limit=100")
     assert r.status_code == 200
-    assert isinstance(r.json(), list)
+    assert isinstance(r.json()["items"], list)
 
 
 def test_admin_list_groups_has_expected_fields(admin_client):
     admin_client.post("/api/groups", json={"name": "AdminWS Fields"})
-    r = admin_client.get("/api/admin/groups")
+    r = admin_client.get("/api/v2/admin/explore?type=group&limit=100")
     assert r.status_code == 200
-    groups = r.json()
+    groups = r.json()["items"]
     assert len(groups) >= 1
     group = groups[0]
     for field in ("id", "name", "created_by", "member_count", "connections_count", "tokens_in", "tokens_out"):
@@ -478,9 +478,9 @@ def test_admin_list_agents_with_connection_tokens(admin_client):
     conn_id = conn_data["id"]
 
     admin_client.post("/api/agents", json={"name": "Agent With Connection", "connection_id": conn_id})
-    r = admin_client.get("/api/admin/agents")
+    r = admin_client.get("/api/v2/admin/explore?type=agent&limit=100")
     assert r.status_code == 200
-    agents = r.json()
+    agents = r.json()["items"]
     connected = [a for a in agents if a.get("connection_id") == conn_id]
     assert connected, "No se encontró el agente con connection_id"
     assert "tokens_in" in connected[0]

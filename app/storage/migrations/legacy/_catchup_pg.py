@@ -18,6 +18,7 @@ from app.storage.migrations.legacy._groups import (
 # ── Schema DDL ─────────────────────────────────────────────────────────────────
 from app.storage.migrations.legacy._helpers import (
     _RESOURCE_TABLES,
+    _SCHEMA_INDEX_DEPS,
 )
 from app.storage.migrations.legacy._resources import (
     _migrate_legacy_agent_language_labels,
@@ -25,6 +26,30 @@ from app.storage.migrations.legacy._resources import (
 )
 from app.utils import flog
 from app.utils.generators import generate_id
+
+
+async def _pre_migrate_pg(conn: Any) -> None:
+    """El equivalente PostgreSQL de `_pre_migrate_sqlite`, que no existía.
+
+    El esquema se re-ejecuta entero en cada arranque y sus `CREATE INDEX`
+    nombran columnas que `CREATE TABLE IF NOT EXISTS` no añade a una tabla que
+    ya existe. En SQLite eso lo cubría `_pre_migrate_sqlite`; aquí no lo cubría
+    nadie, así que una base anterior a la columna respondía *column ... does
+    not exist* al crear el índice y **el backend no arrancaba**. Lo hace la
+    misma lista, para que añadir un índice sobre una columna nueva no vuelva a
+    dejar fuera a uno de los dos motores.
+    """
+    for tabla, columna, tipo in _SCHEMA_INDEX_DEPS:
+        existe = await conn.fetchval(
+            "SELECT 1 FROM information_schema.tables "
+            "WHERE table_schema='public' AND table_name=$1",
+            tabla,
+        )
+        if not existe:
+            continue
+        await conn.execute(
+            f"ALTER TABLE {tabla} ADD COLUMN IF NOT EXISTS {columna} {tipo}"
+        )
 
 
 async def _migrate_pg(conn: Any) -> None:

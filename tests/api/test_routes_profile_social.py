@@ -165,7 +165,7 @@ def test_el_listado_del_admin_publica_la_url_de_la_foto(admin_client):
     con la cookie del administrador, así que autenticarse por medio como otro
     usuario se la pisa y el listado responde 403.
     """
-    sin_foto = admin_client.get("/api/admin/users").json()
+    sin_foto = admin_client.get("/api/v2/admin/explore?type=user&limit=100").json()["items"]
     assert all(u["avatar_url"] is None for u in sin_foto)
 
     subida = admin_client.post(
@@ -179,7 +179,7 @@ def test_el_listado_del_admin_publica_la_url_de_la_foto(admin_client):
     esperada = subida.json()["avatar_url"]
     quien = esperada.split("/")[3]
 
-    usuarios = admin_client.get("/api/admin/users").json()
+    usuarios = admin_client.get("/api/v2/admin/explore?type=user&limit=100").json()["items"]
     fila = next(u for u in usuarios if u["username"] == quien)
     assert fila["avatar_url"] == esperada
     # La imagen no viaja en el listado, solo su dirección.

@@ -62,7 +62,7 @@ def test_el_anonimo_sin_credencial_tampoco(client):
 
 
 def test_el_invitado_no_administra(guest):
-    r = guest.get("/api/admin/users")
+    r = guest.get("/api/v2/admin/explore?type=user&limit=100")
     assert r.status_code == 403
     assert r.json()["detail"]["code"] == "forbidden"
 

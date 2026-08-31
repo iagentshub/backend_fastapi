@@ -213,7 +213,7 @@ def test_first_draft_is_empty_and_apply_creates_normal_resources(
 ) -> None:
     admin_id = next(
         user["id"]
-        for user in admin_client.get("/api/admin/users").json()
+        for user in admin_client.get("/api/v2/admin/explore?type=user&limit=100").json()["items"]
         if user["username"] == "testadmin"
     )
 
@@ -293,7 +293,7 @@ def test_deselect_dependency_cascades_to_agent(admin_client) -> None:
     async def run():
         admin_id = next(
             user["id"]
-            for user in admin_client.get("/api/admin/users").json()
+            for user in admin_client.get("/api/v2/admin/explore?type=user&limit=100").json()["items"]
             if user["username"] == "testadmin"
         )
         storage = OfficialSourceStorage()
@@ -367,7 +367,7 @@ def test_deselect_dependency_cascades_to_agent(admin_client) -> None:
 def test_materialization_rolls_back_all_resources_on_failure(admin_client) -> None:
     admin_id = next(
         user["id"]
-        for user in admin_client.get("/api/admin/users").json()
+        for user in admin_client.get("/api/v2/admin/explore?type=user&limit=100").json()["items"]
         if user["username"] == "testadmin"
     )
 
@@ -431,7 +431,7 @@ def test_materialization_replaces_agent_dependencies_with_real_resource_ids(
 ) -> None:
     admin_id = next(
         user["id"]
-        for user in admin_client.get("/api/admin/users").json()
+        for user in admin_client.get("/api/v2/admin/explore?type=user&limit=100").json()["items"]
         if user["username"] == "testadmin"
     )
 
@@ -492,7 +492,7 @@ def test_materialization_replaces_agent_dependencies_with_real_resource_ids(
 def test_executable_requires_individual_review_before_apply(admin_client) -> None:
     admin_id = next(
         user["id"]
-        for user in admin_client.get("/api/admin/users").json()
+        for user in admin_client.get("/api/v2/admin/explore?type=user&limit=100").json()["items"]
         if user["username"] == "testadmin"
     )
 
@@ -821,7 +821,7 @@ def test_existing_draft_discards_legacy_programming_language_labels(
 ) -> None:
     admin_id = next(
         user["id"]
-        for user in admin_client.get("/api/admin/users").json()
+        for user in admin_client.get("/api/v2/admin/explore?type=user&limit=100").json()["items"]
         if user["username"] == "testadmin"
     )
 

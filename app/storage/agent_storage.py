@@ -59,6 +59,21 @@ class AgentStorage(ResourceStorage):
     table = "agents"
     resource_type = "agent"
 
+    def page_spec(self) -> ScopedResourcePageSpec:
+        """Ver `ScopedResourcePaginationMixin.page_spec`."""
+        return ScopedResourcePageSpec(
+            table=self.table,
+            columns=(
+                "resource_row.id, resource_row.owner_id, resource_row.name, "
+                "resource_row.scope, resource_row.data, resource_row.tokens_in, "
+                "resource_row.tokens_out, resource_row.is_active, "
+                "resource_row.deactivated_at, resource_row.created_at, "
+                "resource_row.updated_at"
+            ),
+            resource_type=self.resource_type,
+            decode=self._row_to_dict,
+        )
+
     async def list_visible_page(
         self,
         *,
@@ -71,20 +86,8 @@ class AgentStorage(ResourceStorage):
         extra_filters: tuple[VisibilityFilter, ...] = (),
     ) -> CursorPage[Dict[str, Any]]:
         await self._ensure_migrated()
-        spec = ScopedResourcePageSpec(
-            table=self.table,
-            columns=(
-                "resource_row.id, resource_row.owner_id, resource_row.name, "
-                "resource_row.scope, resource_row.data, resource_row.tokens_in, "
-                "resource_row.tokens_out, resource_row.is_active, "
-                "resource_row.deactivated_at, resource_row.created_at, "
-                "resource_row.updated_at"
-            ),
-            resource_type=self.resource_type,
-            decode=self._row_to_dict,
-        )
         return await list_scoped_resource_page(
-            spec,
+            self.page_spec(),
             user=user,
             active_group_id=active_group_id,
             scope=scope,
@@ -156,6 +159,9 @@ class AgentStorage(ResourceStorage):
         updated_at = str(data.get("updated_at") or now)
         is_active = 1 if data.get("is_active", True) else 0
         deactivated_at = data.get("deactivated_at")
+        # Promovida del blob para poder preguntar por ella en SQL; el JSON
+        # sigue siendo la fuente, esta columna es su espejo.
+        connection_id = str(data.get("connection_id") or "").strip() or None
         # Ver skill_storage._upsert: upsert explícito para no perder las
         # columnas que este INSERT no nombra (las de fuente oficial).
         await conn.execute(
@@ -174,6 +180,7 @@ class AgentStorage(ResourceStorage):
                 tokens_out,
                 is_active,
                 deactivated_at,
+                connection_id,
                 created_at,
                 updated_at,
             ),
@@ -219,6 +226,15 @@ class AgentStorage(ResourceStorage):
             else:  # all
                 rows = await conn.fetchall(sql("queries/agents:list_all"))
         return [self._row_to_dict(r) for r in rows]
+
+    async def count_by_connection(self, connection_id: str) -> int:
+        """Cuántos agentes usan una conexión, sin traérselos."""
+        await self._ensure_migrated()
+        async with open_db() as conn:
+            total = await conn.fetchval(
+                sql("queries/agents:count_by_connection"), (connection_id,)
+            )
+        return int(total or 0)
 
     async def get(
         self, agent_id: str, scope: Optional[str] = None, owner_id: Optional[str] = None

@@ -282,23 +282,29 @@ async def get_user_role(username: str) -> str:
     return user.get("role", "standard") if user else "standard"
 
 
+def decode_user_row(row: Any) -> dict:
+    """Fila de `users` -> usuario de la API, sin lo que no debe salir.
+
+    Vive suelta porque el panel la pagina por su cuenta: si el listado
+    completo y el paginado decodifican por separado, uno de los dos acaba
+    devolviendo el `password_hash`."""
+    from app.storage import avatars
+
+    d = dict(row)
+    d.pop("password_hash", None)
+    d.pop("provider_sub", None)
+    # El checksum llega del JOIN y aquí se convierte en la URL, que es
+    # lo que el cliente sabe pintar. El hash suelto no le dice nada.
+    d["avatar_url"] = avatars.public_url(
+        d.get("username", ""), d.pop("avatar_checksum", None)
+    )
+    return d
+
+
 async def list_users() -> list:
     async with open_db() as conn:
         rows = await conn.fetchall(sql("queries/auth:list_users"))
-        from app.storage import avatars
-
-        result = []
-        for row in rows:
-            d = dict(row)
-            d.pop("password_hash", None)
-            d.pop("provider_sub", None)
-            # El checksum llega del JOIN y aquí se convierte en la URL, que es
-            # lo que el cliente sabe pintar. El hash suelto no le dice nada.
-            d["avatar_url"] = avatars.public_url(
-                d.get("username", ""), d.pop("avatar_checksum", None)
-            )
-            result.append(d)
-        return result
+        return [decode_user_row(row) for row in rows]
 
 
 async def delete_user(username: str) -> bool:

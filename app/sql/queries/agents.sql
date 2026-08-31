@@ -66,23 +66,23 @@ SELECT id, owner_id, name, scope, data, tokens_in, tokens_out,
 -- name: upsert_pg
 -- engine: pg
 INSERT INTO agents (id, owner_id, name, scope, data, tokens_in, tokens_out,
-                    is_active, deactivated_at, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    is_active, deactivated_at, connection_id, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (id, owner_id) DO UPDATE SET
     name=EXCLUDED.name, scope=EXCLUDED.scope, data=EXCLUDED.data,
     tokens_in=EXCLUDED.tokens_in, tokens_out=EXCLUDED.tokens_out,
     is_active=EXCLUDED.is_active, deactivated_at=EXCLUDED.deactivated_at,
-    updated_at=EXCLUDED.updated_at;
+    connection_id=EXCLUDED.connection_id, updated_at=EXCLUDED.updated_at;
 
 -- name: upsert_sqlite
 INSERT INTO agents (id, owner_id, name, scope, data, tokens_in, tokens_out,
-                    is_active, deactivated_at, created_at, updated_at)
-VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    is_active, deactivated_at, connection_id, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
 ON CONFLICT (id, owner_id) DO UPDATE SET
     name=excluded.name, scope=excluded.scope, data=excluded.data,
     tokens_in=excluded.tokens_in, tokens_out=excluded.tokens_out,
     is_active=excluded.is_active, deactivated_at=excluded.deactivated_at,
-    updated_at=excluded.updated_at;
+    connection_id=excluded.connection_id, updated_at=excluded.updated_at;
 
 -- name: add_tokens_by_owner
 UPDATE agents
@@ -123,3 +123,14 @@ WHERE resource_type=? AND resource_id=? AND owner=?;
 -- name: delete_social_of_agent
 DELETE FROM resource_social
 WHERE resource_type=? AND resource_id=? AND owner=?;
+
+-- name: count_by_connection
+-- Cuántos agentes siguen usando una conexión. Antes se resolvía trayendo
+-- todos los agentes de la instalación y filtrando en Python, con la consulta
+-- equivalente sobre `user_agent_preferences` bien hecha dos líneas más abajo.
+-- Ojo con los comentarios de este fichero: el loader los conserva y el
+-- preparador cuenta los marcadores sobre el texto completo, así que un signo
+-- de interrogación aquí arriba se toma por un parámetro más.
+SELECT COUNT(*)
+FROM agents
+WHERE connection_id = ?;

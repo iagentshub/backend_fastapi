@@ -28,7 +28,10 @@ def test_ci_all_v2_list_gets_expose_only_cursor_pagination(admin_client):
                 f"{path}: obsolete={obsolete!r}, missing_cursor={missing!r}"
             )
 
-    assert len(checked) == 15, (
+    # 15 cuando se migró el catálogo del usuario, y 16 desde que el panel
+    # sumó su listado de conexiones. El número se toca a mano y a propósito:
+    # es lo que obliga a mirar una ruta v2 nueva antes de que entre.
+    assert len(checked) == 16, (
         "La superficie cursor cambió: actualiza deliberadamente la barrera; "
         f"rutas detectadas={sorted(checked)!r}"
     )

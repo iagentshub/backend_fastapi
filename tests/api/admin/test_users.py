@@ -7,16 +7,16 @@ from tests.api.admin._helpers import _register
 
 def test_list_users_as_admin(admin_client, reset_rate_limiter):
     _register("listed_user")
-    r = admin_client.get("/api/admin/users")
+    r = admin_client.get("/api/v2/admin/explore?type=user&limit=100")
     assert r.status_code == 200
-    users = r.json()
+    users = r.json()["items"]
     assert isinstance(users, list)
     assert any(u["username"] == "listed_user" for u in users)
 
 
 def test_list_users_no_password_hash(admin_client, reset_rate_limiter):
     _register("nohash_user")
-    r = admin_client.get("/api/admin/users")
+    r = admin_client.get("/api/v2/admin/explore?type=user&limit=100")
     for u in r.json():
         assert "password_hash" not in u
 
@@ -30,12 +30,12 @@ def test_list_users_forbidden_for_standard(client, reset_rate_limiter):
             "password": "pass1234",
         },
     )
-    r = client.get("/api/admin/users")
+    r = client.get("/api/v2/admin/explore?type=user&limit=100")
     assert r.status_code == 403
 
 
 def test_list_users_unauthenticated(client):
-    r = client.get("/api/admin/users")
+    r = client.get("/api/v2/admin/explore?type=user&limit=100")
     assert r.status_code == 401
 
 
@@ -43,7 +43,7 @@ def test_delete_user_as_admin(admin_client, reset_rate_limiter):
     _register("to_delete")
     r = admin_client.delete("/api/admin/users/to_delete")
     assert r.status_code == 200
-    users = admin_client.get("/api/admin/users").json()
+    users = admin_client.get("/api/v2/admin/explore?type=user&limit=100").json()["items"]
     assert not any(u["username"] == "to_delete" for u in users)
 
 

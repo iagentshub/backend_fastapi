@@ -10,7 +10,6 @@ from fastapi import Depends
 from app.api.routes.admin._router import admin_router
 from app.api.routes.auth import require_admin
 from app.config.data import AGENTS_DIR as _AGENTS_DIR
-from app.connections import is_chat_provider
 from app.errors import APIError
 from app.models.request_bodies import (
     ResourceOwnerBody,
@@ -34,60 +33,6 @@ _workflows = _WorkflowStorage()
 _llm_orchestrations = _LLMOrchestrationStorage()
 
 
-async def _username_map(conn: Any) -> dict[str, str]:
-    rows = await conn.fetchall(sql("queries/admin_resources:user_ids"))
-    return {str(row[0]): str(row[1]) for row in rows}
-
-
-@admin_router.get("/connections")
-async def admin_list_connections(
-    _: str = Depends(require_admin),
-) -> list[dict[str, Any]]:
-    import json as _json
-
-    async with open_db() as conn:
-        rows = await conn.fetchall(sql("queries/admin_resources:list_connections"))
-        username_map = await _username_map(conn)
-    result = []
-    for row in rows:
-        d = (
-            dict(row)
-            if isinstance(row, dict)
-            else {
-                "id": row[0],
-                "owner_id": row[1],
-                "provider_account_id": row[2],
-                "name": row[3],
-                "data": row[4],
-                "tokens_in": row[5],
-                "tokens_out": row[6],
-                "is_active": row[7],
-                "created_at": row[8],
-            }
-        )
-        try:
-            data = _json.loads(d.get("data") or "{}")
-        except (_json.JSONDecodeError, TypeError):
-            data = {}
-        result.append(
-            {
-                "id": d["id"],
-                "owner_id": d["owner_id"],
-                "owner_username": username_map.get(d["owner_id"], d["owner_id"]),
-                "provider_account_id": d.get("provider_account_id"),
-                "name": d["name"],
-                "type": data.get("type", ""),
-                "model": data.get("model", ""),
-                "supports_chat": is_chat_provider(str(data.get("type") or "").lower()),
-                "is_active": bool(d.get("is_active", True)),
-                "tokens_in": d["tokens_in"],
-                "tokens_out": d["tokens_out"],
-                "created_at": d["created_at"],
-            }
-        )
-    return result
-
-
 @admin_router.delete("/connections/{conn_id}")
 async def admin_delete_connection(
     conn_id: str, _: str = Depends(require_admin)
@@ -99,34 +44,6 @@ async def admin_delete_connection(
             404, "not_found", "Conexión no encontrada", extra={"resource": "connection"}
         )
     return {"ok": True}
-
-
-@admin_router.get("/agents")
-async def admin_list_agents(_: str = Depends(require_admin)) -> list[dict[str, Any]]:
-    agents = await _agents.list(scope="all")
-    async with open_db() as conn:
-        username_map = await _username_map(conn)
-        conn_rows = await conn.fetchall(
-            sql("queries/admin_resources:connection_tokens")
-        )
-    conn_data = {
-        r[0]: {"owner_id": r[1], "tokens_in": r[2], "tokens_out": r[3]}
-        for r in conn_rows
-    }
-    for a in agents:
-        conn_id = a.get("connection_id")
-        owner = a.get("owner_id")
-        if not owner and conn_id and conn_id in conn_data:
-            owner = conn_data[conn_id]["owner_id"]
-        a["owner_username"] = username_map.get(owner, owner) if owner else None
-        # Agregar tokens de la conexión asociada
-        if conn_id and conn_id in conn_data:
-            a["tokens_in"] = conn_data[conn_id]["tokens_in"]
-            a["tokens_out"] = conn_data[conn_id]["tokens_out"]
-        else:
-            a["tokens_in"] = 0
-            a["tokens_out"] = 0
-    return agents
 
 
 @admin_router.put("/agents/{agent_id}")
@@ -170,22 +87,6 @@ async def admin_delete_agent(
     return {"ok": True}
 
 
-@admin_router.get("/skills")
-async def admin_list_skills(_: str = Depends(require_admin)) -> list[dict[str, Any]]:
-    from app.config.data import SKILLS_DIR
-    from app.storage.skill_storage import SkillStorage
-
-    async with open_db() as conn:
-        username_map = await _username_map(conn)
-    items = await SkillStorage(SKILLS_DIR).list("all")
-    for item in items:
-        item["owner_username"] = username_map.get(
-            item.get("owner_id", ""), item.get("owner_id", "")
-        )
-        item.pop("content", None)
-    return items
-
-
 @admin_router.delete("/skills/{item_id}")
 async def admin_delete_skill(
     item_id: str, _: str = Depends(require_admin)
@@ -203,21 +104,6 @@ async def admin_delete_skill(
     return {"ok": True}
 
 
-@admin_router.get("/prompts")
-async def admin_list_prompts(_: str = Depends(require_admin)) -> list[dict[str, Any]]:
-    from app.storage.prompt_storage import PromptStorage
-
-    async with open_db() as conn:
-        username_map = await _username_map(conn)
-    items = await PromptStorage().list("all")
-    for item in items:
-        item["owner_username"] = username_map.get(
-            item.get("owner_id", ""), item.get("owner_id", "")
-        )
-        item.pop("content", None)
-    return items
-
-
 @admin_router.delete("/prompts/{item_id}")
 async def admin_delete_prompt(
     item_id: str, _: str = Depends(require_admin)
@@ -232,21 +118,6 @@ async def admin_delete_prompt(
         )
     await storage.delete_as_admin(prompt["scope"], item_id, allow_public=True)
     return {"ok": True}
-
-
-@admin_router.get("/tools")
-async def admin_list_tools(_: str = Depends(require_admin)) -> list[dict[str, Any]]:
-    from app.storage.tool_storage import ToolStorage
-
-    async with open_db() as conn:
-        username_map = await _username_map(conn)
-    items = await ToolStorage().list("all")
-    for item in items:
-        item["owner_username"] = username_map.get(
-            item.get("owner_id", ""), item.get("owner_id", "")
-        )
-        item.pop("content", None)
-    return items
 
 
 @admin_router.get("/tools/{item_id}")
@@ -330,30 +201,6 @@ async def admin_set_tool_security(
     return saved
 
 
-@admin_router.get("/memory")
-async def admin_list_memory(_: str = Depends(require_admin)) -> list[dict[str, Any]]:
-    """A diferencia del resto de recursos, el nombre de un fichero de memoria
-    lo elige el usuario (no un ID generado) y solo es único por dueño (PK
-    compuesta (id, owner_id) en memory_files) — dos usuarios pueden tener
-    ambos un fichero "notes". Para que Admin (que asume IDs únicas
-    globalmente) pueda listar/enlazar/borrar cada uno sin ambigüedad, el
-    "id" que se expone aquí es "{owner_id}::{filename}"."""
-    async with open_db() as conn:
-        username_map = await _username_map(conn)
-        rows = await conn.fetchall(sql("queries/admin_resources:list_memory_files"))
-    return [
-        {
-            "id": f"{r['owner_id']}::{r['id']}",
-            "filename": r["id"],
-            "owner_id": r["owner_id"],
-            "owner_username": username_map.get(r["owner_id"], r["owner_id"]),
-            "size": len(r["content"] or ""),
-            "updated_at": r["updated_at"],
-        }
-        for r in rows
-    ]
-
-
 @admin_router.delete("/memory/{item_id}")
 async def admin_delete_memory(
     item_id: str, _: str = Depends(require_admin)
@@ -373,21 +220,6 @@ async def admin_delete_memory(
     return {"ok": True}
 
 
-@admin_router.get("/knowledge")
-async def admin_list_knowledge(_: str = Depends(require_admin)) -> list[dict[str, Any]]:
-    from app.storage.knowledge import KnowledgeStorage
-
-    async with open_db() as conn:
-        username_map = await _username_map(conn)
-    items = await KnowledgeStorage().list(owner_id=None)
-    for item in items:
-        item["owner_username"] = username_map.get(
-            item.get("owner_id", ""), item.get("owner_id", "")
-        )
-        item.pop("content", None)
-    return items
-
-
 @admin_router.delete("/knowledge/{item_id}")
 async def admin_delete_knowledge(
     item_id: str, _: str = Depends(require_admin)
@@ -399,20 +231,6 @@ async def admin_delete_knowledge(
             404, "not_found", "Elemento no encontrado", extra={"resource": "item"}
         )
     return {"ok": True}
-
-
-@admin_router.get("/workflows")
-async def admin_list_workflows(_: str = Depends(require_admin)) -> list[dict[str, Any]]:
-    items = await _workflows.list_all()
-    async with open_db() as conn:
-        username_map = await _username_map(conn)
-    for item in items:
-        item["owner_username"] = username_map.get(
-            item.get("owner_id", ""), item.get("owner_id", "")
-        )
-        definition = item.pop("definition", None) or {}
-        item["steps"] = len(definition.get("nodes") or [])
-    return items
 
 
 @admin_router.delete("/workflows/{workflow_id}")
@@ -429,21 +247,6 @@ async def admin_delete_workflow(
     return {"ok": True}
 
 
-@admin_router.get("/llm-orchestrations")
-async def admin_list_llm_orchestrations(
-    _: str = Depends(require_admin),
-) -> list[dict[str, Any]]:
-    items = await _llm_orchestrations.list_all()
-    async with open_db() as conn:
-        username_map = await _username_map(conn)
-    for item in items:
-        item["owner_username"] = username_map.get(
-            item.get("owner_id", ""), item.get("owner_id", "")
-        )
-        item["candidate_count"] = len(item.get("candidates") or [])
-    return items
-
-
 @admin_router.delete("/llm-orchestrations/{item_id}")
 async def admin_delete_llm_orchestration(
     item_id: str, _: str = Depends(require_admin)
@@ -456,70 +259,6 @@ async def admin_delete_llm_orchestration(
             extra={"resource": "llm_orchestration"},
         )
     return {"ok": True}
-
-
-@admin_router.get("/groups")
-async def admin_list_groups(
-    _: str = Depends(require_admin),
-) -> list[dict[str, Any]]:
-    import contextlib
-    import json as _json
-
-    from app.config.data import AGENTS_DIR
-
-    async with open_db() as conn:
-        group_rows = await conn.fetchall(sql("queries/admin_resources:list_groups"))
-        groups = [
-            {
-                "id": r[0],
-                "name": r[1],
-                "created_by": r[2],
-                "created_by_username": r[3],
-                "created_at": r[4],
-                "is_active": bool(r[5]),
-                "status": "active" if r[5] else "disabled",
-            }
-            for r in group_rows
-        ]
-        mc_rows = await conn.fetchall(sql("queries/admin_resources:members_per_group"))
-        member_counts = {r[0]: r[1] for r in mc_rows}
-        cs_rows = await conn.fetchall(
-            sql("queries/admin_resources:connections_per_owner")
-        )
-        conn_stats = {
-            r[0]: {"count": r[1], "tokens_in": r[2], "tokens_out": r[3]}
-            for r in cs_rows
-        }
-        kc_rows = await conn.fetchall(
-            sql("queries/admin_resources:knowledge_per_owner")
-        )
-        know_counts = {r[0]: r[1] for r in kc_rows}
-
-    agent_counts: dict[str, int] = {}
-    if AGENTS_DIR.exists():
-        for cfg_path in AGENTS_DIR.glob("private/*/config.json"):
-            with contextlib.suppress(OSError, _json.JSONDecodeError, AttributeError):
-                data = _json.loads(cfg_path.read_text())
-                owner = data.get("owner_id")
-                if owner:
-                    agent_counts[owner] = agent_counts.get(owner, 0) + 1
-
-    result = []
-    for group in groups:
-        group_id = group["id"]
-        stats = conn_stats.get(group_id, {"count": 0, "tokens_in": 0, "tokens_out": 0})
-        result.append(
-            {
-                **group,
-                "member_count": member_counts.get(group_id, 0),
-                "connections_count": stats["count"],
-                "tokens_in": stats["tokens_in"],
-                "tokens_out": stats["tokens_out"],
-                "knowledge_count": know_counts.get(group_id, 0),
-                "agents_count": agent_counts.get(group_id, 0),
-            }
-        )
-    return result
 
 
 @admin_router.delete("/groups/{group_id}")

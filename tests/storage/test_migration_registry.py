@@ -820,3 +820,41 @@ async def test_el_contenido_oficial_pasa_a_columnas_de_recurso(tmp_path):
         "official_package_components",
         "official_package_copies",
     }
+
+
+def test_los_dos_motores_premigran_las_columnas_de_los_indices():
+    """Un `CREATE INDEX` del esquema nombra una columna que
+    `CREATE TABLE IF NOT EXISTS` no añade a una tabla que ya existe, así que
+    hay que añadirla antes de ejecutar el esquema. SQLite lo hacía desde
+    siempre; PostgreSQL no lo hacía **nadie**, y una base existente respondía
+    *column ... does not exist* al crear el índice: el backend no arrancaba.
+
+    Se mira el código de `migrate_schema` porque el fallo solo aparece sobre
+    una base anterior a la columna, que es justo lo que una suite con la base
+    recién creada nunca reproduce.
+    """
+    import inspect
+
+    from app.storage import db
+
+    fuente = inspect.getsource(db.migrate_schema)
+    for motor in ("_pre_migrate_sqlite", "_pre_migrate_pg"):
+        assert f"await {motor}(conn)" in fuente, (
+            f"{motor} no se llama en migrate_schema: el motor que se quede "
+            "sin pre-migración no arranca en cuanto el esquema indexe una "
+            "columna nueva"
+        )
+
+
+def test_la_premigracion_de_postgres_cubre_la_misma_lista():
+    """Las dos pre-migraciones leen `_SCHEMA_INDEX_DEPS`. Si una se copiara su
+    propia lista, añadir una columna la dejaría a medias en un solo motor."""
+    import inspect
+
+    from app.storage.migrations.legacy import _catchup_pg, _catchup_sqlite
+
+    for modulo in (_catchup_pg, _catchup_sqlite):
+        fuente = inspect.getsource(modulo)
+        assert "_SCHEMA_INDEX_DEPS" in fuente, (
+            f"{modulo.__name__} no usa la lista compartida"
+        )

@@ -128,7 +128,7 @@ def test_el_invitado_no_aparece_como_usuario(admin_client):
 
     guest_id = asyncio.run(create_guest_user())
 
-    filas = admin_client.get("/api/admin/users").json()
+    filas = admin_client.get("/api/v2/admin/explore?type=user&limit=100").json()["items"]
     assert all(u.get("username") != guest_id for u in filas)
 
     # Tampoco tiene perfil público ni sale en el buscador de personas.

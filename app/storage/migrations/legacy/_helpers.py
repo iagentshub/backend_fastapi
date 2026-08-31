@@ -26,6 +26,12 @@ _SCHEMA_INDEX_DEPS: list[tuple[str, str, str]] = [
     ("tools", "official_source_id", "TEXT"),
     ("knowledge_items", "official_source_id", "TEXT"),
     ("agent_workflows", "official_source_id", "TEXT"),
+    # Igual que arriba: `idx_agents_connection` se crea en el esquema, que se
+    # re-ejecuta entero en cada arranque, y `CREATE TABLE IF NOT EXISTS` no
+    # añade columnas a una tabla que ya existe. Sin esta línea, una base
+    # anterior a la migración 45 no arranca: el CREATE INDEX responde "no such
+    # column" antes de que la migración llegue a añadirla.
+    ("agents", "connection_id", "TEXT"),
 ]
 
 # Tablas de recursos que reciben el borrado suave (is_active + deactivated_at)

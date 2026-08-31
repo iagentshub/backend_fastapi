@@ -87,7 +87,7 @@ def _materialize(
 def admin_id(admin_client) -> str:
     return next(
         user["id"]
-        for user in admin_client.get("/api/admin/users").json()
+        for user in admin_client.get("/api/v2/admin/explore?type=user&limit=100").json()["items"]
         if user["username"] == "testadmin"
     )
 

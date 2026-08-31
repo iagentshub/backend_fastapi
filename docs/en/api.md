@@ -170,7 +170,6 @@ avoids a different representation for every interface.
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/admin/users` | List all registered users (password hashes excluded) |
 | `PATCH` | `/api/admin/users/{username}` | Update user fields (`role`, `is_active`) |
 | `DELETE` | `/api/admin/users/{username}` | Delete a user (cannot self-delete) |
 
@@ -178,21 +177,19 @@ avoids a different representation for every interface.
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/admin/agents` | List all private agents; each item includes internal `owner_id` and public `owner_username` |
 | `DELETE` | `/api/admin/agents/{id}?scope=private` | Delete a private agent |
 
 ### Connections
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/admin/connections` | List all connections; each item includes `owner_username` and token totals |
+| `GET` | `/api/v2/admin/connections` | Cursor page of connections; each item includes `owner_username` and token totals |
 | `DELETE` | `/api/admin/connections/{id}` | Delete a connection (removes associated token history) |
 
 ### Knowledge
 
 | Method | Endpoint | Description |
 |---|---|---|
-| `GET` | `/api/admin/knowledge` | List all knowledge items; each item includes `owner_username` and `char_count` |
 | `DELETE` | `/api/admin/knowledge/{id}` | Delete a knowledge item |
 
 ### Official sources

@@ -29,7 +29,6 @@ DEUDA = {
     "storage/tool_storage.py": 719,
     "storage/migrations/steps/misc.py": 716,
     "utils/flog.py": 673,
-    "api/routes/admin/resources.py": 660,
     "api/routes/tools.py": 632,
 }
 

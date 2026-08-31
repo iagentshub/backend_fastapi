@@ -12,7 +12,6 @@ from fastapi import Depends
 import app.storage.guest as _guest_cfg
 from app.api.routes.admin._router import admin_router
 from app.api.routes.auth import require_admin
-from app.config.data import AGENTS_DIR as _AGENTS_DIR
 from app.config.startup_checks import report as config_report
 from app.pagination.metrics import snapshot as pagination_metrics_snapshot
 from app.sql import sql
@@ -161,6 +160,12 @@ async def admin_stats(_: str = Depends(require_admin)) -> dict[str, Any]:
         workflows_total = (
             await conn.fetchval(sql("queries/admin_stats:count_workflows"))
         ) or 0
+        agentes_por_scope = {
+            str(fila[0]): int(fila[1])
+            for fila in await conn.fetchall(
+                sql("queries/admin_stats:count_agents_by_scope")
+            )
+        }
 
         _today_utc = _dt.datetime.now(_dt.timezone.utc).date()
         cutoff = (_today_utc - _dt.timedelta(days=13)).isoformat()
@@ -230,16 +235,8 @@ async def admin_stats(_: str = Depends(require_admin)) -> dict[str, Any]:
         else (None, 0)
     )
 
-    agents_public = (
-        len(list(_AGENTS_DIR.glob("public/*/config.json")))
-        if _AGENTS_DIR.exists()
-        else 0
-    )
-    agents_private = (
-        len(list(_AGENTS_DIR.glob("private/*/config.json")))
-        if _AGENTS_DIR.exists()
-        else 0
-    )
+    agents_public = agentes_por_scope.get("public", 0)
+    agents_private = agentes_por_scope.get("private", 0)
 
     from app.config.session import WEBMAIL_URL
 
