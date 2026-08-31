@@ -41,9 +41,9 @@ def test_agent_origin_type_owner(client):
     created = r.json()
 
     # Check via list
-    r_list = client.get("/api/agents")
+    r_list = client.get("/api/v2/agents")
     assert r_list.status_code == 200
-    agents = r_list.json()
+    agents = r_list.json()["items"]
     my_agent = next((a for a in agents if a["id"] == created["id"]), None)
     assert my_agent is not None
     assert my_agent["origin_type"] == "owner"
@@ -88,9 +88,9 @@ def test_agent_origin_type_linked(client):
 
     # member lists agents → shared agent must have origin_type='linked'
     _set_cookie(client, "orig_linked_member")
-    r_list = client.get("/api/agents")
+    r_list = client.get("/api/v2/agents")
     assert r_list.status_code == 200
-    agents = r_list.json()
+    agents = r_list.json()["items"]
     shared = next((a for a in agents if a["id"] == agent_id), None)
     assert shared is not None, "El agente compartido no aparece en el listado del miembro"
     assert shared["origin_type"] == "linked"

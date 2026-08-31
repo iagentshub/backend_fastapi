@@ -81,37 +81,34 @@ def test_lo_declarado_existe_de_verdad():
 
 
 def test_el_explorador_no_devuelve_la_columna_oculta(admin_client):
-    r = admin_client.get("/api/admin/metadata/tables/users/data")
+    r = admin_client.get("/api/v2/admin/metadata/tables/users/data")
     assert r.status_code == 200, r.text
     assert "password_hash" not in r.json()["columns"]
 
 
 def test_el_buscador_no_es_un_oraculo_de_confirmacion(admin_client):
-    """El LIKE se construía sobre todas las columnas, ocultas incluidas.
+    """El LIKE no puede mirar dentro de una columna que no se enseña.
 
-    La columna salía como «[oculto]» pero `total` respondía con cuántas filas
-    casaban, así que se podía confirmar un valor concreto sin verlo nunca.
+    Si lo hiciera, la columna saldría oculta pero el total diría cuántas filas
+    casan, y se podría confirmar un valor concreto sin verlo nunca.
     """
-    fila = admin_client.get("/api/admin/metadata/tables/users/data").json()
-    assert fila["total"] >= 1
-
-    # El hash del admin existe en la tabla; buscar por su prefijo no puede
-    # devolver ninguna coincidencia.
     r = admin_client.get(
-        "/api/admin/metadata/tables/users/data", params={"q": "$2b$"}
+        "/api/v2/admin/metadata/tables/users/data", params={"q": "$2b$"}
     )
-    assert r.status_code == 200
-    assert r.json()["total"] == 0, "el buscador sigue mirando dentro de la columna oculta"
+    assert r.status_code == 200, r.text
+    assert r.json()["items"] == [], (
+        "el buscador sigue mirando dentro de la columna oculta"
+    )
 
 
 def test_un_blob_sale_como_tamano_y_no_como_texto(admin_client):
     """`str(row[i])` sobre un BLOB devolvía la representación de sus bytes."""
-    from app.api.routes.admin.stats import _valor_visible
+    from app.services.metadata_cursor_listing import _valor_visible
 
     assert _valor_visible(b"12345") == "@5 bytes@"
     assert _valor_visible(memoryview(b"abc")) == "@3 bytes@"
     assert _valor_visible(None) is None
-    assert _valor_visible(7) == "7"
+    assert _valor_visible(7) == 7
 
 
 @pytest.mark.parametrize("tabla", ["sessions", "personal_access_tokens", "push_subscriptions"])

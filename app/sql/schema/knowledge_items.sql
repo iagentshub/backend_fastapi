@@ -30,5 +30,7 @@ CREATE TABLE IF NOT EXISTS knowledge_items (
 );
 CREATE INDEX IF NOT EXISTS idx_knowledge_owner
     ON knowledge_items(owner_id, type, created_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_knowledge_visible_order
+    ON knowledge_items(created_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_knowledge_official
     ON knowledge_items(official_source_id);

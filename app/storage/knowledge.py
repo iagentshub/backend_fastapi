@@ -9,11 +9,11 @@ from dataclasses import dataclass
 from html.parser import HTMLParser
 from typing import Any, Dict, List, Optional
 
-from app.pagination.models import OffsetPage, OffsetParams
+from app.pagination.models import CursorPage, CursorParams
 from app.services.resource_visibility import VisibilityFilter
 from app.sql import sql
 from app.storage.db import AsyncConn, open_db
-from app.storage.page_query import fetch_offset_page
+from app.storage.knowledge_cursor_page import fetch_visible_knowledge_cursor_page
 from app.storage.resource_base import ResourceStorage
 from app.storage.skill_storage import ensure_origin_label
 from app.utils.generators import generate_date, generate_id
@@ -314,108 +314,30 @@ class KnowledgeStorage(ResourceStorage):
     table = "knowledge_items"
     resource_type = "knowledge"
 
-    async def list_visible_page(
+    async def list_visible_cursor_page(
         self,
         *,
         user: str,
         owner_id: str,
         type: str | None,
-        page: OffsetParams,
+        page: CursorParams,
         permission_filter: VisibilityFilter | None = None,
         requested_group_id: str | None = None,
         catalog_filter: VisibilityFilter | None = None,
-    ) -> OffsetPage[Dict[str, Any]]:
-        """Página de knowledge propio y compartido, incluidos packs."""
-        if requested_group_id is not None:
-            direct_sql = (
-                "EXISTS (SELECT 1 FROM resource_group_shares direct_share "
-                "WHERE direct_share.resource_type='knowledge' "
-                "AND direct_share.resource_id=k.id AND direct_share.group_id=?)"
-            )
-            pack_sql = (
-                "(k.pack_id IS NOT NULL AND EXISTS ("
-                "SELECT 1 FROM resource_group_shares pack_share "
-                "WHERE pack_share.resource_type='knowledge_pack' "
-                "AND pack_share.resource_id=k.pack_id AND pack_share.group_id=?))"
-            )
-            direct_params: tuple[Any, ...] = (requested_group_id,)
-            pack_params: tuple[Any, ...] = (requested_group_id,)
-            owner_active = (
-                "NOT EXISTS (SELECT 1 FROM groups inactive_owner "
-                "WHERE inactive_owner.id=k.owner_id AND inactive_owner.is_active=0)"
-            )
-            visibility_sql = f"((({direct_sql}) OR ({pack_sql})) AND {owner_active})"
-            visibility_params = (*direct_params, *pack_params)
-        else:
-            membership = (
-                "JOIN group_members visible_member "
-                "ON visible_member.group_id=visible_share.group_id "
-                "JOIN groups visible_group ON visible_group.id=visible_share.group_id "
-            )
-            direct_sql = (
-                "EXISTS (SELECT 1 FROM resource_group_shares visible_share "
-                f"{membership}WHERE visible_share.resource_type='knowledge' "
-                "AND visible_share.resource_id=k.id "
-                "AND visible_member.username=? AND visible_group.is_active=1)"
-            )
-            pack_sql = (
-                "(k.pack_id IS NOT NULL AND EXISTS ("
-                "SELECT 1 FROM resource_group_shares visible_share "
-                f"{membership}WHERE visible_share.resource_type='knowledge_pack' "
-                "AND visible_share.resource_id=k.pack_id "
-                "AND visible_member.username=? AND visible_group.is_active=1))"
-            )
-            direct_params = (user,)
-            pack_params = (user,)
-            owner_active = (
-                "NOT EXISTS (SELECT 1 FROM groups inactive_owner "
-                "WHERE inactive_owner.id=k.owner_id AND inactive_owner.is_active=0)"
-            )
-            visibility_sql = (
-                f"(k.owner_id=? OR ((({direct_sql}) OR ({pack_sql})) "
-                f"AND {owner_active}))"
-            )
-            visibility_params = (owner_id, *direct_params, *pack_params)
+    ) -> CursorPage[Dict[str, Any]]:
+        """Página keyset para consumidores cursor-only del catálogo."""
 
-        clauses = [visibility_sql]
-        params = list(visibility_params)
-        if type:
-            clauses.append("k.type=?")
-            params.append(type)
-        if permission_filter is not None:
-            clauses.append(f"(({pack_sql}) OR ({permission_filter.sql}))")
-            params.extend(pack_params)
-            params.extend(permission_filter.params)
-        if catalog_filter is not None:
-            clauses.append(catalog_filter.sql)
-            params.extend(catalog_filter.params)
-        where = " AND ".join(f"({clause})" for clause in clauses)
-        columns = (
-            "k.id,k.owner_id,k.type,k.title,k.source,k.char_count,"
-            "k.source_char_count,k.content_truncated,k.truncation_reason,k.mime_type,"
-            "k.size_bytes,k.checksum,k.labels,k.is_active,k.deactivated_at,"
-            "k.created_at,k.updated_at,k.pack_id,k.pack_relative_path,k.pack_kind"
+        return await fetch_visible_knowledge_cursor_page(
+            user=user,
+            owner_id=owner_id,
+            type=type,
+            page=page,
+            permission_filter=permission_filter,
+            requested_group_id=requested_group_id,
+            catalog_filter=catalog_filter,
+            decode=lambda row: _coerce_active(dict(row)),
+            annotate=self._annotate_shared_page,
         )
-        async with open_db() as conn:
-            result = await fetch_offset_page(
-                conn,
-                count_sql=f"SELECT COUNT(*) FROM knowledge_items k WHERE {where}",
-                select_sql=(
-                    f"SELECT {columns} FROM knowledge_items k WHERE {where} "
-                    "ORDER BY k.created_at DESC,k.id DESC"
-                ),
-                params=tuple(params),
-                page=page,
-                decode=lambda row: _coerce_active(dict(row)),
-            )
-            await self._annotate_shared_page(
-                conn,
-                result.items,
-                user=user,
-                owner_id=owner_id,
-                requested_group_id=requested_group_id,
-            )
-        return result
 
     async def _annotate_shared_page(
         self,

@@ -17,4 +17,5 @@ CREATE TABLE IF NOT EXISTS skills (
     PRIMARY KEY (id, owner_id)
 );
 CREATE INDEX IF NOT EXISTS idx_skills_owner ON skills(owner_id, scope, updated_at DESC, id DESC);
+CREATE INDEX IF NOT EXISTS idx_skills_visible_order ON skills(updated_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_skills_official ON skills(official_source_id);

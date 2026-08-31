@@ -3,9 +3,9 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
-from fastapi import APIRouter, Depends, Query, Response
+from fastapi import APIRouter, Depends
 
 from app.api.routes.auth import (
     GroupContext,
@@ -18,11 +18,8 @@ from app.errors import APIError
 from app.middleware.locale import get_locale
 from app.models.llm_orchestration import orchestration_id_from_connection
 from app.models.request_bodies import AgentPayload
-from app.pagination.models import OffsetParams
 from app.services.agent_access import agent_access
-from app.services.agent_listing import list_authenticated_agents
 from app.services.agent_presentation import apply_agent_locale
-from app.services.agent_presentation import validate_agent_scope as _check_scope
 from app.services.publishing import assert_can_publish
 from app.services.tool_access import resolve_accessible_tools
 from app.sql import sql
@@ -205,33 +202,6 @@ async def _conn_owner(user: str) -> str | None:
 
 def _apply_locale(agent: Dict[str, Any], locale: str) -> Dict[str, Any]:
     return apply_agent_locale(agent, locale, AGENTS_DIR)
-
-
-@router.get("")
-async def list_agents(
-    scope: str = "all",
-    label: Optional[str] = None,
-    owner_scope: str = "group",
-    group_id: Optional[str] = None,
-    include_inactive: bool = False,
-    limit: int = Query(50, ge=1, le=100),
-    offset: int = Query(0, ge=0),
-    response: Response = None,  # type: ignore[assignment]
-    ctx: GroupContext = Depends(require_group_session),
-) -> List[Dict[str, Any]]:
-    _check_scope(scope)
-    locale = get_locale()
-    return await list_authenticated_agents(
-        _agents,
-        ctx=ctx,
-        scope=scope,
-        label=label,
-        include_inactive=include_inactive,
-        page=OffsetParams(limit=limit, offset=offset),
-        response=response,
-        requested_group_id=group_id,
-        present=lambda item: _apply_locale(item, locale),
-    )
 
 
 @router.post("")

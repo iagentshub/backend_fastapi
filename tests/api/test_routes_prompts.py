@@ -13,9 +13,9 @@ _PROMPT_PAYLOAD = {
 
 
 def test_list_prompts_empty(admin_client):
-    r = admin_client.get("/api/prompts")
+    r = admin_client.get("/api/v2/prompts")
     assert r.status_code == 200
-    assert isinstance(r.json(), list)
+    assert isinstance(r.json()["items"], list)
 
 
 def test_save_private_prompt(admin_client):
@@ -142,5 +142,5 @@ def test_other_user_cannot_edit_or_delete_public_prompt(admin_client):
 
 
 def test_prompts_requires_auth(client):
-    r = client.get("/api/prompts")
+    r = client.get("/api/v2/prompts")
     assert r.status_code == 401

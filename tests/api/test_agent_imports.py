@@ -14,7 +14,7 @@ def test_preview_requires_authentication(client) -> None:
 
 
 def test_preview_does_not_persist_and_strips_client_identity(admin_client) -> None:
-    before = admin_client.get("/api/agents").json()
+    before = admin_client.get("/api/v2/agents").json()["items"]
     response = admin_client.post(
         "/api/agents/import/preview",
         files={
@@ -47,7 +47,7 @@ def test_preview_does_not_persist_and_strips_client_identity(admin_client) -> No
         "labels": ["private"],
     }
     assert set(body["ignored_fields"]) >= {"id", "owner_id", "scope"}
-    assert admin_client.get("/api/agents").json() == before
+    assert admin_client.get("/api/v2/agents").json()["items"] == before
 
 
 def test_preview_reports_invalid_extension_with_stable_error(admin_client) -> None:
@@ -86,22 +86,46 @@ def test_import_catalog_is_searched_and_paginated_per_resource_type(
         assert created.status_code == 200, created.text
 
     first = admin_client.get(
-        "/api/agents/import/catalog/skill", params={"q": "Security", "limit": 1}
+        "/api/v2/agents/import/catalog/skill",
+        params={"q": "Security", "limit": 1, "include_total": "true"},
     )
 
     assert first.status_code == 200, first.text
     body = first.json()
-    assert body["total"] == 2
-    assert body["has_more"] is True
+    assert body["page"]["total"] == 2
+    assert body["page"]["has_more"] is True
+    assert body["page"]["next_cursor"]
     assert len(body["items"]) == 1
     assert "Security" in body["items"][0]["name"]
 
     second = admin_client.get(
-        "/api/agents/import/catalog/skill",
-        params={"q": "Security", "limit": 1, "offset": 1},
+        "/api/v2/agents/import/catalog/skill",
+        params={
+            "q": "Security",
+            "limit": 1,
+            "cursor": body["page"]["next_cursor"],
+        },
     )
     assert second.status_code == 200, second.text
-    assert second.json()["has_more"] is False
+    assert second.json()["page"]["has_more"] is False
+    assert second.json()["page"]["next_cursor"] is None
+
+    wrong_query = admin_client.get(
+        "/api/v2/agents/import/catalog/skill",
+        params={
+            "q": "Operations",
+            "limit": 1,
+            "cursor": body["page"]["next_cursor"],
+        },
+    )
+    assert wrong_query.status_code == 422
+    assert wrong_query.json()["detail"]["code"] == "invalid_cursor"
+
+    obsolete = admin_client.get(
+        "/api/v2/agents/import/catalog/skill", params={"offset": 1}
+    )
+    assert obsolete.status_code == 422
+    assert obsolete.json()["detail"]["field"] == "offset"
 
 
 def test_import_catalog_resolves_linked_ids_in_one_batched_request(
@@ -359,7 +383,7 @@ def test_directory_apply_creates_shared_dependency_once_and_is_atomic(
     assert set(created) == {"a", "b", "z"}
     agents = {
         item["name"]: item
-        for item in admin_client.get("/api/agents").json()
+        for item in admin_client.get("/api/v2/agents").json()["items"]
         if item["name"] in {"Agent X", "Agent Y"}
     }
     assert set(agents["Agent X"]["skills"]) == {created["a"], created["b"]}

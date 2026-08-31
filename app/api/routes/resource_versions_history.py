@@ -13,13 +13,11 @@ from __future__ import annotations
 
 from typing import Any, Dict, Literal
 
-from fastapi import APIRouter, Depends, Query, Response
+from fastapi import APIRouter, Depends
 
 from app.api.routes.auth import GroupContext, require_group_session
 from app.config.data import AGENTS_DIR, SKILLS_DIR
 from app.errors import APIError
-from app.pagination.http import publish_offset_page
-from app.pagination.models import OffsetParams
 from app.storage.agent_storage import AgentStorage
 from app.storage.db import open_db
 from app.storage.resource_versions import ResourceVersionStorage
@@ -68,26 +66,11 @@ async def _owned_resource(
 async def versions(
     resource_type: str,
     resource_id: str,
-    limit: int = Query(50, ge=1, le=100),
-    offset: int = Query(0, ge=0),
-    response: Response = None,  # type: ignore[assignment]
     ctx: GroupContext = Depends(require_group_session),
 ) -> list[Dict[str, Any]]:
-    """Historial de un recurso, de la versión más reciente a la más antigua.
-
-    Era la última ruta de listado que quedó sin paginar. Devuelve solo metadatos
-    —id, versión, autor, motivo, fecha—, así que no arrastraba los snapshots,
-    pero tampoco tenía cota.
-    """
+    """Historial de un recurso, de la versión más reciente a la más antigua."""
     await _owned_resource(resource_type, resource_id, ctx.group_id)
-    page = await _versions.list(
-        resource_type,
-        resource_id,
-        ctx.group_id,
-        page=OffsetParams(limit=limit, offset=offset),
-    )
-    publish_offset_page(response, page)
-    return list(page.items)
+    return await _versions.list(resource_type, resource_id, ctx.group_id)
 
 
 @router.get("/resources/{resource_type}/{resource_id}/versions/{version}")

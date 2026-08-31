@@ -14,7 +14,7 @@ from app.models.agent_import import (
     AgentImportReference,
     AgentImportResourceKind,
 )
-from app.pagination.models import OffsetPage, OffsetParams
+from app.pagination.models import CursorPage, CursorParams
 from app.services.official_source_importer.references import reference_candidates
 from app.services.resource_visibility import VisibilityFilter
 from app.storage.knowledge import KnowledgeStorage
@@ -87,13 +87,13 @@ async def _matching_scoped(
 ) -> list[dict[str, Any]]:
     matches: dict[str, dict[str, Any]] = {}
     for chunk in _chunks(values):
-        offset = 0
+        cursor = None
         while True:
             page = await storage.list_visible_page(
                 user=ctx.user,
                 active_group_id=ctx.group_id,
                 scope="all",
-                page=OffsetParams(limit=200, offset=offset),
+                page=CursorParams(limit=200, cursor=cursor),
                 catalog_filter=_alias_filter(
                     alias="resource_row", name_columns=("name",), values=chunk
                 ),
@@ -105,7 +105,9 @@ async def _matching_scoped(
             )
             if not page.has_more:
                 break
-            offset += len(page.items)
+            cursor = page.next_cursor
+            if cursor is None:
+                raise RuntimeError("Página incompleta sin cursor siguiente")
     return list(matches.values())
 
 
@@ -114,13 +116,13 @@ async def _matching_knowledge(
 ) -> list[dict[str, Any]]:
     matches: dict[str, dict[str, Any]] = {}
     for chunk in _chunks(values):
-        offset = 0
+        cursor = None
         while True:
-            page = await _knowledge.list_visible_page(
+            page = await _knowledge.list_visible_cursor_page(
                 user=ctx.user,
                 owner_id=ctx.group_id,
                 type=None,
-                page=OffsetParams(limit=200, offset=offset),
+                page=CursorParams(limit=200, cursor=cursor),
                 catalog_filter=_alias_filter(
                     alias="k", name_columns=("title", "source"), values=chunk
                 ),
@@ -132,7 +134,9 @@ async def _matching_knowledge(
             )
             if not page.has_more:
                 break
-            offset += len(page.items)
+            cursor = page.next_cursor
+            if cursor is None:
+                raise RuntimeError("Página incompleta sin cursor siguiente")
     return list(matches.values())
 
 
@@ -141,12 +145,12 @@ async def _matching_packs(
 ) -> list[dict[str, Any]]:
     matches: dict[str, dict[str, Any]] = {}
     for chunk in _chunks(values):
-        offset = 0
+        cursor = None
         while True:
-            page = await _packs.list_visible_page(
+            page = await _packs.list_visible_cursor_page(
                 ctx.group_id,
                 ctx.user,
-                page=OffsetParams(limit=200, offset=offset),
+                page=CursorParams(limit=200, cursor=cursor),
                 catalog_filter=_alias_filter(
                     alias="p", name_columns=("name",), values=chunk
                 ),
@@ -158,7 +162,9 @@ async def _matching_packs(
             )
             if not page.has_more:
                 break
-            offset += len(page.items)
+            cursor = page.next_cursor
+            if cursor is None:
+                raise RuntimeError("Página incompleta sin cursor siguiente")
     return list(matches.values())
 
 
@@ -168,13 +174,13 @@ async def _knowledge_in_packs(
     matches: dict[str, dict[str, Any]] = {}
     for chunk in _chunks(pack_ids):
         placeholders = ",".join("?" for _ in chunk)
-        offset = 0
+        cursor = None
         while True:
-            page = await _knowledge.list_visible_page(
+            page = await _knowledge.list_visible_cursor_page(
                 user=ctx.user,
                 owner_id=ctx.group_id,
                 type=None,
-                page=OffsetParams(limit=200, offset=offset),
+                page=CursorParams(limit=200, cursor=cursor),
                 catalog_filter=VisibilityFilter(
                     sql=f"k.pack_id IN ({placeholders})", params=tuple(chunk)
                 ),
@@ -186,7 +192,9 @@ async def _knowledge_in_packs(
             )
             if not page.has_more:
                 break
-            offset += len(page.items)
+            cursor = page.next_cursor
+            if cursor is None:
+                raise RuntimeError("Página incompleta sin cursor siguiente")
     return list(matches.values())
 
 
@@ -307,8 +315,8 @@ class AgentImportCatalog:
         kind: AgentImportResourceKind,
         *,
         query: str,
-        page: OffsetParams,
-    ) -> OffsetPage[AgentImportCandidate]:
+        page: CursorParams,
+    ) -> CursorPage[AgentImportCandidate]:
         """Return one authorized compact page without touching other types."""
 
         catalog_filter = None
@@ -327,25 +335,29 @@ class AgentImportCatalog:
                 page=page,
                 catalog_filter=catalog_filter,
             )
-            return OffsetPage(
+            return CursorPage(
                 items=_candidates(result.items, "name"),
+                next_cursor=result.next_cursor,
+                has_more=result.has_more,
                 total=result.total,
-                params=page,
+                snapshot_at=result.snapshot_at,
             )
         if kind == "knowledge":
-            result = await _knowledge.list_visible_page(
+            result = await _knowledge.list_visible_cursor_page(
                 user=ctx.user,
                 owner_id=ctx.group_id,
                 type=None,
                 page=page,
                 catalog_filter=catalog_filter,
             )
-            return OffsetPage(
+            return CursorPage(
                 items=_candidates(result.items, "title"),
+                next_cursor=result.next_cursor,
+                has_more=result.has_more,
                 total=result.total,
-                params=page,
+                snapshot_at=result.snapshot_at,
             )
-        result = await _packs.list_visible_page(
+        result = await _packs.list_visible_cursor_page(
             ctx.group_id,
             ctx.user,
             page=page,
@@ -355,10 +367,12 @@ class AgentImportCatalog:
                 else None
             ),
         )
-        return OffsetPage(
+        return CursorPage(
             items=_candidates(result.items, "name"),
+            next_cursor=result.next_cursor,
+            has_more=result.has_more,
             total=result.total,
-            params=page,
+            snapshot_at=result.snapshot_at,
         )
 
     def candidates(self, kind: AgentImportResourceKind) -> list[AgentImportCandidate]:

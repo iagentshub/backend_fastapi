@@ -54,7 +54,7 @@ def test_agent_not_visible_to_other_user(client):
     assert r.status_code == 200
 
     _set_cookie(client, "iso_bob_a")
-    agents = client.get("/api/agents").json()
+    agents = client.get("/api/v2/agents").json()["items"]
     names = [a["name"] for a in agents]
     assert "Agente de Alice" not in names
 
@@ -99,7 +99,7 @@ def test_team_agent_visible_to_all_members(client):
 
     # Member también puede verlo al cambiar al mismo group
     _set_cookie(client, "iso_member_d", group_id=group["id"])
-    agents = client.get("/api/agents").json()
+    agents = client.get("/api/v2/agents").json()["items"]
     names = [a["name"] for a in agents]
     assert "Agente Compartido" in names
 
@@ -119,12 +119,12 @@ def test_team_agent_not_visible_outside_team(client):
 
     # En group personal del creador → NO visible
     _set_cookie(client, "iso_creator_e")
-    agents = client.get("/api/agents").json()
+    agents = client.get("/api/v2/agents").json()["items"]
     assert not any(a["name"] == "Solo del Equipo" for a in agents)
 
     # En group personal del miembro → NO visible
     _set_cookie(client, "iso_member_e")
-    agents = client.get("/api/agents").json()
+    agents = client.get("/api/v2/agents").json()["items"]
     assert not any(a["name"] == "Solo del Equipo" for a in agents)
 
 
@@ -146,7 +146,7 @@ def test_outsider_cannot_see_team_agent(client):
 
     # Aunque fuerze el token con el group_id del equipo, los filtros lo bloquean
     _set_cookie(client, "iso_outsider_f", group_id=group["id"])
-    agents = client.get("/api/agents").json()
+    agents = client.get("/api/v2/agents").json()["items"]
     assert not any(a["id"] == agent["id"] for a in agents)
 
 
@@ -203,7 +203,7 @@ def test_private_skill_not_visible_to_other_user(client):
     assert r.status_code == 200
 
     _set_cookie(client, "iso_skill_bob_j")
-    skills = client.get("/api/skills?scope=private").json()
+    skills = client.get("/api/v2/skills?scope=private").json()["items"]
     assert not any(s["name"] == "Skill Secreta" for s in skills)
 
 
@@ -222,5 +222,5 @@ def test_team_skill_visible_to_members(client):
     assert r.status_code == 200
 
     _set_cookie(client, "iso_skill_member_k", group_id=group["id"])
-    skills = client.get("/api/skills?scope=all").json()
+    skills = client.get("/api/v2/skills?scope=all").json()["items"]
     assert any(s["name"] == "Skill Equipo" for s in skills)

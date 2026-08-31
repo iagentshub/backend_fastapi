@@ -6,17 +6,13 @@ from __future__ import annotations
 import json
 from typing import Any, Dict, List, Optional
 
-from fastapi import Depends, Query, Response
+from fastapi import Depends
 
 from app.api.routes.auth import require_auth
 from app.api.routes.explore._router import router
-from app.api.routes.explore._shared import (
-    STARRED_BY_REQUESTER,
-    _add_owner_usernames,
-)
+from app.api.routes.explore._shared import _add_owner_usernames
 from app.api.routes.social._router import _social_limiter
 from app.errors import APIError
-from app.pagination.http import TOTAL_HEADER
 from app.services.social_catalog import _PUBLIC_VAL, PUBLICLY_AVAILABLE_SQL
 from app.sql import sql
 from app.storage.db import IS_PG, open_db
@@ -212,61 +208,3 @@ async def follow_status(
         "followers_count": followers_count or 0,
         "following_count": following_count or 0,
     }
-
-@router.get("/api/feed")
-async def get_feed(
-    limit: int = Query(40, ge=1, le=100),
-    offset: int = Query(0, ge=0),
-    response: Response = None,  # type: ignore[assignment]
-    type: Optional[str] = None,
-    username: str = Depends(require_auth),
-) -> List[Dict[str, Any]]:
-    async with open_db() as conn:
-        conditions: List[str] = [
-            "owner IN (SELECT following FROM user_follows WHERE follower = ?)",
-            "is_public = ?",
-            PUBLICLY_AVAILABLE_SQL,
-        ]
-        params: List[Any] = [username, _PUBLIC_VAL]
-        if type and type != "all":
-            conditions.append("resource_type = ?")
-            params.append(type)
-        where = " AND ".join(conditions)
-        if response is not None:
-            total = await conn.fetchval(
-                f"SELECT COUNT(*) FROM resource_social WHERE {where}", tuple(params)
-            )
-            response.headers[TOTAL_HEADER] = str(total or 0)
-        # El parámetro de la estrella va delante de los del WHERE: la
-        # sustitución de marcadores es posicional.
-        page_params = [username, *params, limit, offset]
-        raw = await conn.fetchall(
-            f"SELECT resource_type, resource_id, owner, name, description, category, "
-            f"stars_count, tags, labels, updated_at, "
-            f"{STARRED_BY_REQUESTER} AS starred "
-            f"FROM resource_social "
-            f"WHERE {where} "
-            # Mismo desempate por clave primaria que el catálogo: el feed
-            # también se recorre por páginas.
-            f"ORDER BY updated_at DESC, "
-            f"resource_type ASC, resource_id ASC, owner ASC "
-            f"LIMIT ? OFFSET ?",
-            tuple(page_params),
-        )
-
-    rows = []
-    for r in raw:
-        row = dict(r)
-        try:
-            row["tags"] = json.loads(row.get("tags") or "[]")
-        except (ValueError, TypeError):
-            row["tags"] = []
-        try:
-            row["labels"] = json.loads(row.get("labels") or '["private"]')
-        except (ValueError, TypeError):
-            row["labels"] = ["private"]
-        # SQLite devuelve 0/1 y PostgreSQL un boolean.
-        row["starred"] = bool(row.get("starred"))
-        rows.append(row)
-    await _add_owner_usernames(rows)
-    return rows

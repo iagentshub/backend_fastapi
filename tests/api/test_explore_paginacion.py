@@ -70,8 +70,8 @@ def test_el_catalogo_y_el_feed_ordenan_por_una_clave_unica(client, monkeypatch):
 
     monkeypatch.setattr(db_module.AsyncConn, "fetchall", espiar)
 
-    assert client.get("/api/explore", params={"limit": 5}).status_code == 200
-    assert client.get("/api/feed", params={"limit": 5}).status_code == 200
+    assert client.get("/api/v2/explore", params={"limit": 5}).status_code == 200
+    assert client.get("/api/v2/feed", params={"limit": 5}).status_code == 200
 
     paginadas = [sql for sql in consultas if "FROM resource_social" in sql]
     assert paginadas, "no se capturó ninguna consulta paginada del catálogo"
@@ -80,21 +80,70 @@ def test_el_catalogo_y_el_feed_ordenan_por_una_clave_unica(client, monkeypatch):
         assert "resource_id" in orden and "owner" in orden, sql
 
 
-def test_las_paginas_del_catalogo_no_repiten_ni_pierden_filas(client):
+def test_cursor_v2_no_repite_ni_pierde_filas_empatadas(client, monkeypatch):
     _login(client, f"explorepag{uuid4().hex[:6]}")
     marca = f"empate{uuid4().hex[:6]}"
     asyncio.run(_sembrar_catalogo_empatado(marca, 12))
 
+    from app.storage import db as db_module
+
+    consultas: list[str] = []
+    original = db_module.AsyncConn.fetchall
+
+    async def espiar(self, sql, params=None):  # type: ignore[no-untyped-def]
+        consultas.append(sql)
+        return await original(self, sql, params)
+
+    monkeypatch.setattr(db_module.AsyncConn, "fetchall", espiar)
     vistos: list[str] = []
-    for offset in (0, 4, 8):
+    cursor = None
+    while True:
         r = client.get(
-            "/api/explore", params={"q": marca, "limit": 4, "offset": offset}
+            "/api/v2/explore",
+            params={"q": marca, "limit": 4, "cursor": cursor}
+            if cursor
+            else {"q": marca, "limit": 4},
         )
         assert r.status_code == 200, r.text
-        vistos.extend(item["resource_id"] for item in r.json())
+        payload = r.json()
+        vistos.extend(item["resource_id"] for item in payload["items"])
+        if not payload["page"]["has_more"]:
+            break
+        cursor = payload["page"]["next_cursor"]
+        assert cursor
 
     assert len(vistos) == 12
     assert len(set(vistos)) == 12, "una fila apareció en dos páginas"
+    selects = [sql for sql in consultas if "FROM resource_social" in sql]
+    assert selects
+    assert all(" OFFSET " not in sql.upper() for sql in selects)
+
+
+def test_cursor_v2_firma_los_filtros(client):
+    _login(client, f"explorectx{uuid4().hex[:6]}")
+    marca = f"contexto{uuid4().hex[:6]}"
+    asyncio.run(_sembrar_catalogo_empatado(marca, 3))
+    first = client.get(
+        "/api/v2/explore", params={"q": marca, "type": "skill", "limit": 1}
+    ).json()
+    cursor = first["page"]["next_cursor"]
+    assert cursor
+    changed = client.get(
+        "/api/v2/explore",
+        params={"q": marca, "type": "agent", "limit": 1, "cursor": cursor},
+    )
+    assert changed.status_code == 422
+    assert changed.json()["detail"]["code"] == "invalid_cursor"
+
+
+def test_cursor_v2_limita_filtros_repetidos(client):
+    _login(client, f"explorelimits{uuid4().hex[:6]}")
+    response = client.get(
+        "/api/v2/explore",
+        params=[("label", f"label-{index}") for index in range(21)],
+    )
+    assert response.status_code == 422
+    assert response.json()["detail"]["field"] == "label"
 
 
 def test_el_feed_pagina_sin_repetir_filas_empatadas(client):
@@ -128,10 +177,16 @@ def test_el_feed_pagina_sin_repetir_filas_empatadas(client):
     asyncio.run(sembrar())
 
     vistos: list[str] = []
-    for offset in (0, 3):
-        r = client.get("/api/feed", params={"limit": 3, "offset": offset})
+    cursor = None
+    for _ in range(2):
+        params = {"limit": 3}
+        if cursor is not None:
+            params["cursor"] = cursor
+        r = client.get("/api/v2/feed", params=params)
         assert r.status_code == 200, r.text
-        vistos.extend(item["resource_id"] for item in r.json())
+        payload = r.json()
+        vistos.extend(item["resource_id"] for item in payload["items"])
+        cursor = payload["page"]["next_cursor"]
 
     assert len(set(vistos)) == len(vistos) == 6
 
@@ -174,9 +229,9 @@ def test_el_catalogo_resuelve_los_packs_de_la_pagina_en_una_consulta(
     monkeypatch.setattr(db_module.AsyncConn, "fetchall", espiar_all)
     monkeypatch.setattr(db_module.AsyncConn, "fetchone", espiar_one)
 
-    r = client.get("/api/explore", params={"q": marca, "limit": 8})
+    r = client.get("/api/v2/explore", params={"q": marca, "limit": 8})
     assert r.status_code == 200
-    assert len(r.json()) == 8
+    assert len(r.json()["items"]) == 8
 
     sobre_knowledge = [sql for sql in consultas if "FROM knowledge_items" in sql]
     assert len(sobre_knowledge) <= 1, sobre_knowledge

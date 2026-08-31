@@ -27,6 +27,11 @@ from app.storage.migrations.steps.avatars import (
     _user_avatars_pg,
     _user_avatars_sqlite,
 )
+from app.storage.migrations.steps.cursor_catalogs import (
+    _cursor_catalogs_pg,
+    _cursor_catalogs_sqlite,
+)
+from app.storage.migrations.steps.cursor_completion import _cursor_completion_indexes
 from app.storage.migrations.steps.knowledge import (
     _knowledge_file_metadata_pg,
     _knowledge_file_metadata_sqlite,
@@ -98,6 +103,7 @@ from app.storage.migrations.steps.shared import (
     _resource_execution_leases,
     _resource_social_origin_index,
     _resource_social_page_index,
+    _scoped_resource_order_indexes,
 )
 from app.storage.migrations.steps.social import (
     _drop_social_fork_columns_pg,
@@ -157,6 +163,9 @@ MIGRATION_PAIRS: tuple[MigrationPair, ...] = (
     # hizo su trabajo, no encuentra columna y no hace nada.
     MigrationPair(40, "user_avatars_drop_legacy_column", _user_avatars_sqlite, _user_avatars_pg),
     MigrationPair(41, "drop_social_fork_columns", _drop_social_fork_columns_sqlite, _drop_social_fork_columns_pg),
+    MigrationPair(42, "scoped_resource_order_indexes", _scoped_resource_order_indexes, _scoped_resource_order_indexes),
+    MigrationPair(43, "cursor_catalogs", _cursor_catalogs_sqlite, _cursor_catalogs_pg),
+    MigrationPair(44, "cursor_completion_indexes", _cursor_completion_indexes, _cursor_completion_indexes),
 )
 
 __all__ = ["MIGRATION_PAIRS"]

@@ -47,31 +47,33 @@ def test_list_connections_pagination_limit(admin_client):
     """limit=1 devuelve solo 1 elemento."""
     _create_conn(admin_client, _CONN_OPENAI)
     _create_conn(admin_client, _CONN_ANTHROPIC)
-    r = admin_client.get("/api/connections?limit=1")
+    r = admin_client.get("/api/v2/connections?limit=1")
     assert r.status_code == 200
-    data = r.json()
+    data = r.json()["items"]
     assert isinstance(data, list)
     assert len(data) == 1
 
 
-def test_list_connections_pagination_offset(admin_client):
-    """offset desplaza la lista de resultados."""
+def test_list_connections_pagination_cursor(admin_client):
+    """El cursor continúa la lista sin repetir la primera fila."""
     _create_conn(admin_client, _CONN_OPENAI)
     _create_conn(admin_client, _CONN_ANTHROPIC)
-    r_all = admin_client.get("/api/connections")
-    assert r_all.status_code == 200
-    total = len(r_all.json())
-
-    r_off = admin_client.get("/api/connections?offset=1")
-    assert r_off.status_code == 200
-    assert len(r_off.json()) == total - 1
+    first = admin_client.get("/api/v2/connections?limit=1")
+    assert first.status_code == 200
+    first_payload = first.json()
+    second = admin_client.get(
+        "/api/v2/connections",
+        params={"limit": 1, "cursor": first_payload["page"]["next_cursor"]},
+    )
+    assert second.status_code == 200
+    assert first_payload["items"][0]["id"] != second.json()["items"][0]["id"]
 
 
 def test_list_connections_zero_limit_is_rejected(admin_client):
     """Los listados no permiten desactivar el límite de respuesta."""
     _create_conn(admin_client, _CONN_OPENAI)
     _create_conn(admin_client, _CONN_ANTHROPIC)
-    r = admin_client.get("/api/connections?limit=0")
+    r = admin_client.get("/api/v2/connections?limit=0")
     assert r.status_code == 422
 
 

@@ -47,9 +47,9 @@ class StressRequest(BaseModel):
 # Endpoints predefinidos para el modo RANDOM
 _RANDOM_ENDPOINTS: List[tuple] = [
     ("/api/auth/me", "GET"),
-    ("/api/agents", "GET"),
+    ("/api/v2/agents", "GET"),
     ("/api/connections", "GET"),
-    ("/api/skills/private", "GET"),
+    ("/api/v2/skills?scope=private", "GET"),
     ("/api/knowledge", "GET"),
 ]
 

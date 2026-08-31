@@ -15,3 +15,5 @@ CREATE TABLE IF NOT EXISTS knowledge_packs (
 );
 CREATE INDEX IF NOT EXISTS idx_knowledge_packs_owner
     ON knowledge_packs(owner_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_knowledge_packs_visible_order
+    ON knowledge_packs(created_at DESC, id DESC);

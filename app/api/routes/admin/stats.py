@@ -6,7 +6,7 @@ import os
 import re
 from typing import Any
 
-from fastapi import Depends, Query
+from fastapi import Depends
 
 # Por módulo, no por valor: el tope se lee en caliente y los tests lo ajustan.
 import app.storage.guest as _guest_cfg
@@ -14,10 +14,9 @@ from app.api.routes.admin._router import admin_router
 from app.api.routes.auth import require_admin
 from app.config.data import AGENTS_DIR as _AGENTS_DIR
 from app.config.startup_checks import report as config_report
-from app.errors import APIError
+from app.pagination.metrics import snapshot as pagination_metrics_snapshot
 from app.sql import sql
 from app.storage.db import IS_PG, open_db
-from app.storage.schema import columnas_sensibles
 from app.utils import flog
 
 
@@ -60,102 +59,6 @@ async def admin_metadata_tables(_: str = Depends(require_admin)) -> list:
                     }
                 )
             return result
-
-
-# Cuánto de un BLOB se resume en lugar de volcarlo. La fila se serializaba con
-# `str(row[i])`, así que abrir `user_avatars` con page_size=200 devolvía
-# doscientas imágenes convertidas a la representación de texto de sus bytes.
-_RESUMEN_BINARIO = "@{n} bytes@"
-
-
-def _valor_visible(valor: object) -> object:
-    """El contenido de una columna, o su tamaño si es binaria."""
-    if valor is None:
-        return None
-    if isinstance(valor, (bytes, bytearray, memoryview)):
-        return _RESUMEN_BINARIO.format(n=len(bytes(valor)))
-    return str(valor)
-
-
-@admin_router.get("/metadata/tables/{table_name}/data")
-async def admin_metadata_table_data(
-    table_name: str,
-    q: str | None = Query(None),
-    page: int = Query(1, ge=1),
-    page_size: int = Query(50, ge=1, le=200),
-    _: str = Depends(require_admin),
-) -> dict:
-    """Datos paginados de una tabla. Columnas sensibles enmascaradas."""
-    async with open_db() as conn:
-        valid = {
-            r[0]
-            for r in await conn.fetchall(
-                "SELECT name FROM sqlite_master WHERE type='table'"
-                if not IS_PG
-                else "SELECT relname FROM pg_stat_user_tables"
-            )
-        }
-        if table_name not in valid:
-            raise APIError(
-                404, "not_found", "Tabla no encontrada", extra={"resource": "table"}
-            )
-
-        if IS_PG:
-            col_rows = await conn.fetchall(
-                sql("queries/admin_stats:pg_column_names"),
-                (table_name,),
-            )
-            col_names = [r[0] for r in col_rows]
-        else:
-            col_rows = await conn.fetchall(f'PRAGMA table_info("{table_name}")')
-            col_names = [r[1] for r in col_rows]
-
-        if not col_names:
-            raise APIError(404, "table_no_columns", "Sin columnas")
-
-        # Lo sensible se declara en el propio DDL con `-- sensitive-columns:`,
-        # el mismo mecanismo que `-- gdpr-identity:`. Antes era una lista negra
-        # de siete nombres literales dentro de este fichero, y una lista negra
-        # de secretos solo es correcta el día que se escribe: desde entonces
-        # habían entrado refresh_hash, token_hash, code_hash, p256dh y auth
-        # —ninguna lleva «token» ni «secret» como nombre completo— y dos de los
-        # siete ya no correspondían a ninguna columna.
-        ocultas = columnas_sensibles().get(table_name, frozenset())
-
-        if q:
-            cast = "::text" if IS_PG else ""
-            # El filtro se construía sobre TODAS las columnas, ocultas
-            # incluidas: la columna salía como «[oculto]» pero `total` decía
-            # cuántas filas casaban, así que se podía confirmar un valor
-            # concreto sin verlo nunca. El enmascarado era solo de pintura.
-            buscables = [c for c in col_names if c not in ocultas]
-            clauses = [f'CAST("{c}"{cast} AS TEXT) LIKE ?' for c in buscables]
-            where = "WHERE " + " OR ".join(clauses) if clauses else ""
-            params = [f"%{q}%"] * len(buscables)
-        else:
-            where, params = "", []
-
-        total = await conn.fetchval(
-            f'SELECT COUNT(*) FROM "{table_name}" {where}', tuple(params)
-        )
-        offset = (page - 1) * page_size
-        rows = await conn.fetchall(
-            f'SELECT * FROM "{table_name}" {where} LIMIT ? OFFSET ?',
-            tuple(params + [page_size, offset]),
-        )
-
-        exposed = [c for c in col_names if c not in ocultas]
-        idx_map = [col_names.index(c) for c in exposed]
-        data_rows = [[_valor_visible(row[i]) for i in idx_map] for row in rows]
-        pages = (total + page_size - 1) // page_size if total else 0
-        return {
-            "columns": exposed,
-            "rows": data_rows,
-            "total": total or 0,
-            "page": page,
-            "page_size": page_size,
-            "pages": pages,
-        }
 
 
 def _server_health() -> dict[str, Any]:
@@ -362,5 +265,6 @@ async def admin_stats(_: str = Depends(require_admin)) -> dict[str, Any]:
         "avg_latency_ms": avg_latency_ms,
         "top_error_endpoint": top_error_endpoint,
         "top_error_count": top_error_count,
+        "pagination": pagination_metrics_snapshot(),
         **_server_health(),
     }

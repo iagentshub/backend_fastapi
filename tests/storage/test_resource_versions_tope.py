@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import pytest
 
-from app.pagination.models import OffsetParams
 from app.storage.resource_versions import ResourceVersionStorage
 
 
@@ -30,10 +29,10 @@ async def test_el_tope_deja_solo_las_ultimas(historial, monkeypatch, tmp_data_di
     monkeypatch.setattr(mod, "MAX_VERSIONS_PER_RESOURCE", 5)
     await _archivar(historial, 12)
 
-    page = await historial.list("agent", "ag1", "u1")
-    assert page.total == 5, "el tope no se aplicó al archivar"
+    filas = await historial.list("agent", "ag1", "u1")
+    assert len(filas) == 5, "el tope no se aplicó al archivar"
     # Las que quedan son las últimas, no las primeras.
-    assert [v["version"] for v in page.items] == [12, 11, 10, 9, 8]
+    assert [v["version"] for v in filas] == [12, 11, 10, 9, 8]
 
 
 async def test_el_tope_no_toca_a_otro_recurso(historial, monkeypatch, tmp_data_dir):
@@ -44,21 +43,5 @@ async def test_el_tope_no_toca_a_otro_recurso(historial, monkeypatch, tmp_data_d
     await _archivar(historial, 6, rid="ag1")
     await _archivar(historial, 2, rid="ag2")
 
-    assert (await historial.list("agent", "ag1", "u1")).total == 3
-    assert (await historial.list("agent", "ag2", "u1")).total == 2
-
-
-async def test_el_listado_pagina(historial, tmp_data_dir):
-    """Era la única ruta de listado del backend que se quedó sin paginar."""
-    await _archivar(historial, 7)
-
-    primera = await historial.list("agent", "ag1", "u1", page=OffsetParams(limit=3))
-    assert [v["version"] for v in primera.items] == [7, 6, 5]
-    assert primera.total == 7
-    assert primera.has_more is True
-
-    ultima = await historial.list(
-        "agent", "ag1", "u1", page=OffsetParams(limit=3, offset=6)
-    )
-    assert [v["version"] for v in ultima.items] == [1]
-    assert ultima.has_more is False
+    assert len(await historial.list("agent", "ag1", "u1")) == 3
+    assert len(await historial.list("agent", "ag2", "u1")) == 2

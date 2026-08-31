@@ -2,10 +2,9 @@
 
 from __future__ import annotations
 
-import asyncio
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
-from fastapi import APIRouter, Depends, Query, Response
+from fastapi import APIRouter, Depends
 
 from app.api.routes.auth import (
     GroupContext,
@@ -15,16 +14,13 @@ from app.auth.auth import get_user_role
 from app.config.data import AGENTS_DIR, SKILLS_DIR
 from app.connections import get_provider
 from app.errors import APIError
-from app.models.llm_orchestration import orchestration_connection_id
 from app.models.request_bodies import (
     ConnectionPayload,
 )
-from app.pagination.materialized import paginate_materialized
 from app.services.connection_access import connection_access
 from app.sql import sql
 from app.storage.agent_storage import AgentStorage
 from app.storage.connection_storage import ConnectionStorage
-from app.storage.crypto import UNREADABLE_FLAG
 from app.storage.db import DB_ERRORS, IS_PG, open_db
 from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
@@ -59,44 +55,6 @@ async def _list_accessible(user: str, group_id: str) -> List[Dict[str, Any]]:
     return await connection_access.list_accessible(user, group_id, include_shared=False)
 
 
-async def _list_orchestration_connections(
-    user: str, group_id: str, *, shared_only: bool = False
-) -> List[Dict[str, Any]]:
-    items: List[Dict[str, Any]] = []
-    seen: set[str] = set()
-    if not shared_only:
-        owner_ids = [group_id] if group_id == user else [group_id, user]
-        for owner_id in owner_ids:
-            for item in await _llm_orchestration_storage.list(owner_id):
-                if item["id"] in seen:
-                    continue
-                seen.add(item["id"])
-                items.append(
-                    connection_access.virtual_connection(
-                        item, personal=owner_id == user and group_id != user
-                    )
-                )
-    shared_ids = await _shares.get_group_shared_resource_ids(
-        group_id, "llm_orchestration"
-    )
-    for item_id in shared_ids:
-        if item_id in seen:
-            continue
-        item = await _llm_orchestration_storage.get_any(item_id)
-        if item and await _groups.owner_is_active(str(item.get("owner_id") or "")):
-            if item.get("owner_id") not in {user, group_id}:
-                configured = await connection_access.get_accessible(
-                    orchestration_connection_id(item_id), user, group_id
-                )
-                if not configured:
-                    continue
-            seen.add(item_id)
-            items.append(
-                connection_access.virtual_connection(item, shared=True, personal=False)
-            )
-    return items
-
-
 async def _get_conn_any(
     conn_id: str, user: str, group_id: str
 ) -> Dict[str, Any] | None:
@@ -124,90 +82,6 @@ async def _resolve_connections(
     )
 
 
-async def _expand_model_connections(
-    connections: List[Dict[str, Any]],
-) -> List[Dict[str, Any]]:
-    """
-    Convierte todas las conexiones Ollama en una lista de entradas por modelo,
-    sin duplicados. Las conexiones con modelo específico tienen prioridad sobre
-    las generadas por expansión de la conexión base.
-    """
-    seen: set = set()
-    result: List[Dict[str, Any]] = []
-
-    for c in connections:
-        model = (c.get("model") or "").strip()
-        if not model:
-            continue
-        if model in seen:
-            continue
-        seen.add(model)
-        clean = {k: v for k, v in c.items() if k != "api_key"}
-        clean["name"] = model
-        result.append(clean)
-
-    # Todas las base, no `base_conns[0]`. El nombre en singular se escribió
-    # cuando una instalación tenía como mucho un Ollama, pero la tabla no impone
-    # unicidad por dueño ni por tipo: dos Ollama sin modelo son la configuración
-    # obvia de quien tiene uno en el portátil y otro en la máquina con GPU, y se
-    # llega también sin querer al entrar en un grupo donde alguien compartió el
-    # suyo. La segunda desaparecía de GET /api/connections mientras /raw seguía
-    # devolviéndola, así que el usuario la veía en una pantalla y no en la otra
-    # sin ningún error en medio.
-    #
-    # En paralelo porque cada expansión es una petición de red: en serie, dos
-    # servidores costarían el doble de espera que uno.
-    base_conns = [c for c in connections if not (c.get("model") or "").strip()]
-    catalogos = await asyncio.gather(*(_catalogo_de(b) for b in base_conns))
-
-    for base, models in zip(base_conns, catalogos):
-        base_clean = {k: v for k, v in base.items() if k != "api_key"}
-        if models:
-            for model in models:
-                if model in seen:
-                    continue
-                seen.add(model)
-                result.append(
-                    {
-                        **base_clean,
-                        "id": f"{base['id']}::{model}",
-                        "name": model,
-                        "model": model,
-                    }
-                )
-        else:
-            result.append(base_clean)
-
-    return result
-
-
-async def _catalogo_de(base: Dict[str, Any]) -> List[str]:
-    """Modelos de una conexión base. Lista vacía si no se le puede preguntar.
-
-    Que una credencial esté ilegible es un estado contemplado —tiene su propio
-    distintivo de «requiere atención»—, así que aquí solo cancela la expansión
-    de esa conexión. Antes hacía `return` de la función entera y se llevaba por
-    delante a todas las demás base.
-    """
-    # El listado expande una conexión Ollama base consultando /api/tags. Si la
-    # credencial guardada es ilegible, no hay una clave válida que enviar: se
-    # conserva la tarjeta marcada para que pueda repararse y se evita por
-    # completo la petición externa.
-    if base.get(UNREADABLE_FLAG):
-        return []
-    provider = get_provider(str(base.get("type") or ""))
-    if not provider:
-        return []
-    try:
-        return await asyncio.to_thread(provider.fetch_models, base)
-    except (OSError, ValueError) as exc:
-        flog.warning(
-            f"[{base.get('type')}] Catálogo no obtenido de la conexión "
-            f"{base.get('id')}: {exc}"
-        )
-        return []
-
-
 # IMPORTANTE: las rutas literales (/providers, /raw, /test-all) deben definirse
 # ANTES que las rutas con parámetros (/{conn_id}) para que FastAPI las priorice.
 
@@ -221,91 +95,6 @@ async def list_connections_raw(
     user, group_id = ctx.user, ctx.group_id
     raw = await _resolve_connections(user, group_id)
     return [{k: v for k, v in c.items() if k != "api_key"} for c in raw]
-
-
-@router.get("")
-async def list_connections(
-    requested_group_id: Optional[str] = Query(None, alias="group_id"),
-    include_inactive: bool = False,
-    limit: int = Query(50, ge=1, le=100),
-    offset: int = Query(0, ge=0),
-    response: Response = None,  # type: ignore[assignment]
-    ctx: GroupContext = Depends(require_group_session),
-) -> List[Dict[str, Any]]:
-    user, active_group_id = ctx.user, ctx.group_id
-
-    if requested_group_id is not None:
-        role = await get_user_role(user)
-        if role != "admin" and not await _groups.can_access(requested_group_id, user):
-            raise APIError(403, "forbidden", "Sin acceso a este grupo")
-        # Devuelve solo las conexiones compartidas con este grupo específico
-        shared_ids = set(
-            await _shares.get_group_shared_resource_ids(
-                requested_group_id, "connection"
-            )
-        )
-        raw: List[Dict[str, Any]] = []
-        for rid in shared_ids:
-            owner_id_row = await _storage.get_owner_id(rid)
-            if not owner_id_row or not await _groups.owner_is_active(owner_id_row):
-                continue
-            c = await _storage.get(rid)
-            if c:
-                c["_shared"] = True
-                c["_group_id"] = requested_group_id
-                raw.append(c)
-        raw.extend(
-            await _list_orchestration_connections(
-                user, requested_group_id, shared_only=True
-            )
-        )
-    else:
-        raw = await _resolve_connections(user, active_group_id)
-        raw.extend(await _list_orchestration_connections(user, active_group_id))
-
-    if not include_inactive:
-        raw = [c for c in raw if c.get("is_active", True)]
-
-    for c in raw:
-        if c.get("_shared") or c.get("owner_id") in (user, active_group_id):
-            c["origin_type"] = compute_origin_type(c)
-
-    if active_group_id != user and await get_user_role(user) != "admin":
-        # Las conexiones personales del usuario (incluidas aquí por
-        # _list_accessible como cortesía al estar en un group de equipo)
-        # no deben pasar por el permiso de RECURSO DE EQUIPO: son suyas,
-        # punto — si no, un usuario sin membresía "real" en el group
-        # activo (p. ej. justo tras cambiar de group) pierde el acceso a
-        # sus propias conexiones personales.
-        # Un solo SELECT sobre group_members para las dos listas: la fila del
-        # miembro es la misma para todas las conexiones.
-        permitido = await _groups.permission_checker(active_group_id, user)
-        raw = [
-            connection
-            for connection in raw
-            if connection.get("owner_id") == user
-            or permitido("connections", connection["id"], "direct")
-        ]
-
-    expandable = [
-        connection
-        for connection in raw
-        if (provider := get_provider(str(connection.get("type") or "")))
-        and provider.expand_models_on_list
-    ]
-    regular = [connection for connection in raw if connection not in expandable]
-    result: List[Dict[str, Any]] = [
-        {k: v for k, v in connection.items() if k != "api_key"}
-        for connection in regular
-    ]
-
-    if expandable:
-        result.extend(await _expand_model_connections(expandable))
-
-    result = paginate_materialized(
-        result, limit=limit, offset=offset, response=response
-    )
-    return result
 
 
 @router.post("")

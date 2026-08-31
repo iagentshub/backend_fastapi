@@ -229,10 +229,10 @@ def test_explore_filtra_por_label_existente(client):
     # Explore excluye los recursos propios del solicitante, así que se consulta
     # como otro usuario distinto del dueño del agente.
     _login(client, _uid("explbl_viewer"))
-    r = client.get("/api/explore", params={"label": "public"})
+    r = client.get("/api/v2/explore", params={"label": "public"})
     assert r.status_code == 200
-    assert isinstance(r.json(), list)
-    ids = [x["resource_id"] for x in r.json()]
+    assert isinstance(r.json()["items"], list)
+    ids = [x["resource_id"] for x in r.json()["items"]]
     assert agent_id in ids
 
 
@@ -243,20 +243,20 @@ def test_explore_filtra_por_varias_labels_or(client):
 
     _login(client, _uid("explblmulti_viewer"))
     r = client.get(
-        "/api/explore",
+        "/api/v2/explore",
         params={"label": ["label-never-exist-xyz999", "public"]},
     )
     assert r.status_code == 200
-    ids = [x["resource_id"] for x in r.json()]
+    ids = [x["resource_id"] for x in r.json()["items"]]
     assert agent_id in ids
 
 
 def test_explore_filtra_por_label_inexistente(client):
     """Líneas 230-231: label que no existe devuelve lista vacía."""
     _login(client, _uid("explbl2"))
-    r = client.get("/api/explore", params={"label": "label-never-exist-xyz999"})
+    r = client.get("/api/v2/explore", params={"label": "label-never-exist-xyz999"})
     assert r.status_code == 200
-    assert r.json() == []
+    assert r.json()["items"] == []
 
 
 # ── explore_preview — líneas 266-324 ─────────────────────────────────────────
@@ -428,9 +428,9 @@ def test_feed_con_filtro_tipo_agent(client):
 
     client.post(f"/api/users/{followed}/follow")
 
-    r = client.get("/api/feed", params={"type": "agent"})
+    r = client.get("/api/v2/feed", params={"type": "agent"})
     assert r.status_code == 200
-    items = r.json()
+    items = r.json()["items"]
     assert all(x["resource_type"] == "agent" for x in items)
     assert any(x["resource_id"] == rid_agent for x in items)
     assert not any(x["resource_id"] == rid_skill for x in items)

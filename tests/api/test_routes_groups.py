@@ -598,13 +598,13 @@ def test_member_permissions_filter_group_resources(client):
     assert updated.status_code == 200
 
     _switch(client, group["id"], member)
-    assert all(row["id"] != agent["id"] for row in client.get("/api/agents").json())
+    assert all(row["id"] != agent["id"] for row in client.get("/api/v2/agents").json()["items"])
     assert client.get(f"/api/agents/{agent['id']}").status_code == 403
     assert all(
         row["id"] != connection["id"]
-        for row in client.get("/api/connections").json()
+        for row in client.get("/api/v2/connections").json()["items"]
     )
     assert all(
         row["id"] != knowledge["id"]
-        for row in client.get("/api/knowledge").json()
+        for row in client.get("/api/v2/knowledge").json()["items"]
     )

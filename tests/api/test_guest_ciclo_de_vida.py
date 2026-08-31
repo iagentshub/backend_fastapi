@@ -25,7 +25,10 @@ def test_el_logout_borra_al_invitado_y_lo_suyo(client):
         json={"name": "efímero", "system_prompt": "x", "model": "gpt-4o"},
     )
     assert r.status_code in (200, 201), r.text
-    assert any(a["name"] == "efímero" for a in client.get("/api/agents").json())
+    assert any(
+        a["name"] == "efímero"
+        for a in client.get("/api/v2/agents").json()["items"]
+    )
 
     assert client.post("/api/auth/logout").status_code == 200
 
@@ -66,7 +69,7 @@ def test_dos_invitados_no_se_ven_entre_si(client):
     client.post("/api/auth/logout")
 
     _abrir_invitado(client)
-    nombres = [a["name"] for a in client.get("/api/agents").json()]
+    nombres = [a["name"] for a in client.get("/api/v2/agents").json()["items"]]
     assert "del primero" not in nombres
 
 
@@ -82,11 +85,11 @@ def test_el_invitado_purgado_no_puede_seguir_operando(client):
     from app.auth.gdpr import purge_user_data
 
     guest_id = _abrir_invitado(client)
-    assert client.get("/api/agents").status_code == 200
+    assert client.get("/api/v2/agents").status_code == 200
 
     asyncio.run(purge_user_data(guest_id))
 
-    r = client.get("/api/agents")
+    r = client.get("/api/v2/agents")
     assert r.status_code == 401, r.text
 
 
@@ -103,7 +106,7 @@ def test_un_invitado_sin_fila_no_pasa_aunque_su_sesion_siga_viva(client):
     from app.storage.db import PH, open_db
 
     guest_id = _abrir_invitado(client)
-    assert client.get("/api/agents").status_code == 200
+    assert client.get("/api/v2/agents").status_code == 200
 
     async def _borrar_solo_el_usuario() -> None:
         async with open_db() as conn:
@@ -112,7 +115,7 @@ def test_un_invitado_sin_fila_no_pasa_aunque_su_sesion_siga_viva(client):
 
     asyncio.run(_borrar_solo_el_usuario())
 
-    r = client.get("/api/agents")
+    r = client.get("/api/v2/agents")
     assert r.status_code == 401, r.text
 
 
@@ -141,7 +144,7 @@ def test_el_invitado_no_sale_en_el_buscador_ni_en_las_estadisticas(admin_client)
     antes = admin_client.get("/api/admin/stats").json()["users_total"]
     guest_id = asyncio.run(create_guest_user())
 
-    encontrados = admin_client.get("/api/users", params={"q": "guest"}).json()
+    encontrados = admin_client.get("/api/v2/users", params={"q": "guest"}).json()["items"]
     filas = encontrados["items"] if isinstance(encontrados, dict) else encontrados
     assert all(u.get("username") != guest_id for u in filas)
 
@@ -199,7 +202,7 @@ def test_el_logout_de_una_cuenta_normal_no_borra_nada(client, reset_rate_limiter
         ).status_code
         == 200
     )
-    nombres = [a["name"] for a in client.get("/api/agents").json()]
+    nombres = [a["name"] for a in client.get("/api/v2/agents").json()["items"]]
     assert "sobrevive" in nombres
 
 

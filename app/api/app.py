@@ -21,6 +21,7 @@ from app.api.routes import (
     agents,
     auth,
     billing,
+    catalog_v2,
     centinel,
     chats,
     connection_catalog,
@@ -291,7 +292,7 @@ def create_app() -> FastAPI:
         allow_credentials=True,
         allow_methods=["*"],
         allow_headers=["*"],
-        # Metadatos de páginas offset y cursor accesibles desde Flutter Web.
+        # Las dos cabeceras cursor del contrato de Chat, visibles en Flutter Web.
         expose_headers=PAGINATION_HEADERS,
     )
 
@@ -392,6 +393,7 @@ def create_app() -> FastAPI:
     app.include_router(skills.router)
     app.include_router(prompts.router)
     app.include_router(tools.router)
+    app.include_router(catalog_v2.router)
     app.include_router(memory.router)
     app.include_router(notifications.router)
     app.include_router(settings.router)

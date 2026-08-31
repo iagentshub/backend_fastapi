@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List
 
-from fastapi import Depends, File, Form, Query, UploadFile
+from fastapi import Depends, File, Form, UploadFile
 
 from app.api.routes.auth import GroupContext, require_group_session
 from app.api.routes.knowledge._router import router
@@ -35,22 +35,6 @@ from app.models.request_bodies import (
     LabelsBody,
 )
 from app.utils.origin import assert_resource_writable
-
-
-@router.get("/packs", response_model=List[Dict[str, Any]])
-async def list_packs(
-    requested_group_id: Optional[str] = Query(None, alias="group_id"),
-    ctx: GroupContext = Depends(require_group_session),
-) -> List[Dict[str, Any]]:
-    user = ctx.user
-    role = await get_user_role(user)
-    if requested_group_id is not None:
-        if role != "admin" and not await _groups.can_access(requested_group_id, user):
-            raise APIError(403, "forbidden", "Sin acceso a este grupo")
-        packs = await _packs.list_shared_with_group(requested_group_id)
-    else:
-        packs = await _packs.list_visible(ctx.group_id, user)
-    return packs
 
 
 @router.post("/packs")

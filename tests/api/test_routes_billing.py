@@ -518,10 +518,13 @@ def test_non_owner_cannot_assign_seats(client):
     assert r.status_code == 404
 
 
-def test_license_gate_blocks_standard_user_without_license(client):
+@pytest.mark.parametrize(
+    "path", ("/api/v2/agents", "/api/v2/connections", "/api/v2/knowledge")
+)
+def test_license_gate_blocks_standard_user_without_license(client, path):
     _enable_billing()
     _setup_user(client, "alice")
-    r = client.get("/api/connections")
+    r = client.get(path)
     assert r.status_code == 403
     assert r.json()["detail"]["code"] == "subscription_required"
 
@@ -535,7 +538,7 @@ def test_license_gate_allogroup_assigned_user(client):
     client.post("/api/billing/licenses/bobby", json={})
 
     _login_as(client, "bobby")
-    r = client.get("/api/connections")
+    r = client.get("/api/v2/connections")
     assert r.status_code == 200
 
 
@@ -564,7 +567,7 @@ def test_canceled_subscription_license_does_not_grant_access(client):
     )
 
     _login_as(client, "bobby")
-    r = client.get("/api/connections")
+    r = client.get("/api/v2/connections")
     assert r.status_code == 403
     assert r.json()["detail"]["code"] == "subscription_required"
 

@@ -38,7 +38,7 @@ def test_listado_marca_la_conexion_y_no_filtra_el_ciphertext(admin_client, rotar
     created = admin_client.post("/api/connections", json=_CONN_PAYLOAD).json()
     rotar_clave()
 
-    conns = admin_client.get("/api/connections").json()
+    conns = admin_client.get("/api/v2/connections").json()["items"]
     rota = next(c for c in conns if c["id"] == created["id"])
     assert rota["credentials_unreadable"] is True
     assert rota["unreadable_fields"] == ["api_key"]
@@ -97,7 +97,7 @@ def test_listado_ollama_ilegible_no_consulta_el_proveedor(admin_client, rotar_cl
     with patch(
         "app.connections.ollama.OllamaProvider.fetch_models"
     ) as fetch_models:
-        conns = admin_client.get("/api/connections").json()
+        conns = admin_client.get("/api/v2/connections").json()["items"]
 
     rota = next(c for c in conns if c["id"] == created["id"])
     assert rota["credentials_unreadable"] is True

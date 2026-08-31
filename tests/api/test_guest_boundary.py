@@ -34,12 +34,12 @@ def guest(client):
 CERRADOS = [
     ("GET", "/api/accounts"),
     ("GET", "/api/billing/subscription"),
-    ("GET", "/api/feed"),
+    ("GET", "/api/v2/feed"),
     ("GET", "/api/groups"),
     ("GET", "/api/notifications"),
     ("GET", "/api/notifications/push/key"),
     ("GET", "/api/social/feed"),
-    ("GET", "/api/users"),
+    ("GET", "/api/v2/users"),
     ("POST", "/api/auth/tokens"),
 ]
 
@@ -57,7 +57,7 @@ def test_el_invitado_no_entra(guest, metodo, ruta):
 
 def test_el_anonimo_sin_credencial_tampoco(client):
     """Sin sesión de ningún tipo la respuesta es 401, no 403."""
-    r = client.get("/api/users")
+    r = client.get("/api/v2/users")
     assert r.status_code == 401
 
 
@@ -71,13 +71,13 @@ def test_el_invitado_no_administra(guest):
 
 ABIERTOS = [
     ("GET", "/api/auth/me"),
-    ("GET", "/api/agents"),
-    ("GET", "/api/connections"),
-    ("GET", "/api/skills"),
-    ("GET", "/api/prompts"),
-    ("GET", "/api/tools"),
-    ("GET", "/api/knowledge"),
-    ("GET", "/api/knowledge/packs"),
+    ("GET", "/api/v2/agents"),
+    ("GET", "/api/v2/connections"),
+    ("GET", "/api/v2/skills"),
+    ("GET", "/api/v2/prompts"),
+    ("GET", "/api/v2/tools"),
+    ("GET", "/api/v2/knowledge"),
+    ("GET", "/api/v2/knowledge-packs"),
     ("GET", "/api/memory"),
     ("GET", "/api/chats/recent"),
     ("GET", "/api/workflows"),
@@ -85,7 +85,7 @@ ABIERTOS = [
     ("GET", "/api/labels/private"),
     ("GET", "/api/llm-orchestrations"),
     # Catálogo público: solo filas is_public. Es la vitrina del demo.
-    ("GET", "/api/explore"),
+    ("GET", "/api/v2/explore"),
 ]
 
 
@@ -123,7 +123,7 @@ def test_el_invitado_completa_el_camino_del_demo(guest):
     )
     assert r.status_code in (200, 201), r.text
 
-    assert any(a["name"] == "agente demo" for a in guest.get("/api/agents").json())
+    assert any(a["name"] == "agente demo" for a in guest.get("/api/v2/agents").json()["items"])
 
 
 def test_el_invitado_activa_y_desactiva_lo_suyo(guest):
@@ -214,7 +214,7 @@ def test_el_invitado_no_crea_knowledge_publico(guest):
 
     assert r.status_code == 403, r.text
     assert r.json()["detail"]["code"] == "guest_cannot_publish"
-    assert guest.get("/api/knowledge").json() == []
+    assert guest.get("/api/v2/knowledge").json()["items"] == []
 
 
 def test_el_invitado_no_convierte_su_knowledge_privado_en_publico(guest):
@@ -233,7 +233,7 @@ def test_el_invitado_no_convierte_su_knowledge_privado_en_publico(guest):
     assert published.status_code == 403, published.text
     assert published.json()["detail"]["code"] == "guest_cannot_publish"
     stored = next(
-        item for item in guest.get("/api/knowledge").json() if item["id"] == item_id
+        item for item in guest.get("/api/v2/knowledge").json()["items"] if item["id"] == item_id
     )
     assert "private" in stored["labels"]
     assert "public" not in stored["labels"]
@@ -251,4 +251,4 @@ def test_el_invitado_no_inicia_un_pack_publico(guest):
 
     assert r.status_code == 403, r.text
     assert r.json()["detail"]["code"] == "guest_cannot_publish"
-    assert guest.get("/api/knowledge/packs").json() == []
+    assert guest.get("/api/v2/knowledge-packs").json()["items"] == []

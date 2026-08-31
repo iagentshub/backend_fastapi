@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import urllib.request
+from dataclasses import dataclass
 from typing import Any, Dict, Set
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
@@ -24,6 +25,13 @@ _know_storage = KnowledgeStorage()
 _REMOTE_PAGE_SIZE = 100
 
 
+@dataclass(frozen=True, slots=True)
+class _RemotePage:
+    payload: Any
+    has_more: bool
+    next_cursor: str | None
+
+
 async def _get_remote_json(base_url: str, path: str, headers: dict[str, str]) -> Any:
     def _read() -> Any:
         request = urllib.request.Request(f"{base_url}{path}", headers=headers)
@@ -33,35 +41,57 @@ async def _get_remote_json(base_url: str, path: str, headers: dict[str, str]) ->
     return await asyncio.to_thread(_read)
 
 
-async def _get_all_remote_pages(
+async def _get_remote_cursor_page(
+    base_url: str, path: str, headers: dict[str, str]
+) -> _RemotePage:
+    decoded = await _get_remote_json(base_url, path, headers)
+    if not isinstance(decoded, dict):
+        raise ValueError("El hub remoto no devolvió el envelope cursor v2")
+    payload = decoded.get("items")
+    page = decoded.get("page")
+    if not isinstance(payload, list) or not isinstance(page, dict):
+        raise ValueError("El hub remoto no devolvió el envelope cursor v2")
+    has_more = page.get("has_more")
+    if not isinstance(has_more, bool):
+        raise ValueError("El hub remoto devolvió metadatos cursor no válidos")
+    next_cursor = page.get("next_cursor")
+    if has_more and not isinstance(next_cursor, str):
+        raise ValueError("El hub remoto indicó más resultados sin cursor")
+    return _RemotePage(
+        payload=payload,
+        has_more=has_more,
+        next_cursor=next_cursor if isinstance(next_cursor, str) else None,
+    )
+
+
+async def _get_all_remote_cursor_pages(
     base_url: str, path: str, headers: dict[str, str]
 ) -> list[dict[str, Any]]:
-    """Consume listados remotos nuevos o legacy sin truncar ni ciclar."""
+    """Consume un listado remoto cursor-only sin interpretar sus cursores."""
+
     parts = urlsplit(path)
     base_query = dict(parse_qsl(parts.query, keep_blank_values=True))
     items: list[dict[str, Any]] = []
-    seen_pages: set[tuple[str, ...]] = set()
-    offset = 0
+    seen_cursors: set[str] = set()
+    cursor: str | None = None
     while True:
-        query = {
-            **base_query,
-            "limit": str(_REMOTE_PAGE_SIZE),
-            "offset": str(offset),
-        }
+        query = {**base_query, "limit": str(_REMOTE_PAGE_SIZE)}
+        if cursor is not None:
+            query["cursor"] = cursor
         page_path = urlunsplit(("", "", parts.path, urlencode(query), ""))
-        payload = await _get_remote_json(base_url, page_path, headers)
-        if not isinstance(payload, list):
+        remote_page = await _get_remote_cursor_page(base_url, page_path, headers)
+        if not isinstance(remote_page.payload, list):
             raise ValueError("El hub remoto no devolvió un listado")
-        page = [item for item in payload if isinstance(item, dict)]
-        fingerprint = tuple(str(item.get("id") or "") for item in page)
-        if fingerprint in seen_pages:
-            break
-        seen_pages.add(fingerprint)
+        page = [item for item in remote_page.payload if isinstance(item, dict)]
         items.extend(page)
-        if len(page) < _REMOTE_PAGE_SIZE:
-            break
-        offset += len(page)
-    return items
+        if not remote_page.has_more:
+            return items
+        cursor = remote_page.next_cursor
+        if not cursor:
+            raise ValueError("El hub remoto indicó más resultados sin cursor")
+        if cursor in seen_cursors:
+            raise ValueError("El hub remoto repitió el cursor de paginación")
+        seen_cursors.add(cursor)
 
 
 def _safe_name(name: str, taken: Set[str], hub_label: str) -> str:
@@ -124,12 +154,12 @@ async def run_hub_sync(
     async def _get(path: str) -> Any:
         return await _get_remote_json(url, path, headers)
 
-    async def _get_all(path: str) -> list[dict[str, Any]]:
-        return await _get_all_remote_pages(url, path, headers)
+    async def _get_all_cursor(path: str) -> list[dict[str, Any]]:
+        return await _get_all_remote_cursor_pages(url, path, headers)
 
     # ── 1. Conexiones (solo estructura, sin credenciales) ──────────────
     try:
-        remote_conns = await _get_all("/api/connections")
+        remote_conns = await _get_all_cursor("/api/v2/connections")
 
         local_conns = await _storage.list(owner)
         local_conn_names: Set[str] = {c["name"] for c in local_conns}
@@ -169,7 +199,7 @@ async def run_hub_sync(
 
     # ── 2. Agentes ────────────────────────────────────────────────────
     try:
-        summaries = await _get_all("/api/agents?scope=private")
+        summaries = await _get_all_cursor("/api/v2/agents?scope=private")
         local_agents = await _agent_storage.list("private")
         local_a_names: Set[str] = {a["name"] for a in local_agents}
         by_src = {a.get("_hub_source"): a for a in local_agents if a.get("_hub_source")}
@@ -221,7 +251,7 @@ async def run_hub_sync(
 
     # ── 3. Skills ────────────────────────────────────────────────────
     try:
-        remote_skills = await _get_all("/api/skills?scope=private")
+        remote_skills = await _get_all_cursor("/api/v2/skills?scope=private")
         local_skills = await _skill_storage.list("private")
         local_s_names: Set[str] = {s["name"] for s in local_skills}
         by_src = {s.get("_hub_source"): s for s in local_skills if s.get("_hub_source")}
@@ -255,7 +285,7 @@ async def run_hub_sync(
 
     # ── 4. Conocimiento ───────────────────────────────────────────────
     try:
-        remote_know = await _get_all("/api/knowledge")
+        remote_know = await _get_all_cursor("/api/v2/knowledge")
 
         local_know = await _know_storage.list(owner)
         local_k_titles: Set[str] = {k["title"] for k in local_know}

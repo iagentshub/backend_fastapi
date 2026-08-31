@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import json
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from app.config.resource_versions import MAX_VERSIONS_PER_RESOURCE
-from app.pagination.models import OffsetPage, OffsetParams
 from app.sql import sql
 from app.storage import db as _db
 from app.storage.db import AsyncConn, open_db
@@ -109,32 +108,26 @@ class ResourceVersionStorage:
             await target.execute(sql("queries/tools:delete_orphan_artifacts"))
 
     async def list(
-        self,
-        resource_type: str,
-        resource_id: str,
-        owner_id: str,
-        *,
-        page: Optional[OffsetParams] = None,
-    ) -> OffsetPage[Dict[str, Any]]:
+        self, resource_type: str, resource_id: str, owner_id: str
+    ) -> List[Dict[str, Any]]:
         """Metadatos de las versiones, de la más reciente a la más antigua.
 
-        Era la única ruta de listado del backend que se quedó sin paginar. El
-        desempate del ORDER BY es único de por sí: `version` lo es dentro de un
-        recurso.
+        Sin cota: llegó a estar paginada con `OffsetPage`, pero la migración a
+        paginación por cursor retiró ese mecanismo del backend y este endpoint
+        no está entre los que se migraron. Devuelve solo metadatos —id, versión,
+        autor, motivo, fecha—, así que no arrastra los snapshots, y el tope por
+        recurso de `_prune` acota cuántas filas puede haber.
+
+        ponytail: cuando se pagine, va con el mismo cursor que el resto. El
+        desempate del ORDER BY ya es único —`version` lo es dentro de un
+        recurso—, que es la mitad difícil.
         """
-        params = page or OffsetParams(limit=50)
         async with open_db() as conn:
-            total = await conn.fetchval(
-                sql("queries/resource_versions:count_versions"),
-                (resource_type, resource_id, owner_id),
-            )
             rows = await conn.fetchall(
                 sql("queries/resource_versions:list_versions"),
-                (resource_type, resource_id, owner_id, params.limit, params.offset),
+                (resource_type, resource_id, owner_id),
             )
-        return OffsetPage(
-            items=[dict(row) for row in rows], total=int(total or 0), params=params
-        )
+        return [dict(row) for row in rows]
 
     async def get(
         self, resource_type: str, resource_id: str, owner_id: str, version: int
