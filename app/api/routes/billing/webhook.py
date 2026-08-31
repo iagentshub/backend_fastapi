@@ -78,6 +78,35 @@ async def webhook(request: Request) -> Dict[str, Any]:
             raise
     return {"received": True}
 
+def _amount_from_event(sub: Dict[str, Any]) -> int | None:
+    """Importe recurrente según Stripe: `unit_amount` × `quantity` de cada item.
+
+    De todo lo que guarda la fila, el importe era el único campo que no salía
+    del evento: se copiaba de `existing` o se ponía a cero. O sea que el número
+    venía de nuestra aritmética, que es justo la fuente que este webhook existe
+    para no tener que creer — y un cambio hecho desde el panel de Stripe, un
+    cupón o un ajuste manual dejaban la fila diciendo tres asientos con el
+    precio de dos.
+
+    Es el neto sin impuesto, que es lo que la columna ha guardado siempre: el
+    alta escribe `totals["amount_cents"]`, y el desglose con impuesto de
+    `_invoice_totals` solo viaja en la respuesta del checkout.
+
+    `None` cuando el evento no trae ningún precio, para poder distinguirlo de un
+    importe que de verdad es cero.
+    """
+    items = _safe_get(_safe_get(sub, "items", {}), "data", []) or []
+    total = 0
+    encontrado = False
+    for item in items:
+        unitario = _safe_get(_safe_get(item, "price") or {}, "unit_amount")
+        if unitario is None:
+            continue
+        total += int(unitario) * int(_safe_get(item, "quantity", 1) or 1)
+        encontrado = True
+    return total if encontrado else None
+
+
 async def _handle_subscription_event(sub: Dict[str, Any], event_type: str) -> None:
     metadata = _safe_get(sub, "metadata") or {}
     user_id = _safe_get(metadata, "user_id")
@@ -124,11 +153,39 @@ async def _handle_subscription_event(sub: Dict[str, Any], event_type: str) -> No
     self_hosted = _safe_get(metadata, "self_hosted") == "1"
 
     existing = await _billing.get_by_stripe_subscription_id(sub["id"])
-    amount_cents = existing["amount_cents"] if existing else 0
 
     status = (
         "canceled" if event_type == "customer.subscription.deleted" else sub["status"]
     )
+
+    # ponytail: una cancelación es terminal —Stripe nunca reactiva una
+    # suscripción cancelada, abre otra con id nuevo—, así que un `updated`
+    # antiguo reentregado después ya no puede resucitarla. No ordena dos
+    # `updated` entre sí; para eso haría falta guardar el `created` del evento
+    # en la fila.
+    if existing and existing["status"] == "canceled" and status != "canceled":
+        flog.warning(
+            f"[billing] {event_type} descartado para {sub['id']}: la suscripción "
+            f"ya estaba cancelada y Stripe no las reactiva"
+        )
+        return
+
+    amount_cents = _amount_from_event(sub)
+    if amount_cents is None:
+        # El respaldo era el camino principal, y por eso nadie había visto el
+        # problema: un cero escrito una vez lo copiaban todos los `updated`
+        # siguientes y no tenía ningún camino de vuelta.
+        amount_cents = existing["amount_cents"] if existing else 0
+        flog.warning(
+            f"[billing] {event_type} de {sub['id']} sin precio en los items; "
+            f"se conserva {amount_cents}"
+        )
+    if amount_cents == 0 and status not in ("canceled", "incomplete_expired"):
+        # Un 0 en una fila activa es una incoherencia, no un dato: es el precio
+        # que la aplicación le enseña a alguien a quien Stripe sí está cobrando.
+        flog.warning(
+            f"[billing] suscripción {sub['id']} en estado {status} con importe 0"
+        )
 
     saved = await _billing.upsert(
         username=user_id,
