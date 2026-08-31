@@ -16,7 +16,7 @@ from app.api.routes.llm_limits import (
     workflow_start_limiter,
 )
 from app.auth.auth import get_user_role
-from app.config.data import AGENTS_DIR, SKILLS_DIR
+from app.config.data import AGENTS_DIR
 from app.errors import APIError
 from app.models.llm_orchestration import orchestration_id_from_connection
 from app.services.connection_access import connection_access
@@ -29,11 +29,9 @@ from app.storage.agent_storage import AgentStorage
 from app.storage.group_shares import GroupShareStorage
 from app.storage.groups import GroupStorage
 from app.storage.resource_executions import ResourceExecutionStorage
-from app.storage.resource_versions import ResourceVersionStorage
 from app.storage.skill_storage import (
     SKILL_ASSIGNABLE_LABELS,
     SKILL_LABELS,
-    SkillStorage,
 )
 from app.storage.tool_storage import ToolStorage
 from app.storage.workflow_runs import TERMINAL_STATUSES, WorkflowRunStorage
@@ -44,8 +42,6 @@ from app.utils.origin import assert_resource_writable, compute_origin_type
 
 router = APIRouter(prefix="/api", tags=["resource-management"])
 _agents = AgentStorage(AGENTS_DIR)
-_skills = SkillStorage(SKILLS_DIR)
-_versions = ResourceVersionStorage()
 _workflows = WorkflowStorage()
 _shares = GroupShareStorage()
 _group_storage = GroupStorage()

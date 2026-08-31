@@ -115,6 +115,14 @@ class SkillStorage(ResourceStorage):
 
     table = "skills"
     resource_type = "skill"
+    # Los cuatro identificadores del listado, literales para que las guardas
+    # de SQL los sigan viendo. La lógica del método vive en ResourceStorage.
+    list_queries = {
+        "public": "queries/skills:list_public",
+        "private_by_owner": "queries/skills:list_private_by_owner",
+        "private": "queries/skills:list_private",
+        "all": "queries/skills:list_all",
+    }
 
     async def list_visible_page(
         self,
@@ -271,26 +279,6 @@ class SkillStorage(ResourceStorage):
 
     # ── public API ───────────────────────────────────────────────────────────
 
-    async def list(
-        self, scope: str = "all", owner_id: Optional[str] = None
-    ) -> List[Dict[str, Any]]:
-        await self._ensure_migrated()
-
-        async with open_db() as conn:
-            if scope == "public":
-                rows = await conn.fetchall(sql("queries/skills:list_public"))
-            elif scope == "private":
-                if owner_id:
-                    rows = await conn.fetchall(
-                        sql("queries/skills:list_private_by_owner"),
-                        (owner_id,),
-                    )
-                else:
-                    rows = await conn.fetchall(sql("queries/skills:list_private"))
-            else:  # all
-                rows = await conn.fetchall(sql("queries/skills:list_all"))
-        return [self._row_to_dict(r, include_content=False) for r in rows]
-
     async def get(
         self, scope: str, skill_id: str, owner_id: Optional[str] = None
     ) -> Optional[Dict[str, Any]]:
@@ -323,16 +311,6 @@ class SkillStorage(ResourceStorage):
                     slug_params,
                 )
         return self._row_to_dict(row) if row else None
-
-    async def get_any(
-        self, skill_id: str, owner_id: Optional[str] = None
-    ) -> Optional[Dict[str, Any]]:
-        """Fetch a skill from any scope — public first, then private."""
-        for scope in ("public", "private"):
-            result = await self.get(scope, skill_id, owner_id=owner_id)
-            if result:
-                return result
-        return None
 
     async def save(
         self,
