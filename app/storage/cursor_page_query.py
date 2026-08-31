@@ -1,4 +1,23 @@
-"""Consulta SQL keyset reutilizable para listados ordenados por dos columnas."""
+"""Consulta SQL keyset para listados ordenados por dos columnas.
+
+**Este motor y `composite_cursor_page` no son el mismo escrito dos veces**, y
+unificarlos degrada el plan sin que ningún test lo note: devuelven exactamente
+las mismas filas.
+
+Aquí el predicado es una **comparación de tupla**,
+`(posicion, id) < (?, ?)`. Es la forma que SQLite y PostgreSQL saben resolver
+con un solo descenso por el índice compuesto `(posicion DESC, id DESC)`: en
+SQLite el plan pasa de `SCAN` a `SEARCH … USING INDEX`. Solo vale cuando todas
+las columnas del orden van en la **misma dirección**, que es la condición que
+cumplen estos listados —los calientes: agentes, skills, prompts, herramientas y
+conocimiento—.
+
+`composite_cursor_page` expande a `(a<?) OR (a=? AND b<?) OR …` porque sus
+consumidores mezclan direcciones (`sort_at DESC, resource_type ASC, item_id
+ASC`), y SQL no admite tupla con órdenes mixtos. Esa expansión es obligatoria
+allí y más cara aquí, así que la separación es deliberada: **antes de fundirlos,
+mide**.
+"""
 
 from __future__ import annotations
 

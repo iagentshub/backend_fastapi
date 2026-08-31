@@ -218,8 +218,7 @@ def test_migration_44_is_recorded_and_builds_indexes_in_real_postgres():
 # cuando hay DSN: dos capas de ceguera sobre la misma línea.
 def _fragmentos_construidos_en_python() -> list[tuple[str, str]]:
     from app.api.routes.explore._shared import STARRED_BY_REQUESTER
-    from app.services.admin_listings import connections_spec
-    from app.services.admin_resource_cursor_listing import OWNER, ROW
+    from app.services.admin_connection_listing import _COLUMNS, _SOURCE
     from app.services.social_catalog import PUBLICLY_AVAILABLE_SQL
 
     fragmentos = [
@@ -236,15 +235,9 @@ def _fragmentos_construidos_en_python() -> list[tuple[str, str]]:
     # `app/sql/` no los ve. Es el mismo punto ciego por el que un `NOT` sobre
     # `@BOOL@` —INTEGER en SQLite, SMALLINT en PostgreSQL— tumbó el perfil
     # público: pasaba en un motor y era un 500 en el otro.
-    for spec in (connections_spec(),):
-        fragmentos.append(
-            (
-                f"admin_listings:{spec.table}",
-                f"SELECT {spec.columns} FROM {spec.table} {ROW} "
-                f"LEFT JOIN users {OWNER} "
-                f"ON {OWNER}.id = {ROW}.{spec.owner_column} WHERE 1=1",
-            )
-        )
+    fragmentos.append(
+        ("admin_connection_listing:connections", f"SELECT {_COLUMNS} {_SOURCE}")
+    )
     return fragmentos
 
 

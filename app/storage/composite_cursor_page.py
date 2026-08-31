@@ -1,4 +1,16 @@
-"""Motor keyset para órdenes compuestos con direcciones mixtas."""
+"""Motor keyset para órdenes compuestos con direcciones mixtas.
+
+El predicado se expande a `(a<?) OR (a=? AND b<?) OR …`, una rama por columna,
+porque el orden mezcla direcciones —`sort_at DESC, resource_type ASC, item_id
+ASC` en el inventario del panel, y lo mismo en Explorar y en el feed— y SQL no
+admite `(a,b) < (?,?)` con órdenes distintos.
+
+**No es el sustituto general de `cursor_page_query`.** Aquel usa comparación de
+tupla, que los dos motores resuelven con un solo descenso por el índice, y lo
+puede hacer porque todas sus columnas van en la misma dirección. Los dos
+devuelven las mismas filas, así que cambiar uno por otro no rompe ningún test:
+solo cambia el plan. Ver el docstring de `cursor_page_query`.
+"""
 
 from __future__ import annotations
 

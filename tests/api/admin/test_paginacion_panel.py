@@ -104,9 +104,9 @@ def test_el_listado_no_proyecta_una_columna_de_contenido():
     se decide qué cruza el cable."""
     import re
 
-    from app.services.admin_listings import connections_spec
+    from app.services.admin_connection_listing import _COLUMNS
 
-    proyeccion = connections_spec().columns.lower()
+    proyeccion = _COLUMNS.lower()
     sin_length = re.sub(r"length\s*\([^)]*\)", "", proyeccion)
     assert not re.search(r"(?:select|,|\.)\s*content\s*(?:,|$| )", sin_length)
 
@@ -152,7 +152,7 @@ def test_el_inventario_no_transporta_la_memoria_para_medirla(admin_client):
     assert fichero["size"] == len(contenido)
     assert "content" not in fichero
 
-    from app.services.admin_explore_cursor_listing import _proyeccion
+    from app.services.admin_explore_hydration import _proyeccion
 
     proyeccion = _proyeccion("memory", "memory_files").lower()
     assert "length(content)" in proyeccion
