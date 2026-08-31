@@ -14,9 +14,13 @@ SELECT id, owner_id, tokens_in, tokens_out
 FROM connections;
 
 -- name: list_memory_files
-SELECT id, owner_id, content, updated_at
+-- LENGTH(content) y no content: el panel solo pinta el tamaño, así que traer el
+-- texto entero de la memoria de largo plazo de cada agente de cada usuario --sin
+-- cota-- para hacerle len() y tirarlo movía toda esa columna por el cable. Es la
+-- misma lección que dejó escrita la mudanza del avatar fuera de `users`.
+SELECT id, owner_id, LENGTH(content) AS size, updated_at
 FROM memory_files
-ORDER BY updated_at DESC;
+ORDER BY updated_at DESC, owner_id, id;
 
 -- name: list_groups
 SELECT g.id, g.name, g.created_by, u.username, g.created_at, g.is_active

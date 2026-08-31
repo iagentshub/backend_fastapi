@@ -347,7 +347,7 @@ async def admin_list_memory(_: str = Depends(require_admin)) -> list[dict[str, A
             "filename": r["id"],
             "owner_id": r["owner_id"],
             "owner_username": username_map.get(r["owner_id"], r["owner_id"]),
-            "size": len(r["content"] or ""),
+            "size": r["size"] or 0,
             "updated_at": r["updated_at"],
         }
         for r in rows
