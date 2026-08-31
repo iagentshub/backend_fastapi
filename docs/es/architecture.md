@@ -110,6 +110,65 @@ migración 24 añade el índice que cubre ese orden. La procedencia de los
 documentos de la página se resuelve con `KnowledgeStorage.pack_locations()`, una
 sola consulta sin la columna `content`, en vez de un `get()` por fila.
 
+
+### El panel de administración también
+
+Los listados de `/api/admin` se quedaron fuera de esa migración, y eran los
+únicos del producto cuyo tamaño no lo decide un usuario sino la instalación
+entera: once `GET` devolvían `SELECT … FROM tabla` sin `WHERE` y sin cota.
+**Se retiraron.** El inventario del panel se pide por `/api/v2/admin/explore`,
+que ya pagina y cubre los once tipos con columnas normalizadas; de los listados
+por tipo solo queda `/api/v2/admin/connections`, que es el único con consumidor
+—el selector de conexiones LLM de la importación oficial—. Publicar diez rutas
+más que nadie llamaba era superficie que mantener sin nadie a quien servir.
+
+Tres cosas que se aprendieron paginándolos:
+
+- **La clave keyset del panel lleva `owner_id`.** Seis de esas tablas tienen PK
+  compuesta `(id, owner_id)`: para un usuario, que solo ve lo suyo, `id` basta;
+  el administrador los ve todos a la vez y ahí `(updated_at, id)` deja de ser
+  única. Un keyset con clave repetida se salta filas en el corte de página sin
+  que nada falle.
+- **El nombre del dueño sale del `JOIN`.** Cada listado llamaba a
+  `_username_map` —la tabla `users` completa— y el panel pinta varias pestañas
+  por carga: nueve copias en la misma sesión.
+- **Los filtros del directorio de usuarios viajan a SQL.** Aplicarlos en
+  Python sobre una página devuelve resultados incompletos sin que se note: el
+  usuario existe, no cae en la página filtrada, y la pantalla dice que no hay
+  ninguno.
+
+`GET /api/admin/memory` es el caso que más costaba: traía la columna `content`
+—la memoria de largo plazo de cada agente de cada usuario, texto libre y sin
+cota— para hacerle `len()` y tirarla. Hoy el tamaño lo calcula
+`LENGTH(content)` en SQL. Es la misma lección que dejó escrita la mudanza del
+avatar, en otra tabla.
+
+Los recuentos que acompañan a grupos y usuarios se piden solo para los
+identificadores de la página, no agregando sobre las tablas completas. El de
+agentes por grupo, además, se leía recorriendo `AGENTS_DIR/private/*/config.json`
+—ficheros que dejó la migración a base de datos y nadie borró—, así que en
+cualquier instalación creada después daba cero; ahora sale de `agents`.
+
+El recuento de agentes por grupo y los `agents_public`/`agents_private` de
+`GET /api/admin/stats` se leían recorriendo `AGENTS_DIR/*/config.json` —los
+ficheros que dejó la migración fichero→base de datos—, así que en cualquier
+instalación creada después daban cero. Los dos salen ya de la tabla `agents`.
+La migración 45 promueve además `connection_id` del blob JSON a columna con
+índice, para que «¿qué agentes usan esta conexión?» sea un `COUNT(*)` en vez de
+traerse todos los agentes de la instalación y filtrarlos en Python.
+
+Retirar los once dejó a la vista que el inventario arrastraba los mismos
+defectos: hacía `SELECT *` sobre `memory_files` y `len(content)` en Python —el
+recorte que este trabajo venía a quitar, vivo justo donde se ejecuta—, no
+excluía a los invitados y no servía ni `avatar_url` ni los recuentos que pintan
+las tarjetas del panel. Su proyección lleva ahora `LENGTH(content)`, el `JOIN`
+de la foto y los recuentos pedidos solo para los identificadores de la página.
+
+`tests/api/test_listados_con_cota.py` es lo que evita que esto vuelva:
+recorre `app/api/routes/` y falla si un `GET` devuelve una lista sin `limit` ni
+`cursor`. Lo que ya estaba y sigue sin cota se declara en su `DEUDA` con el
+motivo, y esa lista solo puede encoger.
+
 ## Control de acceso
 
 Existen dos formas de acceder a la plataforma:

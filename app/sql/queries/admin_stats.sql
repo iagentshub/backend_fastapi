@@ -61,6 +61,16 @@ WHERE role <> 'guest';
 SELECT COUNT(*), COALESCE(SUM(tokens_in),0), COALESCE(SUM(tokens_out),0)
 FROM connections;
 
+-- name: count_agents_by_scope
+-- Los agentes viven en `agents` desde la migración fichero->base de datos.
+-- El panel los contaba recorriendo AGENTS_DIR/{public,private}/*/config.json,
+-- que son los ficheros que aquella migración copió y nadie borró: en una
+-- instalación creada después el glob no encuentra nada y la pantalla decía
+-- cero agentes, sin que nada fallara.
+SELECT scope, COUNT(*)
+FROM agents
+GROUP BY scope;
+
 -- name: count_knowledge
 SELECT COUNT(*)
 FROM knowledge_items;

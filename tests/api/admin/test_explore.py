@@ -76,7 +76,7 @@ def test_admin_agent_graph_contains_owner_connection_and_workflow(admin_client):
 
     admin_user = next(
         user
-        for user in admin_client.get("/api/admin/users").json()
+        for user in admin_client.get("/api/v2/admin/explore?type=user&limit=100").json()["items"]
         if user["username"] == "testadmin"
     )
     connection = asyncio.run(
@@ -207,7 +207,7 @@ def test_admin_resource_graph_not_found(admin_client):
 def test_user_graph_nests_pack_files_under_the_pack(admin_client):
     admin_user = next(
         user
-        for user in admin_client.get("/api/admin/users").json()
+        for user in admin_client.get("/api/v2/admin/explore?type=user&limit=100").json()["items"]
         if user["username"] == "testadmin"
     )
     pack = admin_client.post(
@@ -283,7 +283,7 @@ def test_user_graph_nests_pack_files_under_the_pack(admin_client):
         for item in graph["items"]
     )
 
-    stored = admin_client.get("/api/admin/knowledge").json()
+    stored = admin_client.get("/api/v2/admin/explore?type=knowledge&limit=100").json()["items"]
     stored_file = next(item for item in stored if item["id"] == file_id)
     assert stored_file["checksum"] == hashlib.sha256(b"echo deploy").hexdigest()
 
@@ -295,7 +295,7 @@ def test_user_graph_groups_official_resources_under_repository(admin_client):
 
     admin_user = next(
         user
-        for user in admin_client.get("/api/admin/users").json()
+        for user in admin_client.get("/api/v2/admin/explore?type=user&limit=100").json()["items"]
         if user["username"] == "testadmin"
     )
     skill = admin_client.post(
@@ -355,7 +355,7 @@ def test_user_graph_groups_synced_connections_under_provider_account(admin_clien
 
     admin_user = next(
         user
-        for user in admin_client.get("/api/admin/users").json()
+        for user in admin_client.get("/api/v2/admin/explore?type=user&limit=100").json()["items"]
         if user["username"] == "testadmin"
     )
 

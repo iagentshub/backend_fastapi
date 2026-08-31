@@ -107,6 +107,64 @@ order. Pack provenance for the page is resolved by
 `KnowledgeStorage.pack_locations()`, a single query without the `content`
 column, instead of one `get()` per row.
 
+
+### The admin panel too
+
+The `/api/admin` listings were left out of that migration, and they were the
+only ones in the product whose size is decided by the whole installation
+rather than by a user: eleven `GET`s returned `SELECT … FROM table` with no
+`WHERE` and no cap. **They were removed.** The panel's inventory is requested
+through `/api/v2/admin/explore`, which already paginates and covers all eleven
+types with normalised columns; of the per-type listings only
+`/api/v2/admin/connections` remains, the one with an actual consumer — the LLM
+connection picker of the official import.
+
+Three things learned while paginating them:
+
+- **The panel's keyset key carries `owner_id`.** Six of those tables have a
+  composite PK `(id, owner_id)`: for a user, who only sees their own rows,
+  `id` is enough; the admin sees every owner at once and there
+  `(updated_at, id)` stops being unique. A keyset with a repeated key skips
+  rows at the page boundary and nothing fails.
+- **The owner's name comes from the `JOIN`.** Each listing called
+  `_username_map` — the whole `users` table — and the panel paints several
+  tabs per load: nine copies in one session.
+- **The user directory's filters go to SQL.** Applying them in Python over one
+  page returns silently incomplete results: the user exists, is not in the page
+  that got filtered, and the screen says there is none.
+
+`GET /api/admin/memory` was the worst of them: it fetched the `content` column
+— every agent's long-term memory for every user, free text with no cap — to
+call `len()` on it and throw it away. The size is now `LENGTH(content)` in SQL.
+Same lesson the avatar move already wrote down, in another table.
+
+The counts shown next to groups and users are requested only for the
+identifiers on the page, instead of aggregating over the full tables. The
+per-group agent count was also read by walking
+`AGENTS_DIR/private/*/config.json` — files left behind by the file→DB
+migration — so it reported zero on any installation created afterwards; it now
+comes from `agents`.
+
+The per-group agent count and the `agents_public`/`agents_private` figures of
+`GET /api/admin/stats` were read by walking `AGENTS_DIR/*/config.json` — files
+left behind by the file→DB migration — so they reported zero on any
+installation created afterwards. Both now come from the `agents` table.
+Migration 45 also promotes `connection_id` from the JSON blob to an indexed
+column, so "which agents use this connection?" is a `COUNT(*)` instead of
+fetching every agent in the installation and filtering in Python.
+
+Removing the eleven exposed that the inventory carried the same defects: it did
+`SELECT *` over `memory_files` and `len(content)` in Python — the very
+truncation this work set out to remove, alive exactly where it runs — did not
+exclude guests, and served neither `avatar_url` nor the counts the panel's
+cards paint. Its projection now carries `LENGTH(content)`, the avatar `JOIN`,
+and counts requested only for the identifiers on the page.
+
+`tests/api/test_listados_con_cota.py` is what keeps this from coming back: it
+walks `app/api/routes/` and fails when a `GET` returns a list with no `limit`
+and no `cursor`. What was already uncapped is declared in its `DEUDA` with the
+reason, and that list can only shrink.
+
 ## Access control
 
 There are two ways to access the platform:

@@ -218,9 +218,11 @@ def test_migration_44_is_recorded_and_builds_indexes_in_real_postgres():
 # cuando hay DSN: dos capas de ceguera sobre la misma línea.
 def _fragmentos_construidos_en_python() -> list[tuple[str, str]]:
     from app.api.routes.explore._shared import STARRED_BY_REQUESTER
+    from app.services.admin_listings import connections_spec
+    from app.services.admin_resource_cursor_listing import OWNER, ROW
     from app.services.social_catalog import PUBLICLY_AVAILABLE_SQL
 
-    return [
+    fragmentos = [
         (
             "social_catalog:PUBLICLY_AVAILABLE_SQL",
             f"SELECT 1 FROM resource_social WHERE {PUBLICLY_AVAILABLE_SQL}",
@@ -230,6 +232,20 @@ def _fragmentos_construidos_en_python() -> list[tuple[str, str]]:
             f"SELECT {STARRED_BY_REQUESTER} FROM resource_social",
         ),
     ]
+    # Los listados del panel arman su SELECT en Python, así que el barrido de
+    # `app/sql/` no los ve. Es el mismo punto ciego por el que un `NOT` sobre
+    # `@BOOL@` —INTEGER en SQLite, SMALLINT en PostgreSQL— tumbó el perfil
+    # público: pasaba en un motor y era un 500 en el otro.
+    for spec in (connections_spec(),):
+        fragmentos.append(
+            (
+                f"admin_listings:{spec.table}",
+                f"SELECT {spec.columns} FROM {spec.table} {ROW} "
+                f"LEFT JOIN users {OWNER} "
+                f"ON {OWNER}.id = {ROW}.{spec.owner_column} WHERE 1=1",
+            )
+        )
+    return fragmentos
 
 
 def test_el_sql_armado_en_python_prepara_en_sqlite(tmp_path):

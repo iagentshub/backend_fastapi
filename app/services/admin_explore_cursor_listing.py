@@ -41,10 +41,14 @@ class AdminExploreCursorResult:
 
 def _catalog_union() -> str:
     selects = (
+        # Sin los invitados: son cuentas efímeras que se borran solas, así que
+        # en el inventario aparecerían y desaparecerían entre dos recargas.
+        # Es la misma exclusión que ya llevan `auth:list_users`,
+        # `admin_stats:user_counts` y el buscador de personas.
         "SELECT 'user' resource_type,id item_id,id owner_id,username "
         "owner_username,created_at sort_at,(username||' '||COALESCE(email,'')||' '||"
         "COALESCE(display_name,'')) search_text,role subtype,is_active active,"
-        "is_verified verified FROM users",
+        "is_verified verified FROM users WHERE role <> 'guest'",
         "SELECT 'group',g.id,g.created_by,COALESCE(u.username,g.created_by),"
         "g.created_at,(g.name||' '||COALESCE(u.username,'')),'',g.is_active,NULL "
         "FROM groups g LEFT JOIN users u ON u.id=g.created_by",
@@ -193,14 +197,51 @@ def _public_row(
         item["steps"] = len(definition.get("nodes") or [])
     elif resource_type == "llm_orchestration":
         item["candidate_count"] = len(definition.get("candidates") or [])
+    elif resource_type == "group":
+        item["status"] = "active" if item.get("is_active") else "disabled"
+    elif resource_type == "user":
+        # El checksum llega del JOIN y aquí se convierte en la URL, que es lo
+        # que el cliente sabe pintar. Mismo criterio que `decode_user_row`.
+        from app.storage import avatars
+
+        item["avatar_url"] = avatars.public_url(
+            str(item.get("username") or ""), item.pop("avatar_checksum", None)
+        )
     elif resource_type == "memory":
         item["filename"] = raw.get("id")
         item["id"] = f"{raw.get('owner_id')}::{raw.get('id')}"
-        item["size"] = len(str(raw.get("content") or ""))
+        item["size"] = int(raw.get("content_size") or 0)
     for boolean in ("is_active", "is_verified"):
         if boolean in item:
             item[boolean] = bool(item[boolean])
     return item
+
+
+def _proyeccion(resource_type: str, table: str) -> str:
+    """`SELECT *` sirve para casi todo, pero no para estos dos.
+
+    `memory_files.content` es la memoria de largo plazo de cada agente de cada
+    usuario —texto libre, sin cota— y aquí solo se necesita su tamaño: traerlo
+    entero para hacerle `len()` es la misma pérdida que ya costó una vez, y la
+    que este listado seguía pagando después de que se corrigiera en su gemelo.
+
+    `users.avatar_url` no es una columna: la foto vive en `user_avatars` desde
+    que se sacó de `users`, así que sin el `JOIN` el panel de personas pinta la
+    inicial y nunca la foto.
+    """
+    if table == "memory_files":
+        return "id, owner_id, LENGTH(content) AS content_size, updated_at"
+    if table == "users":
+        return "u.*, a.checksum AS avatar_checksum"
+    return "*"
+
+
+def _join(resource_type: str) -> str:
+    return (
+        "u LEFT JOIN user_avatars a ON a.owner_id = u.id "
+        if resource_type == "user"
+        else ""
+    )
 
 
 async def _load_type(
@@ -217,13 +258,18 @@ async def _load_type(
         if resource_type in _COMPOSITE_TYPES:
             clauses.append("(id=? AND owner_id=?)")
             params.extend((storage_id, owner_id))
+        elif resource_type == "user":
+            clauses.append("u.id=?")
+            params.append(storage_id)
         else:
             clauses.append("id=?")
             params.append(storage_id)
         identity_by_key[(storage_id, owner_id)] = identity
     async with open_db() as conn:
         rows = await conn.fetchall(
-            f"SELECT * FROM {table} WHERE " + " OR ".join(clauses), tuple(params)
+            f"SELECT {_proyeccion(resource_type, table)} FROM {table} "
+            f"{_join(resource_type)}WHERE " + " OR ".join(clauses),
+            tuple(params),
         )
     result: list[dict[str, Any]] = []
     for row in rows:
@@ -263,6 +309,9 @@ async def _hydrate(identities: Sequence[dict[str, Any]]) -> list[dict[str, Any]]
     loaded = await asyncio.gather(
         *(_load_type(resource_type, by_type[resource_type]) for resource_type in types)
     )
+    for resource_type, values in zip(types, loaded, strict=True):
+        if resource_type == "group":
+            await enriquecer_grupos(values)
     catalogs: dict[str, dict[tuple[str, str], dict[str, Any]]] = {}
     for resource_type, values in zip(types, loaded, strict=True):
         catalogs[resource_type] = {
@@ -389,3 +438,41 @@ async def list_admin_explore_cursor(
         ),
         counts=counts,
     )
+
+
+async def enriquecer_grupos(items: list[dict[str, Any]]) -> None:
+    """Recuentos de la tarjeta de grupo, pedidos solo para los de la página.
+
+    La tarjeta pinta miembros, conexiones, agentes, conocimiento y tokens. El
+    inventario nunca los sirvió —los daba el listado por tipo, que el panel
+    dejó de usar—, así que salían todos a cero sin que nada fallara.
+    """
+    from app.sql import sql
+
+    ids = [str(item["id"]) for item in items if item.get("id")]
+    if not ids:
+        return
+    marcadores = ",".join("?" for _ in ids)
+    claves = tuple(ids)
+
+    async def agregado(consulta: str) -> dict[str, Any]:
+        async with open_db() as conn:
+            filas = await conn.fetchall(consulta.replace("@ids@", marcadores), claves)
+        return {fila[0]: fila for fila in filas}
+
+    # Identificadores literales, no compuestos: `test_sql_en_ficheros` busca la
+    # cadena en el código para saber qué secciones tienen consumidor, y una
+    # armada con f-string la deja pareciendo muerta.
+    miembros = await agregado(sql("queries/admin_resources:members_per_group"))
+    conexiones = await agregado(sql("queries/admin_resources:connections_per_owner"))
+    conocimiento = await agregado(sql("queries/admin_resources:knowledge_per_owner"))
+    agentes = await agregado(sql("queries/admin_resources:agents_per_owner"))
+    for item in items:
+        clave = item["id"]
+        item["member_count"] = (miembros.get(clave) or (None, 0))[1]
+        fila = conexiones.get(clave)
+        item["connections_count"] = fila[1] if fila else 0
+        item["tokens_in"] = fila[2] if fila else 0
+        item["tokens_out"] = fila[3] if fila else 0
+        item["knowledge_count"] = (conocimiento.get(clave) or (None, 0))[1]
+        item["agents_count"] = (agentes.get(clave) or (None, 0))[1]

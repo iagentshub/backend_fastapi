@@ -18,6 +18,13 @@ class ScopedResourcePaginationMixin:
     def _page_spec(self) -> ScopedResourcePageSpec:
         raise NotImplementedError
 
+    def page_spec(self) -> ScopedResourcePageSpec:
+        """Columnas y decodificación del recurso, para quien pagine la tabla
+        por otra vía —el panel de administración lista sin filtro de
+        visibilidad—. Sin esto, cada listado nuevo reescribe la decodificación
+        y las dos copias divergen."""
+        return self._page_spec()
+
     async def list_visible_page(
         self,
         *,

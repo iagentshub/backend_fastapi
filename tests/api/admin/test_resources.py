@@ -9,16 +9,16 @@ from tests.api.admin._helpers import _AGENT_PAYLOAD, _insert_connection, _regist
 
 def test_admin_list_agents(admin_client):
     admin_client.post("/api/agents", json=_AGENT_PAYLOAD)
-    r = admin_client.get("/api/admin/agents")
+    r = admin_client.get("/api/v2/admin/explore?type=agent&limit=100")
     assert r.status_code == 200
-    agents = r.json()
+    agents = r.json()["items"]
     assert isinstance(agents, list)
     assert any(a["name"] == "Admin Test Agent" for a in agents)
 
 
 def test_admin_list_agents_has_owner_username(admin_client):
     admin_client.post("/api/agents", json=_AGENT_PAYLOAD)
-    agents = admin_client.get("/api/admin/agents").json()
+    agents = admin_client.get("/api/v2/admin/explore?type=agent&limit=100").json()["items"]
     private = [a for a in agents if a.get("scope") == "private"]
     assert private, "se esperaba al menos un agente privado"
     assert private[0]["owner_username"] == "testadmin"
@@ -29,7 +29,7 @@ def test_admin_delete_agent(admin_client):
     r = admin_client.delete(f"/api/admin/agents/{created['id']}?scope=private")
     assert r.status_code == 200
     assert r.json()["ok"] is True
-    agents = admin_client.get("/api/admin/agents").json()
+    agents = admin_client.get("/api/v2/admin/explore?type=agent&limit=100").json()["items"]
     assert not any(a["id"] == created["id"] for a in agents)
 
 
@@ -47,7 +47,7 @@ def test_admin_delete_public_agent(admin_client):
     r = admin_client.delete(f"/api/admin/agents/{created['id']}?scope=public")
     assert r.status_code == 200
     assert r.json()["ok"] is True
-    agents = admin_client.get("/api/admin/agents").json()
+    agents = admin_client.get("/api/v2/admin/explore?type=agent&limit=100").json()["items"]
     assert not any(a["id"] == created["id"] for a in agents)
 
 
@@ -59,7 +59,7 @@ def test_admin_set_agent_owner(admin_client):
         json={"username": "new_owner_a1"},
     )
     assert r.status_code == 200
-    agents = admin_client.get("/api/admin/agents").json()
+    agents = admin_client.get("/api/v2/admin/explore?type=agent&limit=100").json()["items"]
     moved = next(a for a in agents if a["id"] == created["id"])
     import asyncio
 
@@ -138,7 +138,7 @@ def test_admin_agents_forbidden_for_standard(client, reset_rate_limiter):
             "password": "pass1234",
         },
     )
-    r = client.get("/api/admin/agents")
+    r = client.get("/api/v2/admin/explore?type=agent&limit=100")
     assert r.status_code == 403
 
 
@@ -147,9 +147,9 @@ def test_admin_agents_forbidden_for_standard(client, reset_rate_limiter):
 
 def test_admin_list_connections(admin_client):
     _insert_connection()
-    r = admin_client.get("/api/admin/connections")
+    r = admin_client.get("/api/v2/admin/connections?limit=100")
     assert r.status_code == 200
-    conns = r.json()
+    conns = r.json()["items"]
     assert isinstance(conns, list)
     assert len(conns) >= 1
     assert conns[0]["supports_chat"] is True
@@ -159,7 +159,7 @@ def test_admin_list_connections(admin_client):
 
 def test_admin_list_connections_has_owner_username(admin_client):
     _insert_connection()
-    conns = admin_client.get("/api/admin/connections").json()
+    conns = admin_client.get("/api/v2/admin/connections?limit=100").json()["items"]
     assert conns[0]["owner_username"] == "testadmin"
 
 
@@ -168,7 +168,7 @@ def test_admin_delete_connection(admin_client):
     r = admin_client.delete(f"/api/admin/connections/{conn_id}")
     assert r.status_code == 200
     assert r.json()["ok"] is True
-    conns = admin_client.get("/api/admin/connections").json()
+    conns = admin_client.get("/api/v2/admin/connections?limit=100").json()["items"]
     assert not any(c["id"] == conn_id for c in conns)
 
 
@@ -186,7 +186,7 @@ def test_admin_connections_forbidden_for_standard(client, reset_rate_limiter):
             "password": "pass1234",
         },
     )
-    r = client.get("/api/admin/connections")
+    r = client.get("/api/v2/admin/connections?limit=100")
     assert r.status_code == 403
 
 
@@ -194,9 +194,9 @@ def test_admin_connections_forbidden_for_standard(client, reset_rate_limiter):
 
 
 def test_admin_list_knowledge(admin_client):
-    r = admin_client.get("/api/admin/knowledge")
+    r = admin_client.get("/api/v2/admin/explore?type=knowledge&limit=100")
     assert r.status_code == 200
-    assert isinstance(r.json(), list)
+    assert isinstance(r.json()["items"], list)
 
 
 def test_admin_knowledge_forbidden_for_standard(client, reset_rate_limiter):
@@ -208,14 +208,14 @@ def test_admin_knowledge_forbidden_for_standard(client, reset_rate_limiter):
             "password": "pass1234",
         },
     )
-    r = client.get("/api/admin/knowledge")
+    r = client.get("/api/v2/admin/explore?type=knowledge&limit=100")
     assert r.status_code == 403
 
 
 def test_admin_list_skills(admin_client):
-    r = admin_client.get("/api/admin/skills")
+    r = admin_client.get("/api/v2/admin/explore?type=skill&limit=100")
     assert r.status_code == 200
-    assert isinstance(r.json(), list)
+    assert isinstance(r.json()["items"], list)
 
 
 def test_admin_skills_forbidden_for_standard(client, reset_rate_limiter):
@@ -227,7 +227,7 @@ def test_admin_skills_forbidden_for_standard(client, reset_rate_limiter):
             "password": "pass1234",
         },
     )
-    r = client.get("/api/admin/skills")
+    r = client.get("/api/v2/admin/explore?type=skill&limit=100")
     assert r.status_code == 403
 
 
@@ -244,7 +244,7 @@ def test_admin_delete_skill(admin_client):
     r = admin_client.delete(f"/api/admin/skills/{skill['id']}")
 
     assert r.status_code == 200
-    remaining = admin_client.get("/api/admin/skills").json()
+    remaining = admin_client.get("/api/v2/admin/explore?type=skill&limit=100").json()["items"]
     assert skill["id"] not in {item["id"] for item in remaining}
 
 
@@ -254,9 +254,9 @@ def test_admin_delete_skill_not_found(admin_client):
 
 
 def test_admin_list_memory(admin_client):
-    r = admin_client.get("/api/admin/memory")
+    r = admin_client.get("/api/v2/admin/explore?type=memory&limit=100")
     assert r.status_code == 200
-    assert isinstance(r.json(), list)
+    assert isinstance(r.json()["items"], list)
 
 
 def test_admin_memory_forbidden_for_standard(client, reset_rate_limiter):
@@ -268,20 +268,20 @@ def test_admin_memory_forbidden_for_standard(client, reset_rate_limiter):
             "password": "pass1234",
         },
     )
-    r = client.get("/api/admin/memory")
+    r = client.get("/api/v2/admin/explore?type=memory&limit=100")
     assert r.status_code == 403
 
 
 def test_admin_delete_memory(admin_client):
     admin_client.post("/api/memory/admin-delete-me", json={"content": "some notes"})
 
-    memory = admin_client.get("/api/admin/memory").json()
+    memory = admin_client.get("/api/v2/admin/explore?type=memory&limit=100").json()["items"]
     entry = next(m for m in memory if m["filename"] == "admin-delete-me")
 
     r = admin_client.delete(f"/api/admin/memory/{entry['id']}")
 
     assert r.status_code == 200
-    remaining = admin_client.get("/api/admin/memory").json()
+    remaining = admin_client.get("/api/v2/admin/explore?type=memory&limit=100").json()["items"]
     assert entry["id"] not in {m["id"] for m in remaining}
 
 

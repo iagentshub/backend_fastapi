@@ -272,11 +272,12 @@ async def delete_llm_orchestration(
     item = await _owned(item_id, ctx)
     assert_resource_writable(item, "llm_orchestration")
     virtual_connection_id = orchestration_connection_id(item_id)
-    referenced = [
-        agent
-        for agent in await _agents.list("all")
-        if agent.get("connection_id") == virtual_connection_id
-    ]
+    # Antes: `_agents.list("all")` —todos los agentes de la instalación,
+    # decodificados a dicts— para quedarse con los que referencian esta
+    # orquestación. La pregunta equivalente sobre `user_agent_preferences`, dos
+    # líneas más abajo, ya era un COUNT; ahora `connection_id` es columna con
+    # índice y las dos se resuelven igual.
+    referenced = await _agents.count_by_connection(virtual_connection_id)
     async with open_db() as conn:
         preference_count = int(
             await conn.fetchval(
@@ -293,7 +294,7 @@ async def delete_llm_orchestration(
             "La orquestación está asignada a uno o más agentes",
             extra={
                 "resource": "agent",
-                "count": len(referenced) + preference_count,
+                "count": referenced + preference_count,
             },
         )
     await _storage.delete(item_id, ctx.group_id)

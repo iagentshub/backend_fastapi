@@ -30,6 +30,7 @@ from __future__ import annotations
 from app.storage.migrations.legacy._catchup_pg import (
     _migrate_pg,
     _migrate_users_json_pg,
+    _pre_migrate_pg,
 )
 from app.storage.migrations.legacy._catchup_sqlite import (
     _migrate_sqlite,
@@ -80,6 +81,7 @@ __all__ = [
     "_migrate_group_active_flag_pg",
     "_migrate_legacy_agent_language_labels",
     "_SCHEMA_INDEX_DEPS",
+    "_pre_migrate_pg",
     "_RESOURCE_TABLES",
     "_NAMED_RESOURCE_TABLES",
     "_RESOURCE_BLOB_DUPLICATES",

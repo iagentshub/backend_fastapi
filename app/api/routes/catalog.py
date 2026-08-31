@@ -21,7 +21,7 @@ from app.auth.auth import get_user_role
 from app.errors import APIError
 from app.models.agent_import import AgentImportResourceKind
 from app.pagination.api import CursorPageMetadata, CursorPageResponse
-from app.pagination.metrics import increment
+from app.pagination.http import cursor_error
 from app.pagination.models import CursorPage, CursorParams
 from app.pagination.query import scoped_cursor_params
 from app.pagination.total import ExactTotalTimeout
@@ -76,18 +76,6 @@ class AdminExploreCursorResponse(BaseModel):
     items: list[dict[str, Any]]
     page: CursorPageMetadata
     counts: dict[str, int] | None = None
-
-
-def _cursor_error(exc: Exception, *, resource: str) -> APIError:
-    if isinstance(exc, ExactTotalTimeout):
-        return APIError(
-            503,
-            "pagination_total_timeout",
-            "El total exacto no estuvo disponible dentro del tiempo permitido",
-            extra={"resource": resource},
-        )
-    increment(resource, "invalid_cursors")
-    return APIError(422, "invalid_cursor", "Cursor no válido")
 
 
 @router.get("/agents", tags=["agents-v2"])
@@ -255,7 +243,7 @@ async def list_explore_v2(
             knowledge=_knowledge,
         )
     except (ExactTotalTimeout, ValueError) as exc:
-        raise _cursor_error(exc, resource="explore") from exc
+        raise cursor_error(exc, resource="explore") from exc
     response = CursorPageResponse.from_result(result, limit=page.limit)
     return ExploreCursorResponse(
         items=response.items,
@@ -277,7 +265,7 @@ async def search_users_v2(
             page=page,
         )
     except (ExactTotalTimeout, ValueError) as exc:
-        raise _cursor_error(exc, resource="user") from exc
+        raise cursor_error(exc, resource="user") from exc
     return CursorPageResponse.from_result(result, limit=page.limit)
 
 
@@ -292,7 +280,7 @@ async def list_feed_v2(
             username=username, resource_type=type, page=page
         )
     except (ExactTotalTimeout, ValueError) as exc:
-        raise _cursor_error(exc, resource="feed") from exc
+        raise cursor_error(exc, resource="feed") from exc
     return CursorPageResponse.from_result(result, limit=page.limit)
 
 
@@ -318,7 +306,7 @@ async def list_connections_v2(
             page=page,
         )
     except (ExactTotalTimeout, ValueError) as exc:
-        raise _cursor_error(exc, resource="connection") from exc
+        raise cursor_error(exc, resource="connection") from exc
     return CursorPageResponse.from_result(result, limit=page.limit)
 
 
@@ -339,7 +327,7 @@ async def list_admin_metadata_table_v2(
             page=page,
         )
     except (ExactTotalTimeout, ValueError) as exc:
-        raise _cursor_error(exc, resource="admin_metadata") from exc
+        raise cursor_error(exc, resource="admin_metadata") from exc
     response = CursorPageResponse.from_result(result.page, limit=page.limit)
     return MetadataCursorResponse(
         columns=result.columns, items=response.items, page=response.page
@@ -373,7 +361,7 @@ async def list_admin_explore_v2(
             page=page,
         )
     except (ExactTotalTimeout, ValueError) as exc:
-        raise _cursor_error(exc, resource="admin_explore") from exc
+        raise cursor_error(exc, resource="admin_explore") from exc
     response = CursorPageResponse.from_result(result.page, limit=page.limit)
     return AdminExploreCursorResponse(
         items=response.items, page=response.page, counts=result.counts
@@ -420,7 +408,7 @@ async def list_logs_v2(
             page=page,
         )
     except (ExactTotalTimeout, ValueError) as exc:
-        raise _cursor_error(exc, resource="log") from exc
+        raise cursor_error(exc, resource="log") from exc
     return CursorPageResponse.from_result(result, limit=page.limit)
 
 
@@ -450,5 +438,5 @@ async def list_official_source_draft_components_v2(
             query=q,
         )
     except (ExactTotalTimeout, ValueError) as exc:
-        raise _cursor_error(exc, resource="official_import_component") from exc
+        raise cursor_error(exc, resource="official_import_component") from exc
     return CursorPageResponse.from_result(result, limit=page.limit)

@@ -19,6 +19,7 @@ from typing import Any, AsyncGenerator, List, Optional, Tuple
 
 from app.config import database as database_config
 from app.storage.migrations.legacy import (
+    _pre_migrate_pg,
     _pre_migrate_sqlite,
     _rename_legacy_group_schema_pg,
     _rename_legacy_group_schema_sqlite,
@@ -307,6 +308,9 @@ async def migrate_schema(sqlite_path: Optional[Path] = None) -> None:
         try:
             async with conn.transaction():
                 await _rename_legacy_group_schema_pg(conn)
+                # Mismo motivo que en SQLite: las columnas que nombran los
+                # CREATE INDEX del esquema, antes de ejecutarlo.
+                await _pre_migrate_pg(conn)
                 for stmt in SCHEMA_PG.split(";"):
                     s = stmt.strip()
                     if s:

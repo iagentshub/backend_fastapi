@@ -42,6 +42,12 @@ class WorkflowStorage(ResourceStorage):
             )
         return self._decode(row) if row else None
 
+    def decode_row(self, row: Any) -> Dict[str, Any]:
+        """Decodifica una fila de esta tabla para quien la pagine por
+        otra vía —el panel de administración lista sin filtro de
+        visibilidad—, sin reescribir la decodificación por segunda vez."""
+        return self._decode(row)
+
     async def list_all(self) -> List[Dict[str, Any]]:
         async with open_db() as conn:
             rows = await conn.fetchall(

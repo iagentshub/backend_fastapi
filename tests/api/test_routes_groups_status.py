@@ -132,8 +132,8 @@ def test_admin_list_groups_includes_status(admin_client):
     group = admin_client.post("/api/groups", json={"name": "Grupo Status List"}).json()
     admin_client.post(f"/api/admin/groups/{group['id']}/status", json={"status": "disabled"})
 
-    r = admin_client.get("/api/admin/groups")
-    found = next(w for w in r.json() if w["id"] == group["id"])
+    r = admin_client.get("/api/v2/admin/explore?type=group&limit=100")
+    found = next(w for w in r.json()["items"] if w["id"] == group["id"])
     assert found["status"] == "disabled"
 
 

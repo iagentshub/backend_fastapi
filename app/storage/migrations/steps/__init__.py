@@ -23,6 +23,10 @@ from app.storage.migrations.legacy import (
     _migrate_users_json_sqlite,
 )
 from app.storage.migrations.registry import MigrationPair
+from app.storage.migrations.steps.agent_connection import (
+    _agent_connection_column_pg,
+    _agent_connection_column_sqlite,
+)
 from app.storage.migrations.steps.avatars import (
     _user_avatars_pg,
     _user_avatars_sqlite,
@@ -166,6 +170,7 @@ MIGRATION_PAIRS: tuple[MigrationPair, ...] = (
     MigrationPair(42, "scoped_resource_order_indexes", _scoped_resource_order_indexes, _scoped_resource_order_indexes),
     MigrationPair(43, "cursor_catalogs", _cursor_catalogs_sqlite, _cursor_catalogs_pg),
     MigrationPair(44, "cursor_completion_indexes", _cursor_completion_indexes, _cursor_completion_indexes),
+    MigrationPair(45, "agent_connection_column", _agent_connection_column_sqlite, _agent_connection_column_pg),
 )
 
 __all__ = ["MIGRATION_PAIRS"]

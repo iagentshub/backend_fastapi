@@ -10,6 +10,10 @@ CREATE TABLE IF NOT EXISTS agents (
     deactivated_at TEXT,
     -- Fuente oficial de la que salió el recurso, si salió de alguna. Ver
     -- official_sources: es lo que permite filtrarlos y borrarlos en bloque.
+    -- Promovida del blob `data`, como `name` y `scope`. Sin columna, la
+    -- pregunta "¿qué agentes usan esta conexión?" obligaba a traerse todos
+    -- los agentes de la instalación y filtrarlos en Python.
+    connection_id TEXT,
     official_source_id    TEXT,
     -- Trazabilidad de solo escritura: se rellena al materializar el recurso y
     -- hoy no la lee nadie —quien necesita ese dato entra por
@@ -25,3 +29,4 @@ CREATE TABLE IF NOT EXISTS agents (
 CREATE INDEX IF NOT EXISTS idx_agents_owner ON agents(owner_id, scope, updated_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_agents_visible_order ON agents(updated_at DESC, id DESC);
 CREATE INDEX IF NOT EXISTS idx_agents_official ON agents(official_source_id);
+CREATE INDEX IF NOT EXISTS idx_agents_connection ON agents(connection_id);

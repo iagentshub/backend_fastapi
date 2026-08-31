@@ -13,6 +13,7 @@ from fastapi.responses import JSONResponse
 
 from app.api.routes import (
     accounts,
+    admin_catalog,
     agent_builder,
     agent_chat,
     agent_exports,
@@ -21,7 +22,7 @@ from app.api.routes import (
     agents,
     auth,
     billing,
-    catalog_v2,
+    catalog,
     centinel,
     chats,
     connection_catalog,
@@ -393,7 +394,8 @@ def create_app() -> FastAPI:
     app.include_router(skills.router)
     app.include_router(prompts.router)
     app.include_router(tools.router)
-    app.include_router(catalog_v2.router)
+    app.include_router(catalog.router)
+    app.include_router(admin_catalog.router)
     app.include_router(memory.router)
     app.include_router(notifications.router)
     app.include_router(settings.router)

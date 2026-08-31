@@ -16,7 +16,6 @@ from app.auth.auth import (
     delete_user,
     get_user_by_username,
     hash_password_async,
-    list_users,
 )
 from app.auth.sessions import open_session
 from app.errors import APIError
@@ -27,41 +26,6 @@ from app.storage.db import open_db
 from app.utils import flog
 from app.utils.generators import generate_id
 from app.utils.validation import is_valid_email, is_valid_username, normalize_username
-
-
-@admin_router.get("/users")
-async def admin_list_users(
-    q: str | None = None,
-    role: str | None = None,
-    active: str | None = None,
-    verified: str | None = None,
-    _: str = Depends(require_admin),
-) -> list[dict[str, Any]]:
-    users = await list_users()
-    async with open_db() as conn:
-        token_rows = await conn.fetchall(sql("queries/admin_users:tokens_per_owner"))
-    token_map = {r[0]: {"tokens_in": r[1], "tokens_out": r[2]} for r in token_rows}
-    for u in users:
-        tokens = token_map.get(u.get("id"), {"tokens_in": 0, "tokens_out": 0})
-        u["tokens_in"] = tokens["tokens_in"]
-        u["tokens_out"] = tokens["tokens_out"]
-    if q:
-        q_low = q.lower()
-        users = [
-            u
-            for u in users
-            if q_low in (u.get("username") or "").lower()
-            or q_low in (u.get("email") or "").lower()
-        ]
-    if role:
-        users = [u for u in users if u.get("role") == role]
-    if active is not None:
-        want = active.lower() in ("1", "true", "yes")
-        users = [u for u in users if bool(u.get("is_active", 1)) == want]
-    if verified is not None:
-        want = verified.lower() in ("1", "true", "yes")
-        users = [u for u in users if bool(u.get("is_verified", 1)) == want]
-    return users
 
 
 @admin_router.patch("/users/{username}")
