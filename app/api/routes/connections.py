@@ -146,28 +146,22 @@ async def _expand_model_connections(
         clean["name"] = model
         result.append(clean)
 
+    # Todas las base, no `base_conns[0]`. El nombre en singular se escribió
+    # cuando una instalación tenía como mucho un Ollama, pero la tabla no impone
+    # unicidad por dueño ni por tipo: dos Ollama sin modelo son la configuración
+    # obvia de quien tiene uno en el portátil y otro en la máquina con GPU, y se
+    # llega también sin querer al entrar en un grupo donde alguien compartió el
+    # suyo. La segunda desaparecía de GET /api/connections mientras /raw seguía
+    # devolviéndola, así que el usuario la veía en una pantalla y no en la otra
+    # sin ningún error en medio.
+    #
+    # En paralelo porque cada expansión es una petición de red: en serie, dos
+    # servidores costarían el doble de espera que uno.
     base_conns = [c for c in connections if not (c.get("model") or "").strip()]
-    if base_conns:
-        base = base_conns[0]
+    catalogos = await asyncio.gather(*(_catalogo_de(b) for b in base_conns))
+
+    for base, models in zip(base_conns, catalogos):
         base_clean = {k: v for k, v in base.items() if k != "api_key"}
-        # El listado expande una conexión Ollama base consultando /api/tags.
-        # Si la credencial guardada es ilegible, no hay una clave válida que
-        # enviar: se conserva la tarjeta marcada para que pueda repararse y se
-        # evita por completo la petición externa.
-        if base.get(UNREADABLE_FLAG):
-            result.append(base_clean)
-            return result
-        provider = get_provider(str(base.get("type") or ""))
-        try:
-            models = (
-                await asyncio.to_thread(provider.fetch_models, base) if provider else []
-            )
-        except (OSError, ValueError) as exc:
-            flog.warning(
-                f"[{base.get('type')}] Catálogo no obtenido de la conexión "
-                f"{base.get('id')}: {exc}"
-            )
-            models = []
         if models:
             for model in models:
                 if model in seen:
@@ -185,6 +179,33 @@ async def _expand_model_connections(
             result.append(base_clean)
 
     return result
+
+
+async def _catalogo_de(base: Dict[str, Any]) -> List[str]:
+    """Modelos de una conexión base. Lista vacía si no se le puede preguntar.
+
+    Que una credencial esté ilegible es un estado contemplado —tiene su propio
+    distintivo de «requiere atención»—, así que aquí solo cancela la expansión
+    de esa conexión. Antes hacía `return` de la función entera y se llevaba por
+    delante a todas las demás base.
+    """
+    # El listado expande una conexión Ollama base consultando /api/tags. Si la
+    # credencial guardada es ilegible, no hay una clave válida que enviar: se
+    # conserva la tarjeta marcada para que pueda repararse y se evita por
+    # completo la petición externa.
+    if base.get(UNREADABLE_FLAG):
+        return []
+    provider = get_provider(str(base.get("type") or ""))
+    if not provider:
+        return []
+    try:
+        return await asyncio.to_thread(provider.fetch_models, base)
+    except (OSError, ValueError) as exc:
+        flog.warning(
+            f"[{base.get('type')}] Catálogo no obtenido de la conexión "
+            f"{base.get('id')}: {exc}"
+        )
+        return []
 
 
 # IMPORTANTE: las rutas literales (/providers, /raw, /test-all) deben definirse
