@@ -108,6 +108,13 @@ order. Pack provenance for the page is resolved by
 column, instead of one `get()` per row.
 
 
+The repository has **two** keyset engines, and the difference is in the plan,
+not the result: `cursor_page_query` compares tuples — `(position, id) < (?, ?)`,
+a single index descent — and only works when every column shares one direction;
+`composite_cursor_page` expands into `OR`/`AND` because its consumers mix
+directions. They return the same rows, so swapping one for the other breaks no
+test and does degrade the query.
+
 ### The admin panel too
 
 The `/api/admin` listings were left out of that migration, and they were the

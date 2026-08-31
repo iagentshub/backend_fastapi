@@ -111,6 +111,13 @@ documentos de la página se resuelve con `KnowledgeStorage.pack_locations()`, un
 sola consulta sin la columna `content`, en vez de un `get()` por fila.
 
 
+El repositorio tiene **dos** motores keyset y la diferencia es de plan, no de
+resultado: `cursor_page_query` compara tuplas —`(posicion, id) < (?, ?)`, un
+solo descenso por el índice— y solo sirve con todas las columnas en la misma
+dirección; `composite_cursor_page` expande a `OR`/`AND` porque sus consumidores
+mezclan direcciones. Devuelven las mismas filas, así que intercambiarlos no
+rompe ningún test y sí degrada la consulta.
+
 ### El panel de administración también
 
 Los listados de `/api/admin` se quedaron fuera de esa migración, y eran los
