@@ -196,6 +196,28 @@ async def _rate_limit_purge_loop() -> None:
             flog.error(f"[ratelimit] Error en purga automática: {exc}")
 
 
+def _avisar_si_muere(task: asyncio.Task) -> None:
+    """Registra un bucle de fondo que termina sin que nadie lo cancelara.
+
+    Un `while True` que muere por una excepción no avisa de nada: Python lo dice
+    al recolectar la tarea, y estas no se recolectan nunca porque la tupla de
+    `_lifespan` las mantiene vivas todo el proceso. La excepción se recoge por
+    fin en el apagado, con `gather(return_exceptions=True)`, que la descarta.
+    Cero líneas en el log de principio a fin.
+
+    Va aquí y no dentro de cada bucle a propósito: cubre también al que alguien
+    añada mañana y olvide envolver, que es lo que evita volver a descubrir esto
+    dentro de seis meses.
+    """
+    if task.cancelled():
+        return  # El apagado los cancela: eso es lo normal, no un fallo.
+    exc = task.exception()
+    if exc is not None:
+        flog.error(f"[lifespan] El bucle {task.get_name()} ha muerto: {exc}")
+    else:
+        flog.warning(f"[lifespan] El bucle {task.get_name()} ha terminado solo")
+
+
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     # Antes que la BD: si la configuración se contradice (verificación por email
@@ -219,6 +241,8 @@ async def _lifespan(app: FastAPI):
             workflow_run_maintenance_loop(), name="workflow-run-maintenance"
         ),
     )
+    for _t in tasks:
+        _t.add_done_callback(_avisar_si_muere)
     flog.ok("iAgents Hub arrancado")
     try:
         yield
