@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import json
 import zipfile
@@ -22,6 +23,8 @@ _AGENT_BASE = {
     "model": "gpt-4o",
     "temperature": 0.5,
 }
+
+_MANIFEST_PATH = ".iagentshub/export-manifest.json"
 
 
 def _create_agent(client, extra=None):
@@ -45,6 +48,11 @@ def _zip_names(content: bytes) -> list[str]:
 def _zip_read(content: bytes, path: str) -> str:
     with zipfile.ZipFile(io.BytesIO(content)) as zf:
         return zf.read(path).decode()
+
+
+def _zip_bytes(content: bytes, path: str) -> bytes:
+    with zipfile.ZipFile(io.BytesIO(content)) as zf:
+        return zf.read(path)
 
 
 # ── OpenAI export ─────────────────────────────────────────────────────────────
@@ -364,6 +372,108 @@ def test_export_omits_unreadable_knowledge_and_warns(admin_client):
     assert response.status_code == 200
     assert not any("knowledge/" in name for name in _zip_names(response.content))
     assert "omitido del export" in warning.call_args.args[0]
+
+
+def test_export_packages_prompts_and_safe_tools_with_manifest(admin_client):
+    prompt = admin_client.post(
+        "/api/prompts/private",
+        json={
+            "name": "Review Prompt",
+            "description": "Prompt reusable",
+            "content": "Revisa el cambio con atención.",
+            "alias": "review-change",
+        },
+    ).json()
+    source_tool = admin_client.post(
+        "/api/tools/private",
+        json={
+            "name": "Source Tool",
+            "description": "Tool de fuente",
+            "language": "python",
+            "content": "print('safe source')",
+            "instructions": "Recibe un nombre.",
+            "input_schema": {"type": "object"},
+            "output_schema": {"type": "string"},
+        },
+    ).json()
+    binary_tool = admin_client.post(
+        "/api/tools/private",
+        json={
+            "name": "Binary Tool",
+            "description": "Tool binaria",
+            "language": "cpp",
+            "target_os": "linux",
+            "target_arch": "x64",
+        },
+    ).json()
+    binary = b"\x7fELF\x02\x01" + (b"\x00" * 12) + b"\x3e\x00"
+    uploaded = admin_client.post(
+        f"/api/tools/private/{binary_tool['id']}/binary",
+        files={"file": ("binary-tool", binary, "application/octet-stream")},
+    )
+    assert uploaded.status_code == 200, uploaded.text
+    reviewed = admin_client.post(
+        "/api/tools/private",
+        json={
+            **binary_tool,
+            "labels": ["private"],
+        },
+    )
+    assert reviewed.status_code == 200, reviewed.text
+    blocked_tool = admin_client.post(
+        "/api/tools/private",
+        json={
+            "name": "Blocked Tool",
+            "description": "Pendiente de revisión",
+            "language": "python",
+            "content": "print('blocked')",
+            "labels": ["private", "review"],
+        },
+    ).json()
+    agent = _create_agent(
+        admin_client,
+        {
+            "agent_type": "openai",
+            "prompts": [prompt["id"]],
+            "tools": [source_tool["id"], binary_tool["id"], blocked_tool["id"]],
+        },
+    )
+
+    response = admin_client.get(f"/api/agents/{agent['id']}/export/openai")
+
+    assert response.status_code == 200, response.text
+    assert response.headers["x-iagentshub-export-complete"] == "false"
+    assert response.headers["x-iagentshub-export-warning-count"] == "1"
+    manifest = json.loads(_zip_read(response.content, _MANIFEST_PATH))
+    assert manifest["schema_version"] == 1
+    assert manifest["complete"] is False
+    dependencies = manifest["dependencies"]
+    prompt_entry = next(item for item in dependencies if item["type"] == "prompt")
+    assert "Revisa el cambio" in _zip_read(response.content, prompt_entry["paths"][0])
+
+    tool_entries = {
+        item["id"]: item for item in dependencies if item["type"] == "tool"
+    }
+    assert tool_entries[source_tool["id"]]["status"] == "embedded"
+    assert tool_entries[binary_tool["id"]]["status"] == "embedded"
+    blocked_entry = tool_entries[blocked_tool["id"]]
+    assert blocked_entry["status"] == "omitted"
+    assert blocked_entry["reason"] == "security_review"
+    assert blocked_entry["paths"] == []
+
+    binary_entry = tool_entries[binary_tool["id"]]
+    artifact_path = next(
+        path for path in binary_entry["paths"] if not path.endswith("tool.json")
+    )
+    assert _zip_bytes(response.content, artifact_path) == binary
+    for entry in dependencies:
+        for path, expected in entry["checksums"].items():
+            actual = hashlib.sha256(_zip_bytes(response.content, path)).hexdigest()
+            assert actual == expected
+
+    exported_agent = json.loads(_zip_read(response.content, "agent.json"))
+    assert "No las ejecutes automáticamente" in exported_agent["instructions"]
+    assert "Recibe un nombre" in exported_agent["instructions"]
 
 
 # ── Unknown format ────────────────────────────────────────────────────────────
