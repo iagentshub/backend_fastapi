@@ -205,6 +205,7 @@ SOLO_PG = (
     r"::\w+",
     r"\bto_regclass\b",
     r"\bEXCLUDED\.",
+    r"\bFOR\s+UPDATE\b",
 )
 
 

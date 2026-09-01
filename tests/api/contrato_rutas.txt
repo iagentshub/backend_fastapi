@@ -187,6 +187,7 @@ POST /api/auth/forgot-password
 POST /api/auth/github/device-code
 POST /api/auth/github/device-token
 POST /api/auth/guest
+POST /api/auth/legal-acceptances
 POST /api/auth/login
 POST /api/auth/logout
 POST /api/auth/me/avatar

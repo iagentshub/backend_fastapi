@@ -12,6 +12,13 @@ SELECT *
 FROM subscriptions
 WHERE id = ?;
 
+-- name: get_by_id_for_update
+-- engine: pg
+SELECT *
+FROM subscriptions
+WHERE id = ?
+FOR UPDATE;
+
 -- name: get_by_stripe_id
 SELECT *
 FROM subscriptions
@@ -77,8 +84,11 @@ SET assigned_by = EXCLUDED.assigned_by, assigned_at = EXCLUDED.assigned_at, stat
 
 -- name: assign_license_sqlite
 -- engine: sqlite
-INSERT OR REPLACE INTO subscription_license_assignments (subscription_id, username, assigned_by, assigned_at, status)
-VALUES (?, ?, ?, ?, 'active');
+INSERT INTO subscription_license_assignments (subscription_id, username, assigned_by, assigned_at, status)
+VALUES (?, ?, ?, ?, 'active')
+ON CONFLICT (subscription_id, username) DO
+UPDATE
+SET assigned_by = excluded.assigned_by, assigned_at = excluded.assigned_at, status = 'active';
 
 -- name: get_assignment
 SELECT *

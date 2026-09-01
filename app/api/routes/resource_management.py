@@ -20,6 +20,7 @@ from app.config.data import AGENTS_DIR
 from app.errors import APIError
 from app.models.llm_orchestration import orchestration_id_from_connection
 from app.services.connection_access import connection_access
+from app.services.knowledge_access import resolve_agent_knowledge_ids
 from app.services.tool_access import resolve_accessible_tools
 from app.services.workflow_errors import WorkflowPublicError, workflow_error_event
 from app.services.workflow_run_executor import start_workflow_run
@@ -351,6 +352,9 @@ async def _prepare_workflow_run(workflow_id: str, ctx: GroupContext):
                 storage=_tools,
                 shares=_shares,
                 groups=_group_storage,
+            ),
+            "resolved_knowledge_ids": await resolve_agent_knowledge_ids(
+                agent, ctx.user, ctx.group_id, role == "admin", _shares, _group_storage
             ),
         }
         connection_id = str(

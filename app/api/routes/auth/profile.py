@@ -21,6 +21,7 @@ from app.auth.auth import (
 from app.config.content_languages import CONTENT_LANGUAGE_SET
 from app.errors import APIError
 from app.middleware.ratelimit import RateLimiter, principal_key
+from app.services.legal_consent import acceptance_required
 from app.sql import sql
 from app.storage import avatars
 from app.storage.db import open_db
@@ -86,6 +87,7 @@ async def me(
         "auth_method": auth_method,
         "group_id": group_id,
         "group_personal": group_id == user_id,
+        "legal_acceptance_required": await acceptance_required(user_id, role),
     }
     if user_row:
         payload["email"] = user_row.get("email")

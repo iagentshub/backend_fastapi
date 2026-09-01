@@ -72,6 +72,11 @@ WHERE owner_id = ?;
 DELETE FROM knowledge_items
 WHERE owner_id = ?;
 
+-- name: delete_knowledge_chunks_by_owner
+DELETE FROM knowledge_chunks
+WHERE knowledge_id IN (
+SELECT id FROM knowledge_items WHERE owner_id = ?);
+
 -- name: delete_connections_by_owner
 DELETE FROM connections
 WHERE owner_id = ?;

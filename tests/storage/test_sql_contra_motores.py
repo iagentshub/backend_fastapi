@@ -206,6 +206,72 @@ def test_migration_44_is_recorded_and_builds_indexes_in_real_postgres():
     asyncio.run(_correr())
 
 
+@pytest.mark.skipif(not DSN, reason="define GAIA_TEST_PG_DSN para probar Knowledge FTS")
+def test_migration_47_backfills_and_searches_with_gin_in_real_postgres():
+    """La ruta PostgreSQL crea vector, GIN y fragmentos buscables."""
+
+    import asyncio
+
+    import asyncpg
+
+    from app.storage.db import AsyncConn
+    from app.storage.knowledge_chunks import replace_knowledge_chunks
+    from app.storage.migrations.postgres import run_postgres_migrations
+
+    async def _correr() -> None:
+        conn = await asyncpg.connect(DSN)
+        schema = f"knowledge_search_{uuid4().hex}"
+        try:
+            await conn.execute(f'CREATE SCHEMA "{schema}"')
+            await conn.execute(f'SET search_path TO "{schema}"')
+            for sentencia in schema_for("pg").split(";"):
+                if sentencia.strip():
+                    await conn.execute(sentencia)
+            await conn.execute(
+                "INSERT INTO knowledge_items "
+                "(id,owner_id,type,title,source,content,created_at,updated_at) "
+                "VALUES ('legacy-fts','alice','text','Astronomía','',"
+                "'El observatorio usa un ASTROLABIO preciso.','now','now')"
+            )
+
+            completed = await run_postgres_migrations(conn)
+            migration = await conn.fetchval(
+                "SELECT name FROM schema_migrations WHERE version=47"
+            )
+            match = await conn.fetchval(
+                "SELECT c.knowledge_id FROM knowledge_chunks c "
+                "WHERE c.search_vector @@ websearch_to_tsquery('simple','astrolabio')"
+            )
+            indexes = {
+                row["indexname"]
+                for row in await conn.fetch(
+                    "SELECT indexname FROM pg_indexes WHERE schemaname=$1", schema
+                )
+            }
+            await replace_knowledge_chunks(
+                AsyncConn(conn, True),
+                knowledge_id="legacy-fts",
+                title="Astronomía actualizada",
+                content="Ahora el instrumento vigente es el SEXTANTE.",
+            )
+            replaced_match = await conn.fetchval(
+                "SELECT c.title FROM knowledge_chunks c "
+                "WHERE c.search_vector @@ websearch_to_tsquery('simple','sextante')"
+            )
+
+            assert 47 in completed
+            assert migration == "knowledge_search"
+            assert match == "legacy-fts"
+            assert replaced_match == "Astronomía actualizada"
+            assert "idx_knowledge_chunks_search" in indexes
+        finally:
+            await conn.execute("SET search_path TO public")
+            await conn.execute(f'DROP SCHEMA IF EXISTS "{schema}" CASCADE')
+            await conn.close()
+
+    asyncio.run(_correr())
+
+
 # Fragmentos de SQL que se arman en Python y por tanto no están en `app/sql/`,
 # así que el catálogo de arriba no los ve. Cada uno va con el envoltorio mínimo
 # que lo convierte en una consulta preparable.

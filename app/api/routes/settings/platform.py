@@ -16,6 +16,7 @@ from app.api.routes.settings._router import router
 from app.api.routes.settings._shared import VALID_THEMES
 from app.config.tool_runtimes import public_tool_runtime_catalog
 from app.errors import APIError
+from app.services.legal_consent import public_legal_contract
 from app.services.platform_settings import (
     _VALID_REGISTRATION,
     _read_platform_cfg,
@@ -122,6 +123,7 @@ class PlatformConfigUpdate(BaseModel):
     oauth_github_enabled: Optional[bool] = None
     splash_cycles: Optional[int] = None
     splash_end_on_logo: Optional[bool] = None
+    legal: Optional[dict] = None
 
 
 @router.get("/platform/public")
@@ -171,6 +173,7 @@ async def get_platform_config_public() -> dict:
         # Catálogo contractual único. Flutter decide icono/traducción, pero no
         # vuelve a mantener por su cuenta qué runtimes acepta este backend.
         "tool_runtimes": public_tool_runtime_catalog(),
+        "legal": public_legal_contract(),
     }
 
 
@@ -273,6 +276,17 @@ async def update_platform_config(
             "splash_cycles debe estar entre 1 y 10",
             extra={"field": "splash_cycles"},
         )
+    if "legal" in update and update["legal"].get("required", False):
+        from app.services.legal_consent import legal_configuration_errors
+
+        legal_errors = legal_configuration_errors(update["legal"])
+        if legal_errors:
+            raise APIError(
+                422,
+                "invalid_legal_contract",
+                "No se puede exigir un contrato legal incompleto.",
+                extra={"field": "legal", "errors": legal_errors},
+            )
 
     cfg.update(update)
     _write_platform_cfg(cfg)

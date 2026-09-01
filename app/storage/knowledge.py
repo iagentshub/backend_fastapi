@@ -13,6 +13,10 @@ from app.pagination.models import CursorPage, CursorParams
 from app.services.resource_visibility import VisibilityFilter
 from app.sql import sql
 from app.storage.db import AsyncConn, open_db
+from app.storage.knowledge_chunks import (
+    replace_knowledge_chunks,
+    update_knowledge_chunk_title,
+)
 from app.storage.knowledge_cursor_page import fetch_visible_knowledge_cursor_page
 from app.storage.resource_base import ResourceStorage
 from app.storage.skill_storage import ensure_origin_label
@@ -474,6 +478,20 @@ class KnowledgeStorage(ResourceStorage):
             )
             return _coerce_active(dict(row)) if row else None
 
+    async def get_metadata(
+        self, item_id: str, owner_id: Optional[str] = None
+    ) -> Optional[Dict[str, Any]]:
+        """Lee permisos y estado sin cargar el contenido potencialmente enorme."""
+
+        async with open_db() as conn:
+            row = await conn.fetchone(
+                sql("queries/knowledge:metadata_by_id"),
+                (item_id,),
+            )
+        if row is not None and owner_id is not None and row["owner_id"] != owner_id:
+            return None
+        return _coerce_active(dict(row)) if row else None
+
     async def save(
         self,
         *,
@@ -499,23 +517,23 @@ class KnowledgeStorage(ResourceStorage):
         target = conn
         if target is None:
             async with open_db() as own_conn:
-                await self._save_text_row(
-                    own_conn,
-                    item_id,
-                    owner_id,
-                    type,
-                    title,
-                    source,
-                    content,
-                    normalized_labels,
-                    mime_type,
-                    size_bytes,
-                    normalized_checksum,
-                    extraction,
-                    existing["created_at"] if existing else now,
-                    now,
-                )
-                await own_conn.commit()
+                async with own_conn.transaction():
+                    await self._save_text_row(
+                        own_conn,
+                        item_id,
+                        owner_id,
+                        type,
+                        title,
+                        source,
+                        content,
+                        normalized_labels,
+                        mime_type,
+                        size_bytes,
+                        normalized_checksum,
+                        extraction,
+                        existing["created_at"] if existing else now,
+                        now,
+                    )
             await self.sync_labels(item_id, owner_id, normalized_labels)
         else:
             await self._save_text_row(
@@ -601,6 +619,12 @@ class KnowledgeStorage(ResourceStorage):
                 updated_at,
             ),
         )
+        await replace_knowledge_chunks(
+            conn,
+            knowledge_id=item_id,
+            title=title,
+            content=content,
+        )
 
     async def delete(self, item_id: str, owner_id: Optional[str]) -> bool:
         cond, params = _owner_filter(item_id, owner_id)
@@ -609,6 +633,9 @@ class KnowledgeStorage(ResourceStorage):
                 f"SELECT id FROM knowledge_items WHERE {cond}", params
             ):
                 return False
+            await conn.execute(
+                sql("queries/knowledge_chunks:delete_by_knowledge"), (item_id,)
+            )
             await conn.execute(f"DELETE FROM knowledge_items WHERE {cond}", params)
             await conn.commit()
         await self.clear_labels(item_id)
@@ -657,6 +684,7 @@ class KnowledgeStorage(ResourceStorage):
                     *params,
                 ),
             )
+            await update_knowledge_chunk_title(conn, knowledge_id=item_id, title=title)
             await conn.commit()
         await self.sync_labels(item_id, str(row[0]), labels)
         return True

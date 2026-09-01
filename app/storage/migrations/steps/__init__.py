@@ -56,6 +56,14 @@ from app.storage.migrations.steps.knowledge import (
     _remove_obsolete_knowledge_pack_items_pg,
     _remove_obsolete_knowledge_pack_items_sqlite,
 )
+from app.storage.migrations.steps.knowledge_search import (
+    _knowledge_search_pg,
+    _knowledge_search_sqlite,
+)
+from app.storage.migrations.steps.legal import (
+    _legal_acceptances_pg,
+    _legal_acceptances_sqlite,
+)
 from app.storage.migrations.steps.misc import (
     _app_logs_structured_audit_pg,
     _app_logs_structured_audit_sqlite,
@@ -171,6 +179,8 @@ MIGRATION_PAIRS: tuple[MigrationPair, ...] = (
     MigrationPair(43, "cursor_catalogs", _cursor_catalogs_sqlite, _cursor_catalogs_pg),
     MigrationPair(44, "cursor_completion_indexes", _cursor_completion_indexes, _cursor_completion_indexes),
     MigrationPair(45, "agent_connection_column", _agent_connection_column_sqlite, _agent_connection_column_pg),
+    MigrationPair(46, "legal_acceptances", _legal_acceptances_sqlite, _legal_acceptances_pg),
+    MigrationPair(47, "knowledge_search", _knowledge_search_sqlite, _knowledge_search_pg),
 )
 
 __all__ = ["MIGRATION_PAIRS"]

@@ -294,7 +294,11 @@ def create_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
         # Las dos cabeceras cursor del contrato de Chat, visibles en Flutter Web.
-        expose_headers=PAGINATION_HEADERS,
+        expose_headers=[
+            *PAGINATION_HEADERS,
+            "X-IAgentsHub-Export-Complete",
+            "X-IAgentsHub-Export-Warning-Count",
+        ],
     )
 
     @app.exception_handler(ValueError)

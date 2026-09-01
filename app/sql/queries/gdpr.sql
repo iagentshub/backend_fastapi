@@ -43,6 +43,11 @@ WHERE owner_id = ?;
 DELETE FROM knowledge_items
 WHERE owner_id = ?;
 
+-- name: delete_knowledge_chunks
+DELETE FROM knowledge_chunks
+WHERE knowledge_id IN (
+SELECT id FROM knowledge_items WHERE owner_id = ?);
+
 -- name: delete_knowledge_packs
 DELETE FROM knowledge_packs
 WHERE owner_id = ?;
@@ -197,6 +202,10 @@ WHERE username = ?;
 
 -- name: delete_sessions
 DELETE FROM sessions
+WHERE user_id = ?;
+
+-- name: delete_legal_acceptances
+DELETE FROM legal_acceptances
 WHERE user_id = ?;
 
 -- name: delete_user
