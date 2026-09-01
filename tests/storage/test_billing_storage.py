@@ -1,9 +1,13 @@
 """Tests de BillingStorage — suscripciones e idempotencia de webhooks."""
 from __future__ import annotations
 
+import asyncio
+
 import pytest
 
+from app.sql import sql
 from app.storage.billing import BillingStorage
+from app.storage.db import open_db
 
 
 @pytest.fixture()
@@ -72,6 +76,49 @@ async def test_set_cancel_at_period_end(storage):
     await storage.set_cancel_at_period_end("sub_1", True)
     row = await storage.get_by_stripe_subscription_id("sub_1")
     assert row["cancel_at_period_end"] == 1
+
+
+async def test_assign_license_serializa_la_ultima_plaza(storage):
+    for username in ("alice", "bobby", "carol"):
+        async with open_db() as conn:
+            await conn.execute(
+                "INSERT INTO users "
+                "(id, username, email, role, created_at) VALUES (?, ?, ?, ?, ?)",
+                (
+                    username,
+                    username,
+                    f"{username}@example.com",
+                    "standard",
+                    "2026-09-01T00:00:00+00:00",
+                ),
+            )
+            await conn.commit()
+
+    subscription = await storage.upsert(**_sub_kwargs(seats=1))
+
+    results = await asyncio.gather(
+        storage.assign_license(
+            subscription_id=subscription["id"],
+            target_username="bobby",
+            assigned_by="alice",
+        ),
+        storage.assign_license(
+            subscription_id=subscription["id"],
+            target_username="carol",
+            assigned_by="alice",
+        ),
+        return_exceptions=True,
+    )
+
+    assert sum(isinstance(result, dict) for result in results) == 1
+    failures = [result for result in results if isinstance(result, ValueError)]
+    assert len(failures) == 1
+    assert str(failures[0]) == "no_seats_available"
+    async with open_db() as conn:
+        assert await conn.fetchval(
+            sql("queries/billing:count_active_assignments"),
+            (subscription["id"],),
+        ) == 1
 
 
 async def test_event_idempotency(storage):

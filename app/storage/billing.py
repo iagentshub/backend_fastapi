@@ -211,53 +211,67 @@ class BillingStorage:
         assigned_by: str,
         allow_existing: bool = False,
     ) -> Dict[str, Any]:
-        subscription = await self.get_active_by_id(subscription_id)
-        if not subscription:
-            raise ValueError("subscription_not_active")
-
         now = _now()
         async with open_db() as conn:
-            if not await conn.fetchone(
-                sql("queries/billing:user_exists"), (target_username,)
-            ):
-                raise ValueError("user_not_found")
-
-            existing = await conn.fetchone(
-                sql("queries/billing:active_assignment_for_user"),
-                (target_username,),
-            )
-            if existing:
-                if allow_existing and existing["subscription_id"] == subscription_id:
-                    return dict(existing)
-                raise ValueError("license_already_assigned")
-
-            used = int(
-                await conn.fetchval(
-                    sql("queries/billing:count_active_assignments"),
+            # La capacidad se decide y consume bajo el mismo lock. SQLite
+            # reserva al escritor antes de leer; PostgreSQL serializa por la
+            # fila de la suscripción para permitir paralelismo entre cuentas.
+            async with conn.transaction(immediate=True):
+                subscription = await conn.fetchone(
+                    sql(
+                        "queries/billing:get_by_id_for_update"
+                        if IS_PG
+                        else "queries/billing:get_by_id"
+                    ),
                     (subscription_id,),
                 )
-                or 0
-            )
-            if used >= int(subscription["seats"] or 0):
-                raise ValueError("no_seats_available")
+                if (
+                    not subscription
+                    or subscription["status"] in _ACTIVE_STATUSES_EXCLUDED
+                ):
+                    raise ValueError("subscription_not_active")
 
-            if IS_PG:
+                if not await conn.fetchone(
+                    sql("queries/billing:user_exists"), (target_username,)
+                ):
+                    raise ValueError("user_not_found")
+
+                existing = await conn.fetchone(
+                    sql("queries/billing:active_assignment_for_user"),
+                    (target_username,),
+                )
+                if existing:
+                    if (
+                        allow_existing
+                        and existing["subscription_id"] == subscription_id
+                    ):
+                        return dict(existing)
+                    raise ValueError("license_already_assigned")
+
+                used = int(
+                    await conn.fetchval(
+                        sql("queries/billing:count_active_assignments"),
+                        (subscription_id,),
+                    )
+                    or 0
+                )
+                if used >= int(subscription["seats"] or 0):
+                    raise ValueError("no_seats_available")
+
                 await conn.execute(
-                    sql("queries/billing:assign_license_pg"),
+                    sql(
+                        "queries/billing:assign_license_pg"
+                        if IS_PG
+                        else "queries/billing:assign_license_sqlite"
+                    ),
                     (subscription_id, target_username, assigned_by, now),
                 )
-            else:
-                await conn.execute(
-                    sql("queries/billing:assign_license_sqlite"),
-                    (subscription_id, target_username, assigned_by, now),
-                )
-            await conn.commit()
 
-            row = await conn.fetchone(
-                sql("queries/billing:get_assignment"),
-                (subscription_id, target_username),
-            )
-            return dict(row)
+                row = await conn.fetchone(
+                    sql("queries/billing:get_assignment"),
+                    (subscription_id, target_username),
+                )
+                return dict(row)
 
     async def revoke_license(
         self, *, subscription_id: str, target_username: str
