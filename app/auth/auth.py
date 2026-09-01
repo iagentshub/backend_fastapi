@@ -87,6 +87,7 @@ async def register_user_email(
     phone: Optional[str] = None,
     display_name: Optional[str] = None,
     verify_email: bool = False,
+    legal_acceptances: Optional[list[dict[str, str]]] = None,
 ) -> tuple[str, Optional[str]]:
     """Register a user with separate public username and private account email.
 
@@ -118,10 +119,11 @@ async def register_user_email(
                 token = secrets.token_urlsafe(32)
                 token_hash = _hash_token(token)
                 is_verified = 0
+            user_id = generate_id(32)
             await conn.execute(
                 sql("queries/auth:insert_user_full"),
                 (
-                    generate_id(32),
+                    user_id,
                     username,
                     email,
                     password_hash,
@@ -137,6 +139,15 @@ async def register_user_email(
                     now,
                 ),
             )
+            if legal_acceptances:
+                from app.storage.legal_acceptances import LegalAcceptanceStorage
+
+                await LegalAcceptanceStorage().record(
+                    user_id,
+                    legal_acceptances,
+                    source="registration",
+                    conn=conn,
+                )
     flog.ok(f"Nuevo usuario: {username}", username=username)
     return username, token
 

@@ -17,7 +17,7 @@ from __future__ import annotations
 import time
 from typing import Optional
 
-from fastapi import Cookie, Header
+from fastapi import Cookie, Header, Request
 
 from app.auth.roles import ROLE_RANK, rank_of
 from app.auth.user_lookup import get_user_by_identity
@@ -257,11 +257,16 @@ def require_role(minimum: str):
     async def dependency(
         ga_token: Optional[str] = Cookie(default=None),
         authorization: Optional[str] = Header(default=None),
+        request: Request = None,  # type: ignore[assignment]
     ) -> str:
         user_id, _personal, role, _gid = await _resolve_principal(
             ga_token, authorization
         )
         _assert_min_role(role, minimum)
+        from app.services.legal_consent import assert_legal_access
+
+        if request is not None:
+            await assert_legal_access(user_id, role, request.url.path)
         return user_id
 
     return dependency
@@ -280,11 +285,16 @@ def require_group_role(minimum: str):
         ga_token: Optional[str] = Cookie(default=None),
         authorization: Optional[str] = Header(default=None),
         x_iagents_group: Optional[str] = Header(default=None),
+        request: Request = None,  # type: ignore[assignment]
     ) -> GroupContext:
         user_id, personal_id, role, gid = await _resolve_principal(
             ga_token, authorization
         )
         _assert_min_role(role, minimum)
+        from app.services.legal_consent import assert_legal_access
+
+        if request is not None:
+            await assert_legal_access(user_id, role, request.url.path)
         return await _resolve_group(user_id, personal_id, gid, x_iagents_group)
 
     return dependency

@@ -177,6 +177,12 @@ FROM subscriptions
 WHERE username = ?
 ORDER BY created_at DESC;
 
+-- name: legal_acceptances
+SELECT document_type, version, locale, content_sha256, document_url, accepted_at, source
+FROM legal_acceptances
+WHERE user_id = ?
+ORDER BY accepted_at ASC;
+
 -- Licencias recibidas por el usuario. Las asignaciones de una suscripción que
 -- posee aparecen además como parte de su metadato de facturación.
 -- name: subscription_license_assignments

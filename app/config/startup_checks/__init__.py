@@ -26,7 +26,6 @@ Ningún check devuelve valores, solo nombres de variable: el informe se expone
 en el panel de admin.
 """
 
-
 from __future__ import annotations
 
 # Los módulos se importan enteros, no sus símbolos: `DATA_DIR` y compañía se
@@ -68,6 +67,7 @@ from app.config.startup_checks.checks import (
     _check_smtp,
     _check_trusted_proxies,
 )
+from app.config.startup_checks.legal import _check_legal_contract
 
 __all__ = [
     "ConfigCheck",
@@ -95,6 +95,7 @@ def run_checks() -> list[ConfigCheck]:
         _check_billing_tax(settings),
         _check_selfhosted_prices(settings),
         _check_registration_mode(settings),
+        _check_legal_contract(settings),
         _check_csrf(),
         _check_github_oauth(),
         _check_trusted_proxies(),
@@ -104,6 +105,7 @@ def run_checks() -> list[ConfigCheck]:
         _check_body_limit(settings),
         _check_maintenance_intervals(),
     ]
+
 
 def report() -> dict:
     """Informe serializable — lo consume el panel de admin. Sin valores."""
@@ -115,6 +117,7 @@ def report() -> dict:
         "warnings": sum(1 for c in checks if c.severity == "warning"),
         "checks": [c.as_dict() for c in checks],
     }
+
 
 def log_startup_report(checks: list[ConfigCheck] | None = None) -> list[ConfigCheck]:
     """Escribe en el log qué queda desactivado y por qué variable.
@@ -138,20 +141,25 @@ def log_startup_report(checks: list[ConfigCheck] | None = None) -> list[ConfigCh
         else:
             flog.warning(linea)
 
-    errores = sum(1 for c in degraded if c.severity == "error")
-    if errores and not strict_mode():
+    errores_no_bloqueantes = sum(
+        1 for c in degraded if c.severity == "error" and c.key != "legal_contract"
+    )
+    if errores_no_bloqueantes and not strict_mode():
         flog.warning(
-            f"[config] {errores} problema(s) de configuración no impiden el "
+            f"[config] {errores_no_bloqueantes} problema(s) de configuración no impiden el "
             f"arranque. Define {_STRICT_ENV}=true en producción para que sí lo hagan."
         )
     return checks
 
+
 def assert_config_ok(checks: list[ConfigCheck] | None = None) -> None:
-    """Aborta el arranque si hay errores y el modo estricto está activo."""
-    if not strict_mode():
-        return
+    """Aborta por errores estrictos o por un contrato legal exigido inválido."""
     checks = run_checks() if checks is None else checks
-    errores = [c for c in checks if c.severity == "error"]
+    errores = [
+        c
+        for c in checks
+        if c.severity == "error" and (strict_mode() or c.key == "legal_contract")
+    ]
     if not errores:
         return
     detalle = "\n".join(
@@ -159,6 +167,6 @@ def assert_config_ok(checks: list[ConfigCheck] | None = None) -> None:
         for c in errores
     )
     raise ConfigError(
-        f"{_STRICT_ENV} está activo y la configuración tiene "
+        "La configuración tiene errores que impiden un arranque seguro: "
         f"{len(errores)} problema(s):\n{detalle}"
     )

@@ -31,6 +31,7 @@ from app.api.routes.auth.dependencies import (
 )
 
 from . import gdpr as _gdpr
+from . import legal as _legal
 from . import oauth_device as _oauth_device
 from . import passwords as _passwords
 from . import pat_tokens as _pat_tokens
@@ -44,6 +45,7 @@ router.include_router(_passwords.router)
 router.include_router(_profile.router)
 router.include_router(_oauth_device.router)
 router.include_router(_gdpr.router)
+router.include_router(_legal.router)
 router.include_router(_pat_tokens.router)
 router.include_router(_vscode_oauth.router)
 

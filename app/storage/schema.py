@@ -79,6 +79,7 @@ TABLAS: tuple[str, ...] = (
     "notifications",
     "push_subscriptions",
     "user_avatars",
+    "legal_acceptances",
     "user_follows",
     "resource_stars",
     "resource_social",

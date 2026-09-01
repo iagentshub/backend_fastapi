@@ -71,6 +71,14 @@ _PLATFORM_DEFAULTS: dict = {
     # splash se cierre mostrando la marca (B), no la forma de partida (A).
     "splash_cycles": 1,
     "splash_end_on_logo": True,
+    # El autoalojamiento no exige aceptar documentos del servicio gestionado.
+    # Cloud lo activa solo después de publicar versiones y hashes definitivos.
+    "legal": {
+        "required": False,
+        "ready": False,
+        "accept_url": "/app/legal-acceptance",
+        "documents": {},
+    },
 }
 
 _VALID_REGISTRATION = REGISTRATION_MODES

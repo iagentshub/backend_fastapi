@@ -212,6 +212,22 @@ def test_sin_modo_estricto_los_errores_no_abortan(settings, monkeypatch):
     checks.assert_config_ok()  # no lanza
 
 
+def test_contrato_legal_exigido_invalido_aborta_incluso_sin_modo_estricto(
+    settings, monkeypatch
+):
+    settings(
+        legal={
+            "required": True,
+            "ready": False,
+            "documents": {},
+        }
+    )
+    monkeypatch.delenv(checks._STRICT_ENV, raising=False)
+
+    with pytest.raises(checks.ConfigError, match="Consentimiento legal"):
+        checks.assert_config_ok()
+
+
 def test_con_modo_estricto_los_errores_abortan(settings, monkeypatch):
     settings(email_verify=True)
     monkeypatch.setattr(session_cfg, "SMTP_HOST", "")

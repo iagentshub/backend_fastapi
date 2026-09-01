@@ -33,6 +33,7 @@ _RESOURCE_FILES = (
     ("sessions.json", "queries/gdpr_export:sessions"),
     ("agent_preferences.json", "queries/gdpr_export:agent_preferences"),
     ("personal_access_tokens.json", "queries/gdpr_export:personal_access_tokens"),
+    ("legal_acceptances.json", "queries/gdpr_export:legal_acceptances"),
     ("subscriptions.json", "queries/gdpr_export:subscriptions"),
     ("workflow_runs.json", "queries/gdpr_export:workflow_runs"),
     ("workflow_run_events.json", "queries/gdpr_export:workflow_run_events"),

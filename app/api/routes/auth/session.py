@@ -38,7 +38,13 @@ from app.config.session import (
 from app.errors import APIError
 from app.middleware.locale import get_locale
 from app.middleware.ratelimit import RateLimiter
+from app.models.legal import LegalAcceptancePayload
 from app.services.email import send_verification_email
+from app.services.legal_consent import (
+    legal_contract,
+    public_legal_contract,
+    validate_acceptance,
+)
 from app.services.platform_settings import (
     email_verify_enabled,
     registration_mode,
@@ -69,6 +75,7 @@ class RegisterBody(BaseModel):
     gender: str | None = None
     country: str | None = None
     phone: str | None = None
+    legal_acceptance: LegalAcceptancePayload | None = None
 
 
 class LoginBody(BaseModel):
@@ -129,6 +136,17 @@ async def register(
     gender = (body.gender or "").strip() or None
     country = (body.country or "").strip() or None
     phone = (body.phone or "").strip() or None
+    contract = legal_contract()
+    legal_documents = None
+    if contract["required"] and body.legal_acceptance is None:
+        raise APIError(
+            428,
+            "legal_acceptance_required",
+            "Debes aceptar la versión vigente de los términos y la privacidad.",
+            extra={"legal": public_legal_contract()},
+        )
+    if body.legal_acceptance is not None:
+        legal_documents = validate_acceptance(body.legal_acceptance)
 
     if not is_valid_username(username):
         raise APIError(
@@ -173,6 +191,7 @@ async def register(
             country=country,
             phone=phone,
             verify_email=verificar,
+            legal_acceptances=legal_documents,
         )
     except ValueError as exc:
         resource = "username" if "usuario" in str(exc).lower() else "email"

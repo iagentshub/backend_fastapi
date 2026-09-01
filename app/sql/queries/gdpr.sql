@@ -199,6 +199,10 @@ WHERE username = ?;
 DELETE FROM sessions
 WHERE user_id = ?;
 
+-- name: delete_legal_acceptances
+DELETE FROM legal_acceptances
+WHERE user_id = ?;
+
 -- name: delete_user
 DELETE FROM users
 WHERE id = ?;

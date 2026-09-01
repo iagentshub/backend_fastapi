@@ -92,9 +92,38 @@ async def test_export_contiene_ficheros_requeridos(patch_gdpr_db):
                      "agents.json", "skills.json", "prompts.json", "tools.json",
                      "workflows.json", "knowledge_packs.json", "memory.json",
                      "stars.json", "follows.json", "personal_access_tokens.json",
+                     "legal_acceptances.json",
                      "subscriptions.json", "subscription_license_assignments.json",
                      "workflow_runs.json", "workflow_run_events.json"):
         assert expected in names, f"Falta {expected} en el ZIP"
+
+
+async def test_export_incluye_aceptaciones_legales_demostrables(patch_gdpr_db):
+    from app.storage.legal_acceptances import LegalAcceptanceStorage
+
+    await _make_user("exp_legal")
+    user_id = await _user_id("exp_legal")
+    documents = [
+        {
+            "document_type": document_type,
+            "version": "2026-09-01",
+            "locale": "es",
+            "content_sha256": digest * 64,
+            "document_url": f"/legal/{document_type}/es/2026-09-01",
+        }
+        for document_type, digest in (("terms", "a"), ("privacy", "b"))
+    ]
+    await LegalAcceptanceStorage().record(
+        user_id, documents, source="registration"
+    )
+
+    buf = await export_user_data("exp_legal")
+    exported = json.loads(_zip_read(buf, "legal_acceptances.json"))
+
+    assert len(exported) == 2
+    assert {row["document_type"] for row in exported} == {"terms", "privacy"}
+    assert {row["source"] for row in exported} == {"registration"}
+    assert all(row["accepted_at"] for row in exported)
 
 
 # ── profile.json ─────────────────────────────────────────────────────────────

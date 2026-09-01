@@ -313,6 +313,7 @@ def _check_registration_mode(settings: dict) -> ConfigCheck:
         variables=("GAIA_REGISTRATION",),
     )
 
+
 _CSRF_VARS = ("GAIA_CSRF_ORIGIN_CHECK", "GAIA_CSRF_TOKEN_CHECK")
 
 def _check_csrf() -> ConfigCheck:
