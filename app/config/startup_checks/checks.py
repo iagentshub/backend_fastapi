@@ -248,19 +248,19 @@ def _check_billing_tax(settings: dict) -> ConfigCheck:
         detail=(
             "Activo. Exige en el panel de Stripe: Tax habilitado, las "
             "obligaciones fiscales («registrations») declaradas, un tax_code en "
-            "el producto de asientos y tax_behavior en el precio del add-on "
-            "self-hosted. Si falta algo, el alta falla al crear la suscripción."
+            "el producto de asientos y tax_behavior en el precio del add-on de "
+            "soporte. Si falta algo, el alta falla al crear la suscripción."
         ),
         variables=variables,
     )
 
 
-def _check_selfhosted_prices(settings: dict) -> ConfigCheck:
-    variables = ("STRIPE_PRICE_SELFHOSTED_MONTHLY", "STRIPE_PRICE_SELFHOSTED_ANNUAL")
+def _check_sla_support_price(settings: dict) -> ConfigCheck:
+    variables = ("STRIPE_PRICE_SLA_SUPPORT",)
     if not bool(settings.get("billing_enabled", False)):
         return ConfigCheck(
-            key="billing_selfhosted",
-            feature="Add-on self-hosted",
+            key="billing_sla_support",
+            feature="Add-on de soporte con SLA",
             severity="ok",
             detail="No aplica: la facturación está desactivada.",
             variables=variables,
@@ -268,20 +268,20 @@ def _check_selfhosted_prices(settings: dict) -> ConfigCheck:
     missing = tuple(name for name in variables if not getattr(_billing, name, ""))
     if missing:
         return ConfigCheck(
-            key="billing_selfhosted",
-            feature="Add-on self-hosted",
+            key="billing_sla_support",
+            feature="Add-on de soporte con SLA",
             severity="warning",
             detail=(
-                "Sin identificadores de precio, el add-on self-hosted no se "
-                "puede contratar aunque aparezca en la página de planes."
+                "Sin identificador de precio, el soporte con SLA no se puede "
+                "contratar aunque aparezca en la página de planes."
             ),
             variables=missing,
         )
     return ConfigCheck(
-        key="billing_selfhosted",
-        feature="Add-on self-hosted",
+        key="billing_sla_support",
+        feature="Add-on de soporte con SLA",
         severity="ok",
-        detail="Precios mensual y anual configurados.",
+        detail="Precio anual configurado.",
         variables=variables,
     )
 

@@ -5,6 +5,11 @@ CREATE TABLE IF NOT EXISTS subscriptions (
     stripe_subscription_id TEXT NOT NULL UNIQUE,
     tier                   TEXT NOT NULL,
     seats                  INTEGER NOT NULL DEFAULT 1,
+    -- Guarda el add-on de soporte con SLA. Se llama `self_hosted` porque así
+    -- se llamaba cuando el producto era el permiso de despliegue. El nombre se
+    -- conserva para no migrar una columna viva, pero lo que vale es
+    -- `sla_support` en `billing_pricing`. No es un flag de despliegue: una
+    -- instalación self-hosted sin contrato de soporte lo tiene a 0.
     self_hosted            @BOOL@ NOT NULL DEFAULT 0,
     interval               TEXT NOT NULL,
     amount_cents           INTEGER NOT NULL DEFAULT 0,

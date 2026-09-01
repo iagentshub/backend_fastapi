@@ -14,9 +14,16 @@ STRIPE_API_VERSION: str = os.getenv("STRIPE_API_VERSION", "2024-06-20")
 # Producto usado para precios inline por asiento (developer/business)
 STRIPE_PRODUCT_SEATS: str = os.getenv("STRIPE_PRODUCT_SEATS", "")
 
-# Precio fijo del add-on self-hosted (mensual/anual)
-STRIPE_PRICE_SELFHOSTED_MONTHLY: str = os.getenv("STRIPE_PRICE_SELFHOSTED_MONTHLY", "")
-STRIPE_PRICE_SELFHOSTED_ANNUAL: str = os.getenv("STRIPE_PRICE_SELFHOSTED_ANNUAL", "")
+# Precio fijo del add-on de soporte con SLA, que solo se contrata a un año.
+#
+# Se llamaba STRIPE_PRICE_SELFHOSTED_ANNUAL, y se sigue leyendo: renombrar una
+# variable de entorno deja sin add-on a toda instalación ya desplegada, y el
+# fallo no se ve —el alta funciona, solo que sin la línea de soporte—. La
+# mensual desaparece sin sustituta: la página anuncia contrato anual y el alta
+# la aceptaba igualmente.
+STRIPE_PRICE_SLA_SUPPORT: str = os.getenv("STRIPE_PRICE_SLA_SUPPORT", "") or os.getenv(
+    "STRIPE_PRICE_SELFHOSTED_ANNUAL", ""
+)
 
 # ── Impuestos ─────────────────────────────────────────────────────────────────
 # Hasta ahora se cobraba el importe neto y nadie repercutía IVA: vendiendo

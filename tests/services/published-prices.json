@@ -18,23 +18,26 @@
     "",
     "Los anclajes están comprobados contra lo que anuncia la página pública:",
     "€9/mes y €90/año por un asiento, €4,50 de suelo a 100 asientos, y el",
-    "add-on self-hosted a €400/mes y €4.000/año."
+    "soporte con SLA a €4.000/año.",
+    "",
+    "El add-on se llamaba `self_hosted`, nombre que describe un permiso de",
+    "despliegue que la AGPL-3.0 ya concede gratis. Lo que se vende es el",
+    "soporte, y solo a un año: no hay caso mensual porque la página anuncia",
+    "«requiere contrato anual» y el alta lo aceptaba igualmente."
   ],
   "moneda": "eur",
   "casos": [
-    { "tier": "developer", "seats": 1,   "interval": "month", "self_hosted": false, "price_per_seat_cents": 900, "amount_cents": 900 },
-    { "tier": "developer", "seats": 1,   "interval": "year",  "self_hosted": false, "price_per_seat_cents": 900, "amount_cents": 9000 },
-    { "tier": "business",  "seats": 2,   "interval": "month", "self_hosted": false, "price_per_seat_cents": 747, "amount_cents": 1494 },
-    { "tier": "business",  "seats": 10,  "interval": "month", "self_hosted": false, "price_per_seat_cents": 723, "amount_cents": 7227 },
-    { "tier": "business",  "seats": 10,  "interval": "year",  "self_hosted": false, "price_per_seat_cents": 723, "amount_cents": 72273 },
-    { "tier": "business",  "seats": 50,  "interval": "month", "self_hosted": false, "price_per_seat_cents": 602, "amount_cents": 30076 },
-    { "tier": "business",  "seats": 100, "interval": "month", "self_hosted": false, "price_per_seat_cents": 450, "amount_cents": 45000 },
-    { "tier": "business",  "seats": 100, "interval": "year",  "self_hosted": false, "price_per_seat_cents": 450, "amount_cents": 450000 },
-    { "tier": "business",  "seats": 10,  "interval": "month", "self_hosted": true,  "price_per_seat_cents": 723, "amount_cents": 47227 },
-    { "tier": "business",  "seats": 10,  "interval": "year",  "self_hosted": true,  "price_per_seat_cents": 723, "amount_cents": 472273 }
+    { "tier": "developer", "seats": 1,   "interval": "month", "sla_support": false, "price_per_seat_cents": 900, "amount_cents": 900 },
+    { "tier": "developer", "seats": 1,   "interval": "year",  "sla_support": false, "price_per_seat_cents": 900, "amount_cents": 9000 },
+    { "tier": "business",  "seats": 2,   "interval": "month", "sla_support": false, "price_per_seat_cents": 747, "amount_cents": 1494 },
+    { "tier": "business",  "seats": 10,  "interval": "month", "sla_support": false, "price_per_seat_cents": 723, "amount_cents": 7227 },
+    { "tier": "business",  "seats": 10,  "interval": "year",  "sla_support": false, "price_per_seat_cents": 723, "amount_cents": 72273 },
+    { "tier": "business",  "seats": 50,  "interval": "month", "sla_support": false, "price_per_seat_cents": 602, "amount_cents": 30076 },
+    { "tier": "business",  "seats": 100, "interval": "month", "sla_support": false, "price_per_seat_cents": 450, "amount_cents": 45000 },
+    { "tier": "business",  "seats": 100, "interval": "year",  "sla_support": false, "price_per_seat_cents": 450, "amount_cents": 450000 },
+    { "tier": "business",  "seats": 10,  "interval": "year",  "sla_support": true,  "price_per_seat_cents": 723, "amount_cents": 472273 }
   ],
-  "add_on_self_hosted_cents": {
-    "month": 40000,
+  "add_on_sla_support_cents": {
     "year": 400000
   }
 }
