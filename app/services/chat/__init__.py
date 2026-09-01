@@ -52,6 +52,10 @@ from app.services.chat.providers import _detalle_publico
 from app.services.llm_executor import LLMCapacityError, LLMLease
 from app.storage.crypto import UNREADABLE_FLAG
 from app.storage.db import DB_ERRORS
+from app.storage.knowledge_chunks import (
+    fallback_knowledge_chunks,
+    search_knowledge_chunks,
+)
 from app.utils import flog
 
 __all__ = ["stream_chat", "ChatStreamState", "UnsafeProviderURL"]
@@ -73,6 +77,7 @@ async def stream_chat(
     tool_storage: Optional[_ToolStorage] = None,
     attached_knowledge: Optional[List[Dict[str, Any]]] = None,
     resolved_tools: Optional[List[Dict[str, Any]]] = None,
+    resolved_knowledge_ids: Optional[List[str]] = None,
     llm_lease: LLMLease | None = None,
     stream_state: ChatStreamState | None = None,
 ) -> AsyncGenerator[str, None]:
@@ -214,53 +219,66 @@ async def stream_chat(
                 ),
             )
 
-    # Knowledge injection (URLs + documents attached to the agent)
-    covered_knowledge_ids: set[str] = set()
-    if knowledge_storage is not None and knowledge_pack_storage is not None:
-        for pack_id in agent.knowledge_packs:
-            pack = await knowledge_pack_storage.get(pack_id)
-            if not pack or not pack.get("is_active", True):
-                continue
-            add_context(
-                "knowledge_pack",
-                f"\n\n## Pack de conocimiento: {pack.get('name', pack_id)}",
-            )
-            for member in pack.get("items") or []:
-                knowledge_id = str(member.get("id") or "")
-                item = await knowledge_storage.get(knowledge_id)
-                if item and item.get("is_active", True) and item.get("content"):
-                    covered_knowledge_ids.add(knowledge_id)
-                    add_context(
-                        "knowledge_pack",
-                        f"\n\n### {member.get('relative_path', item.get('title', knowledge_id))}\n"
-                        f"{item['content']}",
-                    )
-    if knowledge_storage is not None and agent.knowledge:
-        for kid in agent.knowledge:
-            if kid in covered_knowledge_ids:
-                continue
-            item = await knowledge_storage.get(kid)
-            if item and item.get("is_active", True) and item.get("content"):
-                add_context(
-                    "knowledge",
-                    (
-                        f"\n\n## Conocimiento: {item.get('title', kid)}\n{item['content']}"
-                    ),
-                )
-
     # Knowledge adjuntado puntualmente a este mensaje desde el chat (vía "@" en
-    # el composer) — ya viene resuelto y autorizado por el llamador (la ruta
-    # valida ownership/permiso de grupo antes de construir esta lista).
+    # el composer). Viene resuelto y autorizado por la ruta y conserva el
+    # documento completo; entra antes que la recuperación para que tenga
+    # prioridad si el presupuesto global obliga a recortar contexto.
+    attached_ids: set[str] = set()
     if attached_knowledge:
         for item in attached_knowledge:
             content = item.get("content")
             if item.get("is_active", True) and content:
+                attached_ids.add(str(item.get("id") or ""))
                 add_context(
                     "attached_knowledge",
                     (
                         f"\n\n## Conocimiento adjunto: {item.get('title', item.get('id', ''))}\n{content}"
                     ),
                 )
+
+    # Knowledge vinculado al agente. Los IDs directos y los miembros de Packs
+    # forman la frontera autorizada: la consulta FTS nunca puede salir de ese
+    # conjunto, y el JOIN descarta además documentos desactivados.
+    linked_knowledge_ids: list[str] = []
+    if resolved_knowledge_ids is not None:
+        linked_knowledge_ids.extend(
+            str(value)
+            for value in resolved_knowledge_ids
+            if value and str(value) not in attached_ids
+        )
+    elif knowledge_storage is not None and knowledge_pack_storage is not None:
+        for pack_id in agent.knowledge_packs:
+            pack = await knowledge_pack_storage.get(pack_id)
+            if not pack or not pack.get("is_active", True):
+                continue
+            for member in pack.get("items") or []:
+                knowledge_id = str(member.get("id") or "")
+                if knowledge_id and knowledge_id not in attached_ids:
+                    linked_knowledge_ids.append(knowledge_id)
+    if resolved_knowledge_ids is None and knowledge_storage is not None:
+        linked_knowledge_ids.extend(
+            str(kid) for kid in agent.knowledge if kid and str(kid) not in attached_ids
+        )
+    linked_knowledge_ids = list(dict.fromkeys(linked_knowledge_ids))
+
+    retrieval_fallback_sources: list[str] = []
+    if linked_knowledge_ids:
+        query = str(history[-1].get("content", "")) if history else ""
+        retrieved = await search_knowledge_chunks(query, linked_knowledge_ids)
+        if not retrieved:
+            retrieved = await fallback_knowledge_chunks(linked_knowledge_ids)
+            retrieval_fallback_sources = [
+                str(item["knowledge_id"]) for item in retrieved
+            ]
+        for item in retrieved:
+            add_context(
+                "knowledge_retrieval",
+                (
+                    f"\n\n## Conocimiento recuperado: {item.get('title', item['knowledge_id'])} "
+                    f"(fragmento {int(item.get('chunk_index') or 0) + 1})\n"
+                    f"{item['content']}"
+                ),
+            )
 
     # Memory injection
     if agent.use_memory and memory_storage is not None:
@@ -343,6 +361,19 @@ async def stream_chat(
                 _estimate_tokens(str(message.get("content", ""))) for message in history
             ),
             connection_id=str(conn.get("id") or ""),
+        )
+
+    if retrieval_fallback_sources:
+        yield _sse(
+            {
+                "type": "context_warning",
+                "code": "knowledge_retrieval_fallback",
+                "message": (
+                    "No hubo coincidencias relevantes; se usó el inicio de "
+                    "hasta cuatro documentos vinculados."
+                ),
+                "sources": retrieval_fallback_sources,
+            }
         )
 
     if truncated_sources or history_truncated:

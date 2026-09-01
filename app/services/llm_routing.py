@@ -179,6 +179,7 @@ async def stream_orchestrated_chat(
     tool_storage: Any = None,
     attached_knowledge: Optional[List[Dict[str, Any]]] = None,
     resolved_tools: Optional[List[Dict[str, Any]]] = None,
+    resolved_knowledge_ids: Optional[List[str]] = None,
     llm_lease: LLMLease | None = None,
     stream_state: ChatStreamState | None = None,
 ) -> AsyncGenerator[str, None]:
@@ -292,6 +293,7 @@ async def stream_orchestrated_chat(
                 tool_storage=tool_storage,
                 attached_knowledge=attached_knowledge,
                 resolved_tools=resolved_tools,
+                resolved_knowledge_ids=resolved_knowledge_ids,
                 llm_lease=llm_lease,
                 stream_state=stream_state,
             ):

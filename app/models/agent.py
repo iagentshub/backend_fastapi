@@ -134,6 +134,7 @@ class Agent(BaseResource):
     # ── Runtime-only (not persisted) ──────────────────────────────────────────
     resolved_skills: List[dict] = field(default_factory=list)
     resolved_tools: List[dict] = field(default_factory=list)
+    resolved_knowledge_ids: List[str] = field(default_factory=list)
 
     # ── Factory ───────────────────────────────────────────────────────────────
 
@@ -191,6 +192,11 @@ class Agent(BaseResource):
                 dict(tool)
                 for tool in (data.get("resolved_tools") or [])
                 if isinstance(tool, dict)
+            ],
+            resolved_knowledge_ids=[
+                str(value)
+                for value in (data.get("resolved_knowledge_ids") or [])
+                if value
             ],
             public_dependencies=(
                 [str(value) for value in data.get("public_dependencies", []) if value]

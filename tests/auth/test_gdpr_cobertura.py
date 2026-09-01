@@ -155,6 +155,9 @@ def test_la_exportación_entrega_los_mismos_recursos_que_borra_el_purgado():
             # Lease efímero de exclusión mutua: no es contenido portable y se
             # elimina al terminar la ejecución o a los cinco minutos sin latido.
             "resource_executions",
+            # Índice derivado de knowledge_items: el contenido ya se exporta
+            # completo en knowledge.json y se reconstruye al migrar.
+            "knowledge_chunks",
             "users",
     }
     faltan = _tablas_borradas() - exportadas - sin_exportar

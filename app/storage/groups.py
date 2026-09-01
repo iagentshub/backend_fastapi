@@ -148,6 +148,10 @@ class GroupStorage:
                     sql("queries/groups:delete_skills_by_owner"), (group_id,)
                 )
                 await conn.execute(
+                    sql("queries/groups:delete_knowledge_chunks_by_owner"),
+                    (group_id,),
+                )
+                await conn.execute(
                     sql("queries/groups:delete_knowledge_by_owner"), (group_id,)
                 )
                 await conn.execute(

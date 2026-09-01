@@ -140,6 +140,9 @@ async def purge_user_data(username: str) -> None:
                     sql("queries/gdpr:delete_memory_files"), (user_id,)
                 )
                 await conn.execute(
+                    sql("queries/gdpr:delete_knowledge_chunks"), (user_id,)
+                )
+                await conn.execute(
                     sql("queries/gdpr:delete_knowledge_items"), (user_id,)
                 )
                 await conn.execute(

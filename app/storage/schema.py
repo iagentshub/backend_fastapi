@@ -49,8 +49,26 @@ _DIALECTOS: dict[str, dict[str, str]] = {
         "SERIAL": "BIGSERIAL PRIMARY KEY",
         "FLOAT": "DOUBLE PRECISION",
         "NOW": "(to_char(NOW() AT TIME ZONE 'UTC', 'YYYY-MM-DD\"T\"HH24:MI:SS.MS\"Z\"'))",
+        "KNOWLEDGE_SEARCH_COLUMN": (
+            "search_vector TSVECTOR GENERATED ALWAYS AS "
+            "(to_tsvector('simple', coalesce(title, '') || ' ' || coalesce(content, ''))) STORED,"
+        ),
+        "KNOWLEDGE_SEARCH_INDEX": (
+            "CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_search "
+            "ON knowledge_chunks USING GIN(search_vector);"
+        ),
     },
 }
+
+_DIALECTOS["sqlite"].update(
+    {
+        "KNOWLEDGE_SEARCH_COLUMN": "search_vector TEXT NOT NULL DEFAULT '',",
+        "KNOWLEDGE_SEARCH_INDEX": (
+            "CREATE INDEX IF NOT EXISTS idx_knowledge_chunks_search "
+            "ON knowledge_chunks(search_vector);"
+        ),
+    }
+)
 
 # El orden importa: `messages` referencia `conversations`, `resource_source_links`
 # y los borradores de importación referencian `official_sources`, y
@@ -69,6 +87,7 @@ TABLAS: tuple[str, ...] = (
     "conversations",
     "messages",
     "knowledge_items",
+    "knowledge_chunks",
     "knowledge_packs",
     "official_sources",
     "resource_source_links",

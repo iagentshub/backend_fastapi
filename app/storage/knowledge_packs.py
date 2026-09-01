@@ -10,6 +10,7 @@ from app.services.resource_visibility import VisibilityFilter
 from app.sql import sql
 from app.storage import labels as label_index
 from app.storage.db import open_db
+from app.storage.knowledge_chunks import replace_knowledge_chunks
 from app.storage.knowledge_pack_page_query import (
     fetch_pack_cursor_page,
 )
@@ -261,6 +262,12 @@ class KnowledgePackStorage:
                             now,
                         ),
                     )
+                    await replace_knowledge_chunks(
+                        conn,
+                        knowledge_id=knowledge_id,
+                        title=item["relative_path"].rsplit("/", 1)[-1],
+                        content=content,
+                    )
         pack = await self.get(pack_id)
         if pack is None:  # pragma: no cover - la transacción acaba de insertarlo
             raise RuntimeError("No se pudo recuperar el pack creado")
@@ -325,6 +332,12 @@ class KnowledgePackStorage:
                             now,
                         ),
                     )
+                await replace_knowledge_chunks(
+                    conn,
+                    knowledge_id=knowledge_id,
+                    title=relative_path.rsplit("/", 1)[-1],
+                    content=content,
+                )
         await label_index.sync_labels(
             "knowledge", knowledge_id, owner_id, list(pack.get("labels") or [])
         )
@@ -374,6 +387,11 @@ class KnowledgePackStorage:
                         sql("queries/knowledge_packs:delete_shares_by_resource"),
                         (resource_type, resource_id),
                     )
+                for item_id in item_ids:
+                    await conn.execute(
+                        sql("queries/knowledge_chunks:delete_by_knowledge"),
+                        (item_id,),
+                    )
                 await conn.execute(
                     sql("queries/knowledge_packs:delete_pack_items"), (pack_id,)
                 )
@@ -419,6 +437,10 @@ class KnowledgePackStorage:
                             "AND resource_id=?",
                             (knowledge_id,),
                         )
+                    await conn.execute(
+                        sql("queries/knowledge_chunks:delete_by_knowledge"),
+                        (knowledge_id,),
+                    )
                     await conn.execute(
                         sql("queries/knowledge_packs:delete_item"), (knowledge_id,)
                     )
@@ -474,6 +496,12 @@ class KnowledgePackStorage:
                                 now,
                             ),
                         )
+                    await replace_knowledge_chunks(
+                        conn,
+                        knowledge_id=knowledge_id,
+                        title=relative_path.rsplit("/", 1)[-1],
+                        content=content,
+                    )
                 await conn.execute(
                     sql("queries/knowledge_packs:touch_pack_sync"),
                     (now, now, pack_id),

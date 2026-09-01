@@ -19,6 +19,7 @@ from app.models.request_bodies import AgentChatBody
 from app.services.agent_access import agent_access
 from app.services.agent_presentation import apply_agent_locale
 from app.services.chat import ChatStreamState, stream_chat
+from app.services.knowledge_access import resolve_accessible_knowledge_ids
 from app.services.llm_executor import try_acquire_llm_lease
 from app.services.llm_routing import stream_orchestrated_chat
 from app.services.tool_access import resolve_accessible_tools
@@ -219,6 +220,17 @@ async def chat(
         shares=_shares,
         groups=_groups,
     )
+    resolved_knowledge_ids = await resolve_accessible_knowledge_ids(
+        knowledge_ids=a.get("knowledge") or [],
+        pack_ids=a.get("knowledge_packs") or [],
+        requester=user,
+        requester_group=group_id,
+        is_admin=role == "admin",
+        knowledge=_knowledge,
+        packs=_knowledge_packs,
+        shares=_shares,
+        groups=_groups,
+    )
 
     execution_lease = await _executions.acquire(
         resource_type="agent",
@@ -279,6 +291,7 @@ async def chat(
                     tool_storage=_tools,
                     attached_knowledge=attached_knowledge,
                     resolved_tools=resolved_tools,
+                    resolved_knowledge_ids=resolved_knowledge_ids,
                     llm_lease=llm_lease,
                     stream_state=stream_state,
                 )
@@ -299,6 +312,7 @@ async def chat(
                     tool_storage=_tools,
                     attached_knowledge=attached_knowledge,
                     resolved_tools=resolved_tools,
+                    resolved_knowledge_ids=resolved_knowledge_ids,
                     llm_lease=llm_lease,
                     stream_state=stream_state,
                 )
