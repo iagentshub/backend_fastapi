@@ -18,8 +18,7 @@ from fastapi import APIRouter, HTTPException
 
 from app.config.billing import (
     STRIPE_API_VERSION,
-    STRIPE_PRICE_SELFHOSTED_ANNUAL,
-    STRIPE_PRICE_SELFHOSTED_MONTHLY,
+    STRIPE_PRICE_SLA_SUPPORT,
     STRIPE_SECRET_KEY,
 )
 from app.config.session import RATE_IP_FACTOR
@@ -56,10 +55,8 @@ _quote_limiter = RateLimiter(
     name="billing-quote",
 )
 
-_SELF_HOSTED_PRICE_IDS = {
-    "month": STRIPE_PRICE_SELFHOSTED_MONTHLY,
-    "year": STRIPE_PRICE_SELFHOSTED_ANNUAL,
-}
+# Uno solo, no un mapa por intervalo: el soporte con SLA se contrata a un año.
+SLA_SUPPORT_PRICE_ID = STRIPE_PRICE_SLA_SUPPORT
 
 def _safe_get(obj: Any, key: str, default: Any = None) -> Any:
     """dict-and-StripeObject-safe lookup — real Stripe SDK objects don't implement .get()."""

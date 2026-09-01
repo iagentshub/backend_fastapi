@@ -39,16 +39,34 @@ def test_compute_total_cents_developer_annual_matches_months_annual():
     assert annual == monthly * bp.MONTHS_ANNUAL
 
 
-def test_compute_total_cents_business_self_hosted_adds_flat_fee():
-    without_sh = compute_total_cents("business", 10, "month", False)["amount_cents"]
-    with_sh = compute_total_cents("business", 10, "month", True)["amount_cents"]
-    assert with_sh - without_sh == round(bp.SH_MONTHLY * 100)
+def test_el_soporte_con_sla_suma_la_cuota_anual():
+    sin_sla = compute_total_cents("business", 10, "year", False)["amount_cents"]
+    con_sla = compute_total_cents("business", 10, "year", True)["amount_cents"]
+    assert con_sla - sin_sla == round(bp.SLA_SUPPORT_ANNUAL * 100)
 
 
-def test_compute_total_cents_business_self_hosted_annual():
-    without_sh = compute_total_cents("business", 10, "year", False)["amount_cents"]
-    with_sh = compute_total_cents("business", 10, "year", True)["amount_cents"]
-    assert with_sh - without_sh == round(bp.SH_ANNUAL * 100)
+def test_el_soporte_con_sla_no_se_contrata_en_mensual():
+    # La página anuncia «requiere contrato anual — no disponible en modalidad
+    # mensual», y el alta lo aceptaba igual: 400 € al mes de un contrato que
+    # la web dice que no existe.
+    with pytest.raises(InvalidPlanError):
+        compute_total_cents("business", 10, "month", True)
+
+
+def test_una_suscripcion_mensual_ya_firmada_se_puede_recalcular():
+    # Mientras el add-on se aceptó en mensual pudo firmarse alguna. Aplicarle
+    # la regla nueva no la corrige: le rompe el cambio de asientos con un 400
+    # que nadie puede arreglar desde la interfaz.
+    totals = compute_total_cents("business", 10, "month", True, new_contract=False)
+    assert totals["amount_cents"] > 0
+
+
+def test_el_desglose_conserva_el_nombre_viejo_del_add_on():
+    # Flutter y React salen después que el backend, y sus bundles cacheados
+    # leen `self_hosted_amount_cents`. Retirarlo aquí les deja el total sin
+    # desglosar en la pantalla de pago.
+    totals = compute_total_cents("business", 10, "year", True)
+    assert totals["self_hosted_amount_cents"] == totals["sla_support_amount_cents"]
 
 
 def test_developer_requires_single_seat():
@@ -92,18 +110,18 @@ _RECORDATORIO = (
 )
 
 
-@pytest.mark.parametrize("caso", _TABLA["casos"], ids=lambda c: f"{c['tier']}-{c['seats']}-{c['interval']}-sh{int(c['self_hosted'])}")
+@pytest.mark.parametrize("caso", _TABLA["casos"], ids=lambda c: f"{c['tier']}-{c['seats']}-{c['interval']}-sla{int(c['sla_support'])}")
 def test_la_formula_reproduce_los_precios_publicados(caso):
     resultado = compute_total_cents(
-        caso["tier"], caso["seats"], caso["interval"], caso["self_hosted"]
+        caso["tier"], caso["seats"], caso["interval"], caso["sla_support"]
     )
     assert resultado["price_per_seat_cents"] == caso["price_per_seat_cents"], _RECORDATORIO
     assert resultado["amount_cents"] == caso["amount_cents"], _RECORDATORIO
 
 
-@pytest.mark.parametrize("interval,esperado", sorted(_TABLA["add_on_self_hosted_cents"].items()))
-def test_el_add_on_self_hosted_cuesta_lo_publicado(interval, esperado):
+@pytest.mark.parametrize("interval,esperado", sorted(_TABLA["add_on_sla_support_cents"].items()))
+def test_el_soporte_con_sla_cuesta_lo_publicado(interval, esperado):
     seats = 10
-    sin_sh = compute_total_cents("business", seats, interval, False)["amount_cents"]
-    con_sh = compute_total_cents("business", seats, interval, True)["amount_cents"]
-    assert con_sh - sin_sh == esperado, _RECORDATORIO
+    sin_sla = compute_total_cents("business", seats, interval, False)["amount_cents"]
+    con_sla = compute_total_cents("business", seats, interval, True)["amount_cents"]
+    assert con_sla - sin_sla == esperado, _RECORDATORIO

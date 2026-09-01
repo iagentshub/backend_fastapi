@@ -64,7 +64,7 @@ from app.config.startup_checks.checks import (
     _check_rate_limit_ip_ceiling,
     _check_registration_mode,
     _check_secure_cookies,
-    _check_selfhosted_prices,
+    _check_sla_support_price,
     _check_smtp,
     _check_trusted_proxies,
 )
@@ -93,7 +93,7 @@ def run_checks() -> list[ConfigCheck]:
         _check_email_verify(settings),
         _check_billing(settings),
         _check_billing_tax(settings),
-        _check_selfhosted_prices(settings),
+        _check_sla_support_price(settings),
         _check_registration_mode(settings),
         _check_csrf(),
         _check_github_oauth(),

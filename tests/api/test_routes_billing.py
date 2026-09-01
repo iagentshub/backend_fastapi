@@ -163,6 +163,26 @@ def test_quote_invalid_seats(client):
     assert r.status_code == 400
 
 
+def test_quote_soporte_sla_solo_anual(client):
+    base = {"tier": "business", "seats": 10}
+    anual = client.post("/api/billing/quote", json={**base, "interval": "year", "sla_support": True})
+    mensual = client.post("/api/billing/quote", json={**base, "interval": "month", "sla_support": True})
+    assert anual.status_code == 200
+    assert anual.json()["sla_support_amount_cents"] == 400_000
+    # La página anuncia contrato anual y esto lo aceptaba en mensual.
+    assert mensual.status_code == 400
+
+
+def test_quote_acepta_el_nombre_viejo_del_add_on(client):
+    # El backend sale antes que Flutter y React: un bundle cacheado sigue
+    # mandando `self_hosted` y tiene que cobrar exactamente lo mismo.
+    base = {"tier": "business", "seats": 10, "interval": "year"}
+    viejo = client.post("/api/billing/quote", json={**base, "self_hosted": True})
+    nuevo = client.post("/api/billing/quote", json={**base, "sla_support": True})
+    assert viejo.status_code == 200 and nuevo.status_code == 200
+    assert viejo.json()["amount_cents"] == nuevo.json()["amount_cents"]
+
+
 # ── /subscribe ──────────────────────────────────────────────────────────────
 
 def test_subscribe_requires_auth(client):
@@ -612,6 +632,35 @@ def test_webhook_real_signature_and_subscription_updated(client):
     state = client.get("/api/billing/subscription").json()
     assert state["tier"] == "developer"
     assert state["status"] == "active"
+
+
+def test_webhook_conserva_el_add_on_con_la_metadata_vieja(client):
+    # Una suscripción dada de alta antes del renombrado lleva `self_hosted` en
+    # su metadata, y sus eventos siguen llegando durante años —renovaciones,
+    # cambios de asientos, bajas—. Leer solo `sla_support` le quitaba el
+    # soporte contratado en la primera renovación, sin error ninguno.
+    _setup_user(client, "alice")
+    sub_obj = {
+        "id": "sub_legacy_sh",
+        "customer": "cus_legacy_sh",
+        "status": "active",
+        "cancel_at_period_end": False,
+        "current_period_end": 1893456000,
+        "metadata": {"username": "alice", "tier": "business", "seats": "10", "interval": "year", "self_hosted": "1"},
+        "items": {"data": [{"id": "si_1", "price": {"id": "price_x"}}]},
+    }
+    event = {"id": "evt_legacy_sh", "object": "event", "type": "customer.subscription.updated", "data": {"object": sub_obj}}
+    payload = json.dumps(event).encode()
+
+    with patch.object(billing_webhook, "STRIPE_WEBHOOK_SECRET", _WEBHOOK_SECRET):
+        r = client.post(
+            "/api/billing/webhook",
+            content=payload,
+            headers={"stripe-signature": _sign_payload(payload, _WEBHOOK_SECRET)},
+        )
+
+    assert r.status_code == 200, r.text
+    assert client.get("/api/billing/subscription").json()["self_hosted"] is True
 
 
 def test_webhook_duplicate_event_processed_once(client):

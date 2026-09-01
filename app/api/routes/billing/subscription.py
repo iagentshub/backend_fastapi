@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field
 
 from app.api.routes.auth import require_auth
 from app.api.routes.billing._shared import (
-    _SELF_HOSTED_PRICE_IDS,
+    SLA_SUPPORT_PRICE_ID,
     _billing,
     _extract_period_end,
     _free_state,
@@ -45,6 +45,11 @@ class PlanBody(BaseModel):
     tier: str = Field(default="", max_length=32)
     seats: int = Field(default=0, ge=0, le=10_000)
     interval: str = Field(default="", max_length=16)
+    # `self_hosted` es como se llamaba el add-on cuando el nombre describía
+    # un permiso de despliegue. Se sigue aceptando porque un bundle cacheado
+    # lo manda; el que vale es `sla_support`, y se puede retirar cuando los
+    # dos clientes hayan salido.
+    sla_support: bool | None = None
     self_hosted: bool = False
     # País de facturación (ISO 3166-1 alfa-2) y NIF-IVA. /quote los ignora
     # —calcula el importe sin impuestos, que no depende de quién pregunte— y
@@ -62,7 +67,8 @@ class CancelBody(BaseModel):
     immediate: bool = False
 
 def _parse_body_plan(body: PlanBody) -> tuple[str, int, str, bool]:
-    return body.tier, body.seats, body.interval, body.self_hosted
+    sla = body.self_hosted if body.sla_support is None else body.sla_support
+    return body.tier, body.seats, body.interval, sla
 
 # Códigos de error de Stripe que son culpa de lo que ha escrito el cliente, no
 # de la instalación: llegaban como 502 «upstream_error» con el texto crudo de
@@ -190,9 +196,9 @@ async def quote(
     # la página de precios lo consulta antes de que exista sesión. Lo que sí
     # faltaba es el límite: era el único POST de billing que cualquiera podía
     # llamar sin freno.
-    tier, seats, interval, self_hosted = _parse_body_plan(body)
+    tier, seats, interval, sla_support = _parse_body_plan(body)
     try:
-        totals = compute_total_cents(tier, seats, interval, self_hosted)
+        totals = compute_total_cents(tier, seats, interval, sla_support)
     except InvalidPlanError as exc:
         raise APIError(400, "invalid_field", str(exc), extra={"field": "plan"})
     # El importe sigue siendo el neto: el impuesto depende del país, que aquí
@@ -207,9 +213,9 @@ async def subscribe(
     user: str = Depends(require_auth),
     _rl: None = Depends(_subscribe_limiter),
 ) -> Dict[str, Any]:
-    tier, seats, interval, self_hosted = _parse_body_plan(body)
+    tier, seats, interval, sla_support = _parse_body_plan(body)
     try:
-        totals = compute_total_cents(tier, seats, interval, self_hosted)
+        totals = compute_total_cents(tier, seats, interval, sla_support)
     except InvalidPlanError as exc:
         raise APIError(400, "invalid_field", str(exc), extra={"field": "plan"})
 
@@ -254,15 +260,15 @@ async def subscribe(
             precio_asientos["tax_behavior"] = STRIPE_TAX_BEHAVIOR
 
         items = [{"price_data": precio_asientos, "quantity": 1}]
-        if self_hosted:
-            sh_price_id = _SELF_HOSTED_PRICE_IDS.get(interval)
-            if not sh_price_id:
+        if sla_support:
+            sla_price_id = SLA_SUPPORT_PRICE_ID
+            if not sla_price_id:
                 raise APIError(
                     400,
-                    "self_hosted_addon_not_configured",
-                    "Add-on self-hosted no configurado",
+                    "sla_support_addon_not_configured",
+                    "Add-on de soporte con SLA no configurado",
                 )
-            items.append({"price": sh_price_id, "quantity": 1})
+            items.append({"price": sla_price_id, "quantity": 1})
 
         extra: Dict[str, Any] = (
             {"automatic_tax": {"enabled": True}} if STRIPE_TAX_ENABLED else {}
@@ -278,7 +284,7 @@ async def subscribe(
                 "tier": tier,
                 "seats": str(seats),
                 "interval": interval,
-                "self_hosted": "1" if self_hosted else "0",
+                "sla_support": "1" if sla_support else "0",
                 "country": country,
             },
             **extra,
@@ -295,7 +301,7 @@ async def subscribe(
         stripe_subscription_id=subscription.id,
         tier=tier,
         seats=seats,
-        self_hosted=self_hosted,
+        self_hosted=sla_support,
         interval=interval,
         amount_cents=totals["amount_cents"],
         status=subscription.status,
@@ -401,7 +407,11 @@ async def change_seats(
 
     try:
         totals = compute_total_cents(
-            "business", seats, row["interval"], bool(row["self_hosted"])
+            "business",
+            seats,
+            row["interval"],
+            bool(row["self_hosted"]),
+            new_contract=False,
         )
     except InvalidPlanError as exc:
         raise APIError(400, "invalid_field", str(exc), extra={"field": "plan"})

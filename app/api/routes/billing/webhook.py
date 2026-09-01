@@ -150,7 +150,14 @@ async def _handle_subscription_event(sub: Dict[str, Any], event_type: str) -> No
     except (TypeError, ValueError):
         seats = 1
     interval = _safe_get(metadata, "interval") or "month"
-    self_hosted = _safe_get(metadata, "self_hosted") == "1"
+    # Las dos claves: `self_hosted` es la que llevan las suscripciones dadas
+    # de alta antes del renombrado, y sus eventos siguen llegando durante
+    # años —renovaciones, cambios de asientos, bajas—. Leer solo la nueva
+    # les quitaba el add-on en la primera renovación, sin error ninguno.
+    sla_support = (
+        _safe_get(metadata, "sla_support") == "1"
+        or _safe_get(metadata, "self_hosted") == "1"
+    )
 
     existing = await _billing.get_by_stripe_subscription_id(sub["id"])
 
@@ -193,7 +200,7 @@ async def _handle_subscription_event(sub: Dict[str, Any], event_type: str) -> No
         stripe_subscription_id=sub["id"],
         tier=tier,
         seats=seats,
-        self_hosted=self_hosted,
+        self_hosted=sla_support,
         interval=interval,
         amount_cents=amount_cents,
         status=status,
