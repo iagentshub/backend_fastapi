@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -55,6 +56,7 @@ _TRANSIENT_ERROR_CODES = frozenset(
     {"llm_capacity_exceeded", "provider_unreachable", "internal_error"}
 )
 _TRANSIENT_HTTP_STATUSES = frozenset({408, 429, 500, 502, 503, 504, 529})
+_ESPERA_ANTES_DE_REINTENTAR = 1.5
 
 
 def _is_transient_provider_error(code: str, message: str) -> bool:
@@ -230,6 +232,13 @@ async def builder_chat(
                 )
                 if attempt == 0 and is_transient:
                     yield _sse({"type": "progress"})
+                    # Volver en el mismo instante es contraproducente justo con
+                    # el error que más se beneficia de esperar: un 429 lo emite
+                    # un proveedor que pide precisamente eso. No hay retroceso
+                    # exponencial porque solo hay un reintento, así que una
+                    # constante es toda la curva que cabe; el keep-alive del
+                    # SSE va a 10 s y no se resiente.
+                    await asyncio.sleep(_ESPERA_ANTES_DE_REINTENTAR)
                     continue
                 if force_ready or is_transient:
                     logger.warning(
