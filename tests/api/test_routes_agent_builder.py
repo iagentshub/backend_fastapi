@@ -397,7 +397,7 @@ def test_complete_expert_specification_skips_provider(admin_client, monkeypatch)
         event for event in _events(response.text) if event["type"] == "builder_done"
     )
     assert done["status"] == "ready"
-    assert done["draft"]["name"] == "Especialista Python y FastAPI"
+    assert done["draft"]["name"] == "senior especializado en Python y FastAPI"
     assert done["draft"]["system_prompt"] == specification.strip()
 
 
@@ -620,5 +620,75 @@ def test_builder_falls_back_when_http_529_persists(admin_client, monkeypatch):
     done = next(event for event in events if event["type"] == "builder_done")
     assert done["status"] == "ready"
     assert "Java" in done["draft"]["system_prompt"]
+    assert calls == 2
+    assert not any(event["type"] == "error" for event in events)
+
+
+def test_builder_reintenta_un_proveedor_inalcanzable(admin_client, monkeypatch):
+    """Los fallos transitorios se reconocen por el código, no por el texto.
+
+    La clasificación buscaba subcadenas ("timeout", "capacity") que ningún
+    mensaje de stream_chat contiene, así que la capacidad agotada y el
+    proveedor inalcanzable —los dos fallos pasajeros más frecuentes— se
+    trataban como definitivos y no se reintentaban nunca.
+    """
+    connection = admin_client.post(
+        "/api/connections",
+        json={
+            "name": "NIM caido una vez",
+            "type": "nvidia",
+            "api_key": "nvapi-test",
+            "model": "meta/llama-3.2-3b-instruct",
+        },
+    ).json()
+    calls = 0
+
+    async def unreachable_once(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            yield (
+                'data: {"type":"error","code":"provider_unreachable",'
+                '"message":"No se pudo contactar con el proveedor."}\n\n'
+            )
+            return
+        reply = json.dumps(
+            {
+                "assistant_message": "Borrador listo.",
+                "status": "ready",
+                "draft": {
+                    "name": "Especialista Java",
+                    "description": "Programa Java con buenas prácticas",
+                    "system_prompt": (
+                        "Eres especialista senior en Java. Analiza los requisitos "
+                        "antes de proponer una solución, aplica diseño mantenible, "
+                        "valida entradas, protege datos sensibles y escribe pruebas "
+                        "automatizadas. Explica las decisiones importantes, señala "
+                        "suposiciones y nunca inventes resultados de una ejecución."
+                    ),
+                    "temperature": 0.2,
+                    "skills": [],
+                    "knowledge": [],
+                    "use_memory": False,
+                },
+            },
+            ensure_ascii=False,
+        )
+        yield f"data: {json.dumps({'type': 'done', 'reply': reply})}\n\n"
+
+    monkeypatch.setattr("app.api.routes.agent_builder.stream_chat", unreachable_once)
+
+    response = admin_client.post(
+        "/api/agent-builder/chat",
+        json={
+            "connection_id": connection["id"],
+            "mode": "guided",
+            "messages": [{"role": "user", "content": "Quiero programar en Java"}],
+        },
+    )
+
+    events = _events(response.text)
+    done = next(event for event in events if event["type"] == "builder_done")
+    assert done["draft"]["name"] == "Especialista Java"
     assert calls == 2
     assert not any(event["type"] == "error" for event in events)

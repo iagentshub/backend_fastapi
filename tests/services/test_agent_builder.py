@@ -180,7 +180,7 @@ def test_expert_fallback_preserves_full_specification():
 
     assert envelope.status == "ready"
     assert envelope.draft is not None
-    assert envelope.draft.name == "Especialista Python y FastAPI"
+    assert envelope.draft.name == "senior de Python y FastAPI"
     assert envelope.draft.system_prompt == specification
 
 
@@ -200,10 +200,15 @@ def test_guided_fallback_turns_answers_into_actionable_prompt():
     assert envelope.draft is not None
     assert "Quiero responder dudas de clientes" in envelope.draft.system_prompt
     assert "No inventar datos" in envelope.draft.system_prompt
-    assert "No inventes datos" in envelope.draft.system_prompt
-    assert "## Forma de trabajo" in envelope.draft.system_prompt
-    assert "## Reglas y límites" in envelope.draft.system_prompt
-    assert "## Formato de respuesta" in envelope.draft.system_prompt
+    # El borrador local reutiliza el mismo marco profesional que
+    # parse_builder_reply aplica a los borradores del modelo.
+    assert envelope.draft.system_prompt.startswith(
+        "Eres un asistente especializado en este objetivo:"
+    )
+    assert "No inventes hechos" in envelope.draft.system_prompt
+    assert "## Método de trabajo" in envelope.draft.system_prompt
+    assert "## Criterios de decisión y límites" in envelope.draft.system_prompt
+    assert "## Contrato de respuesta" in envelope.draft.system_prompt
 
 
 def test_ready_draft_rejects_a_short_generic_system_prompt():
@@ -281,3 +286,33 @@ Adapt the level of detail to the user and keep the output directly actionable.
 
     assert result.draft is not None
     assert result.draft.system_prompt == professional.strip()
+
+
+def test_fallback_no_convierte_la_peticion_en_system_prompt():
+    """La petición se enmarca como objetivo; nunca se copia tal cual.
+
+    Copiada literalmente dejaba un prompt en primera persona ("quiero un agente
+    que me ayude...") que describe al solicitante en vez de instruir al agente,
+    y una tabla de palabras clave lo bautizaba por la primera palabra que
+    reconociese: "cliente" convertía una petición de redacción comercial en un
+    agente de atención al cliente.
+    """
+    peticion = (
+        "Quiero un agente que me ayude a redactar correos comerciales para los "
+        "clientes de mi tienda de bicicletas, con tono cercano."
+    )
+    envelope = build_fallback_ready(
+        [BuilderMessage(role="user", content=peticion)],
+        BuilderResources(),
+        "auto",
+    )
+
+    assert envelope.draft is not None
+    prompt = envelope.draft.system_prompt
+    assert prompt != peticion
+    assert prompt.startswith("Eres un asistente especializado en este objetivo:")
+    assert peticion in prompt
+    assert "## Método de trabajo" in prompt
+    assert "Atención al Cliente" not in envelope.draft.name
+    # El usuario tiene que saber que el borrador no lo diseñó el modelo.
+    assert "sin pasar por el modelo" in envelope.assistant_message

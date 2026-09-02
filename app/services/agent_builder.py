@@ -308,40 +308,27 @@ visible debe estar en el idioma del usuario."""
 
 
 def _fallback_name(text: str) -> str:
-    lower = text.lower()
-    if "python" in lower and "fastapi" in lower:
-        return "Especialista Python y FastAPI"
-    if any(word in lower for word in ("cliente", "soporte", "atención")):
-        return "Asistente de Atención al Cliente"
-    if any(word in lower for word in ("contenido", "redes sociales", "linkedin")):
-        return "Asistente de Contenidos"
-    if any(word in lower for word in ("documento", "contrato", "pdf")):
-        return "Analista de Documentos"
+    """Derive the name from what the user wrote, never from a guessed domain."""
     first_line = next((line.strip() for line in text.splitlines() if line.strip()), "")
-    first_line = re.sub(
-        r"^(quiero|necesito)\s+(crear\s+)?(un\s+)?agente\s+(que\s+|para\s+)?",
+    # Una tabla de palabras clave bautizaba "Asistente de Atención al Cliente"
+    # cualquier petición que mencionase "cliente", aunque fuese para redactar
+    # correos comerciales. Un nombre derivado y soso es editable; uno
+    # confiadamente equivocado se cuela hasta el agente creado.
+    sentence = first_line.split(".")[0]
+    sentence = re.sub(
+        r"^(?:(?:quiero|necesito)\s+(?:crear\s+)?(?:un\s+)?agente\s+(?:que\s+|para\s+)?"
+        r"|eres\s+(?:un|una)\s+(?:agente|asistente)\s+(?:de\s+|para\s+)?)"
+        r"(?:me\s+ayud\w+\s+(?:a|con)\s+)?",
         "",
-        first_line,
+        sentence,
         flags=re.IGNORECASE,
     )
-    words = first_line.split()
-    candidate = " ".join(words[:7]).strip(" .,:;-")
+    candidate = " ".join(sentence.split()[:7]).strip(" .,:;-")
     return candidate[:80] if candidate else "Asistente personalizado"
 
 
 def _fallback_description(text: str) -> str:
-    lower = text.lower()
-    if "python" in lower and "fastapi" in lower:
-        return (
-            "Diseña, implementa y revisa backends profesionales con Python y FastAPI."
-        )
-    if any(word in lower for word in ("cliente", "soporte", "atención")):
-        return "Ayuda a atender clientes con respuestas claras, fiables y coherentes."
-    if any(word in lower for word in ("contenido", "redes sociales", "linkedin")):
-        return "Planifica y crea contenido adaptado al público y al canal."
-    if any(word in lower for word in ("documento", "contrato", "pdf")):
-        return "Analiza documentos y presenta hallazgos de forma clara y verificable."
-    first = next((answer for answer in text.splitlines() if answer.strip()), text)
+    first = next((line for line in text.splitlines() if line.strip()), text)
     return f"Asistente creado para: {first.strip()[:300]}"
 
 
@@ -357,37 +344,24 @@ def build_fallback_ready(
         if message.role == "user" and message.content.strip()
     ]
     combined = "\n\n".join(answers)
-    longest = max(answers, key=len, default="")
-    if _is_actionable_system_prompt(longest):
-        system_prompt = longest
+    if mode == "expert" and _is_actionable_system_prompt(combined):
+        # En modo técnico el usuario escribió la especificación a propósito: es
+        # la fuente de verdad y se conserva tal cual.
+        system_prompt = combined
     else:
-        system_prompt = f"""Eres un asistente especializado en este objetivo:
-
-{combined or "Ayudar al usuario con la tarea que indique."}
-
-## Forma de trabajo
-
-1. Identifica el resultado que necesita el usuario y las restricciones expresadas.
-2. Solicita solamente la información imprescindible que falte para trabajar bien.
-3. Ejecuta la tarea de forma ordenada, explicando decisiones relevantes.
-4. Comprueba que el resultado responde al objetivo antes de entregarlo.
-
-## Reglas y límites
-
-- No inventes datos, fuentes, requisitos ni acciones realizadas.
-- Distingue hechos, supuestos y recomendaciones cuando pueda haber confusión.
-- Protege datos sensibles y avisa de riesgos o limitaciones importantes.
-- Mantén el trabajo dentro del objetivo solicitado y pide confirmación antes de
-  realizar acciones irreversibles o con impacto externo.
-
-## Formato de respuesta
-
-Entrega primero el resultado principal. Añade después los pasos, comprobaciones,
-supuestos o siguientes acciones que ayuden al usuario a revisarlo y utilizarlo."""
+        # En los demás modos el usuario escribió una petición, no instrucciones.
+        # Usarla tal cual dejaba system_prompts en primera persona ("quiero un
+        # agente que me ayude..."), que describen al solicitante y no instruyen
+        # a nadie; y se saltaba el marco profesional que parse_builder_reply sí
+        # aplica a todo borrador venido del modelo.
+        system_prompt = _ensure_professional_system_prompt(
+            "Eres un asistente especializado en este objetivo:\n\n"
+            f"{combined or 'Ayudar al usuario con la tarea que indique.'}"
+        )
     return BuilderEnvelope(
         assistant_message=(
-            "He preparado un borrador con la información disponible. "
-            "Puedes revisarlo y editarlo antes de crear el agente."
+            "He preparado un borrador editable a partir de tu petición, sin "
+            "pasar por el modelo. Revísalo antes de crear el agente."
         ),
         status="ready",
         draft=AgentDraft(

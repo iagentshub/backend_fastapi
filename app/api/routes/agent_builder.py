@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import Any, Dict, List
 
 from fastapi import APIRouter, Depends
@@ -47,27 +48,30 @@ def _sse(data: Dict[str, Any]) -> str:
     return f"data: {json.dumps(data, ensure_ascii=False)}\n\n"
 
 
-def _is_transient_provider_error(message: str) -> bool:
-    """Return whether retrying a provider failure can reasonably succeed."""
-    normalized = message.casefold()
-    transient_markers = (
-        "timed out",
-        "timeout",
-        "temporarily unavailable",
-        "temporarily overloaded",
-        "overloaded",
-        "rate limit",
-        "too many requests",
-        "capacity",
-        "http 408",
-        "http 429",
-        "http 500",
-        "http 502",
-        "http 503",
-        "http 504",
-        "http 529",
-    )
-    return any(marker in normalized for marker in transient_markers)
+# Los códigos que emite stream_chat y que un segundo intento puede salvar.
+# `internal_error` es su red de seguridad final: ahí caen los TimeoutError de
+# socket, que no llegan como URLError.
+_TRANSIENT_ERROR_CODES = frozenset(
+    {"llm_capacity_exceeded", "provider_unreachable", "internal_error"}
+)
+_TRANSIENT_HTTP_STATUSES = frozenset({408, 429, 500, 502, 503, 504, 529})
+
+
+def _is_transient_provider_error(code: str, message: str) -> bool:
+    """Return whether retrying a provider failure can reasonably succeed.
+
+    La versión anterior buscaba subcadenas ("timeout", "overloaded", "capacity")
+    en el texto del error, y ninguno de los mensajes que stream_chat produce las
+    contiene: la capacidad agotada y el proveedor inalcanzable —los dos fallos
+    transitorios más frecuentes— se trataban como definitivos. El código sí
+    viaja en el evento; el texto solo hace falta para el estado HTTP.
+    """
+    if code in _TRANSIENT_ERROR_CODES:
+        return True
+    if code and code != "provider_http_error":
+        return False
+    status = re.search(r"HTTP (\d{3})", message)
+    return status is not None and int(status.group(1)) in _TRANSIENT_HTTP_STATUSES
 
 
 @router.post("/chat")
@@ -146,11 +150,15 @@ async def builder_chat(
             mode=body.mode,
         ),
         temperature=0.2,
-        # Da margen para un prompt profesional con proceso, controles y límites,
-        # sin permitir que un modelo pequeño divague indefinidamente.
-        max_tokens=2200,
-        # La conexión del asistente debe usar un modelo rápido. Tres minutos
-        # cubren colas/cold starts de NIM sin dejar la interfaz bloqueada.
+        # El envoltorio JSON pide identidad, alcance, método paso a paso,
+        # criterios, comprobaciones, límites y contrato de salida, y los saltos
+        # de línea viajan escapados. Con 2200 el corte por longitud llegaba como
+        # JSON incompleto, indistinguible de uno malformado —ningún proveedor
+        # expone finish_reason—, así que se reintentaba con el mismo techo y se
+        # acababa en el borrador local.
+        max_tokens=4000,
+        # La conexión del asistente debe usar un modelo rápido. Minuto y medio
+        # cubre colas/cold starts de NIM sin dejar la interfaz bloqueada.
         timeout=90,
     )
     history = [message.model_dump() for message in body.messages]
@@ -217,7 +225,9 @@ async def builder_chat(
 
             if provider_error:
                 last_issue = provider_error
-                is_transient = _is_transient_provider_error(provider_error)
+                is_transient = _is_transient_provider_error(
+                    provider_error_code, provider_error
+                )
                 if attempt == 0 and is_transient:
                     yield _sse({"type": "progress"})
                     continue
