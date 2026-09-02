@@ -83,7 +83,12 @@ def _listados_sin_cota() -> set[str]:
             parametros = {a.arg for a in nodo.args.args + nodo.args.kwonlyargs}
             if PAGINACION & parametros:
                 continue
-            encontrados.add(f"{fichero.relative_to(RUTAS)}:{nodo.name}")
+            # as_posix y no str: en Windows el separador es "\", así que los
+            # ficheros en subcarpeta salían como "admin\x.py" y no casaban con
+            # DEUDA, escrita con "/". La guarda fallaba por los dos lados a la
+            # vez —listados "nuevos" y entradas "muertas" que eran los mismos—
+            # y solo fuera de CI, que corre en Linux.
+            encontrados.add(f"{fichero.relative_to(RUTAS).as_posix()}:{nodo.name}")
     return encontrados
 
 
